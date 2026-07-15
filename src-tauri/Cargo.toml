@@ -1,0 +1,37 @@
+[package]
+name = "wr-shell"
+description = "A lightweight SSH/Telnet/Serial client"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix avoids a name clash with the bin target on Windows.
+name = "wr_shell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+wr-core = { path = "../crates/wr-core" }
+wr-ssh = { path = "../crates/wr-ssh" }
+wr-vault = { path = "../crates/wr-vault" }
+wr-telnet = { path = "../crates/wr-telnet" }
+wr-serial = { path = "../crates/wr-serial" }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tokio.workspace = true
+async-trait = "0.1"
+base64 = "0.22"

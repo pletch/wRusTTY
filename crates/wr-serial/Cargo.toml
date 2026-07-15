@@ -1,0 +1,16 @@
+[package]
+name = "wr-serial"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wr-core = { path = "../wr-core" }
+async-trait = "0.1"
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio-serial = "5"

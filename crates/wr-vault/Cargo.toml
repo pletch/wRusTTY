@@ -1,0 +1,19 @@
+[package]
+name = "wr-vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,21 @@
+[package]
+name = "wr-ssh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wr-core = { path = "../wr-core" }
+russh = "0.62"
+async-trait = "0.1"
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+dirs = "6"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
