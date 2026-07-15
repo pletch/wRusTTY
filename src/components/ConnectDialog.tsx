@@ -27,8 +27,12 @@ interface Props {
   error?: string | null
 }
 
+// Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
+// instead, and mixing same-property utilities (`w-full` + `w-16`) relies on
+// Tailwind's generated-CSS order rather than className order to resolve the
+// conflict, which isn't guaranteed to go the way it reads left-to-right.
 const inputClass =
-  'w-full rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 type Protocol = 'ssh' | 'telnet' | 'serial'
 
@@ -154,7 +158,7 @@ export function ConnectDialog({
                 required
               />
               <input
-                className={`${inputClass} w-16`}
+                className={`${inputClass} w-16 shrink-0`}
                 placeholder="port"
                 value={port}
                 onChange={(e) => setPort(e.target.value)}
@@ -164,7 +168,7 @@ export function ConnectDialog({
             {protocol === 'ssh' && (
               <>
                 <input
-                  className={inputClass}
+                  className={`${inputClass} w-full`}
                   placeholder="username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -194,7 +198,7 @@ export function ConnectDialog({
 
                 {authType === 'Password' ? (
                   <input
-                    className={inputClass}
+                    className={`${inputClass} w-full`}
                     placeholder="password"
                     type="password"
                     value={password}
@@ -203,13 +207,13 @@ export function ConnectDialog({
                 ) : (
                   <>
                     <input
-                      className={inputClass}
+                      className={`${inputClass} w-full`}
                       placeholder="key path"
                       value={keyPath}
                       onChange={(e) => setKeyPath(e.target.value)}
                     />
                     <input
-                      className={inputClass}
+                      className={`${inputClass} w-full`}
                       placeholder="passphrase (optional)"
                       type="password"
                       value={passphrase}
@@ -237,7 +241,7 @@ export function ConnectDialog({
             {saveProfile && (
               <>
                 <input
-                  className={inputClass}
+                  className={`${inputClass} w-full`}
                   placeholder="session name"
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}

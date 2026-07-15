@@ -14,8 +14,13 @@ interface Props {
   onClose: () => void
 }
 
+// Deliberately excludes `flex-1`/`flex-none` — baking `flex-1` in here and
+// overriding it with `flex-none` on port fields relies on Tailwind's
+// generated-CSS order to resolve the conflicting `flex` shorthand, which
+// isn't guaranteed to match className order (see ConnectDialog's inputClass
+// for the same issue with `w-full`/`w-16`, caught via manual testing).
 const inputClass =
-  'min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'min-w-0 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 function describe(spec: ForwardSpec): string {
   if (spec.type === 'dynamic') return `SOCKS5 :${spec.bindPort}`
@@ -115,7 +120,7 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
 
         <div className="flex gap-1">
           <input
-            className={inputClass}
+            className={`${inputClass} flex-1`}
             placeholder="bind host"
             value={bindHost}
             onChange={(e) => setBindHost(e.target.value)}
@@ -131,7 +136,7 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
         {type !== 'dynamic' && (
           <div className="flex gap-1">
             <input
-              className={inputClass}
+              className={`${inputClass} flex-1`}
               placeholder="target host"
               value={targetHost}
               onChange={(e) => setTargetHost(e.target.value)}
