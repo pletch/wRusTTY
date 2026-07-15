@@ -26,3 +26,6 @@ dist-ssr
 # Rust workspace build output
 /target
 /src-tauri/gen/schemas
+
+# Claude Code local session state — machine/user-specific, never shared
+.claude/
