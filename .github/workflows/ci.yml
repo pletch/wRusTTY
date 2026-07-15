@@ -59,7 +59,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wr-shell-windows-installer
+          # src-tauri is a member of the root Cargo workspace, so build
+          # output lands in the workspace-root `target/`, not a nested
+          # `src-tauri/target/`.
           path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: error
