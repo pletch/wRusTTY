@@ -54,6 +54,19 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
   const loggingRef = useRef(logging)
   loggingRef.current = logging
 
+  // Pane.tsx passes these as fresh inline closures on every render, so
+  // including them in the connect effect's dependency array below would
+  // tear down and reconnect the session on every status update it reports
+  // (status update -> parent re-render -> new closure -> effect re-fires ->
+  // more status updates -> ...), which is exactly the reconnect storm that
+  // produced repeated "connection reset by peer" toasts stacked behind a
+  // host-key prompt that never got a chance to be answered.
+  const onStatusRef = useRef(onStatus)
+  onStatusRef.current = onStatus
+
+  const onSessionIdRef = useRef(onSessionId)
+  onSessionIdRef.current = onSessionId
+
   // Theme updates apply live to the existing terminal instance instead of
   // tearing down and reconnecting the session.
   useEffect(() => {
@@ -108,7 +121,7 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
           break
         }
         case 'status':
-          onStatus?.(event.status)
+          onStatusRef.current?.(event.status)
           if (event.status.startsWith('failed') || event.status === 'disconnected') {
             term.writeln(`\r\n[${event.status}]`)
           }
@@ -134,7 +147,7 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
         }
         setConnecting(false)
         sessionId = id
-        onSessionId?.(id)
+        onSessionIdRef.current?.(id)
         const { cols, rows } = term
         conn.resize(source, id, cols, rows).catch(() => {})
         if (loggingRef.current) {
@@ -207,17 +220,19 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
         conn.disconnect(source, sessionId).catch(() => {})
         if (loggingActive) sessionLog.stop(sessionId).catch(() => {})
       }
-      onSessionId?.(null)
+      onSessionIdRef.current?.(null)
       termRef.current = null
       searchAddonRef.current = null
       term.dispose()
     }
     // `label` is display-only text for the "Connecting to..." line, not a
     // reconnect trigger — intentionally excluded so relabeling a pane
-    // doesn't tear down its session. `logging` is read through a ref so
-    // toggling it doesn't reconnect either (handled by the effect below).
+    // doesn't tear down its session. `logging`, `onStatus`, and
+    // `onSessionId` are all read through refs so none of them reconnect
+    // the session either (onStatus/onSessionId are fresh closures from
+    // Pane.tsx on every render — see the refs above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, onStatus, onSessionId])
+  }, [source])
 
   return (
     <div className="relative h-full w-full">

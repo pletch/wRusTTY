@@ -130,12 +130,14 @@ impl SshSession {
             ..Default::default()
         };
 
+        let verify_started = Arc::new(tokio::sync::Notify::new());
         let handler = ClientHandler::new(
             self.config.host.clone(),
             self.config.port,
             self.known_hosts.clone(),
             self.verifier.clone(),
             self.remote_forwards.clone(),
+            verify_started.clone(),
         );
 
         let connect_fut = client::connect(
@@ -143,13 +145,28 @@ impl SshSession {
             (self.config.host.as_str(), self.config.port),
             handler,
         );
+        tokio::pin!(connect_fut);
 
-        let mut handle = tokio::time::timeout(CONNECT_TIMEOUT, connect_fut)
-            .await
-            .map_err(|_| SshError::Timeout {
-                host: self.config.host.clone(),
-                port: self.config.port,
-            })??;
+        // CONNECT_TIMEOUT bounds the network-level connect + key exchange —
+        // it must stop counting once we're waiting on a human to accept or
+        // reject a host key (see ClientHandler::verify_started), or every
+        // first-time connection to an unknown host would time out before
+        // anyone had a chance to read the fingerprint and click Accept.
+        let mut awaiting_verification = false;
+        let mut handle = loop {
+            tokio::select! {
+                result = &mut connect_fut => break result?,
+                () = tokio::time::sleep(CONNECT_TIMEOUT), if !awaiting_verification => {
+                    return Err(SshError::Timeout {
+                        host: self.config.host.clone(),
+                        port: self.config.port,
+                    });
+                }
+                () = verify_started.notified(), if !awaiting_verification => {
+                    awaiting_verification = true;
+                }
+            }
+        };
 
         self.authenticate(&mut handle).await?;
 

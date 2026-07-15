@@ -43,6 +43,12 @@ pub(crate) struct ClientHandler {
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
     remote_forwards: RemoteForwardRegistry,
+    /// Fired the instant we're about to block on a human accepting or
+    /// rejecting an unknown host key, so the caller's connect-phase timeout
+    /// (meant to bound pure network stalls) can stop counting down — a
+    /// person reading a fingerprint routinely takes longer than any
+    /// reasonable network timeout.
+    verify_started: Arc<tokio::sync::Notify>,
 }
 
 impl ClientHandler {
@@ -52,6 +58,7 @@ impl ClientHandler {
         known_hosts: Arc<Mutex<KnownHostsStore>>,
         verifier: Arc<dyn HostKeyVerifier>,
         remote_forwards: RemoteForwardRegistry,
+        verify_started: Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
             host,
@@ -59,6 +66,7 @@ impl ClientHandler {
             known_hosts,
             verifier,
             remote_forwards,
+            verify_started,
         }
     }
 }
@@ -85,6 +93,8 @@ impl russh::client::Handler for ClientHandler {
             fingerprint: fingerprint(server_public_key),
             status,
         };
+
+        self.verify_started.notify_one();
 
         // Never fall back to trusting on a `false` answer or on any error
         // from the store write — an unaccepted or unrecorded key must abort
