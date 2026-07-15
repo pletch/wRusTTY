@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { X, ArrowLeftRight, Square } from 'lucide-react'
 import * as forward from '../lib/forward'
 import type { ForwardSpec } from '../lib/forward'
+import { toast } from '../lib/toast'
 
 interface ActiveForward {
   id: string
@@ -47,14 +48,17 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
     try {
       const id = await forward.addForward(sessionId, spec)
       setActive((prev) => [...prev, { id, spec }])
+      toast.success(`Forwarding ${describe(spec)}`)
     } catch (err) {
       setError(String(err))
     }
   }
 
   async function remove(id: string) {
+    const f = active.find((a) => a.id === id)
     await forward.removeForward(id).catch(() => {})
-    setActive((prev) => prev.filter((f) => f.id !== id))
+    setActive((prev) => prev.filter((a) => a.id !== id))
+    if (f) toast.info(`Stopped ${describe(f.spec)}`)
   }
 
   return (

@@ -5,7 +5,9 @@ import { SessionManager } from './components/SessionManager'
 import { QuickConnectPalette } from './components/QuickConnectPalette'
 import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
+import { ToastHost } from './components/ToastHost'
 import { TerminalSquare } from 'lucide-react'
+import { toast } from './lib/toast'
 import * as profiles from './lib/profiles'
 import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
@@ -78,6 +80,19 @@ function App() {
   function selectTab(id: string) {
     setActiveTabId(id)
     refit()
+  }
+
+  function reorderTabs(draggedId: string, targetId: string) {
+    if (draggedId === targetId) return
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.id === draggedId)
+      const to = prev.findIndex((t) => t.id === targetId)
+      if (from === -1 || to === -1) return prev
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
   }
 
   function stepTab(delta: 1 | -1) {
@@ -192,12 +207,18 @@ function App() {
   function saveProfile(profile: SessionProfile) {
     profiles
       .saveSession(profile)
-      .then(() => setProfilesVersion((v) => v + 1))
-      .catch(() => {})
+      .then(() => {
+        setProfilesVersion((v) => v + 1)
+        toast.success(`Saved session "${profile.label}"`)
+      })
+      .catch((err) => toast.error(`Couldn't save session: ${err}`))
   }
 
   function saveCredential(profileId: string, secret: VaultSecret) {
-    vault.setCredential(profileId, secret).catch(() => {})
+    vault
+      .setCredential(profileId, secret)
+      .then(() => toast.success('Credential saved to vault'))
+      .catch((err) => toast.error(`Couldn't save credential: ${err}`))
   }
 
   function openPalette() {
@@ -248,11 +269,13 @@ function App() {
           <TabBar
             tabs={tabs}
             activeTabId={activeTabId}
+            statusByPane={statusByPane}
             onSelect={selectTab}
             onClose={closeTab}
             onNew={newTab}
             onDuplicate={duplicateTab}
             onReconnect={reconnectTab}
+            onReorder={reorderTabs}
           />
         </div>
         <div className="flex shrink-0 items-center gap-0.5 border-b border-white/10 bg-black/20 px-1.5">
@@ -284,7 +307,12 @@ function App() {
                 onConnect={(paneId, config) => connectPane(tab.id, paneId, config)}
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
-                onStatus={(paneId, s) => setStatusByPane((prev) => ({ ...prev, [paneId]: s }))}
+                onStatus={(paneId, s) => {
+                  setStatusByPane((prev) => ({ ...prev, [paneId]: s }))
+                  // Surfaced even for background tabs — otherwise a failed
+                  // connection in a tab you're not looking at is silent.
+                  if (s.startsWith('failed')) toast.error(s.replace(/^failed: /, ''))
+                }}
                 onSplit={(paneId, direction) => splitPane(tab.id, paneId, direction)}
                 onClose={(paneId) => closePane(tab.id, paneId)}
               />
@@ -318,6 +346,7 @@ function App() {
           </footer>
         )
       })()}
+      <ToastHost />
     </div>
   )
 }

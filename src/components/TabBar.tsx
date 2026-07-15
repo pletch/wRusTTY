@@ -1,27 +1,48 @@
 import { useEffect, useState } from 'react'
-import { Plus, X, RotateCw, Copy } from 'lucide-react'
+import { Plus, X, RotateCw, Copy, Terminal as TerminalIcon, Radio, Cable } from 'lucide-react'
 import type { Tab } from '../types'
+import { allLeaves } from '../lib/paneTree'
 
 interface Props {
   tabs: Tab[]
   activeTabId: string | null
+  statusByPane: Record<string, string>
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
   onDuplicate: (id: string) => void
   onReconnect: (id: string) => void
+  onReorder: (draggedId: string, targetId: string) => void
+}
+
+const protocolIcons = {
+  ssh: TerminalIcon,
+  sshProfile: TerminalIcon,
+  telnet: Radio,
+  serial: Cable,
+}
+
+function statusDotColor(status: string | undefined): string | null {
+  if (!status) return null
+  if (status === 'connected') return 'bg-emerald-400'
+  if (status.startsWith('failed') || status === 'disconnected') return 'bg-red-400'
+  return 'bg-amber-400'
 }
 
 export function TabBar({
   tabs,
   activeTabId,
+  statusByPane,
   onSelect,
   onClose,
   onNew,
   onDuplicate,
   onReconnect,
+  onReorder,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
+  const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!menu) return
@@ -35,21 +56,61 @@ export function TabBar({
       <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
+          const leaf = allLeaves(tab.root).find((l) => l.id === tab.activePaneId)
+          const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
+          const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null
           return (
             <div
               key={tab.id}
+              draggable
               onClick={() => onSelect(tab.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
               }}
+              onDragStart={(e) => {
+                setDraggedId(tab.id)
+                e.dataTransfer.effectAllowed = 'move'
+              }}
+              onDragEnd={() => {
+                setDraggedId(null)
+                setDropTargetId(null)
+              }}
+              onDragOver={(e) => {
+                if (!draggedId || draggedId === tab.id) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                setDropTargetId(tab.id)
+              }}
+              onDragLeave={() => setDropTargetId((id) => (id === tab.id ? null : id))}
+              onDrop={(e) => {
+                e.preventDefault()
+                if (draggedId) onReorder(draggedId, tab.id)
+                setDraggedId(null)
+                setDropTargetId(null)
+              }}
               className={`group relative flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 border-r border-white/5 px-3 text-xs transition-colors duration-150 ${
                 active
                   ? 'bg-white/10 text-white'
                   : 'text-white/45 hover:bg-white/[0.06] hover:text-white/80'
+              } ${draggedId === tab.id ? 'opacity-40' : ''} ${
+                dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''
               }`}
             >
               {active && <span className="absolute inset-x-0 top-0 h-[2px] bg-sky-400" />}
+              {dropTargetId === tab.id && draggedId !== tab.id && (
+                <span className="absolute inset-y-0 left-0 w-0.5 bg-sky-400" />
+              )}
+              {ProtocolIcon && (
+                <span className="relative shrink-0 text-white/40">
+                  <ProtocolIcon size={12} />
+                  {dotColor && (
+                    <span
+                      className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-[#1a1b22] transition-colors duration-300 ${dotColor}`}
+                    />
+                  )}
+                </span>
+              )}
               <span className="truncate">{tab.title}</span>
               <button
                 onClick={(e) => {

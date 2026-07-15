@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Folder, Server, ExternalLink, Trash2, PanelLeft } from 'lucide-react'
 import * as profiles from '../lib/profiles'
 import type { SessionProfile } from '../lib/profiles'
+import { toast } from '../lib/toast'
 
 interface Props {
   onOpen: (profile: SessionProfile) => void
@@ -25,8 +26,14 @@ export function SessionManager({ onOpen, refreshToken }: Props) {
   }, [menu])
 
   async function remove(id: string) {
-    await profiles.deleteSession(id).catch(() => {})
-    setSessions((prev) => prev.filter((s) => s.id !== id))
+    const label = sessions.find((s) => s.id === id)?.label
+    try {
+      await profiles.deleteSession(id)
+      setSessions((prev) => prev.filter((s) => s.id !== id))
+      toast.info(label ? `Deleted "${label}"` : 'Session deleted')
+    } catch (err) {
+      toast.error(`Couldn't delete session: ${err}`)
+    }
   }
 
   const groups = new Map<string, SessionProfile[]>()

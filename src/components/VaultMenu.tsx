@@ -3,6 +3,7 @@ import { save, open } from '@tauri-apps/plugin-dialog'
 import { Lock, Unlock, Download, Upload } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
+import { toast } from '../lib/toast'
 
 interface Props {
   status: VaultStatus
@@ -54,6 +55,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
       await vault.create(password)
       onStatusChange()
       setOpen(false)
+      toast.success('Vault created and unlocked')
     } catch (err) {
       setError(String(err))
     } finally {
@@ -68,6 +70,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
       await vault.unlock(password)
       onStatusChange()
       setOpen(false)
+      toast.success('Vault unlocked')
     } catch (err) {
       setError(String(err))
     } finally {
@@ -79,6 +82,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     await vault.lock().catch(() => {})
     onStatusChange()
     setOpen(false)
+    toast.info('Vault locked')
   }
 
   async function doExport() {
@@ -89,6 +93,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     if (!dest) return
     try {
       await vault.exportVault(dest)
+      toast.success('Vault exported')
     } catch (err) {
       setError(String(err))
     }
@@ -107,6 +112,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     try {
       await vault.importVault(src)
       onStatusChange()
+      toast.info('Vault imported — unlock it with its master password')
     } catch (err) {
       setError(String(err))
     }

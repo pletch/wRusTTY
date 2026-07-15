@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
-import { Search, ChevronUp, ChevronDown, X } from 'lucide-react'
+import { Search, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
@@ -42,6 +42,9 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  // Reinitializes to true on every mount, which is what we want — Pane.tsx
+  // remounts this component (via a `key` bump) on every reconnect.
+  const [connecting, setConnecting] = useState(true)
 
   // Settings can change without reconnecting the session, so they're read
   // through a ref rather than added to the effect's dependency array.
@@ -93,10 +96,10 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
     }
 
     fitAddon.fit()
-    term.writeln(`Connecting to ${label}...`)
 
     const onEvent = (event: ConnEvent) => {
       if (disposed) return
+      setConnecting(false)
       switch (event.type) {
         case 'data': {
           const bytes = conn.decodeBase64(event.bytesBase64)
@@ -129,6 +132,7 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
           conn.disconnect(source, id).catch(() => {})
           return
         }
+        setConnecting(false)
         sessionId = id
         onSessionId?.(id)
         const { cols, rows } = term
@@ -143,7 +147,10 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
         }
       })
       .catch((err) => {
-        if (!disposed) term.writeln(`\r\n[connect error] ${String(err)}`)
+        if (!disposed) {
+          setConnecting(false)
+          term.writeln(`\r\n[connect error] ${String(err)}`)
+        }
       })
 
     const dataListener = term.onData((data) => {
@@ -215,6 +222,12 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+      {connecting && (
+        <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">
+          <Loader2 size={20} className="animate-spin text-sky-400" />
+          Connecting to {label}...
+        </div>
+      )}
       {searchOpen && (
         <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-100">
           <Search size={13} className="mr-1 text-white/40" />
