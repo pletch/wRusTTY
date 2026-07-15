@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { save, open } from '@tauri-apps/plugin-dialog'
+import { Lock, Unlock, Download, Upload } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 
@@ -7,6 +8,13 @@ interface Props {
   status: VaultStatus
   onStatusChange: () => void
 }
+
+const fieldClass =
+  'w-full rounded border border-white/10 bg-black/20 px-2 py-1.5 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+const primaryButton =
+  'w-full rounded bg-sky-500/90 py-1.5 font-medium text-white transition-colors duration-100 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50'
+const secondaryButton =
+  'flex w-full items-center gap-1.5 rounded py-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white/90'
 
 export function VaultMenu({ status, onStatusChange }: Props) {
   const [open_, setOpen] = useState(false)
@@ -104,20 +112,22 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
-  const icon = status === 'unlocked' ? '🔓' : '🔒'
+  const Icon = status === 'unlocked' ? Unlock : Lock
 
   return (
     <div className="relative" data-vault-menu>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="px-2 text-white/50 hover:text-white/90"
+        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+          status === 'unlocked' ? 'text-emerald-400' : 'text-white/50 hover:text-white/90'
+        }`}
         title={`Vault: ${status}`}
       >
-        {icon}
+        <Icon size={15} strokeWidth={2} />
       </button>
       {open_ && (
         <div
-          className="absolute right-0 top-full z-50 mt-1 w-72 rounded border border-white/10 bg-[#1f2028] p-3 text-xs shadow-lg"
+          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
           onClick={(e) => e.stopPropagation()}
         >
           {status === 'uninitialized' && (
@@ -131,29 +141,21 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                 placeholder="master password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-white/90 outline-none focus:border-white/30"
+                className={fieldClass}
               />
               <input
                 type="password"
                 placeholder="confirm password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-white/90 outline-none focus:border-white/30"
+                className={fieldClass}
               />
               {error && <p className="text-red-400">{error}</p>}
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full rounded bg-white/10 py-1.5 text-white/90 hover:bg-white/20 disabled:opacity-50"
-              >
+              <button type="submit" disabled={busy} className={primaryButton}>
                 Create vault
               </button>
-              <button
-                type="button"
-                onClick={doImport}
-                className="w-full rounded py-1 text-white/50 hover:bg-white/10"
-              >
-                Import existing vault...
+              <button type="button" onClick={doImport} className={secondaryButton}>
+                <Upload size={13} /> Import existing vault...
               </button>
             </form>
           )}
@@ -167,47 +169,32 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                 placeholder="master password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-white/90 outline-none focus:border-white/30"
+                className={fieldClass}
               />
               {error && <p className="text-red-400">{error}</p>}
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full rounded bg-white/10 py-1.5 text-white/90 hover:bg-white/20 disabled:opacity-50"
-              >
+              <button type="submit" disabled={busy} className={primaryButton}>
                 Unlock
               </button>
-              <button
-                type="button"
-                onClick={doImport}
-                className="w-full rounded py-1 text-white/50 hover:bg-white/10"
-              >
-                Import a different vault...
+              <button type="button" onClick={doImport} className={secondaryButton}>
+                <Upload size={13} /> Import a different vault...
               </button>
             </form>
           )}
 
           {status === 'unlocked' && (
             <div className="space-y-2">
-              <p className="text-white/60">Vault is unlocked.</p>
+              <p className="flex items-center gap-1.5 text-emerald-400/90">
+                <Unlock size={13} /> Vault is unlocked
+              </p>
               {error && <p className="text-red-400">{error}</p>}
-              <button
-                onClick={doLock}
-                className="w-full rounded bg-white/10 py-1.5 text-white/90 hover:bg-white/20"
-              >
+              <button onClick={doLock} className={primaryButton}>
                 Lock now
               </button>
-              <button
-                onClick={doExport}
-                className="w-full rounded py-1 text-left text-white/70 hover:bg-white/10"
-              >
-                Export vault file...
+              <button onClick={doExport} className={secondaryButton}>
+                <Download size={13} /> Export vault file...
               </button>
-              <button
-                onClick={doImport}
-                className="w-full rounded py-1 text-left text-white/70 hover:bg-white/10"
-              >
-                Import vault file...
+              <button onClick={doImport} className={secondaryButton}>
+                <Upload size={13} /> Import vault file...
               </button>
             </div>
           )}

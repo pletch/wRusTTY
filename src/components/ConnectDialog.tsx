@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Terminal as TerminalIcon, Radio, Cable, Save, Plug } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
 import type { VaultSecret } from '../lib/vault'
@@ -27,9 +28,15 @@ interface Props {
 }
 
 const inputClass =
-  'w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-sm text-white/90 outline-none focus:border-white/30'
+  'w-full rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 type Protocol = 'ssh' | 'telnet' | 'serial'
+
+const protocolIcons: Record<Protocol, typeof TerminalIcon> = {
+  ssh: TerminalIcon,
+  telnet: Radio,
+  serial: Cable,
+}
 
 export function ConnectDialog({
   onConnect,
@@ -111,21 +118,27 @@ export function ConnectDialog({
     <div className="flex h-full w-full items-center justify-center">
       <form
         onSubmit={submit}
-        className="w-80 space-y-3 rounded-lg border border-white/10 bg-white/5 p-5"
+        className="w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl duration-150"
       >
-        <div className="flex gap-1 rounded bg-black/20 p-0.5 text-xs">
-          {(['ssh', 'telnet', 'serial'] as const).map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => switchProtocol(p)}
-              className={`flex-1 rounded py-1 uppercase tracking-wide ${
-                protocol === p ? 'bg-white/15 text-white' : 'text-white/40 hover:text-white/70'
-              }`}
-            >
-              {p}
-            </button>
-          ))}
+        <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
+          {(['ssh', 'telnet', 'serial'] as const).map((p) => {
+            const Icon = protocolIcons[p]
+            return (
+              <button
+                key={p}
+                type="button"
+                onClick={() => switchProtocol(p)}
+                className={`flex flex-1 items-center justify-center gap-1.5 rounded py-1.5 uppercase tracking-wide transition-colors duration-150 ${
+                  protocol === p
+                    ? 'bg-white/15 text-white shadow-sm'
+                    : 'text-white/40 hover:text-white/70'
+                }`}
+              >
+                <Icon size={13} />
+                {p}
+              </button>
+            )
+          })}
         </div>
 
         {protocol === 'serial' ? (
@@ -159,17 +172,19 @@ export function ConnectDialog({
                 />
 
                 <div className="flex gap-3 text-xs text-white/70">
-                  <label className="flex items-center gap-1">
+                  <label className="flex items-center gap-1.5">
                     <input
                       type="radio"
+                      className="accent-sky-400"
                       checked={authType === 'Password'}
                       onChange={() => setAuthType('Password')}
                     />
                     Password
                   </label>
-                  <label className="flex items-center gap-1">
+                  <label className="flex items-center gap-1.5">
                     <input
                       type="radio"
+                      className="accent-sky-400"
                       checked={authType === 'PublicKey'}
                       onChange={() => setAuthType('PublicKey')}
                     />
@@ -208,13 +223,15 @@ export function ConnectDialog({
         )}
 
         {protocol === 'ssh' && onSaveProfile && (
-          <div className="space-y-2 border-t border-white/10 pt-2">
+          <div className="space-y-2 border-t border-white/10 pt-2.5">
             <label className="flex items-center gap-2 text-xs text-white/70">
               <input
                 type="checkbox"
+                className="accent-sky-400"
                 checked={saveProfile}
                 onChange={(e) => setSaveProfile(e.target.checked)}
               />
+              <Save size={12} className="text-white/40" />
               Save as session
             </label>
             {saveProfile && (
@@ -233,6 +250,7 @@ export function ConnectDialog({
                   >
                     <input
                       type="checkbox"
+                      className="accent-sky-400"
                       checked={saveCredential}
                       disabled={!vaultUnlocked}
                       onChange={(e) => setSaveCredential(e.target.checked)}
@@ -251,8 +269,9 @@ export function ConnectDialog({
 
         <button
           type="submit"
-          className="w-full rounded bg-white/10 py-1.5 text-sm text-white/90 hover:bg-white/20"
+          className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500"
         >
+          <Plug size={14} />
           Connect
         </button>
       </form>

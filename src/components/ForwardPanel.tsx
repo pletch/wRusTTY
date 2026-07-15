@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { X, ArrowLeftRight, Square } from 'lucide-react'
 import * as forward from '../lib/forward'
 import type { ForwardSpec } from '../lib/forward'
 
@@ -13,7 +14,7 @@ interface Props {
 }
 
 const inputClass =
-  'min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none focus:border-white/30'
+  'min-w-0 flex-1 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 function describe(spec: ForwardSpec): string {
   if (spec.type === 'dynamic') return `SOCKS5 :${spec.bindPort}`
@@ -58,13 +59,18 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
 
   return (
     <div
-      className="absolute right-2 top-8 z-40 w-72 rounded border border-white/10 bg-[#1f2028] p-3 text-xs shadow-lg"
+      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="font-medium text-white/90">Port forwarding</h2>
-        <button onClick={onClose} className="text-white/40 hover:text-white/80">
-          ×
+        <h2 className="flex items-center gap-1.5 font-medium text-white/90">
+          <ArrowLeftRight size={13} /> Port forwarding
+        </h2>
+        <button
+          onClick={onClose}
+          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+        >
+          <X size={13} />
         </button>
       </div>
 
@@ -73,14 +79,14 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
           {active.map((f) => (
             <li
               key={f.id}
-              className="flex items-center justify-between gap-2 rounded bg-black/20 px-2 py-1"
+              className="flex items-center justify-between gap-2 rounded bg-black/20 px-2 py-1.5"
             >
               <span className="truncate text-white/70">{describe(f.spec)}</span>
               <button
                 onClick={() => remove(f.id)}
-                className="shrink-0 text-white/40 hover:text-red-300"
+                className="flex shrink-0 items-center gap-1 text-white/40 transition-colors duration-100 hover:text-red-300"
               >
-                stop
+                <Square size={10} /> stop
               </button>
             </li>
           ))}
@@ -94,7 +100,7 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
               key={t}
               type="button"
               onClick={() => setType(t)}
-              className={`flex-1 rounded py-0.5 uppercase ${
+              className={`flex-1 rounded py-1 uppercase transition-colors duration-100 ${
                 type === t ? 'bg-white/15 text-white' : 'text-white/40 hover:text-white/70'
               }`}
             >
@@ -140,7 +146,7 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
 
         <button
           type="submit"
-          className="w-full rounded bg-white/10 py-1 text-white/90 hover:bg-white/20"
+          className="w-full rounded bg-sky-500/90 py-1.5 font-medium text-white transition-colors duration-100 hover:bg-sky-500"
         >
           Add forward
         </button>

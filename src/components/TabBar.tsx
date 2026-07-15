@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Plus, X, RotateCw, Copy } from 'lucide-react'
 import type { Tab } from '../types'
 
 interface Props {
@@ -30,7 +31,7 @@ export function TabBar({
   }, [menu])
 
   return (
-    <div className="relative flex h-9 shrink-0 items-center border-b border-white/10 bg-black/20">
+    <div className="relative flex h-10 shrink-0 items-center border-b border-white/10 bg-black/20">
       <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
@@ -42,19 +43,22 @@ export function TabBar({
                 e.preventDefault()
                 setMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
               }}
-              className={`group flex min-w-[120px] max-w-[200px] cursor-pointer items-center gap-2 border-r border-white/10 px-3 text-xs ${
-                active ? 'bg-white/10 text-white' : 'text-white/50 hover:bg-white/5'
+              className={`group relative flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 border-r border-white/5 px-3 text-xs transition-colors duration-150 ${
+                active
+                  ? 'bg-white/10 text-white'
+                  : 'text-white/45 hover:bg-white/[0.06] hover:text-white/80'
               }`}
             >
+              {active && <span className="absolute inset-x-0 top-0 h-[2px] bg-sky-400" />}
               <span className="truncate">{tab.title}</span>
               <button
                 onClick={(e) => {
                   e.stopPropagation()
                   onClose(tab.id)
                 }}
-                className="ml-auto rounded px-1 text-white/40 opacity-0 hover:bg-white/10 hover:text-white group-hover:opacity-100"
+                className="ml-auto shrink-0 rounded p-0.5 text-white/40 opacity-0 transition-opacity duration-150 hover:bg-white/10 hover:text-white group-hover:opacity-100"
               >
-                ×
+                <X size={13} strokeWidth={2} />
               </button>
             </div>
           )
@@ -62,43 +66,43 @@ export function TabBar({
       </div>
       <button
         onClick={onNew}
-        className="shrink-0 px-3 text-sm text-white/50 hover:bg-white/5 hover:text-white"
-        title="New connection (Ctrl+T)"
+        className="flex shrink-0 items-center justify-center px-3 py-2 text-white/45 transition-colors duration-150 hover:bg-white/[0.06] hover:text-white"
+        title="New connection (Ctrl+Shift+T)"
       >
-        +
+        <Plus size={16} strokeWidth={2} />
       </button>
 
       {menu && (
         <div
-          className="fixed z-50 w-32 rounded border border-white/10 bg-[#1f2028] py-1 text-xs text-white/80 shadow-lg"
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs text-white/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
           <button
-            className="block w-full px-3 py-1.5 text-left hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
             onClick={() => {
               onReconnect(menu.tabId)
               setMenu(null)
             }}
           >
-            Reconnect
+            <RotateCw size={13} /> Reconnect
           </button>
           <button
-            className="block w-full px-3 py-1.5 text-left hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
             onClick={() => {
               onDuplicate(menu.tabId)
               setMenu(null)
             }}
           >
-            Duplicate
+            <Copy size={13} /> Duplicate
           </button>
           <button
-            className="block w-full px-3 py-1.5 text-left text-red-300 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-white/10"
             onClick={() => {
               onClose(menu.tabId)
               setMenu(null)
             }}
           >
-            Close
+            <X size={13} /> Close
           </button>
         </div>
       )}

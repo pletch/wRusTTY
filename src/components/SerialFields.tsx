@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import * as serial from '../lib/serial'
 import type { SerialConfig } from '../lib/serial'
 
 const inputClass =
-  'w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-sm text-white/90 outline-none focus:border-white/30'
+  'w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 const selectClass = inputClass
 
 interface Props {
@@ -54,9 +55,9 @@ export function SerialFields({ config, onChange }: Props) {
           type="button"
           onClick={refresh}
           title="Refresh ports"
-          className="rounded border border-white/10 px-2 text-sm text-white/70 hover:bg-white/10"
+          className="flex items-center justify-center rounded border border-white/10 px-2 text-white/70 transition-colors duration-100 hover:bg-white/10 hover:text-white"
         >
-          ↻
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
@@ -124,16 +125,17 @@ export function SerialFields({ config, onChange }: Props) {
       </div>
 
       <div className="flex items-center gap-3 text-xs text-white/70">
-        <label className="flex items-center gap-1">
+        <label className="flex items-center gap-1.5">
           <input
             type="checkbox"
+            className="accent-sky-400"
             checked={config.localEcho}
             onChange={(e) => set('localEcho', e.target.checked)}
           />
           Local echo
         </label>
         <select
-          className="rounded border border-white/10 bg-black/20 px-1 py-0.5 text-white/90 outline-none"
+          className="rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
           value={config.lineEnding}
           onChange={(e) => set('lineEnding', e.target.value as SerialConfig['lineEnding'])}
         >

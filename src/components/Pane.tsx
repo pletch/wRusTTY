@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
+import { SplitSquareHorizontal, SplitSquareVertical, X, ScrollText, ArrowLeftRight } from 'lucide-react'
 import { Terminal } from './Terminal'
 import { ConnectDialog } from './ConnectDialog'
 import { ForwardPanel } from './ForwardPanel'
@@ -38,11 +39,9 @@ export function Pane(props: Props) {
           <Pane {...props} node={node.children[0]} />
         </Panel>
         <PanelResizeHandle
-          className={
-            node.direction === 'horizontal'
-              ? 'w-1 bg-white/5 hover:bg-white/20 active:bg-white/30'
-              : 'h-1 bg-white/5 hover:bg-white/20 active:bg-white/30'
-          }
+          className={`bg-white/5 transition-colors duration-150 hover:bg-sky-400/40 active:bg-sky-400/60 ${
+            node.direction === 'horizontal' ? 'w-[3px]' : 'h-[3px]'
+          }`}
         />
         <Panel defaultSize={node.sizes[1]} minSize={10}>
           <Pane {...props} node={node.children[1]} />
@@ -53,6 +52,9 @@ export function Pane(props: Props) {
 
   return <PaneLeafView {...props} node={node} />
 }
+
+const toolbarButton =
+  'flex items-center justify-center rounded p-1 text-white/35 transition-colors duration-150 hover:bg-white/10 hover:text-white/85'
 
 function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   const {
@@ -78,18 +80,16 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
 
   return (
     <div
-      className={`relative flex h-full w-full flex-col ${
-        active ? 'ring-1 ring-inset ring-white/20' : ''
+      className={`relative flex h-full w-full flex-col rounded-md transition-shadow duration-150 ${
+        active ? 'ring-1 ring-inset ring-sky-400/40' : 'ring-1 ring-inset ring-transparent'
       }`}
       onFocusCapture={() => onFocusPane(node.id)}
       onMouseDown={() => onFocusPane(node.id)}
     >
-      <div className="group flex h-5 shrink-0 items-center justify-end gap-1 bg-black/30 px-1">
+      <div className="flex h-6 shrink-0 items-center justify-end gap-0.5 rounded-t-md bg-black/30 px-1">
         {node.source && (
           <button
-            className={`rounded px-1 text-[10px] leading-none hover:bg-white/10 hover:text-white/80 ${
-              loggingEnabled ? 'text-red-400' : 'text-white/30'
-            }`}
+            className={`${toolbarButton} ${loggingEnabled ? 'text-red-400 hover:text-red-300' : ''}`}
             title={
               loggingEnabled
                 ? 'Session logging on (applies from next connect)'
@@ -97,41 +97,41 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             }
             onClick={() => setLoggingEnabled((v) => !v)}
           >
-            ●
+            <ScrollText size={13} strokeWidth={2} />
           </button>
         )}
         {isSsh && sessionId && (
           <button
-            className="rounded px-1 text-[10px] leading-none text-white/30 hover:bg-white/10 hover:text-white/80"
+            className={toolbarButton}
             title="Port forwarding"
             onClick={() => setForwardsOpen((v) => !v)}
           >
-            ⇄
+            <ArrowLeftRight size={13} strokeWidth={2} />
           </button>
         )}
         <button
-          className="rounded px-1 text-[10px] leading-none text-white/30 hover:bg-white/10 hover:text-white/80"
+          className={toolbarButton}
           title="Split right"
           onClick={() => onSplit(node.id, 'horizontal')}
         >
-          ⬌
+          <SplitSquareHorizontal size={13} strokeWidth={2} />
         </button>
         <button
-          className="rounded px-1 text-[10px] leading-none text-white/30 hover:bg-white/10 hover:text-white/80"
+          className={toolbarButton}
           title="Split down"
           onClick={() => onSplit(node.id, 'vertical')}
         >
-          ⬍
+          <SplitSquareVertical size={13} strokeWidth={2} />
         </button>
         <button
-          className="rounded px-1 text-[10px] leading-none text-white/30 hover:bg-red-500/30 hover:text-white/80"
+          className={`${toolbarButton} hover:bg-red-500/25 hover:text-white`}
           title="Close pane"
           onClick={() => onClose(node.id)}
         >
-          ×
+          <X size={13} strokeWidth={2} />
         </button>
       </div>
-      <div className="relative min-h-0 flex-1 p-1">
+      <div className="relative min-h-0 flex-1 p-1.5">
         {node.source ? (
           <Terminal
             key={node.generation}

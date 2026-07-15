@@ -5,6 +5,7 @@ import { SessionManager } from './components/SessionManager'
 import { QuickConnectPalette } from './components/QuickConnectPalette'
 import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
+import { TerminalSquare } from 'lucide-react'
 import * as profiles from './lib/profiles'
 import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
@@ -254,7 +255,7 @@ function App() {
             onReconnect={reconnectTab}
           />
         </div>
-        <div className="flex shrink-0 items-center border-b border-white/10 bg-black/20 px-1">
+        <div className="flex shrink-0 items-center gap-0.5 border-b border-white/10 bg-black/20 px-1.5">
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
@@ -263,7 +264,8 @@ function App() {
         <SessionManager onOpen={openSavedSession} refreshToken={profilesVersion} />
         <main className="relative min-h-0 flex-1 p-2">
           {tabs.length === 0 && (
-            <div className="flex h-full items-center justify-center text-sm text-white/40">
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-white/30">
+              <TerminalSquare size={28} strokeWidth={1.5} />
               No open sessions
             </div>
           )}
@@ -303,11 +305,18 @@ function App() {
       {(() => {
         const activeTab = tabs.find((t) => t.id === activeTabId)
         const status = activeTab && statusByPane[activeTab.activePaneId]
-        return status ? (
-          <footer className="shrink-0 border-t border-white/10 px-3 py-1 text-xs text-white/40">
+        if (!status) return null
+        const dotColor = status === 'connected'
+          ? 'bg-emerald-400'
+          : status.startsWith('failed') || status === 'disconnected'
+            ? 'bg-red-400'
+            : 'bg-amber-400'
+        return (
+          <footer className="flex shrink-0 items-center gap-1.5 border-t border-white/10 px-3 py-1.5 text-xs text-white/40">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor} transition-colors duration-300`} />
             {status}
           </footer>
-        ) : null
+        )
       })()}
     </div>
   )

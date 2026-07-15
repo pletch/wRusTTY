@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Search, Server } from 'lucide-react'
 import type { SessionProfile } from '../lib/profiles'
 
 interface Props {
@@ -46,22 +47,25 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-start justify-center bg-black/60 pt-24"
+      className="animate-in fade-in absolute inset-0 z-50 flex items-start justify-center bg-black/60 pt-24 duration-150"
       onClick={onClose}
     >
       <div
-        className="w-96 rounded-lg border border-white/10 bg-[#1f2028] shadow-xl"
+        className="animate-in fade-in zoom-in-95 slide-in-from-top-2 w-96 rounded-xl border border-white/10 bg-[#1f2028] shadow-2xl duration-150"
         onClick={(e) => e.stopPropagation()}
       >
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Jump to session..."
-          className="w-full border-b border-white/10 bg-transparent px-3 py-2 text-sm text-white/90 outline-none"
-        />
-        <div className="max-h-72 overflow-y-auto py-1 text-xs">
+        <div className="flex items-center gap-2 border-b border-white/10 px-3">
+          <Search size={14} className="shrink-0 text-white/40" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Jump to session..."
+            className="w-full bg-transparent py-2.5 text-sm text-white/90 outline-none placeholder:text-white/30"
+          />
+        </div>
+        <div className="max-h-72 overflow-y-auto p-1 text-xs">
           {results.length === 0 && (
             <p className="px-3 py-3 text-white/30">No matching sessions</p>
           )}
@@ -70,13 +74,16 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
               key={s.id}
               onMouseEnter={() => setIndex(i)}
               onClick={() => onSelect(s)}
-              className={`cursor-pointer px-3 py-1.5 ${
+              className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-100 ${
                 i === index ? 'bg-white/10 text-white' : 'text-white/70'
               }`}
             >
-              <div className="truncate">{s.label}</div>
-              <div className="truncate text-white/40">
-                {s.username}@{s.host}
+              <Server size={13} className="shrink-0 text-white/30" />
+              <div className="min-w-0">
+                <div className="truncate">{s.label}</div>
+                <div className="truncate text-white/40">
+                  {s.username}@{s.host}
+                </div>
               </div>
             </div>
           ))}

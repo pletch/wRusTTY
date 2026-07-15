@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
+import { Search, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
@@ -215,7 +216,8 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       {searchOpen && (
-        <div className="absolute right-2 top-2 z-40 flex items-center gap-1 rounded border border-white/10 bg-[#1f2028] px-2 py-1 text-xs shadow-lg">
+        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-100">
+          <Search size={13} className="mr-1 text-white/40" />
           <input
             ref={searchInputRef}
             value={searchQuery}
@@ -236,24 +238,24 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
           />
           <button
             onClick={() => searchAddonRef.current?.findPrevious(searchQuery)}
-            className="rounded px-1 text-white/50 hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
             title="Previous (Shift+Enter)"
           >
-            ↑
+            <ChevronUp size={14} />
           </button>
           <button
             onClick={() => searchAddonRef.current?.findNext(searchQuery)}
-            className="rounded px-1 text-white/50 hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
             title="Next (Enter)"
           >
-            ↓
+            <ChevronDown size={14} />
           </button>
           <button
             onClick={() => setSearchOpen(false)}
-            className="rounded px-1 text-white/50 hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
             title="Close (Esc)"
           >
-            ×
+            <X size={14} />
           </button>
         </div>
       )}
