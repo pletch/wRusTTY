@@ -181,8 +181,13 @@ export function ConnectDialog({
           ? { type: 'Password', password }
           : { type: 'PublicKey', key_path: keyPath, passphrase: passphrase || null }
 
-      if (saveProfile && onSaveProfile && label.trim()) {
+      if (saveProfile && onSaveProfile) {
         const profileId = initial?.id ?? crypto.randomUUID()
+        // An unnamed session saved silently with no way to tell it apart
+        // from a real save was worse than picking a reasonable default —
+        // the host is always present and is what the sidebar would show
+        // as the subtitle anyway.
+        const resolvedLabel = label.trim() || host
         // A public key with no passphrase has no secret to store — nothing
         // actually gets saved to the vault in that case even with the
         // checkbox on, so hasCredential has to agree, or the sidebar would
@@ -195,7 +200,7 @@ export function ConnectDialog({
           (authType === 'Password' || Boolean(passphrase))
         onSaveProfile({
           id: profileId,
-          label: label.trim(),
+          label: resolvedLabel,
           folder: initial?.folder ?? null,
           host,
           port: Number(port) || 22,
@@ -467,7 +472,7 @@ export function ConnectDialog({
                 <>
                   <input
                     className={`${inputClass} w-full`}
-                    placeholder="session name"
+                    placeholder={`session name (defaults to "${host || 'host'}")`}
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
                   />
