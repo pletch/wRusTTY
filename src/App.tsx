@@ -53,6 +53,20 @@ function App() {
   const [paletteSessions, setPaletteSessions] = useState<SessionProfile[]>([])
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
+  const [maximized, setMaximized] = useState(false)
+
+  // Rounded corners only make sense for a floating window — a maximized
+  // one should fill the screen edge-to-edge like any other app.
+  useEffect(() => {
+    const win = getCurrentWindow()
+    win.isMaximized().then(setMaximized)
+    const unlisten = win.onResized(() => {
+      win.isMaximized().then(setMaximized)
+    })
+    return () => {
+      unlisten.then((f) => f())
+    }
+  }, [])
 
   function updateSettings(next: typeof terminalSettings) {
     setTerminalSettings(next)
@@ -295,7 +309,11 @@ function App() {
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-[#16171d]">
+    <div
+      className={`flex h-screen w-screen flex-col overflow-hidden bg-[#16171d] ${
+        maximized ? '' : 'rounded-xl border border-white/10'
+      }`}
+    >
       <div className="flex h-10 shrink-0 items-stretch border-b border-white/10 bg-black/20">
         <TabBar
           tabs={tabs}
@@ -364,7 +382,7 @@ function App() {
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
-        <WindowControls />
+        <WindowControls maximized={maximized} />
       </div>
       <div className="relative flex min-h-0 flex-1">
         <main className="relative min-h-0 flex-1">

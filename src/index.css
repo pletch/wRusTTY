@@ -19,13 +19,16 @@ body,
 
 body {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
-  background: #16171d;
+  /* Transparent so the window's own rounded corners (drawn by the app
+     root div, see App.tsx) show the desktop through instead of a square
+     of background color poking out past them — the OS window itself has
+     no shape of its own once decorations are off and transparent is on. */
+  background: transparent;
   color: #e5e4e7;
 }
 
 @media (prefers-color-scheme: light) {
   body {
-    background: #ffffff;
     color: #16171d;
   }
 }
