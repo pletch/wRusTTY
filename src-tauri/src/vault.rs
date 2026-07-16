@@ -58,7 +58,7 @@ fn verify_windows_hello_blocking(
     }
 
     let availability = UserConsentVerifier::CheckAvailabilityAsync()
-        .and_then(|op| op.join())
+        .and_then(|op| op.get())
         .map_err(|e| e.to_string())?;
     if availability != UserConsentVerifierAvailability::Available {
         return Err(format!("Windows Hello isn't available ({availability:?})"));
@@ -69,7 +69,7 @@ fn verify_windows_hello_blocking(
         unsafe { RoGetActivationFactory(&class_id) }.map_err(|e| e.to_string())?;
     let result =
         unsafe { interop.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(message)) }
-            .and_then(|op| op.join())
+            .and_then(|op| op.get())
             .map_err(|e| e.to_string())?;
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
@@ -91,7 +91,7 @@ async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), Stri
     // instead of moving the HWND value itself across that boundary.
     let hwnd_value = hwnd.0 as isize;
     let message = message.to_string();
-    // RequestVerificationForWindowAsync's `.join()` blocks the calling
+    // RequestVerificationForWindowAsync's `.get()` blocks the calling
     // thread until the prompt is answered — spawn_blocking keeps that off
     // the async runtime's worker threads instead of stalling them for
     // however long the user takes to respond.
