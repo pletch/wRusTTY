@@ -90,17 +90,38 @@ function App() {
   // identity every render makes React think the ref "changed" on every
   // single render, perpetually detaching and reattaching it — each of
   // which calls setSlots, triggering another render, forever.
+  // Splitting a pane or popping it to a new tab reparents PaneLeafView in
+  // the React tree (it switches position between a plain leaf and a child
+  // of a new PanelGroup), which unmounts and remounts it — detaching and
+  // reattaching this same leaf's slot ref. If that detach and reattach ever
+  // land in separate commits instead of one batched update, the slot would
+  // briefly read as missing, and connectedEntries below would unmount the
+  // live Terminal and reconnect it from scratch. Observed on WebView2 but
+  // not WebKitGTK, presumably down to layout/commit scheduling differences
+  // rather than anything guaranteed by React itself. Deferring the removal
+  // lets an immediate reattach for the same paneId cancel it first.
+  const pendingRemovals = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
   const registerSlot = useCallback((paneId: string, el: HTMLDivElement | null) => {
-    setSlots((prev) => {
-      if (el) {
-        if (prev[paneId] === el) return prev
-        return { ...prev, [paneId]: el }
-      }
-      if (!(paneId in prev)) return prev
-      const next = { ...prev }
-      delete next[paneId]
-      return next
-    })
+    const pending = pendingRemovals.current.get(paneId)
+    if (pending !== undefined) {
+      clearTimeout(pending)
+      pendingRemovals.current.delete(paneId)
+    }
+    if (el) {
+      setSlots((prev) => (prev[paneId] === el ? prev : { ...prev, [paneId]: el }))
+      return
+    }
+    const timeout = setTimeout(() => {
+      pendingRemovals.current.delete(paneId)
+      setSlots((prev) => {
+        if (!(paneId in prev)) return prev
+        const next = { ...prev }
+        delete next[paneId]
+        return next
+      })
+    }, 50)
+    pendingRemovals.current.set(paneId, timeout)
   }, [])
 
   // Rounded corners only make sense for a floating window — a maximized
