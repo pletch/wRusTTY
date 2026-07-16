@@ -245,6 +245,13 @@ export function VaultMenu({ status, onStatusChange }: Props) {
               <button type="button" onClick={doImport} className={secondaryButton}>
                 <Upload size={13} /> Import a different vault...
               </button>
+              <button
+                type="button"
+                onClick={doDelete}
+                className={`${secondaryButton} text-red-300/90 hover:text-red-300`}
+              >
+                <Trash2 size={13} /> Delete vault...
+              </button>
             </form>
           )}
 
