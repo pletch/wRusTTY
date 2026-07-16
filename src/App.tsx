@@ -395,7 +395,10 @@ function App() {
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className="absolute inset-0"
+              // Flush with the tab bar above (top-0) but a small margin on
+              // the other three sides, now that those touch the window's
+              // own visible border instead of another seam.
+              className="absolute inset-x-2 bottom-2 top-0"
               style={{ display: tab.id === activeTabId ? undefined : 'none' }}
             >
               <Pane
