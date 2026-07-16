@@ -208,6 +208,15 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
     container.addEventListener('keydown', onKeyDown, true)
 
     const onResize = () => {
+      // Switching away from this tab sets its container to `display:
+      // none`, collapsing it to 0x0 — which the ResizeObserver below
+      // faithfully reports. Fitting to that would resize the remote PTY
+      // down to nothing and back on every tab switch, which is exactly
+      // the kind of double-resize that left the client-side cursor
+      // rendering a few columns off from the shell's own idea of where
+      // it is, until the next full redraw (e.g. pressing Enter) resynced
+      // them. A hidden container has nothing useful to fit to anyway.
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
       fitAddon.fit()
       if (sessionId) conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
     }
