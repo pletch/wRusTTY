@@ -49,14 +49,14 @@ fn verify_windows_hello_blocking(message: String) -> Result<(), String> {
     }
 
     let availability = UserConsentVerifier::CheckAvailabilityAsync()
-        .and_then(|op| op.get())
+        .and_then(|op| op.join())
         .map_err(|e| e.to_string())?;
     if availability != UserConsentVerifierAvailability::Available {
         return Err(format!("Windows Hello isn't available ({availability:?})"));
     }
 
     let result = UserConsentVerifier::RequestVerificationAsync(&HSTRING::from(message))
-        .and_then(|op| op.get())
+        .and_then(|op| op.join())
         .map_err(|e| e.to_string())?;
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
@@ -68,7 +68,7 @@ fn verify_windows_hello_blocking(message: String) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 async fn verify_windows_hello(message: &str) -> Result<(), String> {
-    // RequestVerificationAsync's `.get()` blocks the calling thread until
+    // RequestVerificationAsync's `.join()` blocks the calling thread until
     // the prompt is answered — spawn_blocking keeps that off the async
     // runtime's worker threads instead of stalling them for however long
     // the user takes to respond.
