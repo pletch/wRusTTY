@@ -102,8 +102,10 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
     searchAddonRef.current = searchAddon
     term.open(container)
 
+    let webglAddon: WebglAddon | null = null
     try {
-      term.loadAddon(new WebglAddon())
+      webglAddon = new WebglAddon()
+      term.loadAddon(webglAddon)
     } catch {
       // WebGL unavailable — xterm falls back to its canvas renderer.
     }
@@ -219,6 +221,15 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
       if (container.clientWidth === 0 || container.clientHeight === 0) return
       fitAddon.fit()
       if (sessionId) conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
+      // Guarding against the 0x0 fit stopped the PTY-side desync, but the
+      // WebGL addon caches glyphs in a texture atlas keyed to cell
+      // dimensions measured at some earlier point — if that happened while
+      // this container was hidden (0-sized), the atlas can end up stale,
+      // rendering the cursor (and potentially glyphs) at the wrong pixel
+      // offset for their otherwise-correct logical column. Clearing it
+      // forces a fresh measurement and redraw against the current size.
+      webglAddon?.clearTextureAtlas()
+      term.refresh(0, term.rows - 1)
     }
     window.addEventListener('resize', onResize)
 
