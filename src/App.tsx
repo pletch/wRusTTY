@@ -264,27 +264,25 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-[#16171d]">
-      <div className="flex items-stretch">
-        <div className="min-w-0 flex-1">
-          <TabBar
-            tabs={tabs}
-            activeTabId={activeTabId}
-            statusByPane={statusByPane}
-            onSelect={selectTab}
-            onClose={closeTab}
-            onNew={newTab}
-            onDuplicate={duplicateTab}
-            onReconnect={reconnectTab}
-            onReorder={reorderTabs}
-          />
-        </div>
-        <div className="flex shrink-0 items-center gap-0.5 border-b border-white/10 bg-black/20 px-1.5">
+      <div className="flex h-10 shrink-0 items-stretch border-b border-white/10 bg-black/20">
+        <TabBar
+          tabs={tabs}
+          activeTabId={activeTabId}
+          statusByPane={statusByPane}
+          onSelect={selectTab}
+          onClose={closeTab}
+          onNew={newTab}
+          onDuplicate={duplicateTab}
+          onReconnect={reconnectTab}
+          onReorder={reorderTabs}
+        />
+        <div className="flex shrink-0 items-center gap-0.5 px-1.5">
+          <SessionManager onOpen={openSavedSession} refreshToken={profilesVersion} />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
       </div>
       <div className="relative flex min-h-0 flex-1">
-        <SessionManager onOpen={openSavedSession} refreshToken={profilesVersion} />
         <main className="relative min-h-0 flex-1 p-2">
           {tabs.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-white/30">
@@ -312,6 +310,14 @@ function App() {
                   // Surfaced even for background tabs — otherwise a failed
                   // connection in a tab you're not looking at is silent.
                   if (s.startsWith('failed')) toast.error(s.replace(/^failed: /, ''))
+                  // A clean remote-initiated disconnect (the shell exited,
+                  // the server hung up) closes the pane on its own rather
+                  // than leaving a dead terminal sitting open — but only a
+                  // clean disconnect, not a failure, since the error should
+                  // stay visible until the user dismisses it themselves.
+                  if (s === 'disconnected') {
+                    setTimeout(() => closePane(tab.id, paneId), 800)
+                  }
                 }}
                 onSplit={(paneId, direction) => splitPane(tab.id, paneId, direction)}
                 onClose={(paneId) => closePane(tab.id, paneId)}

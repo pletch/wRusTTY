@@ -11,12 +11,22 @@ interface Props {
 }
 
 export function SessionManager({ onOpen, refreshToken }: Props) {
+  const [open, setOpen] = useState(false)
   const [sessions, setSessions] = useState<SessionProfile[]>([])
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
 
   useEffect(() => {
     profiles.listSessions().then(setSessions).catch(() => setSessions([]))
   }, [refreshToken])
+
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest('[data-sessions-menu]')) setOpen(false)
+    }
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [open])
 
   useEffect(() => {
     if (!menu) return
@@ -44,46 +54,61 @@ export function SessionManager({ onOpen, refreshToken }: Props) {
   }
 
   return (
-    <div className="flex w-56 shrink-0 flex-col border-r border-white/10 bg-black/10 text-xs">
-      <div className="flex items-center gap-1.5 border-b border-white/10 px-3 py-2.5 text-white/50">
-        <PanelLeft size={13} />
-        <span>Sessions</span>
-      </div>
-      <div className="flex-1 overflow-y-auto py-1">
-        {sessions.length === 0 && (
-          <p className="px-3 py-3 leading-relaxed text-white/30">
-            No saved sessions yet. Check "Save as session" when connecting.
-          </p>
-        )}
-        {[...groups.entries()].map(([folder, items]) => (
-          <div key={folder}>
-            <div className="flex items-center gap-1.5 px-3 pb-1 pt-2 text-[10px] uppercase tracking-wide text-white/30">
-              <Folder size={10} />
-              {folder}
-            </div>
-            {items.map((s) => (
-              <div
-                key={s.id}
-                onDoubleClick={() => onOpen(s)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  setMenu({ id: s.id, x: e.clientX, y: e.clientY })
-                }}
-                className="mx-1 flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
-                title={`${s.username}@${s.host}:${s.port}`}
-              >
-                <Server size={12} className="mt-0.5 shrink-0 text-white/30" />
-                <div className="min-w-0">
-                  <div className="truncate text-white/90">{s.label}</div>
-                  <div className="truncate text-white/40">
-                    {s.username}@{s.host}
-                  </div>
+    <div className="relative" data-sessions-menu>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+          open ? 'text-white/90' : 'text-white/50 hover:text-white/90'
+        }`}
+        title="Sessions"
+      >
+        <PanelLeft size={15} strokeWidth={2} />
+      </button>
+      {open && (
+        <div
+          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-white/10 bg-[#1f2028] text-xs shadow-xl duration-100"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="max-h-96 overflow-y-auto py-1">
+            {sessions.length === 0 && (
+              <p className="px-3 py-3 leading-relaxed text-white/30">
+                No saved sessions yet. Check "Save as session" when connecting.
+              </p>
+            )}
+            {[...groups.entries()].map(([folder, items]) => (
+              <div key={folder}>
+                <div className="flex items-center gap-1.5 px-3 pb-1 pt-2 text-[10px] uppercase tracking-wide text-white/30">
+                  <Folder size={10} />
+                  {folder}
                 </div>
+                {items.map((s) => (
+                  <div
+                    key={s.id}
+                    onClick={() => {
+                      onOpen(s)
+                      setOpen(false)
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setMenu({ id: s.id, x: e.clientX, y: e.clientY })
+                    }}
+                    className="mx-1 flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
+                    title={`${s.username}@${s.host}:${s.port}`}
+                  >
+                    <Server size={12} className="mt-0.5 shrink-0 text-white/30" />
+                    <div className="min-w-0">
+                      <div className="truncate text-white/90">{s.label}</div>
+                      <div className="truncate text-white/40">
+                        {s.username}@{s.host}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
-        ))}
-      </div>
+        </div>
+      )}
 
       {menu && (
         <div
@@ -96,6 +121,7 @@ export function SessionManager({ onOpen, refreshToken }: Props) {
               const profile = sessions.find((s) => s.id === menu.id)
               if (profile) onOpen(profile)
               setMenu(null)
+              setOpen(false)
             }}
           >
             <ExternalLink size={13} /> Open
