@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { save, open } from '@tauri-apps/plugin-dialog'
-import { Lock, Unlock, Download, Upload } from 'lucide-react'
+import { Lock, Unlock, Download, Upload, Fingerprint } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 import { toast } from '../lib/toast'
@@ -23,12 +23,14 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [osUnlockOn, setOsUnlockOn] = useState(false)
 
   useEffect(() => {
     if (!open_) return
     setPassword('')
     setConfirmPassword('')
     setError(null)
+    vault.osUnlockAvailable().then(setOsUnlockOn).catch(() => {})
   }, [open_, status])
 
   useEffect(() => {
@@ -75,6 +77,31 @@ export function VaultMenu({ status, onStatusChange }: Props) {
       setError(String(err))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function submitUnlockWithOs() {
+    setBusy(true)
+    try {
+      await vault.unlockWithOs()
+      onStatusChange()
+      setOpen(false)
+      toast.success('Vault unlocked')
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function toggleOsUnlock(next: boolean) {
+    setError(null)
+    try {
+      if (next) await vault.enableOsUnlock()
+      else await vault.disableOsUnlock()
+      setOsUnlockOn(next)
+    } catch (err) {
+      setError(String(err))
     }
   }
 
@@ -168,6 +195,21 @@ export function VaultMenu({ status, onStatusChange }: Props) {
 
           {status === 'locked' && (
             <form onSubmit={submitUnlock} className="space-y-2">
+              {osUnlockOn && (
+                <>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={submitUnlockWithOs}
+                    className={`${primaryButton} flex items-center justify-center gap-1.5`}
+                  >
+                    <Fingerprint size={13} /> Unlock with Windows sign-in
+                  </button>
+                  <p className="flex items-center gap-2 text-white/30">
+                    <span className="h-px flex-1 bg-white/10" /> or <span className="h-px flex-1 bg-white/10" />
+                  </p>
+                </>
+              )}
               <p className="text-white/60">Enter your master password to unlock.</p>
               <input
                 type="password"
@@ -192,6 +234,21 @@ export function VaultMenu({ status, onStatusChange }: Props) {
               <p className="flex items-center gap-1.5 text-emerald-400/90">
                 <Unlock size={13} /> Vault is unlocked
               </p>
+              <label className="flex items-start gap-2 py-1 text-white/70">
+                <input
+                  type="checkbox"
+                  checked={osUnlockOn}
+                  onChange={(e) => toggleOsUnlock(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  Unlock with Windows sign-in
+                  <span className="block text-white/40">
+                    Skips the master password next launch — protected by Windows'
+                    own sign-in instead of Argon2.
+                  </span>
+                </span>
+              </label>
               {error && <p className="text-red-400">{error}</p>}
               <button onClick={doLock} className={primaryButton}>
                 Lock now

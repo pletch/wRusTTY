@@ -35,3 +35,5 @@ tauri-plugin-single-instance = "2"
 tokio.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
+zeroize = "1"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

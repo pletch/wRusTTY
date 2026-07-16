@@ -66,7 +66,32 @@ impl Vault {
     }
 
     pub fn unlock(path: impl Into<PathBuf>, master_password: &str) -> Result<Self, VaultError> {
-        let path = path.into();
+        let (path, salt, nonce, ciphertext) = Self::read_file(path.into())?;
+        let key = crypto::derive_key(master_password, &salt)?;
+        Self::finish_unlock(path, salt, key, &nonce, &ciphertext)
+    }
+
+    /// Unlocks using the raw vault key directly instead of deriving one from
+    /// a master password. Used by the OS-keychain convenience unlock: the
+    /// key itself (not the password) is what's wrapped by the OS — DPAPI via
+    /// Windows Credential Manager — so unlocking this way skips Argon2
+    /// entirely and is only as strong as that OS-level protection.
+    pub fn unlock_with_key(path: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, VaultError> {
+        let (path, salt, nonce, ciphertext) = Self::read_file(path.into())?;
+        Self::finish_unlock(path, salt, key, &nonce, &ciphertext)
+    }
+
+    /// A copy of the raw encryption key, for wrapping by an OS-level secret
+    /// store as a convenience-unlock path. The caller is responsible for
+    /// zeroizing its copy once it's been handed off to that store.
+    pub fn key_bytes(&self) -> [u8; 32] {
+        self.key
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn read_file(
+        path: PathBuf,
+    ) -> Result<(PathBuf, [u8; crypto::SALT_LEN], Vec<u8>, Vec<u8>), VaultError> {
         let contents = std::fs::read_to_string(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 VaultError::NotFound
@@ -90,8 +115,17 @@ impl Vault {
             .decode(&file.ciphertext)
             .map_err(|e| VaultError::Corrupt(e.to_string()))?;
 
-        let key = crypto::derive_key(master_password, &salt)?;
-        let plaintext = crypto::decrypt(&key, &nonce, &ciphertext)?;
+        Ok((path, salt, nonce, ciphertext))
+    }
+
+    fn finish_unlock(
+        path: PathBuf,
+        salt: [u8; crypto::SALT_LEN],
+        key: [u8; 32],
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Self, VaultError> {
+        let plaintext = crypto::decrypt(&key, nonce, ciphertext)?;
         let entries: HashMap<String, VaultSecret> =
             serde_json::from_slice(&plaintext).map_err(|e| VaultError::Corrupt(e.to_string()))?;
 
@@ -228,6 +262,39 @@ mod tests {
 
         let reopened = Vault::unlock(&path, "pw").unwrap();
         assert!(!reopened.has("session-1"));
+    }
+
+    #[test]
+    fn unlock_with_key_matches_password_derived_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let mut vault = Vault::create(&path, "pw").unwrap();
+        vault
+            .set(
+                "session-1".to_string(),
+                VaultSecret::Password {
+                    password: "hunter2".to_string(),
+                },
+            )
+            .unwrap();
+        let key = vault.key_bytes();
+        drop(vault);
+
+        let reopened = Vault::unlock_with_key(&path, key).unwrap();
+        assert!(reopened.has("session-1"));
+    }
+
+    #[test]
+    fn unlock_with_key_rejects_wrong_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        drop(Vault::create(&path, "pw").unwrap());
+
+        match Vault::unlock_with_key(&path, [0u8; 32]) {
+            Err(VaultError::WrongPassword) => {}
+            Err(other) => panic!("expected WrongPassword, got {other:?}"),
+            Ok(_) => panic!("expected WrongPassword, got Ok"),
+        }
     }
 
     #[test]

@@ -22,6 +22,22 @@ export function lock() {
   return invoke<void>('vault_lock')
 }
 
+export function osUnlockAvailable() {
+  return invoke<boolean>('vault_os_unlock_available')
+}
+
+export function enableOsUnlock() {
+  return invoke<void>('vault_enable_os_unlock')
+}
+
+export function disableOsUnlock() {
+  return invoke<void>('vault_disable_os_unlock')
+}
+
+export function unlockWithOs() {
+  return invoke<void>('vault_unlock_with_os')
+}
+
 export function setCredential(sessionId: string, secret: VaultSecret) {
   return invoke<void>('vault_set_credential', { sessionId, secret })
 }
