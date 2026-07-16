@@ -26,7 +26,11 @@ use crate::profiles;
 use crate::vault::VaultState;
 
 #[derive(Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SshEvent {
     /// Base64-encoded PTY bytes — cheaper over IPC than a JSON number array
     /// and, unlike UTF-8 lossy conversion, doesn't corrupt binary output.

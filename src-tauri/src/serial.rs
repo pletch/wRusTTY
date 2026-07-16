@@ -18,7 +18,11 @@ use wr_serial::{PortInfo, SerialConfig, SerialSession};
 use crate::connection_status::status_label;
 
 #[derive(Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SerialEvent {
     Data { bytes_base64: String },
     Status { status: String },

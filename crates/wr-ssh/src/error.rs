@@ -3,6 +3,9 @@ pub enum SshError {
     #[error("connection to {host}:{port} timed out")]
     Timeout { host: String, port: u16 },
 
+    #[error("authentication to {host}:{port} timed out")]
+    AuthTimeout { host: String, port: u16 },
+
     #[error("failed to connect to {host}:{port}: {source}")]
     Connect {
         host: String,

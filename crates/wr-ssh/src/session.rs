@@ -19,6 +19,7 @@ use crate::handler::{ClientHandler, HostKeyVerifier};
 use crate::known_hosts::KnownHostsStore;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 const KEEPALIVE_MAX: usize = 3;
 
@@ -168,7 +169,16 @@ impl SshSession {
             }
         };
 
-        self.authenticate(&mut handle).await?;
+        // No prior art for how long auth should take, but unlike host-key
+        // verification this isn't waiting on a human — a real hang here
+        // (bad server, network stall) should surface as an error rather
+        // than leaving the UI stuck on "Connecting..." forever.
+        tokio::time::timeout(AUTH_TIMEOUT, self.authenticate(&mut handle))
+            .await
+            .map_err(|_| SshError::AuthTimeout {
+                host: self.config.host.clone(),
+                port: self.config.port,
+            })??;
 
         let channel = handle.channel_open_session().await?;
         channel
