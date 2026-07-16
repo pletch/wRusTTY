@@ -67,15 +67,20 @@ fn verify_windows_hello_blocking(
     let class_id = HSTRING::from("Windows.Security.Credentials.UI.UserConsentVerifier");
     let interop: IUserConsentVerifierInterop =
         unsafe { RoGetActivationFactory(&class_id) }.map_err(|e| e.to_string())?;
-    // Annotated on the final binding rather than left to inference or
-    // named directly on an intermediate — same shape as the
-    // CheckAvailabilityAsync call above, which resolves fine without ever
-    // needing to name IAsyncOperation (whose exact import path shouldn't
-    // matter to code that never spells it out).
-    let result: UserConsentVerificationResult =
-        unsafe { interop.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(message)) }
-            .and_then(|op| op.get())
-            .map_err(|e| e.to_string())?;
+    // The compiler confirmed this method is generic here (its error
+    // message on a prior attempt literally said the closure parameter's
+    // type "must be known at this point," with no amount of downstream
+    // annotation able to reach back far enough to fix it) — a turbofish
+    // pins the type down at the call site directly, without needing to
+    // name or import IAsyncOperation at all.
+    let result = unsafe {
+        interop.RequestVerificationForWindowAsync::<UserConsentVerificationResult>(
+            hwnd,
+            &HSTRING::from(message),
+        )
+    }
+    .and_then(|op| op.get())
+    .map_err(|e| e.to_string())?;
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
             "Windows Hello verification didn't succeed ({result:?})"
