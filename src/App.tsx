@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -74,7 +74,13 @@ function App() {
   // unmounts, so the live connection survives the move untouched.
   const [slots, setSlots] = useState<Record<string, HTMLDivElement>>({})
 
-  function registerSlot(paneId: string, el: HTMLDivElement | null) {
+  // Stable across renders (empty deps — setSlots itself is guaranteed
+  // stable by React) so that the per-leaf ref callbacks built from it in
+  // Pane.tsx can themselves stay stable. Without that, a fresh callback
+  // identity every render makes React think the ref "changed" on every
+  // single render, perpetually detaching and reattaching it — each of
+  // which calls setSlots, triggering another render, forever.
+  const registerSlot = useCallback((paneId: string, el: HTMLDivElement | null) => {
     setSlots((prev) => {
       if (el) {
         if (prev[paneId] === el) return prev
@@ -85,7 +91,7 @@ function App() {
       delete next[paneId]
       return next
     })
-  }
+  }, [])
 
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.

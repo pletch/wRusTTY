@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { ConnectDialog } from './ConnectDialog'
 import { ForwardPanel } from './ForwardPanel'
@@ -64,6 +65,15 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onDropTab,
   } = props
   const sessionId = sessionIdByPane[node.id] ?? null
+  // Stable across re-renders of this same leaf — an inline `(el) =>
+  // onSlotRef(node.id, el)` would be a brand-new function every render,
+  // which makes React treat the ref as "changed" every time, perpetually
+  // detaching and reattaching it (each of which calls onSlotRef, which
+  // updates state, which triggers another render — infinite loop).
+  const slotRef = useCallback(
+    (el: HTMLDivElement | null) => onSlotRef(node.id, el),
+    [node.id, onSlotRef],
+  )
 
   return (
     <div
@@ -79,7 +89,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         // the terminal's real home, moving it between tabs (a totally
         // separate React subtree per tab) would force an unmount/remount,
         // tearing down the live session to move it.
-        <div ref={(el) => onSlotRef(node.id, el)} className="relative h-full w-full" />
+        <div ref={slotRef} className="relative h-full w-full" />
       ) : (
         <div
           className="h-full w-full"
