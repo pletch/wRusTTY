@@ -333,23 +333,25 @@ function App() {
           className="min-w-0 flex-1"
           onDoubleClick={() => getCurrentWindow().toggleMaximize()}
         />
-        {activeLeaf?.source && (
+        {activeTab && (
           <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
-            <button
-              className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
-                activePaneId && loggingByPane[activePaneId]
-                  ? 'text-red-400 hover:text-red-300'
-                  : 'text-white/50 hover:text-white/90'
-              }`}
-              title={
-                activePaneId && loggingByPane[activePaneId]
-                  ? 'Session logging on (applies from next connect)'
-                  : 'Log session output to file (applies from next connect)'
-              }
-              onClick={() => activePaneId && toggleLogging(activePaneId)}
-            >
-              <ScrollText size={15} strokeWidth={2} />
-            </button>
+            {activeLeaf?.source && (
+              <button
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                  activePaneId && loggingByPane[activePaneId]
+                    ? 'text-red-400 hover:text-red-300'
+                    : 'text-white/50 hover:text-white/90'
+                }`}
+                title={
+                  activePaneId && loggingByPane[activePaneId]
+                    ? 'Session logging on (applies from next connect)'
+                    : 'Log session output to file (applies from next connect)'
+                }
+                onClick={() => activePaneId && toggleLogging(activePaneId)}
+              >
+                <ScrollText size={15} strokeWidth={2} />
+              </button>
+            )}
             {activeIsSsh && activeSessionId && (
               <button
                 className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
