@@ -209,9 +209,19 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
     }
     window.addEventListener('resize', onResize)
 
+    // The container can shrink or grow without the OS window itself
+    // resizing — e.g. the status footer appearing/disappearing as a
+    // connection's status changes reflows the flex layout above it. A
+    // plain 'resize' listener on window misses that entirely, leaving
+    // xterm's row count stale and its rendering overlapping whatever
+    // ends up occupying the space it no longer actually has.
+    const resizeObserver = new ResizeObserver(onResize)
+    resizeObserver.observe(container)
+
     return () => {
       disposed = true
       window.removeEventListener('resize', onResize)
+      resizeObserver.disconnect()
       container.removeEventListener('contextmenu', onContextMenu)
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()

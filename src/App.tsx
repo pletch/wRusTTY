@@ -23,6 +23,7 @@ import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
+import { findTheme } from './lib/theme'
 import { allLeaves, blankLeaf, closeLeaf, firstLeaf, splitLeaf, updateLeaf } from './lib/paneTree'
 import type { Tab } from './types'
 
@@ -398,14 +399,17 @@ function App() {
               // Flush with the tab bar above and the status footer below
               // (both already have their own divider borders) — just a
               // sliver of margin on the left/right against the window's
-              // own edge. No background here on purpose: the terminal
-              // paints its own theme color within its inset bounds, and
-              // this margin is meant to read as the application window's
-              // background showing through, not a colored frame of its
-              // own — so it stays transparent and inherits the root div's
-              // bg-[#16171d] behind it.
+              // own edge. Confirmed via pixel sampling that this needs to
+              // track the *active terminal theme*, not the app's own fixed
+              // background: with a non-default theme (e.g. Dracula), the
+              // terminal paints #282a36 while the app chrome is #16171d,
+              // and "seamless" means no visible boundary between the
+              // margin and whatever color the terminal actually renders.
               className="absolute inset-x-1 inset-y-0"
-              style={{ display: tab.id === activeTabId ? undefined : 'none' }}
+              style={{
+                display: tab.id === activeTabId ? undefined : 'none',
+                background: findTheme(terminalSettings.themeName).background,
+              }}
             >
               <Pane
                 node={tab.root}
