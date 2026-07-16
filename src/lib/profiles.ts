@@ -9,6 +9,12 @@ export interface SessionProfile {
   username: string
   authType: 'password' | 'public_key'
   keyPath: string | null
+  // Whether a credential for this profile is stored in the vault. Tracked
+  // here (not just inferred by asking the vault) because the vault can't
+  // be queried at all while it's locked — this flag is what lets a locked
+  // session's entry in the sidebar prompt "unlock to connect automatically"
+  // instead of just silently falling back to the manual form.
+  hasCredential: boolean
 }
 
 export function listSessions() {

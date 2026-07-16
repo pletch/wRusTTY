@@ -17,6 +17,9 @@ interface Props {
   onFocusPane: (id: string) => void
   onConnect: (paneId: string, source: ConnectionSource) => void
   onSelectSession: (paneId: string, profile: SessionProfile) => void
+  onEditSession: (paneId: string, profile: SessionProfile) => void
+  onDeleteSession: (profile: SessionProfile) => void
+  onUnlockAndSelectSession: (paneId: string, profile: SessionProfile, password: string) => Promise<void>
   onSaveProfile: (profile: SessionProfile) => void
   onSaveCredential: (profileId: string, secret: VaultSecret) => void
   onCloseForwards: (paneId: string) => void
@@ -62,6 +65,9 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onFocusPane,
     onConnect,
     onSelectSession,
+    onEditSession,
+    onDeleteSession,
+    onUnlockAndSelectSession,
     onSaveProfile,
     onSaveCredential,
     onCloseForwards,
@@ -129,6 +135,11 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             sessions={sessions}
             onConnect={(source) => onConnect(node.id, source)}
             onSelectSession={(profile) => onSelectSession(node.id, profile)}
+            onEditSession={(profile) => onEditSession(node.id, profile)}
+            onDeleteSession={onDeleteSession}
+            onUnlockAndSelectSession={(profile, password) =>
+              onUnlockAndSelectSession(node.id, profile, password)
+            }
             onSaveProfile={onSaveProfile}
             onSaveCredential={onSaveCredential}
           />

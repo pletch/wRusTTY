@@ -1,5 +1,16 @@
-import { useState } from 'react'
-import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, Folder, Server } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import {
+  Terminal as TerminalIcon,
+  Radio,
+  Cable,
+  Save,
+  Plug,
+  Folder,
+  Server,
+  Lock,
+  Pencil,
+  Trash2,
+} from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
 import type { VaultSecret } from '../lib/vault'
@@ -16,6 +27,7 @@ export interface ConnectDialogInitial {
   authType?: 'Password' | 'PublicKey'
   keyPath?: string
   folder?: string | null
+  hasCredential?: boolean
 }
 
 interface Props {
@@ -31,6 +43,16 @@ interface Props {
    * vault credential lets it connect right away). */
   sessions?: SessionProfile[]
   onSelectSession?: (profile: SessionProfile) => void
+  /** Populates the form from this profile without ever auto-connecting,
+   * even if the vault already holds its credential — the only way to edit
+   * a session's saved details rather than just reuse them. */
+  onEditSession?: (profile: SessionProfile) => void
+  onDeleteSession?: (profile: SessionProfile) => void
+  /** A session with a stored credential picked while the vault is locked
+   * prompts for the master password inline instead of just falling back to
+   * the manual form — this unlocks the vault and then behaves like
+   * onSelectSession would have if it had been unlocked all along. */
+  onUnlockAndSelectSession?: (profile: SessionProfile, masterPassword: string) => Promise<void>
 }
 
 // Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
@@ -57,6 +79,9 @@ export function ConnectDialog({
   error,
   sessions,
   onSelectSession,
+  onEditSession,
+  onDeleteSession,
+  onUnlockAndSelectSession,
 }: Props) {
   const [protocol, setProtocol] = useState<Protocol>('ssh')
 
@@ -71,10 +96,53 @@ export function ConnectDialog({
   const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '~/.ssh/id_ed25519')
   const [passphrase, setPassphrase] = useState('')
   const [label, setLabel] = useState(initial?.label ?? '')
-  const [saveProfile, setSaveProfile] = useState(false)
+  // Defaults on whenever we're prefilled from a known profile (picked from
+  // the sidebar, or via Edit) — connecting then naturally writes any
+  // tweaks back to that same profile instead of leaving them stranded in
+  // the form. Doesn't apply to a from-scratch manual connection, where
+  // there's no profile yet to update.
+  const [saveProfile, setSaveProfile] = useState(!!initial?.id)
   const [saveCredential, setSaveCredential] = useState(false)
 
   const [serialConfig, setSerialConfig] = useState(defaultSerialConfig)
+
+  const [menu, setMenu] = useState<{ profile: SessionProfile; x: number; y: number } | null>(null)
+  const [pendingUnlock, setPendingUnlock] = useState<SessionProfile | null>(null)
+  const [unlockPassword, setUnlockPassword] = useState('')
+  const [unlockError, setUnlockError] = useState<string | null>(null)
+  const [unlocking, setUnlocking] = useState(false)
+
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [menu])
+
+  function pickSession(profile: SessionProfile) {
+    if (profile.hasCredential && !vaultUnlocked && onUnlockAndSelectSession) {
+      setPendingUnlock(profile)
+      setUnlockPassword('')
+      setUnlockError(null)
+      return
+    }
+    onSelectSession?.(profile)
+  }
+
+  async function submitUnlock(e: React.FormEvent) {
+    e.preventDefault()
+    if (!pendingUnlock || !onUnlockAndSelectSession) return
+    setUnlocking(true)
+    setUnlockError(null)
+    try {
+      await onUnlockAndSelectSession(pendingUnlock, unlockPassword)
+      setPendingUnlock(null)
+    } catch (err) {
+      setUnlockError(String(err))
+    } finally {
+      setUnlocking(false)
+    }
+  }
 
   function switchProtocol(next: Protocol) {
     setProtocol(next)
@@ -93,6 +161,16 @@ export function ConnectDialog({
 
       if (saveProfile && onSaveProfile && label.trim()) {
         const profileId = initial?.id ?? crypto.randomUUID()
+        // A public key with no passphrase has no secret to store — nothing
+        // actually gets saved to the vault in that case even with the
+        // checkbox on, so hasCredential has to agree, or the sidebar would
+        // offer to "unlock the vault" for a session that never put
+        // anything there.
+        const willSaveCredential =
+          saveCredential &&
+          Boolean(onSaveCredential) &&
+          vaultUnlocked &&
+          (authType === 'Password' || Boolean(passphrase))
         onSaveProfile({
           id: profileId,
           label: label.trim(),
@@ -102,16 +180,18 @@ export function ConnectDialog({
           username,
           authType: authType === 'Password' ? 'password' : 'public_key',
           keyPath: authType === 'PublicKey' ? keyPath : null,
+          // Preserves a prior credential's flag across an unrelated edit —
+          // there's no "forget stored credential" affordance yet, so saving
+          // shouldn't silently lose track of one that already exists.
+          hasCredential: willSaveCredential || Boolean(initial?.hasCredential),
         })
 
-        if (saveCredential && onSaveCredential && vaultUnlocked) {
+        if (willSaveCredential && onSaveCredential) {
           const secret: VaultSecret =
             authType === 'Password'
               ? { type: 'Password', password }
               : { type: 'Passphrase', passphrase }
-          if (authType === 'Password' || passphrase) {
-            onSaveCredential(profileId, secret)
-          }
+          onSaveCredential(profileId, secret)
         }
       }
 
@@ -133,6 +213,61 @@ export function ConnectDialog({
     groups.get(key)!.push(s)
   }
 
+  if (pendingUnlock) {
+    return (
+      <div className="flex h-full w-full items-center justify-center">
+        <form
+          onSubmit={submitUnlock}
+          className="w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl duration-150"
+        >
+          <div className="flex items-center gap-2 text-white/90">
+            <Lock size={15} className="text-amber-400" />
+            <span className="truncate font-medium">{pendingUnlock.label}</span>
+          </div>
+          <p className="text-xs leading-relaxed text-white/50">
+            This session has a saved credential. Unlock the vault to connect automatically.
+          </p>
+          <input
+            type="password"
+            autoFocus
+            placeholder="master password"
+            value={unlockPassword}
+            onChange={(e) => setUnlockPassword(e.target.value)}
+            className={`${inputClass} w-full`}
+          />
+          {unlockError && <p className="text-xs text-red-400">{unlockError}</p>}
+          <button
+            type="submit"
+            disabled={unlocking}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Lock size={14} />
+            Unlock & Connect
+          </button>
+          <div className="flex items-center justify-between text-xs text-white/40">
+            <button
+              type="button"
+              onClick={() => {
+                onSelectSession?.(pendingUnlock)
+                setPendingUnlock(null)
+              }}
+              className="hover:text-white/70"
+            >
+              Enter manually instead
+            </button>
+            <button
+              type="button"
+              onClick={() => setPendingUnlock(null)}
+              className="hover:text-white/70"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full w-full items-center justify-center">
       <div className="animate-in fade-in zoom-in-95 flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
@@ -150,17 +285,24 @@ export function ConnectDialog({
                 {items.map((s) => (
                   <div
                     key={s.id}
-                    onClick={() => onSelectSession?.(s)}
+                    onClick={() => pickSession(s)}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setMenu({ profile: s, x: e.clientX, y: e.clientY })
+                    }}
                     className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
                     title={`${s.username}@${s.host}:${s.port}`}
                   >
                     <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="truncate text-white/90">{s.label}</div>
                       <div className="truncate text-white/40">
                         {s.username}@{s.host}
                       </div>
                     </div>
+                    {s.hasCredential && (
+                      <Lock size={10} className="mt-0.5 shrink-0 text-white/25" />
+                    )}
                   </div>
                 ))}
               </div>
@@ -324,6 +466,42 @@ export function ConnectDialog({
           </button>
         </form>
       </div>
+
+      {menu && (
+        <div
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs shadow-xl duration-100"
+          style={{ left: menu.x, top: menu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
+            onClick={() => {
+              pickSession(menu.profile)
+              setMenu(null)
+            }}
+          >
+            <Plug size={13} /> Connect
+          </button>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
+            onClick={() => {
+              onEditSession?.(menu.profile)
+              setMenu(null)
+            }}
+          >
+            <Pencil size={13} /> Edit
+          </button>
+          <button
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-white/10"
+            onClick={() => {
+              onDeleteSession?.(menu.profile)
+              setMenu(null)
+            }}
+          >
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
+      )}
     </div>
   )
 }

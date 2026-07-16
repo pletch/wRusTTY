@@ -20,6 +20,10 @@ pub struct SessionProfile {
     pub auth_type: String, // "password" | "public_key"
     #[serde(rename = "keyPath")]
     pub key_path: Option<String>,
+    /// Whether a credential for this profile is stored in the vault.
+    /// `default` so profiles saved before this field existed still parse.
+    #[serde(rename = "hasCredential", default)]
+    pub has_credential: bool,
 }
 
 #[derive(Default)]
@@ -27,14 +31,14 @@ pub struct ProfileState {
     lock: Mutex<()>,
 }
 
-fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map(|dir| dir.join("sessions.json"))
         .map_err(|e| e.to_string())
 }
 
-fn read_profiles(path: &PathBuf) -> Result<Vec<SessionProfile>, String> {
+pub(crate) fn read_profiles(path: &PathBuf) -> Result<Vec<SessionProfile>, String> {
     match std::fs::read_to_string(path) {
         Ok(contents) => serde_json::from_str(&contents).map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -42,7 +46,7 @@ fn read_profiles(path: &PathBuf) -> Result<Vec<SessionProfile>, String> {
     }
 }
 
-fn write_profiles(path: &PathBuf, profiles: &[SessionProfile]) -> Result<(), String> {
+pub(crate) fn write_profiles(path: &PathBuf, profiles: &[SessionProfile]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

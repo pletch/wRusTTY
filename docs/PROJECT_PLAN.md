@@ -99,9 +99,11 @@ mosh, RDP) means adding a crate, not touching the UI.
 - Named color themes (import iTerm/VS Code schemes), light/dark following OS
 - Configurable keyboard shortcuts
 - Duplicate tab / reconnect / "restart session" actions
-- Serial QoL: live port hotplug refresh, common baud presets, DTR/RTS toggles,
-  local echo and line-ending options (CR/LF/CRLF) — this is where PuTTY is weak
-  and you can win
+- Serial QoL: live port hotplug refresh, common baud presets, DTR/RTS toggles
+  **(shipped)**, local echo and line-ending options (CR/LF/CRLF) **(shipped)**
+  — this is where PuTTY is weak and you can win. **Still to do**: audit
+  Tabby's serial connection options (e.g. input mode) for anything worth
+  matching that isn't covered above.
 
 ### Recommended additions — Windows 11 polish
 - Mica/acrylic window material, rounded corners, snap-layout support
@@ -127,7 +129,30 @@ mosh, RDP) means adding a crate, not touching the UI.
   and nonce per save; format-versioned header for future migration.
 - Unlock once per app launch; auto-lock after configurable idle timeout.
 - Optional convenience unlock: wrap the vault key with DPAPI via Windows
-  Credential Manager (`keyring` crate) so the OS login unlocks it.
+  Credential Manager (`keyring` crate) so the OS login unlocks it. **Shipped**,
+  but it's silent (tied to the existing Windows logon session, not a fresh
+  challenge) — no Windows Hello prompt appears on unlock.
+- **Future**: full WebAuthn/FIDO2 Windows Hello support (the `hmac-secret`/PRF
+  extension, deriving a key from a real per-use biometric/PIN challenge)
+  for a case where a genuine fresh prompt is wanted, not just DPAPI's
+  silent gate. Scoped out for now — a related idea (`UserConsentVerifier`,
+  a simpler WinRT consent-prompt gate in front of the existing DPAPI key)
+  was also considered and deferred after finding a documented unresolved
+  compatibility issue for non-UWP desktop apps like this one
+  (microsoft/windows-rs#1565). Both routes need real Windows Hello
+  hardware to validate — untestable from the Linux dev machine this
+  project is built on.
+- **Future**: OIDC-gated vault unlock against a self-hosted IdP (Authelia,
+  Authentik, PocketID, etc.) — a distinct feature from WebAuthn/Windows
+  Hello above, not a variant of it. OIDC is a federated auth protocol (full
+  Authorization Code + PKCE flow, a local loopback HTTP listener for the
+  redirect since this is a native app, self-hosted issuer discovery/config
+  UI since there's no fixed provider) — it needs network access to the
+  IdP, unlike the local-only WebAuthn/DPAPI checks. Like both of those, an
+  OIDC token can't itself be used as vault key material (it proves
+  identity to a relying party, it isn't a secret) — it could only ever gate
+  access to a key already stored some other way, the same architectural
+  role `UserConsentVerifier` would have played.
 - Import/export = the encrypted file itself (portable, safe to email/USB), plus
   plaintext JSON/CSV export behind an explicit "I understand" warning.
 - Importers: PuTTY registry sessions (no passwords stored there — structure only),

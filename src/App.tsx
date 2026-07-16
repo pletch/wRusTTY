@@ -217,6 +217,10 @@ function App() {
       .status()
       .then(setVaultStatus)
       .catch(() => {})
+    // A vault import replaces sessions.json too (they're exported as one
+    // bundle — see vault_export/vault_import), so anything that can change
+    // vault status also potentially changed the saved-sessions list.
+    setProfilesVersion((v) => v + 1)
   }
 
   useEffect(() => {
@@ -415,15 +419,8 @@ function App() {
     toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
   }
 
-  // Shared by both "open in a new tab" (openSavedSession) and "load into
-  // this pane" (connectPaneFromProfile): resolves whether the vault already
-  // holds this profile's credential — if so, the manual connect form can be
-  // skipped entirely and the secret resolved on the Rust side, never sent to
-  // the frontend — plus the prefill data for the connect form either way.
-  async function resolveProfileSource(profile: SessionProfile) {
-    const canConnectDirect =
-      vaultStatus === 'unlocked' && (await vault.hasCredential(profile.id).catch(() => false))
-    const initial: PaneLeaf['initial'] = {
+  function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
+    return {
       id: profile.id,
       label: profile.label,
       folder: profile.folder,
@@ -432,11 +429,22 @@ function App() {
       username: profile.username,
       authType: profile.authType === 'password' ? 'Password' : 'PublicKey',
       keyPath: profile.keyPath ?? undefined,
+      hasCredential: profile.hasCredential,
     }
+  }
+
+  // Shared by both "open in a new tab" (openSavedSession) and "load into
+  // this pane" (connectPaneFromProfile): resolves whether the vault already
+  // holds this profile's credential — if so, the manual connect form can be
+  // skipped entirely and the secret resolved on the Rust side, never sent to
+  // the frontend — plus the prefill data for the connect form either way.
+  async function resolveProfileSource(profile: SessionProfile) {
+    const canConnectDirect =
+      vaultStatus === 'unlocked' && (await vault.hasCredential(profile.id).catch(() => false))
     const source: ConnectionSource | null = canConnectDirect
       ? { protocol: 'sshProfile', profileId: profile.id }
       : null
-    return { source, initial }
+    return { source, initial: profileToInitial(profile) }
   }
 
   async function openSavedSession(profile: SessionProfile) {
@@ -449,11 +457,15 @@ function App() {
     setActiveTabId(tab.id)
   }
 
-  /** Loads a saved session into an already-open (blank) pane, in place —
-   * used by the saved-sessions sidebar inside that pane's own connect
-   * dialog, so picking a session there doesn't spawn a whole new tab. */
-  async function connectPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
-    const { source, initial } = await resolveProfileSource(profile)
+  /** Applies a source/initial pair to an already-open pane, in place —
+   * shared by connectPaneFromProfile, editPaneFromProfile, and
+   * unlockVaultAndConnectProfile below. */
+  function applyProfileToPane(
+    tabId: string,
+    paneId: string,
+    source: ConnectionSource | null,
+    initial: PaneLeaf['initial'],
+  ) {
     setTabs((prev) =>
       prev.map((t) => {
         if (t.id !== tabId) return t
@@ -463,6 +475,62 @@ function App() {
         return { ...t, root, title }
       }),
     )
+  }
+
+  /** Loads a saved session into an already-open (blank) pane, in place —
+   * used by the saved-sessions sidebar inside that pane's own connect
+   * dialog, so picking a session there doesn't spawn a whole new tab. */
+  async function connectPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
+    const { source, initial } = await resolveProfileSource(profile)
+    applyProfileToPane(tabId, paneId, source, initial)
+  }
+
+  /** Populates the form from this profile without ever auto-connecting —
+   * the only way to edit a session's saved details rather than just reuse
+   * them, since a plain pick auto-connects whenever the vault already has
+   * a credential for it. */
+  function editPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
+    applyProfileToPane(tabId, paneId, null, profileToInitial(profile))
+  }
+
+  /** Unlocks the vault with a freshly-typed master password, then connects
+   * the picked session exactly as it would have if the vault had already
+   * been unlocked — checking `hasCredential` fresh against the Rust side
+   * rather than trusting `vaultStatus` React state, which wouldn't have
+   * caught up yet at this point in the same call. */
+  async function unlockVaultAndConnectProfile(
+    tabId: string,
+    paneId: string,
+    profile: SessionProfile,
+    password: string,
+  ) {
+    await vault.unlock(password)
+    refreshVaultStatus()
+    const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
+    const source: ConnectionSource | null = hasCredential
+      ? { protocol: 'sshProfile', profileId: profile.id }
+      : null
+    applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
+  }
+
+  function deleteSessionProfile(profile: SessionProfile) {
+    // Deleting the profile doesn't touch the vault on its own — without
+    // this, a profile with hasCredential would leave its actual credential
+    // orphaned in the vault forever, keyed by an id nothing references
+    // anymore. Best-effort: the profile itself is still gone either way,
+    // even if the vault happens to be locked right now and can't be
+    // reached (nothing else currently offers a way to remove a single
+    // orphaned entry, but it's harmless sitting unused).
+    if (profile.hasCredential) {
+      vault.deleteCredential(profile.id).catch(() => {})
+    }
+    profiles
+      .deleteSession(profile.id)
+      .then(() => {
+        setProfilesVersion((v) => v + 1)
+        toast.info(`Deleted "${profile.label}"`)
+      })
+      .catch((err) => toast.error(`Couldn't delete session: ${err}`))
   }
 
   function saveProfile(profile: SessionProfile) {
@@ -673,6 +741,11 @@ function App() {
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
                 onConnect={(paneId, config) => connectPane(tab.id, paneId, config)}
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
+                onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
+                onDeleteSession={deleteSessionProfile}
+                onUnlockAndSelectSession={(paneId, profile, password) =>
+                  unlockVaultAndConnectProfile(tab.id, paneId, profile, password)
+                }
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
                 onCloseForwards={closeForwards}

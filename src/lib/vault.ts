@@ -22,6 +22,14 @@ export function lock() {
   return invoke<void>('vault_lock')
 }
 
+/** Permanently deletes the vault file (every stored credential with it),
+ * the OS-unlock keyring entry, and clears `hasCredential` on every saved
+ * session profile — done together on the Rust side so nothing is left
+ * pointing at a credential that no longer exists. */
+export function deleteVault() {
+  return invoke<void>('vault_delete')
+}
+
 export function osUnlockAvailable() {
   return invoke<boolean>('vault_os_unlock_available')
 }

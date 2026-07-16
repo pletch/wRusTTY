@@ -53,6 +53,7 @@ pub fn run() {
             vault::vault_create,
             vault::vault_unlock,
             vault::vault_lock,
+            vault::vault_delete,
             vault::vault_set_credential,
             vault::vault_delete_credential,
             vault::vault_has_credential,

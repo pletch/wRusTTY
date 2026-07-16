@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { save, open } from '@tauri-apps/plugin-dialog'
-import { Lock, Unlock, Download, Upload, Fingerprint } from 'lucide-react'
+import { Lock, Unlock, Download, Upload, Fingerprint, Trash2 } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 import { toast } from '../lib/toast'
@@ -112,15 +112,34 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     toast.info('Vault locked')
   }
 
+  async function doDelete() {
+    const ok = window.confirm(
+      'Permanently delete the vault? Every credential stored in it will be lost — this cannot be undone. Saved sessions themselves are kept, just without their stored credentials.',
+    )
+    if (!ok) return
+    try {
+      await vault.deleteVault()
+      onStatusChange()
+      setOpen(false)
+      toast.info('Vault deleted')
+    } catch (err) {
+      setError(String(err))
+    }
+  }
+
   async function doExport() {
     const dest = await save({
-      defaultPath: 'wr-shell-vault.wrv',
-      filters: [{ name: 'wr-shell vault', extensions: ['wrv'] }],
+      defaultPath: 'wr-shell-export.wrb',
+      // Saved session profiles reference vault entries by id and are
+      // meaningless without each other, so the export bundles both — a
+      // plain `.wrv` (vault-only) export from an older build isn't
+      // importable here anymore, hence the distinct extension.
+      filters: [{ name: 'wr-shell export bundle', extensions: ['wrb'] }],
     })
     if (!dest) return
     try {
       await vault.exportVault(dest)
-      toast.success('Vault exported')
+      toast.success('Vault and saved sessions exported')
     } catch (err) {
       setError(String(err))
     }
@@ -129,17 +148,17 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   async function doImport() {
     const src = await open({
       multiple: false,
-      filters: [{ name: 'wr-shell vault', extensions: ['wrv'] }],
+      filters: [{ name: 'wr-shell export bundle', extensions: ['wrb'] }],
     })
     if (!src || Array.isArray(src)) return
     const ok = window.confirm(
-      'Importing replaces the current vault file. You will need the imported file\'s master password to unlock it. Continue?',
+      'Importing replaces the current vault and saved sessions. You will need the imported file\'s master password to unlock it. Continue?',
     )
     if (!ok) return
     try {
       await vault.importVault(src)
       onStatusChange()
-      toast.info('Vault imported — unlock it with its master password')
+      toast.info('Vault and saved sessions imported — unlock the vault with its master password')
     } catch (err) {
       setError(String(err))
     }
@@ -254,10 +273,16 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                 Lock now
               </button>
               <button onClick={doExport} className={secondaryButton}>
-                <Download size={13} /> Export vault file...
+                <Download size={13} /> Export vault & sessions...
               </button>
               <button onClick={doImport} className={secondaryButton}>
-                <Upload size={13} /> Import vault file...
+                <Upload size={13} /> Import vault & sessions...
+              </button>
+              <button
+                onClick={doDelete}
+                className={`${secondaryButton} text-red-300/90 hover:text-red-300`}
+              >
+                <Trash2 size={13} /> Delete vault...
               </button>
             </div>
           )}
