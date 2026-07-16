@@ -28,17 +28,26 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
 /// whatever's configured) challenge — without this, DPAPI alone would
 /// silently hand back the stored key to *any* process running under the
 /// same already-authenticated Windows session, with no fresh check at all.
-/// Uses `UserConsentVerifier` directly rather than the `IUserConsentVerifierInterop`
-/// HWND-binding variant, since the latter is what's reported not to work
-/// from non-UWP desktop apps — the dialog just won't be parented to our
-/// window, which is cosmetic, not a correctness issue.
+///
+/// Uses `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`
+/// (via `RoGetActivationFactory`, the WinRT activation path — not
+/// `CoCreateInstance`, which is classic-COM activation and doesn't apply
+/// to a WinRT interop factory; that mismatch is exactly what produced a
+/// "Class not registered" error in another non-UWP app's attempt at this)
+/// so the prompt is parented to our window and opens in the foreground,
+/// rather than the window-less `RequestVerificationAsync`, whose prompt
+/// can open behind the app with no indication it's even there.
 #[cfg(target_os = "windows")]
-fn verify_windows_hello_blocking(message: String) -> Result<(), String> {
+fn verify_windows_hello_blocking(
+    hwnd: windows::Win32::Foundation::HWND,
+    message: String,
+) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Security::Credentials::UI::{
         UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
     };
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    use windows::Win32::System::WinRT::{IUserConsentVerifierInterop, RoGetActivationFactory};
 
     // This runs on a fresh tokio blocking-pool thread with no COM apartment
     // of its own — WinRT activation needs one. Safe to call unconditionally:
@@ -55,9 +64,13 @@ fn verify_windows_hello_blocking(message: String) -> Result<(), String> {
         return Err(format!("Windows Hello isn't available ({availability:?})"));
     }
 
-    let result = UserConsentVerifier::RequestVerificationAsync(&HSTRING::from(message))
-        .and_then(|op| op.join())
-        .map_err(|e| e.to_string())?;
+    let class_id = HSTRING::from("Windows.Security.Credentials.UI.UserConsentVerifier");
+    let interop: IUserConsentVerifierInterop =
+        unsafe { RoGetActivationFactory(&class_id) }.map_err(|e| e.to_string())?;
+    let result =
+        unsafe { interop.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(message)) }
+            .and_then(|op| op.join())
+            .map_err(|e| e.to_string())?;
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
             "Windows Hello verification didn't succeed ({result:?})"
@@ -67,19 +80,31 @@ fn verify_windows_hello_blocking(message: String) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-async fn verify_windows_hello(message: &str) -> Result<(), String> {
-    // RequestVerificationAsync's `.join()` blocks the calling thread until
-    // the prompt is answered — spawn_blocking keeps that off the async
-    // runtime's worker threads instead of stalling them for however long
-    // the user takes to respond.
+async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), String> {
+    let hwnd = app
+        .get_webview_window("main")
+        .ok_or_else(|| "no main window".to_string())?
+        .hwnd()
+        .map_err(|e| e.to_string())?;
+    // HWND isn't necessarily Send, and this needs to run on a different
+    // thread (spawn_blocking, below) — round-trip through a plain isize
+    // instead of moving the HWND value itself across that boundary.
+    let hwnd_value = hwnd.0 as isize;
     let message = message.to_string();
-    tokio::task::spawn_blocking(move || verify_windows_hello_blocking(message))
-        .await
-        .map_err(|e| e.to_string())?
+    // RequestVerificationForWindowAsync's `.join()` blocks the calling
+    // thread until the prompt is answered — spawn_blocking keeps that off
+    // the async runtime's worker threads instead of stalling them for
+    // however long the user takes to respond.
+    tokio::task::spawn_blocking(move || {
+        let hwnd = windows::Win32::Foundation::HWND(hwnd_value as _);
+        verify_windows_hello_blocking(hwnd, message)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn verify_windows_hello(_message: &str) -> Result<(), String> {
+async fn verify_windows_hello(_app: &AppHandle, _message: &str) -> Result<(), String> {
     // No equivalent local challenge exists on other platforms — the
     // OS-unlock feature this gates is Windows-only to begin with (see
     // vault_enable_os_unlock).
@@ -222,7 +247,7 @@ pub async fn vault_unlock_with_os(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    verify_windows_hello("Unlock wr-shell's credential vault").await?;
+    verify_windows_hello(&app, "Unlock wr-shell's credential vault").await?;
     let encoded = keyring_entry()?.get_password().map_err(|e| e.to_string())?;
     let mut key_vec = BASE64.decode(&encoded).map_err(|e| e.to_string())?;
     let key: [u8; 32] = key_vec

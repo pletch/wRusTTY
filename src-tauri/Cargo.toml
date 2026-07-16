@@ -39,4 +39,16 @@ zeroize = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Security_Credentials_UI", "Foundation", "Win32_System_Com"] }
+# Pinned to match whatever version `tauri` itself depends on (currently
+# 0.61.x) rather than a newer one — WebviewWindow::hwnd() returns tauri's
+# own `windows::Win32::Foundation::HWND`, and passing it to a different
+# major/minor version of the same crate is a hard type mismatch even
+# though the type is structurally identical, since Cargo treats them as
+# wholly separate types unless they resolve to one shared dependency.
+windows = { version = "=0.61.3", features = [
+  "Security_Credentials_UI",
+  "Foundation",
+  "Win32_System_Com",
+  "Win32_System_WinRT",
+  "Win32_Foundation",
+] }
