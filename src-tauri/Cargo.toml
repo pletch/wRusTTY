@@ -57,3 +57,10 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_WinRT",
   "Win32_Foundation",
 ] }
+# IUserConsentVerifierInterop::RequestVerificationForWindowAsync's generic
+# return type is `T: windows_core::Interface`, which we satisfy with
+# `IAsyncOperation<UserConsentVerificationResult>` — but that type lives in
+# this separate crate and the `windows` crate's own generated code refers
+# to it by this crate name directly (not re-exported through
+# `windows::Foundation`), so we need it as a direct dependency to name it.
+windows-future = "=0.3.2"

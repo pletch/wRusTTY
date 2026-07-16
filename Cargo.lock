@@ -6670,6 +6670,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "windows 0.62.2",
+ "windows-future 0.3.2",
  "wr-core",
  "wr-serial",
  "wr-ssh",

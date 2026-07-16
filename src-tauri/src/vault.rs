@@ -48,6 +48,7 @@ fn verify_windows_hello_blocking(
     };
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
     use windows::Win32::System::WinRT::{IUserConsentVerifierInterop, RoGetActivationFactory};
+    use windows_future::IAsyncOperation;
 
     // This runs on a fresh tokio blocking-pool thread with no COM apartment
     // of its own — WinRT activation needs one. Safe to call unconditionally:
@@ -67,14 +68,16 @@ fn verify_windows_hello_blocking(
     let class_id = HSTRING::from("Windows.Security.Credentials.UI.UserConsentVerifier");
     let interop: IUserConsentVerifierInterop =
         unsafe { RoGetActivationFactory(&class_id) }.map_err(|e| e.to_string())?;
-    // The compiler confirmed this method is generic here (its error
-    // message on a prior attempt literally said the closure parameter's
-    // type "must be known at this point," with no amount of downstream
-    // annotation able to reach back far enough to fix it) — a turbofish
-    // pins the type down at the call site directly, without needing to
-    // name or import IAsyncOperation at all.
+    // RequestVerificationForWindowAsync is generic over its *return*
+    // interface type (bounded by `windows_core::Interface`), not over the
+    // result value — so the turbofish target is
+    // IAsyncOperation<UserConsentVerificationResult>, not
+    // UserConsentVerificationResult itself. Confirmed directly from the
+    // windows-rs source (generated fn signature in
+    // Win32/System/WinRT/mod.rs): `fn RequestVerificationForWindowAsync<T:
+    // Interface>(...) -> Result<T>`.
     let result = unsafe {
-        interop.RequestVerificationForWindowAsync::<UserConsentVerificationResult>(
+        interop.RequestVerificationForWindowAsync::<IAsyncOperation<UserConsentVerificationResult>>(
             hwnd,
             &HSTRING::from(message),
         )
