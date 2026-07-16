@@ -50,7 +50,17 @@ function blankTab(): Tab {
 function refit() {
   // Terminal listens for window resize to re-fit; nudge it after a tab or
   // pane becomes visible/resized (it may have been sized while hidden).
-  setTimeout(() => window.dispatchEvent(new Event('resize')), 0)
+  // A plain setTimeout(0) only guarantees "after this task," not "after the
+  // browser has actually flushed layout for the newly-visible container" —
+  // WebView2/Chromium schedules its layout/paint pipeline differently than
+  // WebKitGTK, so the synthetic resize could fire before the container's
+  // real size was settled, leaving xterm's fit computed against a
+  // transitional size (visible as the cursor rendering a few columns off
+  // right after a tab switch, self-correcting on the next full redraw).
+  // Double rAF reliably waits for a completed paint first.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
+  })
 }
 
 function App() {
