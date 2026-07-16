@@ -10,6 +10,7 @@ import {
   Lock,
   Pencil,
   Trash2,
+  Fingerprint,
 } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
@@ -53,6 +54,11 @@ interface Props {
    * the manual form — this unlocks the vault and then behaves like
    * onSelectSession would have if it had been unlocked all along. */
   onUnlockAndSelectSession?: (profile: SessionProfile, masterPassword: string) => Promise<void>
+  /** Whether the OS-keychain unlock (Windows sign-in) is currently enabled —
+   * offers it as a one-click alternative to typing the master password in
+   * the unlock prompt above, same as VaultMenu's own locked-state view. */
+  osUnlockAvailable?: boolean
+  onUnlockWithOsAndSelectSession?: (profile: SessionProfile) => Promise<void>
 }
 
 // Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
@@ -82,6 +88,8 @@ export function ConnectDialog({
   onEditSession,
   onDeleteSession,
   onUnlockAndSelectSession,
+  osUnlockAvailable,
+  onUnlockWithOsAndSelectSession,
 }: Props) {
   const [protocol, setProtocol] = useState<Protocol>('ssh')
 
@@ -136,6 +144,20 @@ export function ConnectDialog({
     setUnlockError(null)
     try {
       await onUnlockAndSelectSession(pendingUnlock, unlockPassword)
+      setPendingUnlock(null)
+    } catch (err) {
+      setUnlockError(String(err))
+    } finally {
+      setUnlocking(false)
+    }
+  }
+
+  async function submitUnlockWithOs() {
+    if (!pendingUnlock || !onUnlockWithOsAndSelectSession) return
+    setUnlocking(true)
+    setUnlockError(null)
+    try {
+      await onUnlockWithOsAndSelectSession(pendingUnlock)
       setPendingUnlock(null)
     } catch (err) {
       setUnlockError(String(err))
@@ -227,6 +249,23 @@ export function ConnectDialog({
           <p className="text-xs leading-relaxed text-white/50">
             This session has a saved credential. Unlock the vault to connect automatically.
           </p>
+          {osUnlockAvailable && onUnlockWithOsAndSelectSession && (
+            <>
+              <button
+                type="button"
+                disabled={unlocking}
+                onClick={submitUnlockWithOs}
+                className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Fingerprint size={14} />
+                Unlock with Windows sign-in
+              </button>
+              <p className="flex items-center gap-2 text-white/30">
+                <span className="h-px flex-1 bg-white/10" /> or{' '}
+                <span className="h-px flex-1 bg-white/10" />
+              </p>
+            </>
+          )}
           <input
             type="password"
             autoFocus

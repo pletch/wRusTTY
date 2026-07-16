@@ -6669,6 +6669,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-single-instance",
  "tokio",
+ "windows 0.62.2",
  "wr-core",
  "wr-serial",
  "wr-ssh",

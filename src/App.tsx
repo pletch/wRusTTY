@@ -95,6 +95,7 @@ function App() {
   }, [profilesVersion])
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
+  const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
   // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
   // by pane id, and portaled into whichever "slot" div currently represents
@@ -217,6 +218,13 @@ function App() {
       .status()
       .then(setVaultStatus)
       .catch(() => {})
+    // Kept alongside vault status (rather than only fetched inside
+    // VaultMenu) so the locked-session unlock prompt in the connect
+    // dialog's sidebar can also offer "Unlock with Windows sign-in".
+    vault
+      .osUnlockAvailable()
+      .then(setOsUnlockAvailable)
+      .catch(() => setOsUnlockAvailable(false))
     // A vault import replaces sessions.json too (they're exported as one
     // bundle — see vault_export/vault_import), so anything that can change
     // vault status also potentially changed the saved-sessions list.
@@ -513,6 +521,23 @@ function App() {
     applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
   }
 
+  /** Same as unlockVaultAndConnectProfile, but via the OS-keychain unlock
+   * (Windows sign-in, gated by a fresh Windows Hello/PIN check on Windows)
+   * instead of a typed master password. */
+  async function unlockWithOsAndConnectProfile(
+    tabId: string,
+    paneId: string,
+    profile: SessionProfile,
+  ) {
+    await vault.unlockWithOs()
+    refreshVaultStatus()
+    const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
+    const source: ConnectionSource | null = hasCredential
+      ? { protocol: 'sshProfile', profileId: profile.id }
+      : null
+    applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
+  }
+
   function deleteSessionProfile(profile: SessionProfile) {
     // Deleting the profile doesn't touch the vault on its own — without
     // this, a profile with hasCredential would leave its actual credential
@@ -745,6 +770,10 @@ function App() {
                 onDeleteSession={deleteSessionProfile}
                 onUnlockAndSelectSession={(paneId, profile, password) =>
                   unlockVaultAndConnectProfile(tab.id, paneId, profile, password)
+                }
+                osUnlockAvailable={osUnlockAvailable}
+                onUnlockWithOsAndSelectSession={(paneId, profile) =>
+                  unlockWithOsAndConnectProfile(tab.id, paneId, profile)
                 }
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}

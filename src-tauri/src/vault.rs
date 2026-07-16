@@ -24,6 +24,68 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())
 }
 
+/// Gates OS-unlock on a fresh, per-use Windows Hello (or PIN/password,
+/// whatever's configured) challenge — without this, DPAPI alone would
+/// silently hand back the stored key to *any* process running under the
+/// same already-authenticated Windows session, with no fresh check at all.
+/// Uses `UserConsentVerifier` directly rather than the `IUserConsentVerifierInterop`
+/// HWND-binding variant, since the latter is what's reported not to work
+/// from non-UWP desktop apps — the dialog just won't be parented to our
+/// window, which is cosmetic, not a correctness issue.
+#[cfg(target_os = "windows")]
+fn verify_windows_hello_blocking(message: String) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Security::Credentials::UI::{
+        UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+    };
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+    // This runs on a fresh tokio blocking-pool thread with no COM apartment
+    // of its own — WinRT activation needs one. Safe to call unconditionally:
+    // it no-ops (S_FALSE) if something already initialized this thread, and
+    // this thread never touches COM again after returning it to the pool.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+
+    let availability = UserConsentVerifier::CheckAvailabilityAsync()
+        .and_then(|op| op.get())
+        .map_err(|e| e.to_string())?;
+    if availability != UserConsentVerifierAvailability::Available {
+        return Err(format!("Windows Hello isn't available ({availability:?})"));
+    }
+
+    let result = UserConsentVerifier::RequestVerificationAsync(&HSTRING::from(message))
+        .and_then(|op| op.get())
+        .map_err(|e| e.to_string())?;
+    if result != UserConsentVerificationResult::Verified {
+        return Err(format!(
+            "Windows Hello verification didn't succeed ({result:?})"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+async fn verify_windows_hello(message: &str) -> Result<(), String> {
+    // RequestVerificationAsync's `.get()` blocks the calling thread until
+    // the prompt is answered — spawn_blocking keeps that off the async
+    // runtime's worker threads instead of stalling them for however long
+    // the user takes to respond.
+    let message = message.to_string();
+    tokio::task::spawn_blocking(move || verify_windows_hello_blocking(message))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn verify_windows_hello(_message: &str) -> Result<(), String> {
+    // No equivalent local challenge exists on other platforms — the
+    // OS-unlock feature this gates is Windows-only to begin with (see
+    // vault_enable_os_unlock).
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct VaultState {
     pub(crate) vault: TokioMutex<Option<Vault>>,
@@ -132,9 +194,11 @@ pub async fn vault_os_unlock_available() -> Result<bool, String> {
 
 /// Stores a copy of the already-unlocked vault's key in the OS keychain, so
 /// future launches can skip the master password. Security now rests on
-/// whatever gates that keychain entry (Windows sign-in / Windows Hello via
-/// DPAPI), not on Argon2 — an explicit, opt-in trade of the vault's own KDF
-/// strength for convenience.
+/// Argon2 only indirectly — retrieving the key (vault_unlock_with_os) is
+/// gated on a fresh Windows Hello/PIN challenge each time
+/// (verify_windows_hello), not just on DPAPI's own "same logged-in Windows
+/// session" check, which by itself would hand the key to anything already
+/// running as that user with no further challenge at all.
 #[tauri::command]
 pub async fn vault_enable_os_unlock(state: State<'_, VaultState>) -> Result<(), String> {
     let guard = state.vault.lock().await;
@@ -158,6 +222,7 @@ pub async fn vault_unlock_with_os(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
+    verify_windows_hello("Unlock wr-shell's credential vault").await?;
     let encoded = keyring_entry()?.get_password().map_err(|e| e.to_string())?;
     let mut key_vec = BASE64.decode(&encoded).map_err(|e| e.to_string())?;
     let key: [u8; 32] = key_vec

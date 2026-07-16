@@ -100,6 +100,9 @@ export function VaultMenu({ status, onStatusChange }: Props) {
       if (next) await vault.enableOsUnlock()
       else await vault.disableOsUnlock()
       setOsUnlockOn(next)
+      // App.tsx tracks this too (for the session-picker's locked-vault
+      // unlock prompt), so it needs to hear about the change as well.
+      onStatusChange()
     } catch (err) {
       setError(String(err))
     }
@@ -270,8 +273,8 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                 <span>
                   Unlock with Windows sign-in
                   <span className="block text-white/40">
-                    Skips the master password next launch — protected by Windows'
-                    own sign-in instead of Argon2.
+                    Skips the master password — each unlock still requires a
+                    fresh Windows Hello/PIN check instead of Argon2.
                   </span>
                 </span>
               </label>

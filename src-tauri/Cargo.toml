@@ -37,3 +37,6 @@ async-trait = "0.1"
 base64 = "0.22"
 zeroize = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Security_Credentials_UI", "Foundation", "Win32_System_Com"] }
