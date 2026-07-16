@@ -90,39 +90,51 @@ function App() {
   // identity every render makes React think the ref "changed" on every
   // single render, perpetually detaching and reattaching it — each of
   // which calls setSlots, triggering another render, forever.
+  const registerSlot = useCallback((paneId: string, el: HTMLDivElement | null) => {
+    setSlots((prev) => {
+      if (el) {
+        if (prev[paneId] === el) return prev
+        return { ...prev, [paneId]: el }
+      }
+      if (!(paneId in prev)) return prev
+      const next = { ...prev }
+      delete next[paneId]
+      return next
+    })
+  }, [])
+
   // Splitting a pane or popping it to a new tab reparents PaneLeafView in
   // the React tree (it switches position between a plain leaf and a child
   // of a new PanelGroup), which unmounts and remounts it — detaching and
-  // reattaching this same leaf's slot ref. If that detach and reattach ever
-  // land in separate commits instead of one batched update, the slot would
-  // briefly read as missing, and connectedEntries below would unmount the
-  // live Terminal and reconnect it from scratch. Observed on WebView2 but
-  // not WebKitGTK, presumably down to layout/commit scheduling differences
-  // rather than anything guaranteed by React itself. Deferring the removal
-  // lets an immediate reattach for the same paneId cancel it first.
-  const pendingRemovals = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // reattaching this same leaf's slot ref, with no guarantee about how
+  // long the gap in between lasts (tried papering over it with a fixed
+  // delay before this; it wasn't reliably long enough on WebView2, where
+  // this reproduces — not seen at all on WebKitGTK). Rather than guess a
+  // duration, every connected leaf always has *some* portal target: its
+  // real pane slot if one's registered, or this permanent, hidden,
+  // off-tree div otherwise. connectedEntries below never has to render
+  // `null` for a connected leaf, so the live <Terminal> never unmounts no
+  // matter how long the real slot takes to reappear — it just sits
+  // harmlessly in the fallback (identical to a background tab: 0x0, so
+  // Terminal's own resize guard skips fitting) until its real slot shows up.
+  const homeContainers = useRef<Record<string, HTMLDivElement>>({})
 
-  const registerSlot = useCallback((paneId: string, el: HTMLDivElement | null) => {
-    const pending = pendingRemovals.current.get(paneId)
-    if (pending !== undefined) {
-      clearTimeout(pending)
-      pendingRemovals.current.delete(paneId)
+  function getHomeContainer(paneId: string): HTMLDivElement {
+    let el = homeContainers.current[paneId]
+    if (!el) {
+      el = document.createElement('div')
+      el.style.position = 'fixed'
+      el.style.top = '0'
+      el.style.left = '0'
+      el.style.width = '0'
+      el.style.height = '0'
+      el.style.overflow = 'hidden'
+      el.style.pointerEvents = 'none'
+      document.body.appendChild(el)
+      homeContainers.current[paneId] = el
     }
-    if (el) {
-      setSlots((prev) => (prev[paneId] === el ? prev : { ...prev, [paneId]: el }))
-      return
-    }
-    const timeout = setTimeout(() => {
-      pendingRemovals.current.delete(paneId)
-      setSlots((prev) => {
-        if (!(paneId in prev)) return prev
-        const next = { ...prev }
-        delete next[paneId]
-        return next
-      })
-    }, 50)
-    pendingRemovals.current.set(paneId, timeout)
-  }, [])
+    return el
+  }
 
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.
@@ -448,6 +460,19 @@ function App() {
       .map((leaf) => ({ tab, leaf })),
   )
 
+  // Prunes home containers for leaves that are truly gone (disconnected or
+  // closed, not just mid-move) — otherwise every one ever created would sit
+  // in the DOM forever.
+  useEffect(() => {
+    const liveIds = new Set(connectedEntries.map(({ leaf }) => leaf.id))
+    for (const [id, el] of Object.entries(homeContainers.current)) {
+      if (!liveIds.has(id)) {
+        el.remove()
+        delete homeContainers.current[id]
+      }
+    }
+  })
+
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden bg-[#16171d] ${
@@ -578,8 +603,8 @@ function App() {
             </div>
           ))}
           {connectedEntries.map(({ tab, leaf }) => {
-            const slot = slots[leaf.id]
-            if (!slot || !leaf.source) return null
+            if (!leaf.source) return null
+            const slot = slots[leaf.id] ?? getHomeContainer(leaf.id)
             return createPortal(
               // React portals bubble events according to the *React* tree,
               // not the DOM tree — this content's React parent is wherever
