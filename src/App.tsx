@@ -6,7 +6,13 @@ import { QuickConnectPalette } from './components/QuickConnectPalette'
 import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
 import { ToastHost } from './components/ToastHost'
-import { TerminalSquare } from 'lucide-react'
+import {
+  TerminalSquare,
+  SplitSquareHorizontal,
+  SplitSquareVertical,
+  ScrollText,
+  ArrowLeftRight,
+} from 'lucide-react'
 import { toast } from './lib/toast'
 import * as profiles from './lib/profiles'
 import type { SessionProfile } from './lib/profiles'
@@ -37,6 +43,9 @@ function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
   const [statusByPane, setStatusByPane] = useState<Record<string, string>>({})
+  const [loggingByPane, setLoggingByPane] = useState<Record<string, boolean>>({})
+  const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
+  const [sessionIdByPane, setSessionIdByPane] = useState<Record<string, string | null>>({})
   const [profilesVersion, setProfilesVersion] = useState(0)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [paletteSessions, setPaletteSessions] = useState<SessionProfile[]>([])
@@ -164,6 +173,18 @@ function App() {
     refit()
   }
 
+  function toggleLogging(paneId: string) {
+    setLoggingByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+  }
+
+  function toggleForwards(paneId: string) {
+    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+  }
+
+  function closeForwards(paneId: string) {
+    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+  }
+
   function closePane(tabId: string, paneId: string) {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
@@ -262,6 +283,15 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [])
 
+  // Split/logging/port-forwarding controls act on whichever pane is
+  // currently focused, rather than living as buttons on the pane itself.
+  const activeTab = tabs.find((t) => t.id === activeTabId)
+  const activeLeaf = activeTab && allLeaves(activeTab.root).find((l) => l.id === activeTab.activePaneId)
+  const activePaneId = activeTab?.activePaneId
+  const activeIsSsh =
+    activeLeaf?.source?.protocol === 'ssh' || activeLeaf?.source?.protocol === 'sshProfile'
+  const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
+
   return (
     <div className="flex h-screen w-screen flex-col bg-[#16171d]">
       <div className="flex h-10 shrink-0 items-stretch border-b border-white/10 bg-black/20">
@@ -276,14 +306,60 @@ function App() {
           onReconnect={reconnectTab}
           onReorder={reorderTabs}
         />
-        <div className="flex shrink-0 items-center gap-0.5 px-1.5">
+        {activeLeaf?.source && (
+          <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
+            <button
+              className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                activePaneId && loggingByPane[activePaneId]
+                  ? 'text-red-400 hover:text-red-300'
+                  : 'text-white/50 hover:text-white/90'
+              }`}
+              title={
+                activePaneId && loggingByPane[activePaneId]
+                  ? 'Session logging on (applies from next connect)'
+                  : 'Log session output to file (applies from next connect)'
+              }
+              onClick={() => activePaneId && toggleLogging(activePaneId)}
+            >
+              <ScrollText size={15} strokeWidth={2} />
+            </button>
+            {activeIsSsh && activeSessionId && (
+              <button
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                  activePaneId && forwardsOpenByPane[activePaneId]
+                    ? 'text-white/90'
+                    : 'text-white/50 hover:text-white/90'
+                }`}
+                title="Port forwarding"
+                onClick={() => activePaneId && toggleForwards(activePaneId)}
+              >
+                <ArrowLeftRight size={15} strokeWidth={2} />
+              </button>
+            )}
+            <button
+              className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
+              title="Split right"
+              onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'horizontal')}
+            >
+              <SplitSquareHorizontal size={15} strokeWidth={2} />
+            </button>
+            <button
+              className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
+              title="Split down"
+              onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'vertical')}
+            >
+              <SplitSquareVertical size={15} strokeWidth={2} />
+            </button>
+          </div>
+        )}
+        <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
           <SessionManager onOpen={openSavedSession} refreshToken={profilesVersion} />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
       </div>
       <div className="relative flex min-h-0 flex-1">
-        <main className="relative min-h-0 flex-1 p-2">
+        <main className="relative min-h-0 flex-1">
           {tabs.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-white/30">
               <TerminalSquare size={28} strokeWidth={1.5} />
@@ -293,14 +369,16 @@ function App() {
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              className="absolute inset-2"
+              className="absolute inset-0"
               style={{ display: tab.id === activeTabId ? undefined : 'none' }}
             >
               <Pane
                 node={tab.root}
-                activePaneId={tab.activePaneId}
                 settings={terminalSettings}
                 vaultUnlocked={vaultStatus === 'unlocked'}
+                loggingByPane={loggingByPane}
+                forwardsOpenByPane={forwardsOpenByPane}
+                sessionIdByPane={sessionIdByPane}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
                 onConnect={(paneId, config) => connectPane(tab.id, paneId, config)}
                 onSaveProfile={saveProfile}
@@ -319,8 +397,10 @@ function App() {
                     setTimeout(() => closePane(tab.id, paneId), 800)
                   }
                 }}
-                onSplit={(paneId, direction) => splitPane(tab.id, paneId, direction)}
-                onClose={(paneId) => closePane(tab.id, paneId)}
+                onSessionId={(paneId, id) =>
+                  setSessionIdByPane((prev) => ({ ...prev, [paneId]: id }))
+                }
+                onCloseForwards={closeForwards}
               />
             </div>
           ))}
