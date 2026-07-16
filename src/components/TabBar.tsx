@@ -52,7 +52,7 @@ export function TabBar({
   }, [menu])
 
   return (
-    <div className="relative flex min-w-0 shrink items-stretch">
+    <div className="relative flex min-w-0 shrink items-stretch pl-1.5">
       <div className="flex min-w-0 shrink items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId

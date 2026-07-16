@@ -311,7 +311,7 @@ function App() {
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden bg-[#16171d] ${
-        maximized ? '' : 'rounded-xl border border-white/10'
+        maximized ? '' : 'rounded-lg border border-white/10'
       }`}
     >
       <div className="flex h-10 shrink-0 items-stretch border-b border-white/10 bg-black/20">
