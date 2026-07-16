@@ -23,7 +23,6 @@ import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
-import { findTheme } from './lib/theme'
 import { allLeaves, blankLeaf, closeLeaf, firstLeaf, splitLeaf, updateLeaf } from './lib/paneTree'
 import type { Tab } from './types'
 
@@ -396,20 +395,12 @@ function App() {
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              // Flush with the tab bar above and the status footer below
-              // (both already have their own divider borders) — just a
-              // sliver of margin on the left/right against the window's
-              // own edge. Confirmed via pixel sampling that this needs to
-              // track the *active terminal theme*, not the app's own fixed
-              // background: with a non-default theme (e.g. Dracula), the
-              // terminal paints #282a36 while the app chrome is #16171d,
-              // and "seamless" means no visible boundary between the
-              // margin and whatever color the terminal actually renders.
-              className="absolute inset-x-1 inset-y-0"
-              style={{
-                display: tab.id === activeTabId ? undefined : 'none',
-                background: findTheme(terminalSettings.themeName).background,
-              }}
+              // No margin/padding here on purpose — the terminal itself
+              // owns its own theme-matched inset now (see Terminal.tsx),
+              // which is the only place that can never drift out of sync
+              // with whatever color it actually paints.
+              className="absolute inset-0"
+              style={{ display: tab.id === activeTabId ? undefined : 'none' }}
             >
               <Pane
                 node={tab.root}

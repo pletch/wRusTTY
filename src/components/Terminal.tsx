@@ -245,7 +245,16 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
   }, [source])
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="relative h-full w-full px-1.5 pt-3"
+      // Painted here, from the exact same findTheme() call that configures
+      // xterm's own theme a few lines up, rather than duplicated in a
+      // separate wrapper — one source of truth means this padding can
+      // never drift out of sync with whatever the terminal itself paints,
+      // which a previous attempt at this (matching color one level up, in
+      // App.tsx) did the moment a non-default theme was actually tested.
+      style={{ background: findTheme(settings.themeName).background }}
+    >
       <div ref={containerRef} className="h-full w-full" />
       {connecting && (
         <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">
