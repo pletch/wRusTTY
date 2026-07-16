@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Plus, X, RotateCw, Copy, Terminal as TerminalIcon, Radio, Cable } from 'lucide-react'
+import {
+  Plus,
+  X,
+  RotateCw,
+  Copy,
+  Terminal as TerminalIcon,
+  Radio,
+  Cable,
+  TerminalSquare,
+} from 'lucide-react'
 import type { Tab } from '../types'
 import { allLeaves } from '../lib/paneTree'
 
@@ -52,7 +61,13 @@ export function TabBar({
   }, [menu])
 
   return (
-    <div className="relative flex min-w-0 shrink items-stretch pl-2">
+    <div className="relative flex min-w-0 shrink items-stretch">
+      {/* Placeholder app icon — swap for the real logo later. Also gives
+       * the tab strip natural clearance from the window's rounded corner,
+       * replacing what used to just be an empty sliver of padding. */}
+      <div className="flex shrink-0 items-center pl-2.5 pr-1.5 text-sky-400">
+        <TerminalSquare size={16} strokeWidth={2} />
+      </div>
       <div className="flex min-w-0 shrink items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
