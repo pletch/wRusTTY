@@ -118,6 +118,18 @@ export function Terminal({
     let webglAddon: WebglAddon | null = null
     try {
       webglAddon = new WebglAddon()
+      // A lost GPU context (driver reset, resource exhaustion — plausible
+      // with several terminals' worth of WebGL contexts open at once, all
+      // tabs' panes stay mounted regardless of visibility) otherwise
+      // leaves this terminal rendering a blank/corrupted canvas forever,
+      // since nothing else notices or recovers. Disposing it here just
+      // drops back to xterm's own canvas renderer for the rest of this
+      // session, matching what happens when WebGL wasn't available to
+      // begin with.
+      webglAddon.onContextLoss(() => {
+        webglAddon?.dispose()
+        webglAddon = null
+      })
       term.loadAddon(webglAddon)
     } catch {
       // WebGL unavailable — xterm falls back to its canvas renderer.

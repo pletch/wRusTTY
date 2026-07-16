@@ -537,29 +537,49 @@ function App() {
             const slot = slots[leaf.id]
             if (!slot || !leaf.source) return null
             return createPortal(
-              <Terminal
-                key={`${leaf.id}-${leaf.generation}`}
-                source={leaf.source}
-                label={leaf.initial?.label ?? sourceLabel(leaf.source)}
-                settings={terminalSettings}
-                logging={loggingByPane[leaf.id] ?? false}
-                active={leaf.id === tab.activePaneId}
-                onStatus={(s) => {
-                  setStatusByPane((prev) => ({ ...prev, [leaf.id]: s }))
-                  // Surfaced even for background tabs — otherwise a failed
-                  // connection in a tab you're not looking at is silent.
-                  if (s.startsWith('failed')) toast.error(s.replace(/^failed: /, ''))
-                  // A clean remote-initiated disconnect (the shell exited,
-                  // the server hung up) closes the pane on its own rather
-                  // than leaving a dead terminal sitting open — but only a
-                  // clean disconnect, not a failure, since the error should
-                  // stay visible until the user dismisses it themselves.
-                  if (s === 'disconnected') {
-                    setTimeout(() => closePane(tab.id, leaf.id), 800)
-                  }
-                }}
-                onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
-              />,
+              // React portals bubble events according to the *React* tree,
+              // not the DOM tree — this content's React parent is wherever
+              // createPortal was called (here, inside App), not
+              // PaneLeafView, so PaneLeafView's own onMouseDown/
+              // onFocusCapture never actually fire for clicks inside a
+              // connected terminal. That silently broke pane-focus tracking
+              // the moment a pane had a live connection (still worked for
+              // an unconnected ConnectDialog pane, which isn't portaled),
+              // which is why "move to new tab" looked broken — it was
+              // acting on a stale activePaneId. Re-declaring the focus
+              // handlers here, actually inside the portal's real React
+              // ancestry, fixes it.
+              <div
+                className="relative h-full w-full"
+                onFocusCapture={() => focusPane(tab.id, leaf.id)}
+                onMouseDown={() => focusPane(tab.id, leaf.id)}
+              >
+                <Terminal
+                  key={`${leaf.id}-${leaf.generation}`}
+                  source={leaf.source}
+                  label={leaf.initial?.label ?? sourceLabel(leaf.source)}
+                  settings={terminalSettings}
+                  logging={loggingByPane[leaf.id] ?? false}
+                  active={leaf.id === tab.activePaneId}
+                  onStatus={(s) => {
+                    setStatusByPane((prev) => ({ ...prev, [leaf.id]: s }))
+                    // Surfaced even for background tabs — otherwise a
+                    // failed connection in a tab you're not looking at is
+                    // silent.
+                    if (s.startsWith('failed')) toast.error(s.replace(/^failed: /, ''))
+                    // A clean remote-initiated disconnect (the shell
+                    // exited, the server hung up) closes the pane on its
+                    // own rather than leaving a dead terminal sitting open
+                    // — but only a clean disconnect, not a failure, since
+                    // the error should stay visible until the user
+                    // dismisses it themselves.
+                    if (s === 'disconnected') {
+                      setTimeout(() => closePane(tab.id, leaf.id), 800)
+                    }
+                  }}
+                  onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
+                />
+              </div>,
               slot,
               leaf.id,
             )
