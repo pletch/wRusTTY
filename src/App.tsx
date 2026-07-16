@@ -23,6 +23,7 @@ import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
+import { findTheme } from './lib/theme'
 import { allLeaves, blankLeaf, closeLeaf, firstLeaf, splitLeaf, updateLeaf } from './lib/paneTree'
 import type { Tab } from './types'
 
@@ -395,11 +396,17 @@ function App() {
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              // Flush with the tab bar above (top-0) but a small margin on
-              // the other three sides, now that those touch the window's
-              // own visible border instead of another seam.
-              className="absolute inset-x-2 bottom-2 top-0"
-              style={{ display: tab.id === activeTabId ? undefined : 'none' }}
+              // Flush with the tab bar above and the status footer below
+              // (both already have their own divider borders) — just a
+              // sliver of margin on the left/right against the window's
+              // own edge. Filled with the active theme's background
+              // rather than the app chrome's fixed color, so it doesn't
+              // read as a mismatched frame for any non-default theme.
+              className="absolute inset-x-1 inset-y-0"
+              style={{
+                display: tab.id === activeTabId ? undefined : 'none',
+                background: findTheme(terminalSettings.themeName).background,
+              }}
             >
               <Pane
                 node={tab.root}
