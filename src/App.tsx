@@ -268,8 +268,16 @@ function App() {
       root: leaf,
       activePaneId: leaf.id,
     }
+    // The remaining tab's title may have been describing the pane that
+    // just left — e.g. it was named after the pane you're popping out —
+    // so it needs to follow whichever pane is left behind as active now,
+    // the same way focusPane already does when switching panes normally.
+    const remainingActiveLeaf = allLeaves(newRoot).find((l) => l.id === newActivePaneId)
+    const remainingTitle = remainingActiveLeaf?.source ? sourceLabel(remainingActiveLeaf.source) : tab.title
     setTabs((prev) => [
-      ...prev.map((t) => (t.id === tabId ? { ...t, root: newRoot, activePaneId: newActivePaneId } : t)),
+      ...prev.map((t) =>
+        t.id === tabId ? { ...t, root: newRoot, activePaneId: newActivePaneId, title: remainingTitle } : t,
+      ),
       poppedTab,
     ])
     setActiveTabId(poppedTab.id)
@@ -285,11 +293,16 @@ function App() {
     if (!draggedTab || draggedTab.root.type !== 'leaf' || !draggedTab.root.source) return
     const draggedLeaf: PaneLeaf = draggedTab.root
     const withoutDragged = tabs.filter((t) => t.id !== draggedTabId)
-    const next = withoutDragged.map((t) =>
-      findLeaf(t.root, targetPaneId)
-        ? { ...t, root: updateLeaf(t.root, targetPaneId, () => draggedLeaf) }
-        : t,
-    )
+    const next = withoutDragged.map((t) => {
+      if (!findLeaf(t.root, targetPaneId)) return t
+      const root = updateLeaf(t.root, targetPaneId, () => draggedLeaf)
+      // Same reasoning as connectPane: only follow the newly-attached
+      // connection if it landed on the tab's actual active pane, so an
+      // attach into some other (non-focused) split pane doesn't rename a
+      // tab that's still showing something else.
+      const title = targetPaneId === t.activePaneId ? sourceLabel(draggedLeaf.source!) : t.title
+      return { ...t, root, title }
+    })
     setTabs(next)
     if (activeTabId === draggedTabId) {
       const idx = tabs.findIndex((t) => t.id === draggedTabId)

@@ -115,25 +115,30 @@ export function Terminal({
     searchAddonRef.current = searchAddon
     term.open(container)
 
-    let webglAddon: WebglAddon | null = null
-    try {
-      webglAddon = new WebglAddon()
-      // A lost GPU context (driver reset, resource exhaustion — plausible
-      // with several terminals' worth of WebGL contexts open at once, all
-      // tabs' panes stay mounted regardless of visibility) otherwise
-      // leaves this terminal rendering a blank/corrupted canvas forever,
-      // since nothing else notices or recovers. Disposing it here just
-      // drops back to xterm's own canvas renderer for the rest of this
-      // session, matching what happens when WebGL wasn't available to
-      // begin with.
-      webglAddon.onContextLoss(() => {
-        webglAddon?.dispose()
-        webglAddon = null
-      })
-      term.loadAddon(webglAddon)
-    } catch {
-      // WebGL unavailable — xterm falls back to its canvas renderer.
+    // A lost GPU context (driver reset, resource exhaustion — plausible with
+    // several terminals' worth of WebGL contexts open at once, since every
+    // tab's panes stay mounted regardless of visibility) otherwise leaves a
+    // terminal rendering a blank/corrupted canvas forever, since nothing
+    // else notices or recovers. Disposing on loss just drops back to
+    // xterm's own canvas renderer for the rest of this session, matching
+    // what happens when WebGL wasn't available to begin with. Pulled out
+    // as its own function since onResize below needs to redo this same
+    // setup when it tears down and rebuilds the addon after a move.
+    function loadWebgl(): WebglAddon | null {
+      try {
+        const addon = new WebglAddon()
+        addon.onContextLoss(() => {
+          addon.dispose()
+          if (webglAddon === addon) webglAddon = null
+        })
+        term.loadAddon(addon)
+        return addon
+      } catch {
+        // WebGL unavailable — xterm falls back to its canvas renderer.
+        return null
+      }
     }
+    let webglAddon = loadWebgl()
 
     fitAddon.fit()
 
@@ -247,13 +252,22 @@ export function Terminal({
       fitAddon.fit()
       if (sessionId) conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
       // Guarding against the 0x0 fit stopped the PTY-side desync, but the
-      // WebGL addon caches glyphs in a texture atlas keyed to cell
-      // dimensions measured at some earlier point — if that happened while
-      // this container was hidden (0-sized), the atlas can end up stale,
-      // rendering the cursor (and potentially glyphs) at the wrong pixel
-      // offset for their otherwise-correct logical column. Clearing it
-      // forces a fresh measurement and redraw against the current size.
-      webglAddon?.clearTextureAtlas()
+      // canvas can still end up visually stale after this — most sharply
+      // when a pane is dragged between tabs, since that detaches and
+      // reattaches its DOM node elsewhere (React portal retargeting), and
+      // detaching/reattaching a WebGL canvas can silently clear its actual
+      // drawing buffer even though the JS-level context survives. xterm's
+      // renderer still believes already-painted rows are valid and only
+      // repaints cells that changed, so old (cleared) content stays blank
+      // while newly written rows still render correctly — clearTextureAtlas
+      // + refresh() wasn't enough to fix this, since both still defer to
+      // that same "nothing changed here" assumption. Tearing down and
+      // rebuilding the addon from scratch forces a genuinely fresh full
+      // repaint with no assumptions left over from before the move.
+      if (webglAddon) {
+        webglAddon.dispose()
+        webglAddon = loadWebgl()
+      }
       term.refresh(0, term.rows - 1)
       // This only reaches here on a real (non-zero) resize, which is
       // exactly what happens when a hidden tab becomes visible again
