@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { ConnectDialog } from './ConnectDialog'
 import { ForwardPanel } from './ForwardPanel'
@@ -74,6 +74,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     (el: HTMLDivElement | null) => onSlotRef(node.id, el),
     [node.id, onSlotRef],
   )
+  const [dragOver, setDragOver] = useState(false)
 
   return (
     <div
@@ -92,11 +93,22 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         <div ref={slotRef} className="relative h-full w-full" />
       ) : (
         <div
-          className="h-full w-full"
+          className={`h-full w-full transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
           onDragOver={(e) => {
-            if (e.dataTransfer.types.includes(DRAG_TAB_MIME)) e.preventDefault()
+            if (!e.dataTransfer.types.includes(DRAG_TAB_MIME)) return
+            e.preventDefault()
+            // Chromium (WebView2 on Windows) is stricter than WebKitGTK
+            // here — without an explicit dropEffect matching what dragstart
+            // declared as effectAllowed, it shows the "not allowed" cursor
+            // over this drop target even though preventDefault() was
+            // called, which is technically enough on some engines but not
+            // this one.
+            e.dataTransfer.dropEffect = 'move'
+            setDragOver(true)
           }}
+          onDragLeave={() => setDragOver(false)}
           onDrop={(e) => {
+            setDragOver(false)
             const draggedTabId = e.dataTransfer.getData(DRAG_TAB_MIME)
             if (draggedTabId) onDropTab(node.id, draggedTabId)
           }}
