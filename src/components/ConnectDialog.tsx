@@ -143,7 +143,7 @@ export function ConnectDialog({
           <div className="max-h-[32rem] w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
             {[...groups.entries()].map(([folder, items]) => (
               <div key={folder}>
-                <div className="flex items-center gap-1.5 px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-white/30">
+                <div className="flex items-center gap-1.5 px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-white/60">
                   <Folder size={10} />
                   {folder}
                 </div>
