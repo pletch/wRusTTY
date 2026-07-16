@@ -124,16 +124,18 @@ export function SerialFields({ config, onChange }: Props) {
         </select>
       </div>
 
-      <div className="flex items-center gap-3 text-xs text-white/70">
-        <label className="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            className="accent-sky-400"
-            checked={config.localEcho}
-            onChange={(e) => set('localEcho', e.target.checked)}
-          />
-          Local echo
-        </label>
+      <div className="flex items-center gap-2 text-xs text-white/70">
+        <select
+          className={`${selectClass} min-w-0 flex-1`}
+          value={config.inputMode}
+          onChange={(e) => set('inputMode', e.target.value as SerialConfig['inputMode'])}
+          title={inputModeHints[config.inputMode]}
+        >
+          <option value="Normal">Normal input</option>
+          <option value="LocalEcho">Local echo</option>
+          <option value="Readline">Readline</option>
+          <option value="ReadlineHex">Readline (hex)</option>
+        </select>
         <select
           className="rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
           value={config.lineEnding}
@@ -144,6 +146,16 @@ export function SerialFields({ config, onChange }: Props) {
           <option value="CrLf">CRLF</option>
         </select>
       </div>
+      <p className="text-[11px] leading-relaxed text-white/40">{inputModeHints[config.inputMode]}</p>
     </>
   )
+}
+
+const inputModeHints: Record<SerialConfig['inputMode'], string> = {
+  Normal: 'Each keystroke is sent immediately, as-is.',
+  LocalEcho: "Each keystroke is sent immediately and echoed locally — for devices that don't echo their own input.",
+  Readline:
+    'Compose a line locally (with editing, history via ↑/↓) and send it only on Enter.',
+  ReadlineHex:
+    'Like Readline, but the composed line is parsed as hex bytes (e.g. "AA 0x1B FF") and sent raw.',
 }

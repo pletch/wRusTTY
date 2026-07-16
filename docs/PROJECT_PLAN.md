@@ -100,10 +100,13 @@ mosh, RDP) means adding a crate, not touching the UI.
 - Configurable keyboard shortcuts
 - Duplicate tab / reconnect / "restart session" actions
 - Serial QoL: live port hotplug refresh, common baud presets, DTR/RTS toggles
-  **(shipped)**, local echo and line-ending options (CR/LF/CRLF) **(shipped)**
-  — this is where PuTTY is weak and you can win. **Still to do**: audit
-  Tabby's serial connection options (e.g. input mode) for anything worth
-  matching that isn't covered above.
+  **(shipped)**, local echo and line-ending options (CR/LF/CRLF) **(shipped)**,
+  input mode — Normal/Local echo/Readline/Readline-hex, matching Tabby's
+  local line-editor behavior for devices that don't echo or expect a whole
+  line at once **(shipped)** — this is where PuTTY is weak and you can win.
+  Audited the rest of Tabby's serial options (slow-feed byte-by-byte send,
+  independent input/output newline modes, hex-dump output mode, live
+  baud-rate change) as lower-value or awkward fits and left them out for now.
 
 ### Recommended additions — Windows 11 polish
 - Mica/acrylic window material, rounded corners, snap-layout support

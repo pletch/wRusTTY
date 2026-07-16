@@ -12,6 +12,7 @@ import * as sessionLog from '../lib/logging'
 import type { TerminalSettings } from '../lib/settings'
 import { findTheme } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
+import { LineEditor, parseHexLine } from '../lib/lineEditor'
 
 interface Props {
   source: ConnectionSource
@@ -170,6 +171,31 @@ export function Terminal({
       }
     }
 
+    // Readline/Readline-hex (serial only) buffer keystrokes locally and
+    // only hand a completed line to the wire on Enter, instead of the
+    // normal one-keystroke-at-a-time passthrough — see lib/lineEditor.ts.
+    const inputMode = source.protocol === 'serial' ? source.config.inputMode : 'Normal'
+    const lineEditor =
+      inputMode === 'Readline' || inputMode === 'ReadlineHex'
+        ? new LineEditor(term, (line) => {
+            if (!sessionId) return
+            if (inputMode === 'ReadlineHex') {
+              const bytes = parseHexLine(line)
+              if (!bytes) {
+                term.writeln('[invalid hex — expected space-separated bytes like "AA 0x1B FF"]')
+                return
+              }
+              conn.write(source, sessionId, bytes).catch(() => {})
+            } else {
+              // Appending a bare CR and letting the existing line-ending
+              // translation (already applied to everything written to the
+              // serial port) rewrite it means Readline mode's Enter key
+              // behaves exactly like a normal typed Enter would.
+              conn.write(source, sessionId, new TextEncoder().encode(`${line}\r`)).catch(() => {})
+            }
+          })
+        : null
+
     conn
       .connect(source, onEvent)
       .then((id) => {
@@ -186,6 +212,7 @@ export function Terminal({
         // into the pane first — this is the point a new connection is
         // actually usable.
         term.focus()
+        lineEditor?.start()
         if (loggingRef.current) {
           sessionLog
             .start(id, label)
@@ -203,6 +230,10 @@ export function Terminal({
       })
 
     const dataListener = term.onData((data) => {
+      if (lineEditor) {
+        lineEditor.handleData(data)
+        return
+      }
       if (sessionId) conn.write(source, sessionId, new TextEncoder().encode(data))
     })
 

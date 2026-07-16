@@ -6,6 +6,14 @@ export type StopBits = 'One' | 'Two'
 export type FlowControl = 'None' | 'Software' | 'Hardware'
 export type LineEnding = 'Cr' | 'Lf' | 'CrLf'
 
+// Frontend-only — never sent to Rust as-is (see connection.ts's 'serial'
+// case), since only 'LocalEcho' has a backend-visible effect (translates to
+// the existing `localEcho: boolean`). Readline/ReadlineHex are purely a
+// client-side input-composition behavior: a local line editor buffers
+// keystrokes and only hands a completed line to the wire on Enter, instead
+// of sending each keystroke immediately.
+export type InputMode = 'Normal' | 'LocalEcho' | 'Readline' | 'ReadlineHex'
+
 export interface SerialConfig {
   portName: string
   baudRate: number
@@ -13,7 +21,7 @@ export interface SerialConfig {
   parity: Parity
   stopBits: StopBits
   flowControl: FlowControl
-  localEcho: boolean
+  inputMode: InputMode
   lineEnding: LineEnding
 }
 
@@ -30,7 +38,7 @@ export function defaultSerialConfig(): SerialConfig {
     parity: 'None',
     stopBits: 'One',
     flowControl: 'None',
-    localEcho: false,
+    inputMode: 'Normal',
     lineEnding: 'Cr',
   }
 }

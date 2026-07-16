@@ -35,8 +35,15 @@ export function connect(source: ConnectionSource, onEvent: (event: ConnEvent) =>
       return invoke<string>('ssh_connect_profile', { profileId: source.profileId, channel })
     case 'telnet':
       return invoke<string>('telnet_connect', { config: source.config, channel })
-    case 'serial':
-      return invoke<string>('serial_connect', { config: source.config, channel })
+    case 'serial': {
+      // inputMode is frontend-only (see lib/serial.ts) — Rust only ever
+      // needs to know whether it should echo written bytes back itself,
+      // which is exactly what 'LocalEcho' means; Readline/ReadlineHex are
+      // handled entirely client-side and look like 'Normal' to the backend.
+      const { inputMode, ...rest } = source.config
+      const config = { ...rest, localEcho: inputMode === 'LocalEcho' }
+      return invoke<string>('serial_connect', { config, channel })
+    }
   }
 }
 
