@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Terminal as TerminalIcon, Radio, Cable, Save, Plug } from 'lucide-react'
+import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, Folder, Server } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
 import type { VaultSecret } from '../lib/vault'
@@ -25,6 +25,12 @@ interface Props {
   vaultUnlocked?: boolean
   initial?: ConnectDialogInitial
   error?: string | null
+  /** Saved sessions shown in a sidebar alongside the manual connect form —
+   * picking one calls onSelectSession instead of prefilling anything here
+   * directly, since the parent may skip this form entirely (e.g. a stored
+   * vault credential lets it connect right away). */
+  sessions?: SessionProfile[]
+  onSelectSession?: (profile: SessionProfile) => void
 }
 
 // Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
@@ -49,6 +55,8 @@ export function ConnectDialog({
   vaultUnlocked,
   initial,
   error,
+  sessions,
+  onSelectSession,
 }: Props) {
   const [protocol, setProtocol] = useState<Protocol>('ssh')
 
@@ -118,167 +126,204 @@ export function ConnectDialog({
     }
   }
 
+  const groups = new Map<string, SessionProfile[]>()
+  for (const s of sessions ?? []) {
+    const key = s.folder ?? 'Sessions'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(s)
+  }
+
   return (
     <div className="flex h-full w-full items-center justify-center">
-      <form
-        onSubmit={submit}
-        className="w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl duration-150"
-      >
-        <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
-          {(['ssh', 'telnet', 'serial'] as const).map((p) => {
-            const Icon = protocolIcons[p]
-            return (
-              <button
-                key={p}
-                type="button"
-                onClick={() => switchProtocol(p)}
-                className={`flex flex-1 items-center justify-center gap-1.5 rounded py-1.5 uppercase tracking-wide transition-colors duration-150 ${
-                  protocol === p
-                    ? 'bg-white/15 text-white shadow-sm'
-                    : 'text-white/40 hover:text-white/70'
-                }`}
-              >
-                <Icon size={13} />
-                {p}
-              </button>
-            )
-          })}
-        </div>
-
-        {protocol === 'serial' ? (
-          <SerialFields config={serialConfig} onChange={setSerialConfig} />
-        ) : (
-          <>
-            <div className="flex gap-2">
-              <input
-                className={`${inputClass} min-w-0 flex-1`}
-                placeholder="host"
-                value={host}
-                onChange={(e) => setHost(e.target.value)}
-                required
-              />
-              <input
-                className={`${inputClass} w-16 shrink-0`}
-                placeholder="port"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-              />
-            </div>
-
-            {protocol === 'ssh' && (
-              <>
-                <input
-                  className={`${inputClass} w-full`}
-                  placeholder="username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                />
-
-                <div className="flex gap-3 text-xs text-white/70">
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="radio"
-                      className="accent-sky-400"
-                      checked={authType === 'Password'}
-                      onChange={() => setAuthType('Password')}
-                    />
-                    Password
-                  </label>
-                  <label className="flex items-center gap-1.5">
-                    <input
-                      type="radio"
-                      className="accent-sky-400"
-                      checked={authType === 'PublicKey'}
-                      onChange={() => setAuthType('PublicKey')}
-                    />
-                    Public key
-                  </label>
+      <div className="animate-in fade-in zoom-in-95 flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
+        {sessions && sessions.length > 0 && (
+          // Fixed width, scrolls independently of the form — so having a
+          // handful of saved sessions or a hundred never pushes the connect
+          // form (which is what you actually came here to use) out of view.
+          <div className="max-h-[32rem] w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
+            {[...groups.entries()].map(([folder, items]) => (
+              <div key={folder}>
+                <div className="flex items-center gap-1.5 px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-white/30">
+                  <Folder size={10} />
+                  {folder}
                 </div>
-
-                {authType === 'Password' ? (
-                  <input
-                    className={`${inputClass} w-full`}
-                    placeholder="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                ) : (
-                  <>
-                    <input
-                      className={`${inputClass} w-full`}
-                      placeholder="key path"
-                      value={keyPath}
-                      onChange={(e) => setKeyPath(e.target.value)}
-                    />
-                    <input
-                      className={`${inputClass} w-full`}
-                      placeholder="passphrase (optional)"
-                      type="password"
-                      value={passphrase}
-                      onChange={(e) => setPassphrase(e.target.value)}
-                    />
-                  </>
-                )}
-              </>
-            )}
-          </>
-        )}
-
-        {protocol === 'ssh' && onSaveProfile && (
-          <div className="space-y-2 border-t border-white/10 pt-2.5">
-            <label className="flex items-center gap-2 text-xs text-white/70">
-              <input
-                type="checkbox"
-                className="accent-sky-400"
-                checked={saveProfile}
-                onChange={(e) => setSaveProfile(e.target.checked)}
-              />
-              <Save size={12} className="text-white/40" />
-              Save as session
-            </label>
-            {saveProfile && (
-              <>
-                <input
-                  className={`${inputClass} w-full`}
-                  placeholder="session name"
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                />
-                {onSaveCredential && (
-                  <label
-                    className={`flex items-center gap-2 text-xs ${
-                      vaultUnlocked ? 'text-white/70' : 'text-white/30'
-                    }`}
+                {items.map((s) => (
+                  <div
+                    key={s.id}
+                    onClick={() => onSelectSession?.(s)}
+                    className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
+                    title={`${s.username}@${s.host}:${s.port}`}
                   >
-                    <input
-                      type="checkbox"
-                      className="accent-sky-400"
-                      checked={saveCredential}
-                      disabled={!vaultUnlocked}
-                      onChange={(e) => setSaveCredential(e.target.checked)}
-                    />
-                    {vaultUnlocked
-                      ? 'Also save credential to vault (next open skips this form)'
-                      : 'Unlock the vault to also save the credential'}
-                  </label>
-                )}
-              </>
-            )}
+                    <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
+                    <div className="min-w-0">
+                      <div className="truncate text-white/90">{s.label}</div>
+                      <div className="truncate text-white/40">
+                        {s.username}@{s.host}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
         )}
+        <form onSubmit={submit} className="w-80 space-y-3 p-5">
+          <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
+            {(['ssh', 'telnet', 'serial'] as const).map((p) => {
+              const Icon = protocolIcons[p]
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => switchProtocol(p)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded py-1.5 uppercase tracking-wide transition-colors duration-150 ${
+                    protocol === p
+                      ? 'bg-white/15 text-white shadow-sm'
+                      : 'text-white/40 hover:text-white/70'
+                  }`}
+                >
+                  <Icon size={13} />
+                  {p}
+                </button>
+              )
+            })}
+          </div>
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+          {protocol === 'serial' ? (
+            <SerialFields config={serialConfig} onChange={setSerialConfig} />
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <input
+                  className={`${inputClass} min-w-0 flex-1`}
+                  placeholder="host"
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  required
+                />
+                <input
+                  className={`${inputClass} w-16 shrink-0`}
+                  placeholder="port"
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                />
+              </div>
 
-        <button
-          type="submit"
-          className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500"
-        >
-          <Plug size={14} />
-          Connect
-        </button>
-      </form>
+              {protocol === 'ssh' && (
+                <>
+                  <input
+                    className={`${inputClass} w-full`}
+                    placeholder="username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    required
+                  />
+
+                  <div className="flex gap-3 text-xs text-white/70">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        className="accent-sky-400"
+                        checked={authType === 'Password'}
+                        onChange={() => setAuthType('Password')}
+                      />
+                      Password
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        className="accent-sky-400"
+                        checked={authType === 'PublicKey'}
+                        onChange={() => setAuthType('PublicKey')}
+                      />
+                      Public key
+                    </label>
+                  </div>
+
+                  {authType === 'Password' ? (
+                    <input
+                      className={`${inputClass} w-full`}
+                      placeholder="password"
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  ) : (
+                    <>
+                      <input
+                        className={`${inputClass} w-full`}
+                        placeholder="key path"
+                        value={keyPath}
+                        onChange={(e) => setKeyPath(e.target.value)}
+                      />
+                      <input
+                        className={`${inputClass} w-full`}
+                        placeholder="passphrase (optional)"
+                        type="password"
+                        value={passphrase}
+                        onChange={(e) => setPassphrase(e.target.value)}
+                      />
+                    </>
+                  )}
+                </>
+              )}
+            </>
+          )}
+
+          {protocol === 'ssh' && onSaveProfile && (
+            <div className="space-y-2 border-t border-white/10 pt-2.5">
+              <label className="flex items-center gap-2 text-xs text-white/70">
+                <input
+                  type="checkbox"
+                  className="accent-sky-400"
+                  checked={saveProfile}
+                  onChange={(e) => setSaveProfile(e.target.checked)}
+                />
+                <Save size={12} className="text-white/40" />
+                Save as session
+              </label>
+              {saveProfile && (
+                <>
+                  <input
+                    className={`${inputClass} w-full`}
+                    placeholder="session name"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                  />
+                  {onSaveCredential && (
+                    <label
+                      className={`flex items-center gap-2 text-xs ${
+                        vaultUnlocked ? 'text-white/70' : 'text-white/30'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-sky-400"
+                        checked={saveCredential}
+                        disabled={!vaultUnlocked}
+                        onChange={(e) => setSaveCredential(e.target.checked)}
+                      />
+                      {vaultUnlocked
+                        ? 'Also save credential to vault (next open skips this form)'
+                        : 'Unlock the vault to also save the credential'}
+                    </label>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {error && <p className="text-xs text-red-400">{error}</p>}
+
+          <button
+            type="submit"
+            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500"
+          >
+            <Plug size={14} />
+            Connect
+          </button>
+        </form>
+      </div>
     </div>
   )
 }

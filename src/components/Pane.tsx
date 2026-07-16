@@ -13,8 +13,10 @@ interface Props {
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
   sessionIdByPane: Record<string, string | null>
+  sessions: SessionProfile[]
   onFocusPane: (id: string) => void
   onConnect: (paneId: string, source: ConnectionSource) => void
+  onSelectSession: (paneId: string, profile: SessionProfile) => void
   onSaveProfile: (profile: SessionProfile) => void
   onSaveCredential: (profileId: string, secret: VaultSecret) => void
   onCloseForwards: (paneId: string) => void
@@ -56,8 +58,10 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     vaultUnlocked,
     forwardsOpenByPane,
     sessionIdByPane,
+    sessions,
     onFocusPane,
     onConnect,
+    onSelectSession,
     onSaveProfile,
     onSaveCredential,
     onCloseForwards,
@@ -114,9 +118,17 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
           }}
         >
           <ConnectDialog
+            // Remounts fresh (with the newly-selected profile's data already
+            // baked into its initial useState() calls) whenever a different
+            // saved session is picked from the sidebar — simpler than
+            // syncing every field from `initial` via an effect, and it's
+            // exactly the "start fresh" semantics we want here anyway.
+            key={node.initial?.id ?? 'blank'}
             initial={node.initial}
             vaultUnlocked={vaultUnlocked}
+            sessions={sessions}
             onConnect={(source) => onConnect(node.id, source)}
+            onSelectSession={(profile) => onSelectSession(node.id, profile)}
             onSaveProfile={onSaveProfile}
             onSaveCredential={onSaveCredential}
           />

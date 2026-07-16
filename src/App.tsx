@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
 import { TabBar } from './components/TabBar'
-import { SessionManager } from './components/SessionManager'
 import { QuickConnectPalette } from './components/QuickConnectPalette'
 import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
@@ -87,7 +86,13 @@ function App() {
   const [sessionIdByPane, setSessionIdByPane] = useState<Record<string, string | null>>({})
   const [profilesVersion, setProfilesVersion] = useState(0)
   const [paletteOpen, setPaletteOpen] = useState(false)
-  const [paletteSessions, setPaletteSessions] = useState<SessionProfile[]>([])
+  // Kept fresh here (rather than fetched lazily wherever it's needed) since
+  // it now backs both the quick-connect palette and the saved-sessions
+  // sidebar inside every blank pane's connect dialog.
+  const [sessions, setSessions] = useState<SessionProfile[]>([])
+  useEffect(() => {
+    profiles.listSessions().then(setSessions).catch(() => setSessions([]))
+  }, [profilesVersion])
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [maximized, setMaximized] = useState(false)
@@ -410,19 +415,15 @@ function App() {
     toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
   }
 
-  async function openSavedSession(profile: SessionProfile) {
-    const leaf = blankLeaf()
-
-    // If the vault is unlocked and already holds this profile's credential,
-    // skip the manual connect form entirely — the secret is resolved on
-    // the Rust side and never sent to the frontend.
+  // Shared by both "open in a new tab" (openSavedSession) and "load into
+  // this pane" (connectPaneFromProfile): resolves whether the vault already
+  // holds this profile's credential — if so, the manual connect form can be
+  // skipped entirely and the secret resolved on the Rust side, never sent to
+  // the frontend — plus the prefill data for the connect form either way.
+  async function resolveProfileSource(profile: SessionProfile) {
     const canConnectDirect =
       vaultStatus === 'unlocked' && (await vault.hasCredential(profile.id).catch(() => false))
-
-    if (canConnectDirect) {
-      leaf.source = { protocol: 'sshProfile', profileId: profile.id }
-    }
-    leaf.initial = {
+    const initial: PaneLeaf['initial'] = {
       id: profile.id,
       label: profile.label,
       folder: profile.folder,
@@ -432,9 +433,36 @@ function App() {
       authType: profile.authType === 'password' ? 'Password' : 'PublicKey',
       keyPath: profile.keyPath ?? undefined,
     }
+    const source: ConnectionSource | null = canConnectDirect
+      ? { protocol: 'sshProfile', profileId: profile.id }
+      : null
+    return { source, initial }
+  }
+
+  async function openSavedSession(profile: SessionProfile) {
+    const { source, initial } = await resolveProfileSource(profile)
+    const leaf = blankLeaf()
+    leaf.source = source
+    leaf.initial = initial
     const tab: Tab = { id: newTabId(), title: profile.label, root: leaf, activePaneId: leaf.id }
     setTabs((prev) => [...prev, tab])
     setActiveTabId(tab.id)
+  }
+
+  /** Loads a saved session into an already-open (blank) pane, in place —
+   * used by the saved-sessions sidebar inside that pane's own connect
+   * dialog, so picking a session there doesn't spawn a whole new tab. */
+  async function connectPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
+    const { source, initial } = await resolveProfileSource(profile)
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t
+        const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source: source ?? l.source, initial }))
+        const leaf = allLeaves(root).find((l) => l.id === paneId)
+        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
+        return { ...t, root, title }
+      }),
+    )
   }
 
   function saveProfile(profile: SessionProfile) {
@@ -455,10 +483,6 @@ function App() {
   }
 
   function openPalette() {
-    profiles
-      .listSessions()
-      .then(setPaletteSessions)
-      .catch(() => setPaletteSessions([]))
     setPaletteOpen(true)
   }
 
@@ -617,7 +641,6 @@ function App() {
           </div>
         )}
         <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
-          <SessionManager onOpen={openSavedSession} refreshToken={profilesVersion} />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
@@ -646,8 +669,10 @@ function App() {
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 forwardsOpenByPane={forwardsOpenByPane}
                 sessionIdByPane={sessionIdByPane}
+                sessions={sessions}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
                 onConnect={(paneId, config) => connectPane(tab.id, paneId, config)}
+                onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
                 onCloseForwards={closeForwards}
@@ -712,7 +737,7 @@ function App() {
         </main>
         {paletteOpen && (
           <QuickConnectPalette
-            sessions={paletteSessions}
+            sessions={sessions}
             onClose={() => setPaletteOpen(false)}
             onSelect={(profile) => {
               openSavedSession(profile)
