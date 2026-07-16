@@ -6,6 +6,8 @@ import { QuickConnectPalette } from './components/QuickConnectPalette'
 import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
 import { ToastHost } from './components/ToastHost'
+import { WindowControls } from './components/WindowControls'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   TerminalSquare,
   SplitSquareHorizontal,
@@ -306,6 +308,11 @@ function App() {
           onReconnect={reconnectTab}
           onReorder={reorderTabs}
         />
+        <div
+          data-tauri-drag-region
+          className="min-w-0 flex-1"
+          onDoubleClick={() => getCurrentWindow().toggleMaximize()}
+        />
         {activeLeaf?.source && (
           <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
             <button
@@ -357,6 +364,7 @@ function App() {
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
+        <WindowControls />
       </div>
       <div className="relative flex min-h-0 flex-1">
         <main className="relative min-h-0 flex-1">

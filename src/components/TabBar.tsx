@@ -52,8 +52,8 @@ export function TabBar({
   }, [menu])
 
   return (
-    <div className="relative flex min-w-0 flex-1 items-stretch">
-      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
+    <div className="relative flex min-w-0 shrink items-stretch">
+      <div className="flex min-w-0 shrink items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           const leaf = allLeaves(tab.root).find((l) => l.id === tab.activePaneId)
