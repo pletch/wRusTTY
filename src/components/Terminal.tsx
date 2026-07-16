@@ -150,6 +150,10 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
         onSessionIdRef.current?.(id)
         const { cols, rows } = term
         conn.resize(source, id, cols, rows).catch(() => {})
+        // So you can start typing immediately instead of having to click
+        // into the pane first — this is the point a new connection is
+        // actually usable.
+        term.focus()
         if (loggingRef.current) {
           sessionLog
             .start(id, label)
