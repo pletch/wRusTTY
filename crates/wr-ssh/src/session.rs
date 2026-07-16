@@ -34,6 +34,10 @@ pub struct SshSession {
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     resize_tx: Option<mpsc::Sender<(u16, u16)>>,
     remote_forwards: forward::RemoteForwardRegistry,
+    // Opened lazily on first use and reused for the connection's lifetime —
+    // a `OnceCell` keeps this on a shared `&self`, matching `add_forward`'s
+    // shape, rather than requiring `&mut self` everywhere SFTP is touched.
+    sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
 }
 
 impl SshSession {
@@ -51,6 +55,7 @@ impl SshSession {
             input_tx: None,
             resize_tx: None,
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
+            sftp: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -59,6 +64,24 @@ impl SshSession {
     pub async fn add_forward(&self, spec: ForwardSpec) -> Result<ForwardHandle, SshError> {
         let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
         forward::start(handle, self.remote_forwards.clone(), spec).await
+    }
+
+    /// Returns the shared SFTP client for this connection, opening the
+    /// subsystem channel on first use. Mirrors the existing
+    /// `request_pty`/`request_shell` sequence in `connect_inner` — a fresh
+    /// independent channel off the same live connection, requesting a
+    /// subsystem instead of a shell.
+    pub async fn get_or_open_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
+        self.sftp
+            .get_or_try_init(|| async {
+                let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
+                let channel = handle.channel_open_session().await?;
+                channel.request_subsystem(true, "sftp").await?;
+                let client = wr_sftp::SftpClient::new(channel.into_stream()).await?;
+                Ok::<_, SshError>(Arc::new(client))
+            })
+            .await
+            .cloned()
     }
 }
 
@@ -109,6 +132,7 @@ impl Connection for SshSession {
     async fn disconnect(&mut self) -> Result<(), SshError> {
         self.input_tx = None;
         self.resize_tx = None;
+        self.sftp = tokio::sync::OnceCell::new();
         if let Some(handle) = self.handle.take() {
             // Dropping input/resize senders stops the pumping tasks; ignore
             // errors here since the transport may already be gone.

@@ -34,4 +34,7 @@ pub enum SshError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Sftp(#[from] wr_sftp::SftpError),
 }

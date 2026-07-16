@@ -2,6 +2,7 @@ mod connection_status;
 mod logging;
 mod profiles;
 mod serial;
+mod sftp;
 mod ssh;
 mod telnet;
 mod vault;
@@ -21,12 +22,14 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(ssh::SshState::default())
         .manage(telnet::TelnetState::default())
         .manage(serial::SerialState::default())
         .manage(profiles::ProfileState::default())
         .manage(vault::VaultState::default())
         .manage(logging::LoggingState::default())
+        .manage(sftp::SftpState::default())
         .invoke_handler(tauri::generate_handler![
             ssh::ssh_connect,
             ssh::ssh_connect_profile,
@@ -36,6 +39,10 @@ pub fn run() {
             ssh::ssh_respond_host_key,
             ssh::ssh_add_forward,
             ssh::ssh_remove_forward,
+            sftp::sftp_list_dir,
+            sftp::sftp_canonicalize,
+            sftp::sftp_edit_file,
+            sftp::sftp_stop_watching,
             telnet::telnet_connect,
             telnet::telnet_write,
             telnet::telnet_resize,

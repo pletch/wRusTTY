@@ -15,6 +15,7 @@ import {
   SplitSquareVertical,
   ScrollText,
   ArrowLeftRight,
+  Folder,
   ExternalLink,
   X,
 } from 'lucide-react'
@@ -83,6 +84,7 @@ function App() {
   const [statusByPane, setStatusByPane] = useState<Record<string, string>>({})
   const [loggingByPane, setLoggingByPane] = useState<Record<string, boolean>>({})
   const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
+  const [filesOpenByPane, setFilesOpenByPane] = useState<Record<string, boolean>>({})
   const [sessionIdByPane, setSessionIdByPane] = useState<Record<string, string | null>>({})
   const [profilesVersion, setProfilesVersion] = useState(0)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -347,10 +349,22 @@ function App() {
 
   function toggleForwards(paneId: string) {
     setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+    // Both panels anchor to the same corner of the pane — keep them
+    // mutually exclusive rather than stacking or overlapping.
+    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: false }))
   }
 
   function closeForwards(paneId: string) {
     setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+  }
+
+  function toggleFiles(paneId: string) {
+    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+  }
+
+  function closeFiles(paneId: string) {
+    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: false }))
   }
 
   function closePane(tabId: string, paneId: string) {
@@ -699,6 +713,19 @@ function App() {
                 <ArrowLeftRight size={15} strokeWidth={2} />
               </button>
             )}
+            {activeIsSsh && activeSessionId && (
+              <button
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                  activePaneId && filesOpenByPane[activePaneId]
+                    ? 'text-white/90'
+                    : 'text-white/50 hover:text-white/90'
+                }`}
+                title="Remote files"
+                onClick={() => activePaneId && toggleFiles(activePaneId)}
+              >
+                <Folder size={15} strokeWidth={2} />
+              </button>
+            )}
             <button
               className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
               title="Split right"
@@ -761,6 +788,7 @@ function App() {
                 node={tab.root}
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 forwardsOpenByPane={forwardsOpenByPane}
+                filesOpenByPane={filesOpenByPane}
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
@@ -778,6 +806,7 @@ function App() {
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
                 onCloseForwards={closeForwards}
+                onCloseFiles={closeFiles}
                 onSlotRef={registerSlot}
                 onDropTab={attachTabToPane}
               />

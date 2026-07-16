@@ -7,3 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+russh-sftp = "2.3"
+tokio.workspace = true
+thiserror.workspace = true
+serde.workspace = true

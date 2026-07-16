@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { ConnectDialog } from './ConnectDialog'
 import { ForwardPanel } from './ForwardPanel'
+import { FilesPanel } from './FilesPanel'
 import type { PaneLeaf, PaneNode } from '../types'
 import type { ConnectionSource } from '../lib/connection'
 import type { SessionProfile } from '../lib/profiles'
@@ -12,6 +13,7 @@ interface Props {
   node: PaneNode
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
+  filesOpenByPane: Record<string, boolean>
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
   onFocusPane: (id: string) => void
@@ -25,6 +27,7 @@ interface Props {
   onSaveProfile: (profile: SessionProfile) => void
   onSaveCredential: (profileId: string, secret: VaultSecret) => void
   onCloseForwards: (paneId: string) => void
+  onCloseFiles: (paneId: string) => void
   onSlotRef: (paneId: string, el: HTMLDivElement | null) => void
   onDropTab: (targetPaneId: string, draggedTabId: string) => void
 }
@@ -62,6 +65,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     node,
     vaultUnlocked,
     forwardsOpenByPane,
+    filesOpenByPane,
     sessionIdByPane,
     sessions,
     onFocusPane,
@@ -75,6 +79,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onSaveProfile,
     onSaveCredential,
     onCloseForwards,
+    onCloseFiles,
     onSlotRef,
     onDropTab,
   } = props
@@ -155,6 +160,9 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
       )}
       {forwardsOpenByPane[node.id] && sessionId && (
         <ForwardPanel sessionId={sessionId} onClose={() => onCloseForwards(node.id)} />
+      )}
+      {filesOpenByPane[node.id] && sessionId && (
+        <FilesPanel sessionId={sessionId} onClose={() => onCloseFiles(node.id)} />
       )}
     </div>
   )

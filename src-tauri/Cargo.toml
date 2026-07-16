@@ -21,6 +21,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 wr-core = { path = "../crates/wr-core" }
 wr-ssh = { path = "../crates/wr-ssh" }
+wr-sftp = { path = "../crates/wr-sftp" }
 wr-vault = { path = "../crates/wr-vault" }
 wr-telnet = { path = "../crates/wr-telnet" }
 wr-serial = { path = "../crates/wr-serial" }
@@ -32,11 +33,14 @@ tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
 tokio.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
 zeroize = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+notify-debouncer-full = "0.3"
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 # Pinned to match whatever version wr-ssh's russh/pageant dependency

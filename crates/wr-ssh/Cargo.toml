@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 wr-core = { path = "../wr-core" }
+wr-sftp = { path = "../wr-sftp" }
 russh = "0.62"
 async-trait = "0.1"
 tokio.workspace = true

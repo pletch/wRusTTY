@@ -275,7 +275,11 @@ pub async fn ssh_resize(
 }
 
 #[tauri::command]
-pub async fn ssh_disconnect(session_id: String, state: State<'_, SshState>) -> Result<(), String> {
+pub async fn ssh_disconnect(
+    session_id: String,
+    state: State<'_, SshState>,
+    sftp_state: State<'_, crate::sftp::SftpState>,
+) -> Result<(), String> {
     let session = state.sessions.lock().await.remove(&session_id);
     if let Some(session) = session {
         session
@@ -299,6 +303,8 @@ pub async fn ssh_disconnect(session_id: String, state: State<'_, SshState>) -> R
             let _ = handle.stop().await;
         }
     }
+
+    crate::sftp::stop_watching_session(&sftp_state, &session_id).await;
 
     Ok(())
 }
@@ -351,7 +357,9 @@ pub async fn ssh_respond_host_key(
     Ok(())
 }
 
-async fn lookup(
+/// `pub(crate)` so the `sftp` module can look up the SSH session an SFTP
+/// operation piggybacks on, without exposing `SshState`'s session map itself.
+pub(crate) async fn lookup(
     state: &State<'_, SshState>,
     session_id: &str,
 ) -> Result<Arc<TokioMutex<SshSession>>, String> {
