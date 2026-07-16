@@ -43,7 +43,6 @@ fn verify_windows_hello_blocking(
     message: String,
 ) -> Result<(), String> {
     use windows::core::HSTRING;
-    use windows::Foundation::IAsyncOperation;
     use windows::Security::Credentials::UI::{
         UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
     };
@@ -68,14 +67,15 @@ fn verify_windows_hello_blocking(
     let class_id = HSTRING::from("Windows.Security.Credentials.UI.UserConsentVerifier");
     let interop: IUserConsentVerifierInterop =
         unsafe { RoGetActivationFactory(&class_id) }.map_err(|e| e.to_string())?;
-    // Explicitly typed rather than left to inference: the compiler can't
-    // pin down IAsyncOperation's result type from this call alone (it's
-    // only constrained by the `!= Verified` comparison several lines down,
-    // which turned out not to be close enough for it to work it out).
-    let op: IAsyncOperation<UserConsentVerificationResult> =
+    // Annotated on the final binding rather than left to inference or
+    // named directly on an intermediate — same shape as the
+    // CheckAvailabilityAsync call above, which resolves fine without ever
+    // needing to name IAsyncOperation (whose exact import path shouldn't
+    // matter to code that never spells it out).
+    let result: UserConsentVerificationResult =
         unsafe { interop.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(message)) }
+            .and_then(|op| op.get())
             .map_err(|e| e.to_string())?;
-    let result = op.get().map_err(|e| e.to_string())?;
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
             "Windows Hello verification didn't succeed ({result:?})"
