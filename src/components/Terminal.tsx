@@ -18,6 +18,8 @@ interface Props {
   label: string
   settings: TerminalSettings
   logging?: boolean
+  /** Whether this is the focused pane within its (possibly split) tab. */
+  active?: boolean
   onStatus?: (status: string) => void
   onSessionId?: (id: string | null) => void
 }
@@ -34,7 +36,15 @@ function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
 }
 
-export function Terminal({ source, label, settings, logging, onStatus, onSessionId }: Props) {
+export function Terminal({
+  source,
+  label,
+  settings,
+  logging,
+  active,
+  onStatus,
+  onSessionId,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const termRef = useRef<XTerm | null>(null)
@@ -66,6 +76,9 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
 
   const onSessionIdRef = useRef(onSessionId)
   onSessionIdRef.current = onSessionId
+
+  const activeRef = useRef(active)
+  activeRef.current = active
 
   // Theme updates apply live to the existing terminal instance instead of
   // tearing down and reconnecting the session.
@@ -230,6 +243,14 @@ export function Terminal({ source, label, settings, logging, onStatus, onSession
       // forces a fresh measurement and redraw against the current size.
       webglAddon?.clearTextureAtlas()
       term.refresh(0, term.rows - 1)
+      // This only reaches here on a real (non-zero) resize, which is
+      // exactly what happens when a hidden tab becomes visible again
+      // (App.tsx's refit() dispatches a resize event on tab switch) — so
+      // this doubles as "the tab holding this pane just became active."
+      // Guarded on `active` too so, in a split, switching tabs doesn't
+      // steal focus from a pane other than the one you'd last clicked
+      // into within it.
+      if (activeRef.current) term.focus()
     }
     window.addEventListener('resize', onResize)
 

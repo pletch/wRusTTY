@@ -404,6 +404,7 @@ function App() {
             >
               <Pane
                 node={tab.root}
+                activePaneId={tab.activePaneId}
                 settings={terminalSettings}
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 loggingByPane={loggingByPane}

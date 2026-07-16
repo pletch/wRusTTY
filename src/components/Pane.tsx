@@ -11,6 +11,7 @@ import type { TerminalSettings } from '../lib/settings'
 
 interface Props {
   node: PaneNode
+  activePaneId: string
   settings: TerminalSettings
   vaultUnlocked: boolean
   loggingByPane: Record<string, boolean>
@@ -56,6 +57,7 @@ export function Pane(props: Props) {
 function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   const {
     node,
+    activePaneId,
     settings,
     vaultUnlocked,
     loggingByPane,
@@ -71,6 +73,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   } = props
   const label = node.initial?.label ?? (node.source ? sourceLabel(node.source) : '')
   const sessionId = sessionIdByPane[node.id] ?? null
+  const active = node.id === activePaneId
 
   return (
     <div
@@ -85,6 +88,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
           label={label}
           settings={settings}
           logging={loggingByPane[node.id] ?? false}
+          active={active}
           onStatus={(s) => onStatus(node.id, s)}
           onSessionId={(id) => onSessionId(node.id, id)}
         />
