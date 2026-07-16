@@ -256,13 +256,7 @@ impl SshSession {
                 key_path,
                 passphrase,
             } => {
-                let expanded = expand_tilde(key_path);
-                if !expanded.exists() {
-                    return Err(SshError::KeyNotFound(key_path.clone()));
-                }
-                let key_content = std::fs::read_to_string(&expanded)?.replace("\r\n", "\n");
-                let key: PrivateKey = decode_secret_key(&key_content, passphrase.as_deref())
-                    .map_err(|e| SshError::KeyLoad(e.to_string()))?;
+                let key = load_private_key(key_path, passphrase.as_deref())?;
 
                 handle
                     .authenticate_publickey(
@@ -285,6 +279,35 @@ impl SshSession {
     }
 }
 
+/// PuTTY key files open with `PuTTY-User-Key-File-2:` or `-3:` — distinct
+/// enough from every OpenSSH/PEM header (`-----BEGIN ... PRIVATE KEY-----`
+/// or `ssh-...`) that a prefix check is all the dispatch needs.
+fn is_ppk(content: &str) -> bool {
+    content.trim_start().starts_with("PuTTY-User-Key-File-")
+}
+
+/// Loads a private key from disk, dispatching to PuTTY's `.ppk` decoder or
+/// OpenSSH/PEM's depending on the file's own header. PuTTY's format is
+/// structurally unrelated to OpenSSH/PEM (its own header, section layout,
+/// and — for v3 — Argon2id KDF), so it needs its own decoder rather than
+/// falling out of `decode_secret_key`. russh already pulls in `ssh-key`
+/// with the "ppk" feature enabled, so both v2 and v3, encrypted or not,
+/// are supported for free via `PrivateKey::from_ppk`. Pulled out of
+/// `authenticate` so it's unit-testable without a live connection.
+fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<PrivateKey, SshError> {
+    let expanded = expand_tilde(key_path);
+    if !expanded.exists() {
+        return Err(SshError::KeyNotFound(key_path.to_string()));
+    }
+    let key_content = std::fs::read_to_string(&expanded)?.replace("\r\n", "\n");
+    if is_ppk(&key_content) {
+        PrivateKey::from_ppk(&key_content, passphrase.map(str::to_string))
+            .map_err(|e| SshError::KeyLoad(e.to_string()))
+    } else {
+        decode_secret_key(&key_content, passphrase).map_err(|e| SshError::KeyLoad(e.to_string()))
+    }
+}
+
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         if let Some(home) = dirs::home_dir() {
@@ -292,4 +315,60 @@ fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod ppk_tests {
+    use super::*;
+
+    // Real PuTTY-generated key files, borrowed from ssh-key's own test
+    // suite (Apache-2.0/MIT) — these exercise the actual PuTTY-3 + Argon2id
+    // decode path, not just our own dispatch logic.
+    const ED25519_PLAIN: &str = include_str!("../tests/fixtures/id_ed25519.ppk");
+    const ED25519_ENCRYPTED: &str = include_str!("../tests/fixtures/id_ed25519_enc.ppk");
+
+    fn write_fixture(dir: &tempfile::TempDir, name: &str, content: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn detects_ppk_by_header() {
+        assert!(is_ppk(ED25519_PLAIN));
+        assert!(!is_ppk(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n"
+        ));
+    }
+
+    #[test]
+    fn loads_unencrypted_ppk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_fixture(&dir, "id_ed25519.ppk", ED25519_PLAIN);
+        load_private_key(path.to_str().unwrap(), None).unwrap();
+    }
+
+    #[test]
+    fn loads_encrypted_ppk_with_correct_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_fixture(&dir, "id_ed25519_enc.ppk", ED25519_ENCRYPTED);
+        load_private_key(path.to_str().unwrap(), Some("123")).unwrap();
+    }
+
+    #[test]
+    fn rejects_encrypted_ppk_with_wrong_passphrase() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_fixture(&dir, "id_ed25519_enc.ppk", ED25519_ENCRYPTED);
+        assert!(load_private_key(path.to_str().unwrap(), Some("wrong")).is_err());
+    }
+
+    #[test]
+    fn missing_key_file_reports_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.ppk");
+        match load_private_key(path.to_str().unwrap(), None) {
+            Err(SshError::KeyNotFound(_)) => {}
+            other => panic!("expected KeyNotFound, got {other:?}"),
+        }
+    }
 }
