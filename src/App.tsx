@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -40,6 +40,21 @@ import type { PaneLeaf, Tab } from './types'
 
 function newTabId() {
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+// A leaf connected via a saved profile carries a `sshProfile` source whose
+// only field is the profile's id — sourceLabel() for that variant returns
+// the raw (UUID-looking) id, since resolving it to the profile's actual
+// name requires the profile list, which isn't available down in lib/
+// connection.ts. leaf.initial.label is filled in with the real name at
+// connect time and is always the better title when present; every title
+// computation should go through this instead of calling sourceLabel(source)
+// directly, or a saved-profile pane's title regresses to its profile id
+// the moment anything (focus, split, pop-out, attach) recomputes it.
+function leafTitle(leaf: PaneLeaf, fallback: string): string {
+  if (leaf.initial?.label) return leaf.initial.label
+  if (leaf.source) return sourceLabel(leaf.source)
+  return fallback
 }
 
 function blankTab(): Tab {
@@ -103,20 +118,28 @@ function App() {
     })
   }, [])
 
-  // Splitting a pane or popping it to a new tab reparents PaneLeafView in
-  // the React tree (it switches position between a plain leaf and a child
-  // of a new PanelGroup), which unmounts and remounts it — detaching and
-  // reattaching this same leaf's slot ref, with no guarantee about how
-  // long the gap in between lasts (tried papering over it with a fixed
-  // delay before this; it wasn't reliably long enough on WebView2, where
-  // this reproduces — not seen at all on WebKitGTK). Rather than guess a
-  // duration, every connected leaf always has *some* portal target: its
-  // real pane slot if one's registered, or this permanent, hidden,
-  // off-tree div otherwise. connectedEntries below never has to render
-  // `null` for a connected leaf, so the live <Terminal> never unmounts no
-  // matter how long the real slot takes to reappear — it just sits
-  // harmlessly in the fallback (identical to a background tab: 0x0, so
-  // Terminal's own resize guard skips fitting) until its real slot shows up.
+  // React's own reconciler (updatePortal, in react-dom's createChildReconciler)
+  // discards and recreates a portal's entire subtree whenever the target
+  // container passed to createPortal differs from the previous render's —
+  // *even when the key is identical*. Splitting a pane or popping it to a
+  // new tab reparents PaneLeafView in the React tree (it switches position
+  // between a plain leaf and a child of a new PanelGroup), which unmounts
+  // and remounts it, producing a brand new slot div — so portaling directly
+  // into `slots[leaf.id]` (whatever it currently is) forces exactly this
+  // "different container" case, tearing down and reconnecting the live
+  // session, no matter how briefly the container changes. (Two earlier
+  // attempts assumed the cause was a timing gap where the slot went
+  // missing — a fixed delay, then a hidden fallback container — and both
+  // still hit this, since switching between real-slot and fallback is
+  // itself a container change.)
+  //
+  // The fix: never change what a leaf's portal targets. Each connected leaf
+  // gets exactly one permanent container div, created once and portaled
+  // into for its entire connected lifetime; a layout effect below physically
+  // relocates *that same div* (plain DOM appendChild, invisible to React)
+  // into whichever slot currently represents its position. The div's
+  // identity — and therefore React's containerInfo — never changes, so
+  // updatePortal always takes the "reuse" branch.
   const homeContainers = useRef<Record<string, HTMLDivElement>>({})
 
   function getHomeContainer(paneId: string): HTMLDivElement {
@@ -135,6 +158,36 @@ function App() {
     }
     return el
   }
+
+  // Runs after every commit (so after a slot div's own mount/unmount has
+  // already happened) and physically moves each connected leaf's permanent
+  // container into its current slot, or parks it invisibly off-tree if it
+  // doesn't have one at the moment — using useLayoutEffect rather than
+  // useEffect so the move happens before the browser paints, avoiding a
+  // visible flash of the pane looking empty.
+  useLayoutEffect(() => {
+    for (const paneId of Object.keys(homeContainers.current)) {
+      const home = homeContainers.current[paneId]
+      const slot = slots[paneId]
+      if (slot && home.parentElement !== slot) {
+        home.style.position = 'relative'
+        home.style.inset = ''
+        home.style.width = '100%'
+        home.style.height = '100%'
+        home.style.overflow = ''
+        home.style.pointerEvents = ''
+        slot.appendChild(home)
+      } else if (!slot && home.parentElement !== document.body) {
+        home.style.position = 'fixed'
+        home.style.inset = '0'
+        home.style.width = '0'
+        home.style.height = '0'
+        home.style.overflow = 'hidden'
+        home.style.pointerEvents = 'none'
+        document.body.appendChild(home)
+      }
+    }
+  })
 
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.
@@ -238,7 +291,8 @@ function App() {
       prev.map((t) => {
         if (t.id !== tabId) return t
         const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source }))
-        const title = paneId === t.activePaneId ? sourceLabel(source) : t.title
+        const leaf = allLeaves(root).find((l) => l.id === paneId)
+        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
         return { ...t, root, title }
       }),
     )
@@ -252,7 +306,7 @@ function App() {
         return {
           ...t,
           activePaneId: paneId,
-          title: leaf?.source ? sourceLabel(leaf.source) : t.title,
+          title: leaf ? leafTitle(leaf, t.title) : t.title,
         }
       }),
     )
@@ -307,7 +361,7 @@ function App() {
     const newActivePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
     const poppedTab: Tab = {
       id: newTabId(),
-      title: leaf.initial?.label ?? (leaf.source ? sourceLabel(leaf.source) : 'New Connection'),
+      title: leafTitle(leaf, 'New Connection'),
       root: leaf,
       activePaneId: leaf.id,
     }
@@ -316,7 +370,7 @@ function App() {
     // so it needs to follow whichever pane is left behind as active now,
     // the same way focusPane already does when switching panes normally.
     const remainingActiveLeaf = allLeaves(newRoot).find((l) => l.id === newActivePaneId)
-    const remainingTitle = remainingActiveLeaf?.source ? sourceLabel(remainingActiveLeaf.source) : tab.title
+    const remainingTitle = remainingActiveLeaf ? leafTitle(remainingActiveLeaf, tab.title) : tab.title
     setTabs((prev) => [
       ...prev.map((t) =>
         t.id === tabId ? { ...t, root: newRoot, activePaneId: newActivePaneId, title: remainingTitle } : t,
@@ -343,7 +397,7 @@ function App() {
       // connection if it landed on the tab's actual active pane, so an
       // attach into some other (non-focused) split pane doesn't rename a
       // tab that's still showing something else.
-      const title = targetPaneId === t.activePaneId ? sourceLabel(draggedLeaf.source!) : t.title
+      const title = targetPaneId === t.activePaneId ? leafTitle(draggedLeaf, t.title) : t.title
       return { ...t, root, title }
     })
     setTabs(next)
@@ -353,7 +407,7 @@ function App() {
       setActiveTabId(neighbor?.id ?? null)
     }
     refit()
-    toast.success(`Attached ${sourceLabel(draggedLeaf.source!)}`)
+    toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
   }
 
   async function openSavedSession(profile: SessionProfile) {
@@ -604,7 +658,9 @@ function App() {
           ))}
           {connectedEntries.map(({ tab, leaf }) => {
             if (!leaf.source) return null
-            const slot = slots[leaf.id] ?? getHomeContainer(leaf.id)
+            // Always the same element for this leaf's whole connected
+            // lifetime — see the useLayoutEffect above for why.
+            const slot = getHomeContainer(leaf.id)
             return createPortal(
               // React portals bubble events according to the *React* tree,
               // not the DOM tree — this content's React parent is wherever
@@ -626,7 +682,7 @@ function App() {
                 <Terminal
                   key={`${leaf.id}-${leaf.generation}`}
                   source={leaf.source}
-                  label={leaf.initial?.label ?? sourceLabel(leaf.source)}
+                  label={leafTitle(leaf, sourceLabel(leaf.source))}
                   settings={terminalSettings}
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}
