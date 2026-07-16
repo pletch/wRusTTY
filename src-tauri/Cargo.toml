@@ -39,13 +39,18 @@ zeroize = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [target.'cfg(windows)'.dependencies]
-# Pinned to match whatever version `tauri` itself depends on (currently
-# 0.61.x) rather than a newer one — WebviewWindow::hwnd() returns tauri's
-# own `windows::Win32::Foundation::HWND`, and passing it to a different
-# major/minor version of the same crate is a hard type mismatch even
-# though the type is structurally identical, since Cargo treats them as
-# wholly separate types unless they resolve to one shared dependency.
-windows = { version = "=0.61.3", features = [
+# Pinned to match whatever version wr-ssh's russh/pageant dependency
+# pulls in on Windows (currently 0.62.x) rather than tauri's own version —
+# without this, cargo resolves two separate copies of windows-core in the
+# dependency graph (one per windows major/minor line, since 0.x releases
+# aren't semver-compatible across minor bumps), and trait bounds like
+# `Interface` fail to satisfy across the two copies even for structurally
+# identical types. We never pass tauri's own HWND value directly into a
+# function expecting this crate's HWND type — WebviewWindow::hwnd() is
+# round-tripped through a plain isize first — so matching tauri's version
+# specifically isn't required, only matching whatever else is already in
+# the graph.
+windows = { version = "=0.62.2", features = [
   "Security_Credentials_UI",
   "Foundation",
   "Win32_System_Com",
