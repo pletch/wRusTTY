@@ -1,29 +1,24 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
-import { Terminal } from './Terminal'
 import { ConnectDialog } from './ConnectDialog'
 import { ForwardPanel } from './ForwardPanel'
 import type { PaneLeaf, PaneNode } from '../types'
 import type { ConnectionSource } from '../lib/connection'
-import { sourceLabel } from '../lib/connection'
 import type { SessionProfile } from '../lib/profiles'
 import type { VaultSecret } from '../lib/vault'
-import type { TerminalSettings } from '../lib/settings'
+import { DRAG_TAB_MIME } from '../lib/dragTypes'
 
 interface Props {
   node: PaneNode
-  activePaneId: string
-  settings: TerminalSettings
   vaultUnlocked: boolean
-  loggingByPane: Record<string, boolean>
   forwardsOpenByPane: Record<string, boolean>
   sessionIdByPane: Record<string, string | null>
   onFocusPane: (id: string) => void
   onConnect: (paneId: string, source: ConnectionSource) => void
   onSaveProfile: (profile: SessionProfile) => void
   onSaveCredential: (profileId: string, secret: VaultSecret) => void
-  onStatus: (paneId: string, status: string) => void
-  onSessionId: (paneId: string, id: string | null) => void
   onCloseForwards: (paneId: string) => void
+  onSlotRef: (paneId: string, el: HTMLDivElement | null) => void
+  onDropTab: (targetPaneId: string, draggedTabId: string) => void
 }
 
 /** Recursive dispatcher only — no hooks here, since a pane can flip between
@@ -57,23 +52,18 @@ export function Pane(props: Props) {
 function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   const {
     node,
-    activePaneId,
-    settings,
     vaultUnlocked,
-    loggingByPane,
     forwardsOpenByPane,
     sessionIdByPane,
     onFocusPane,
     onConnect,
     onSaveProfile,
     onSaveCredential,
-    onStatus,
-    onSessionId,
     onCloseForwards,
+    onSlotRef,
+    onDropTab,
   } = props
-  const label = node.initial?.label ?? (node.source ? sourceLabel(node.source) : '')
   const sessionId = sessionIdByPane[node.id] ?? null
-  const active = node.id === activePaneId
 
   return (
     <div
@@ -82,24 +72,33 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
       onMouseDown={() => onFocusPane(node.id)}
     >
       {node.source ? (
-        <Terminal
-          key={node.generation}
-          source={node.source}
-          label={label}
-          settings={settings}
-          logging={loggingByPane[node.id] ?? false}
-          active={active}
-          onStatus={(s) => onStatus(node.id, s)}
-          onSessionId={(id) => onSessionId(node.id, id)}
-        />
+        // The actual <Terminal> lives in a single flat pool rendered once at
+        // the App root (see App.tsx) and is portaled in here — not mounted
+        // directly in this tree — so that dragging a connection between
+        // tabs/panes moves data, not a React component. If this div were
+        // the terminal's real home, moving it between tabs (a totally
+        // separate React subtree per tab) would force an unmount/remount,
+        // tearing down the live session to move it.
+        <div ref={(el) => onSlotRef(node.id, el)} className="relative h-full w-full" />
       ) : (
-        <ConnectDialog
-          initial={node.initial}
-          vaultUnlocked={vaultUnlocked}
-          onConnect={(source) => onConnect(node.id, source)}
-          onSaveProfile={onSaveProfile}
-          onSaveCredential={onSaveCredential}
-        />
+        <div
+          className="h-full w-full"
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes(DRAG_TAB_MIME)) e.preventDefault()
+          }}
+          onDrop={(e) => {
+            const draggedTabId = e.dataTransfer.getData(DRAG_TAB_MIME)
+            if (draggedTabId) onDropTab(node.id, draggedTabId)
+          }}
+        >
+          <ConnectDialog
+            initial={node.initial}
+            vaultUnlocked={vaultUnlocked}
+            onConnect={(source) => onConnect(node.id, source)}
+            onSaveProfile={onSaveProfile}
+            onSaveCredential={onSaveCredential}
+          />
+        </div>
       )}
       {forwardsOpenByPane[node.id] && sessionId && (
         <ForwardPanel sessionId={sessionId} onClose={() => onCloseForwards(node.id)} />

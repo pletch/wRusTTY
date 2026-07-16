@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
+import { Terminal } from './components/Terminal'
 import { TabBar } from './components/TabBar'
 import { SessionManager } from './components/SessionManager'
 import { QuickConnectPalette } from './components/QuickConnectPalette'
@@ -14,6 +16,7 @@ import {
   SplitSquareVertical,
   ScrollText,
   ArrowLeftRight,
+  ExternalLink,
   X,
 } from 'lucide-react'
 import { toast } from './lib/toast'
@@ -24,8 +27,16 @@ import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
-import { allLeaves, blankLeaf, closeLeaf, firstLeaf, splitLeaf, updateLeaf } from './lib/paneTree'
-import type { Tab } from './types'
+import {
+  allLeaves,
+  blankLeaf,
+  closeLeaf,
+  findLeaf,
+  firstLeaf,
+  splitLeaf,
+  updateLeaf,
+} from './lib/paneTree'
+import type { PaneLeaf, Tab } from './types'
 
 function newTabId() {
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -55,6 +66,26 @@ function App() {
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [maximized, setMaximized] = useState(false)
+  // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
+  // by pane id, and portaled into whichever "slot" div currently represents
+  // its position (see Pane.tsx). Dragging a connection between tabs/splits
+  // only ever changes which slot its portal points at — the Terminal
+  // component itself, and the session/xterm instance it owns, never
+  // unmounts, so the live connection survives the move untouched.
+  const [slots, setSlots] = useState<Record<string, HTMLDivElement>>({})
+
+  function registerSlot(paneId: string, el: HTMLDivElement | null) {
+    setSlots((prev) => {
+      if (el) {
+        if (prev[paneId] === el) return prev
+        return { ...prev, [paneId]: el }
+      }
+      if (!(paneId in prev)) return prev
+      const next = { ...prev }
+      delete next[paneId]
+      return next
+    })
+  }
 
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.
@@ -215,6 +246,54 @@ function App() {
     refit()
   }
 
+  /** Extracts a pane out of its (split) tab into its own new tab. The leaf
+   * object — and the pooled Terminal/session it identifies — carries over
+   * untouched; only its tree position changes. */
+  function popPaneToNewTab(tabId: string, paneId: string) {
+    const tab = tabs.find((t) => t.id === tabId)
+    if (!tab) return
+    const leaf = findLeaf(tab.root, paneId)
+    const newRoot = closeLeaf(tab.root, paneId)
+    if (!leaf || !newRoot) return // only offered when the tab actually has a split
+    const newActivePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
+    const poppedTab: Tab = {
+      id: newTabId(),
+      title: leaf.initial?.label ?? (leaf.source ? sourceLabel(leaf.source) : 'New Connection'),
+      root: leaf,
+      activePaneId: leaf.id,
+    }
+    setTabs((prev) => [
+      ...prev.map((t) => (t.id === tabId ? { ...t, root: newRoot, activePaneId: newActivePaneId } : t)),
+      poppedTab,
+    ])
+    setActiveTabId(poppedTab.id)
+    refit()
+  }
+
+  /** Attaches a dragged tab's connection into an empty pane elsewhere,
+   * closing the tab it came from. Same principle as popPaneToNewTab: the
+   * leaf object moves, its id (and therefore its pooled Terminal) doesn't
+   * change, so the live session is untouched by the move. */
+  function attachTabToPane(targetPaneId: string, draggedTabId: string) {
+    const draggedTab = tabs.find((t) => t.id === draggedTabId)
+    if (!draggedTab || draggedTab.root.type !== 'leaf' || !draggedTab.root.source) return
+    const draggedLeaf: PaneLeaf = draggedTab.root
+    const withoutDragged = tabs.filter((t) => t.id !== draggedTabId)
+    const next = withoutDragged.map((t) =>
+      findLeaf(t.root, targetPaneId)
+        ? { ...t, root: updateLeaf(t.root, targetPaneId, () => draggedLeaf) }
+        : t,
+    )
+    setTabs(next)
+    if (activeTabId === draggedTabId) {
+      const idx = tabs.findIndex((t) => t.id === draggedTabId)
+      const neighbor = next[idx] ?? next[idx - 1] ?? null
+      setActiveTabId(neighbor?.id ?? null)
+    }
+    refit()
+    toast.success(`Attached ${sourceLabel(draggedLeaf.source!)}`)
+  }
+
   async function openSavedSession(profile: SessionProfile) {
     const leaf = blankLeaf()
 
@@ -310,6 +389,15 @@ function App() {
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
   const activeTabHasSplit = activeTab ? allLeaves(activeTab.root).length > 1 : false
 
+  // Flat list of every live (source-holding) pane across every tab — the
+  // pool that Terminal instances are portaled from. See the `slots` comment
+  // above for why this exists instead of rendering Terminal inline per tab.
+  const connectedEntries = tabs.flatMap((tab) =>
+    allLeaves(tab.root)
+      .filter((leaf) => leaf.source)
+      .map((leaf) => ({ tab, leaf })),
+  )
+
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden bg-[#16171d] ${
@@ -380,13 +468,22 @@ function App() {
               <SplitSquareVertical size={15} strokeWidth={2} />
             </button>
             {activeTabHasSplit && (
-              <button
-                className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-red-500/25 hover:text-white"
-                title="Close this pane"
-                onClick={() => activeTab && activePaneId && closePane(activeTab.id, activePaneId)}
-              >
-                <X size={15} strokeWidth={2} />
-              </button>
+              <>
+                <button
+                  className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
+                  title="Move this pane to a new tab"
+                  onClick={() => activeTab && activePaneId && popPaneToNewTab(activeTab.id, activePaneId)}
+                >
+                  <ExternalLink size={15} strokeWidth={2} />
+                </button>
+                <button
+                  className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-red-500/25 hover:text-white"
+                  title="Close this pane"
+                  onClick={() => activeTab && activePaneId && closePane(activeTab.id, activePaneId)}
+                >
+                  <X size={15} strokeWidth={2} />
+                </button>
+              </>
             )}
           </div>
         )}
@@ -417,18 +514,32 @@ function App() {
             >
               <Pane
                 node={tab.root}
-                activePaneId={tab.activePaneId}
-                settings={terminalSettings}
                 vaultUnlocked={vaultStatus === 'unlocked'}
-                loggingByPane={loggingByPane}
                 forwardsOpenByPane={forwardsOpenByPane}
                 sessionIdByPane={sessionIdByPane}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
                 onConnect={(paneId, config) => connectPane(tab.id, paneId, config)}
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
-                onStatus={(paneId, s) => {
-                  setStatusByPane((prev) => ({ ...prev, [paneId]: s }))
+                onCloseForwards={closeForwards}
+                onSlotRef={registerSlot}
+                onDropTab={attachTabToPane}
+              />
+            </div>
+          ))}
+          {connectedEntries.map(({ tab, leaf }) => {
+            const slot = slots[leaf.id]
+            if (!slot || !leaf.source) return null
+            return createPortal(
+              <Terminal
+                key={`${leaf.id}-${leaf.generation}`}
+                source={leaf.source}
+                label={leaf.initial?.label ?? sourceLabel(leaf.source)}
+                settings={terminalSettings}
+                logging={loggingByPane[leaf.id] ?? false}
+                active={leaf.id === tab.activePaneId}
+                onStatus={(s) => {
+                  setStatusByPane((prev) => ({ ...prev, [leaf.id]: s }))
                   // Surfaced even for background tabs — otherwise a failed
                   // connection in a tab you're not looking at is silent.
                   if (s.startsWith('failed')) toast.error(s.replace(/^failed: /, ''))
@@ -438,16 +549,15 @@ function App() {
                   // clean disconnect, not a failure, since the error should
                   // stay visible until the user dismisses it themselves.
                   if (s === 'disconnected') {
-                    setTimeout(() => closePane(tab.id, paneId), 800)
+                    setTimeout(() => closePane(tab.id, leaf.id), 800)
                   }
                 }}
-                onSessionId={(paneId, id) =>
-                  setSessionIdByPane((prev) => ({ ...prev, [paneId]: id }))
-                }
-                onCloseForwards={closeForwards}
-              />
-            </div>
-          ))}
+                onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
+              />,
+              slot,
+              leaf.id,
+            )
+          })}
         </main>
         {paletteOpen && (
           <QuickConnectPalette

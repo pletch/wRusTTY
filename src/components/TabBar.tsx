@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import type { Tab } from '../types'
 import { allLeaves } from '../lib/paneTree'
+import { DRAG_TAB_MIME } from '../lib/dragTypes'
 
 interface Props {
   tabs: Tab[]
@@ -86,6 +87,11 @@ export function TabBar({
               onDragStart={(e) => {
                 setDraggedId(tab.id)
                 e.dataTransfer.effectAllowed = 'move'
+                // Lets an empty pane elsewhere in the window (a totally
+                // separate drop target from the other tabs here) recognize
+                // this as "a tab being dragged," to attach its connection
+                // there — see DRAG_TAB_MIME.
+                e.dataTransfer.setData(DRAG_TAB_MIME, tab.id)
               }}
               onDragEnd={() => {
                 setDraggedId(null)
