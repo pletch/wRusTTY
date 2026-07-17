@@ -5,6 +5,11 @@ export interface TerminalSettings {
   rightClickPaste: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
+  /** Offers to reopen whatever tabs/panes were connected when the app was
+   * last closed. Off by default — it's a real behavior change (reconnecting
+   * live sessions on launch) with a security angle (may need to unlock the
+   * vault to do it), so it's opt-in rather than assumed. */
+  restoreSessionsOnLaunch: boolean
 }
 
 const STORAGE_KEY = 'wr-shell.terminal-settings'
@@ -13,6 +18,7 @@ const defaults: TerminalSettings = {
   copyOnSelect: true,
   rightClickPaste: true,
   themeName: 'wr-shell Dark',
+  restoreSessionsOnLaunch: false,
 }
 
 export function loadSettings(): TerminalSettings {

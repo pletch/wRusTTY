@@ -59,6 +59,22 @@ export function SettingsMenu({ settings, onChange }: Props) {
               </span>
             </span>
           </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-sky-400"
+              checked={settings.restoreSessionsOnLaunch}
+              onChange={(e) =>
+                onChange({ ...settings, restoreSessionsOnLaunch: e.target.checked })
+              }
+            />
+            <span className="text-white/80">
+              Restore sessions on launch
+              <span className="block text-white/40">
+                Offers to reopen open tabs next time you start wr-shell.
+              </span>
+            </span>
+          </label>
           <div className="mt-1 border-t border-white/10 px-1 pt-2.5">
             <label className="flex items-center justify-between gap-2 text-white/80">
               <span>Theme</span>

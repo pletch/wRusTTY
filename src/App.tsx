@@ -8,6 +8,7 @@ import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
 import { ToastHost } from './components/ToastHost'
 import { WindowControls } from './components/WindowControls'
+import { RestoreSessionsPrompt } from './components/RestoreSessionsPrompt'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import {
@@ -37,6 +38,8 @@ import {
   splitLeaf,
   updateLeaf,
 } from './lib/paneTree'
+import * as sessionSnapshot from './lib/sessionSnapshot'
+import type { SessionSnapshot } from './lib/sessionSnapshot'
 import type { PaneLeaf, Tab } from './types'
 
 function newTabId() {
@@ -100,6 +103,13 @@ function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  // A previous run's session snapshot, awaiting Restore/Discard — set once
+  // at startup (see the mount effect below) and cleared either way. Nothing
+  // writes a fresh snapshot until this is resolved, so an unanswered prompt
+  // can't have its own answer overwritten by the still-default blank tab
+  // underneath it.
+  const [pendingRestore, setPendingRestore] = useState<SessionSnapshot | null>(null)
+  const [restoreDecided, setRestoreDecided] = useState(false)
   // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
   // by pane id, and portaled into whichever "slot" div currently represents
   // its position (see Pane.tsx). Dragging a connection between tabs/splits
@@ -249,6 +259,66 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Runs once at startup, before anything has a chance to overwrite last
+  // run's snapshot: if the setting is on and a snapshot with at least one
+  // restorable session exists, hold off on deciding anything (leaves the
+  // default blank tab showing underneath the prompt) until the user answers
+  // it. Otherwise there's nothing to ask about — mark it decided immediately
+  // so the persist-on-change effect below is free to start writing.
+  useEffect(() => {
+    if (!terminalSettings.restoreSessionsOnLaunch) {
+      setRestoreDecided(true)
+      return
+    }
+    const snapshot = sessionSnapshot.loadSnapshot()
+    if (snapshot && sessionSnapshot.countSessions(snapshot.tabs) > 0) {
+      setPendingRestore(snapshot)
+    } else {
+      setRestoreDecided(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Keeps the on-disk snapshot current as tabs/panes change, rather than
+  // only writing it on a clean exit — a crash or force-quit shouldn't lose
+  // it either. Gated on restoreDecided so this can't fire (and overwrite
+  // the very snapshot being offered) before the startup prompt is answered.
+  useEffect(() => {
+    if (!restoreDecided) return
+    sessionSnapshot.saveSnapshot(tabs, activeTabId)
+  }, [tabs, activeTabId, restoreDecided])
+
+  function applyRestore(snapshot: SessionSnapshot) {
+    setTabs(snapshot.tabs)
+    setActiveTabId(snapshot.activeTabId)
+    setPendingRestore(null)
+    setRestoreDecided(true)
+  }
+
+  function discardRestore() {
+    sessionSnapshot.clearSnapshot()
+    setPendingRestore(null)
+    setRestoreDecided(true)
+  }
+
+  function restoreSessions() {
+    if (pendingRestore) applyRestore(pendingRestore)
+  }
+
+  async function unlockAndRestoreSessions(password: string) {
+    if (!pendingRestore) return
+    await vault.unlock(password)
+    refreshVaultStatus()
+    applyRestore(pendingRestore)
+  }
+
+  async function unlockWithOsAndRestoreSessions() {
+    if (!pendingRestore) return
+    await vault.unlockWithOs()
+    refreshVaultStatus()
+    applyRestore(pendingRestore)
+  }
 
   function newTab() {
     const tab = blankTab()
@@ -949,6 +1019,19 @@ function App() {
         )
       })()}
       <ToastHost />
+      {pendingRestore && (
+        <RestoreSessionsPrompt
+          count={sessionSnapshot.countSessions(pendingRestore.tabs)}
+          needsVaultUnlock={
+            sessionSnapshot.needsVaultUnlock(pendingRestore.tabs) && vaultStatus !== 'unlocked'
+          }
+          osUnlockAvailable={osUnlockAvailable}
+          onRestore={restoreSessions}
+          onUnlockAndRestore={unlockAndRestoreSessions}
+          onUnlockWithOsAndRestore={unlockWithOsAndRestoreSessions}
+          onDiscard={discardRestore}
+        />
+      )}
     </div>
   )
 }
