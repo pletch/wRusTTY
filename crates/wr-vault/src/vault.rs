@@ -394,4 +394,46 @@ mod tests {
         let vault = Vault::unlock(&path, "legacy pw").unwrap();
         assert!(!vault.has("anything"));
     }
+
+    /// `persist()` writes to a temp file and renames it over the target
+    /// (atomic on the same volume) rather than truncating in place — this
+    /// confirms that mechanism actually leaves no stray temp file behind,
+    /// not just that the vault round-trips (already covered elsewhere).
+    #[test]
+    fn persist_leaves_no_temp_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let mut vault = Vault::create(&path, "pw").unwrap();
+        vault
+            .set(
+                "session-1".to_string(),
+                VaultSecret::Password {
+                    password: "hunter2".to_string(),
+                },
+            )
+            .unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("vault.wrv")],
+            "no temp file should be left behind after persist()"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_vault_file_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        drop(Vault::create(&path, "pw").unwrap());
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }
