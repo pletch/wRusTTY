@@ -456,13 +456,25 @@ function App() {
   }
 
   // Shared by both "open in a new tab" (openSavedSession) and "load into
-  // this pane" (connectPaneFromProfile): resolves whether the vault already
-  // holds this profile's credential — if so, the manual connect form can be
-  // skipped entirely and the secret resolved on the Rust side, never sent to
-  // the frontend — plus the prefill data for the connect form either way.
+  // this pane" (connectPaneFromProfile): resolves whether we can skip the
+  // manual connect form and go straight to connecting, with the secret (if
+  // any) resolved on the Rust side, never sent to the frontend — plus the
+  // prefill data for the connect form either way.
+  //
+  // Password auth always needs a secret to connect at all, so it only goes
+  // direct when the vault actually has one saved. Public-key auth doesn't
+  // necessarily need one — an unencrypted key connects fine with no
+  // passphrase — and there's no way to know from here whether the key on
+  // disk is actually encrypted, so it always goes direct (once the vault is
+  // unlocked); if the key does turn out to need a passphrase that isn't
+  // saved, the connection just fails the same way a stale saved password
+  // would, which this app already treats as an acceptable outcome of
+  // auto-connecting rather than a reason to withhold it.
   async function resolveProfileSource(profile: SessionProfile) {
     const canConnectDirect =
-      vaultStatus === 'unlocked' && (await vault.hasCredential(profile.id).catch(() => false))
+      vaultStatus === 'unlocked' &&
+      (profile.authType === 'public_key' ||
+        (await vault.hasCredential(profile.id).catch(() => false)))
     const source: ConnectionSource | null = canConnectDirect
       ? { protocol: 'sshProfile', profileId: profile.id }
       : null
