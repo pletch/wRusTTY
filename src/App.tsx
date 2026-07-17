@@ -607,6 +607,22 @@ function App() {
       .catch((err) => toast.error(`Couldn't save session: ${err}`))
   }
 
+  function reorderSessions(draggedId: string, targetId: string) {
+    if (draggedId === targetId) return
+    setSessions((prev) => {
+      const from = prev.findIndex((s) => s.id === draggedId)
+      const to = prev.findIndex((s) => s.id === targetId)
+      if (from === -1 || to === -1) return prev
+      const next = [...prev]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      profiles
+        .reorderSessions(next.map((s) => s.id))
+        .catch((err) => toast.error(`Couldn't reorder sessions: ${err}`))
+      return next
+    })
+  }
+
   function saveCredential(profileId: string, secret: VaultSecret) {
     vault
       .setCredential(profileId, secret)
@@ -843,6 +859,7 @@ function App() {
                 onSaveCredential={saveCredential}
                 onImportKeyToVault={importKeyToVault}
                 onDeleteCredential={deleteCredentialFromVault}
+                onReorderSessions={reorderSessions}
                 onCloseForwards={closeForwards}
                 onCloseFiles={closeFiles}
                 onSlotRef={registerSlot}

@@ -13,6 +13,8 @@ import {
   Pencil,
   Trash2,
   Fingerprint,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
@@ -68,6 +70,28 @@ interface Props {
    * the unlock prompt above, same as VaultMenu's own locked-state view. */
   osUnlockAvailable?: boolean
   onUnlockWithOsAndSelectSession?: (profile: SessionProfile) => Promise<void>
+  /** Drags a session from one row onto another within the same folder
+   * group, reordering the saved-sessions list. */
+  onReorderSessions?: (draggedId: string, targetId: string) => void
+}
+
+const COLLAPSED_FOLDERS_KEY = 'wr-shell.collapsed-session-folders'
+
+function loadCollapsedFolders(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_FOLDERS_KEY)
+    return raw ? new Set(JSON.parse(raw)) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+function saveCollapsedFolders(folders: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_FOLDERS_KEY, JSON.stringify([...folders]))
+  } catch {
+    // Best-effort; a persistence failure shouldn't break folder collapsing.
+  }
 }
 
 // Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
@@ -101,6 +125,7 @@ export function ConnectDialog({
   onUnlockAndSelectSession,
   osUnlockAvailable,
   onUnlockWithOsAndSelectSession,
+  onReorderSessions,
 }: Props) {
   const [protocol, setProtocol] = useState<Protocol>('ssh')
 
@@ -125,6 +150,8 @@ export function ConnectDialog({
   )
   const [passphrase, setPassphrase] = useState('')
   const [label, setLabel] = useState(initial?.label ?? '')
+  const [folder, setFolder] = useState(initial?.folder ?? '')
+  const [isNewFolder, setIsNewFolder] = useState(false)
   // Defaults on whenever we're prefilled from a known profile (picked from
   // the sidebar, or via Edit) — connecting then naturally writes any
   // tweaks back to that same profile instead of leaving them stranded in
@@ -140,6 +167,9 @@ export function ConnectDialog({
   const [unlockPassword, setUnlockPassword] = useState('')
   const [unlockError, setUnlockError] = useState<string | null>(null)
   const [unlocking, setUnlocking] = useState(false)
+  const [collapsedFolders, setCollapsedFolders] = useState(loadCollapsedFolders)
+  const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!menu) return
@@ -193,6 +223,16 @@ export function ConnectDialog({
     }
   }
 
+  function toggleFolder(name: string) {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      saveCollapsedFolders(next)
+      return next
+    })
+  }
+
   function switchProtocol(next: Protocol) {
     setProtocol(next)
     if (next === 'telnet' && port === '22') setPort('23')
@@ -244,7 +284,7 @@ export function ConnectDialog({
         onSaveProfile({
           id: profileId,
           label: resolvedLabel,
-          folder: initial?.folder ?? null,
+          folder: folder.trim() || null,
           host,
           port: Number(port) || 22,
           username,
@@ -284,6 +324,10 @@ export function ConnectDialog({
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key)!.push(s)
   }
+
+  const existingFolders = [
+    ...new Set((sessions ?? []).map((s) => s.folder).filter((f): f is string => !!f)),
+  ].sort()
 
   if (pendingUnlock) {
     return (
@@ -365,37 +409,69 @@ export function ConnectDialog({
           // handful of saved sessions or a hundred never pushes the connect
           // form (which is what you actually came here to use) out of view.
           <div className="max-h-[32rem] w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
-            {[...groups.entries()].map(([folder, items]) => (
-              <div key={folder}>
-                <div className="flex items-center gap-1.5 px-3 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-white/60">
-                  <Folder size={10} />
-                  {folder}
-                </div>
-                {items.map((s) => (
-                  <div
-                    key={s.id}
-                    onClick={() => pickSession(s)}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      setMenu({ profile: s, x: e.clientX, y: e.clientY })
-                    }}
-                    className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
-                    title={`${s.username}@${s.host}:${s.port}`}
+            {[...groups.entries()].map(([folderName, items]) => {
+              const collapsed = collapsedFolders.has(folderName)
+              return (
+                <div key={folderName}>
+                  <button
+                    type="button"
+                    onClick={() => toggleFolder(folderName)}
+                    className="flex w-full items-center gap-1 px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-white/60 transition-colors duration-100 hover:text-white/90"
                   >
-                    <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-white/90">{s.label}</div>
-                      <div className="truncate text-white/40">
-                        {s.username}@{s.host}
+                    {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+                    <Folder size={10} />
+                    {folderName}
+                  </button>
+                  {!collapsed &&
+                    items.map((s) => (
+                      <div
+                        key={s.id}
+                        draggable
+                        onDragStart={() => setDraggedId(s.id)}
+                        onDragEnd={() => {
+                          setDraggedId(null)
+                          setDropTargetId(null)
+                        }}
+                        onDragOver={(e) => {
+                          if (!draggedId || draggedId === s.id) return
+                          const draggedProfile = sessions?.find((p) => p.id === draggedId)
+                          if ((draggedProfile?.folder ?? null) !== (s.folder ?? null)) return
+                          e.preventDefault()
+                          e.dataTransfer.dropEffect = 'move'
+                          setDropTargetId(s.id)
+                        }}
+                        onDragLeave={() => setDropTargetId((id) => (id === s.id ? null : id))}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          if (draggedId) onReorderSessions?.(draggedId, s.id)
+                          setDraggedId(null)
+                          setDropTargetId(null)
+                        }}
+                        onClick={() => pickSession(s)}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          setMenu({ profile: s, x: e.clientX, y: e.clientY })
+                        }}
+                        className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06] ${
+                          draggedId === s.id ? 'opacity-40' : ''
+                        } ${dropTargetId === s.id && draggedId !== s.id ? 'bg-sky-400/10' : ''}`}
+                        title={`${s.username}@${s.host}:${s.port}`}
+                      >
+                        <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-white/90">{s.label}</div>
+                          <div className="truncate text-white/40">
+                            {s.username}@{s.host}
+                          </div>
+                        </div>
+                        {s.hasCredential && (
+                          <Lock size={10} className="mt-0.5 shrink-0 text-white/25" />
+                        )}
                       </div>
-                    </div>
-                    {s.hasCredential && (
-                      <Lock size={10} className="mt-0.5 shrink-0 text-white/25" />
-                    )}
-                  </div>
-                ))}
-              </div>
-            ))}
+                    ))}
+                </div>
+              )
+            })}
           </div>
         )}
         <form onSubmit={submit} className="w-80 space-y-3 p-5">
@@ -541,6 +617,48 @@ export function ConnectDialog({
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
                   />
+                  {isNewFolder ? (
+                    <div className="flex gap-1.5">
+                      <input
+                        className={`${inputClass} w-full flex-1`}
+                        placeholder="new folder name"
+                        autoFocus
+                        value={folder}
+                        onChange={(e) => setFolder(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsNewFolder(false)
+                          setFolder(initial?.folder ?? '')
+                        }}
+                        className="shrink-0 rounded border border-white/10 bg-black/20 px-2 text-xs text-white/50 transition-colors duration-100 hover:text-white/90"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <select
+                      className={`${inputClass} w-full`}
+                      value={folder}
+                      onChange={(e) => {
+                        if (e.target.value === '__new__') {
+                          setIsNewFolder(true)
+                          setFolder('')
+                        } else {
+                          setFolder(e.target.value)
+                        }
+                      }}
+                    >
+                      <option value="">No folder</option>
+                      {existingFolders.map((f) => (
+                        <option key={f} value={f}>
+                          {f}
+                        </option>
+                      ))}
+                      <option value="__new__">+ New folder...</option>
+                    </select>
+                  )}
                   {onSaveCredential && (authType === 'Password' || keyStorage === 'path') && (
                     <label
                       className={`flex items-center gap-2 text-xs ${

@@ -28,6 +28,7 @@ interface Props {
   onSaveCredential: (profileId: string, secret: VaultSecret) => void
   onImportKeyToVault: (profileId: string, keyPath: string, passphrase: string | null) => void
   onDeleteCredential: (profileId: string) => void
+  onReorderSessions: (draggedId: string, targetId: string) => void
   onCloseForwards: (paneId: string) => void
   onCloseFiles: (paneId: string) => void
   onSlotRef: (paneId: string, el: HTMLDivElement | null) => void
@@ -82,6 +83,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onSaveCredential,
     onImportKeyToVault,
     onDeleteCredential,
+    onReorderSessions,
     onCloseForwards,
     onCloseFiles,
     onSlotRef,
@@ -161,6 +163,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             onSaveCredential={onSaveCredential}
             onImportKeyToVault={onImportKeyToVault}
             onDeleteCredential={onDeleteCredential}
+            onReorderSessions={onReorderSessions}
           />
         </div>
       )}

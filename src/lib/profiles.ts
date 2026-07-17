@@ -28,3 +28,9 @@ export function saveSession(profile: SessionProfile) {
 export function deleteSession(id: string) {
   return invoke<void>('delete_session', { id })
 }
+
+/** Persists a new display order — `orderedIds` must be the full list of
+ * session ids in their desired order. */
+export function reorderSessions(orderedIds: string[]) {
+  return invoke<void>('reorder_sessions', { orderedIds })
+}

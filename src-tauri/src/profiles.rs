@@ -112,3 +112,27 @@ pub async fn delete_session(
     profiles.retain(|p| p.id != id);
     write_profiles(&path, &profiles)
 }
+
+/// Persists a new display order for the saved-session list, given the full
+/// list of ids in their desired order (as sent by the frontend, which
+/// already has the complete, up-to-date list in memory). Any id not present
+/// — there shouldn't be one, but a stale/incomplete list is preferable to a
+/// dropped session — keeps its relative position at the end rather than
+/// being deleted.
+#[tauri::command]
+pub async fn reorder_sessions(
+    app: AppHandle,
+    ordered_ids: Vec<String>,
+    state: tauri::State<'_, ProfileState>,
+) -> Result<(), String> {
+    let _guard = state.lock.lock().await;
+    let path = profiles_path(&app)?;
+    let mut profiles = read_profiles(&path)?;
+    let position: std::collections::HashMap<&str, usize> = ordered_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.as_str(), i))
+        .collect();
+    profiles.sort_by_key(|p| position.get(p.id.as_str()).copied().unwrap_or(usize::MAX));
+    write_profiles(&path, &profiles)
+}

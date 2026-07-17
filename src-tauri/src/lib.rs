@@ -58,6 +58,7 @@ pub fn run() {
             profiles::list_sessions,
             profiles::save_session,
             profiles::delete_session,
+            profiles::reorder_sessions,
             vault::vault_status,
             vault::vault_create,
             vault::vault_unlock,
