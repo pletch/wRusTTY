@@ -1,0 +1,20 @@
+# cargo-audit config (crates.io ADVISORY DB). Every ignored advisory below
+# must have a comment explaining why — this list should only ever grow when
+# there's genuinely no better option, not as a way to silence noise.
+[advisories]
+ignore = [
+  # rsa (Marvin Attack timing side-channel). Pulled in transitively by
+  # russh/ssh-key for RSA key support — core to this app's SSH auth. The
+  # advisory itself states "No fixed upgrade is available", so there is no
+  # version bump that resolves this; revisit if/when upstream ships a fix.
+  "RUSTSEC-2023-0071",
+  # quick-xml (memory-exhaustion DoS / quadratic runtime on attacker XML).
+  # Reached only via tauri-plugin-clipboard-manager -> arboard ->
+  # wl-clipboard-rs -> wayland-* -> wayland-scanner, a *build-time*
+  # proc-macro that parses this app's own bundled, static Wayland protocol
+  # descriptor XML — never attacker-controlled input at runtime. No direct
+  # dependency edge exists for us to bump; a newer wayland-scanner release
+  # pulling in a fixed quick-xml would resolve this on its own.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
