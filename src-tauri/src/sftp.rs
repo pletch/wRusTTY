@@ -148,6 +148,14 @@ pub async fn sftp_edit_file(
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or("remote-file");
+    // `rsplit('/')` already rules out a forward slash, but a hostile or
+    // just differently-shaped server could still hand back `..` itself or
+    // a name containing a backslash (a path separator on Windows, where
+    // this temp file eventually gets opened) — either could escape the
+    // freshly created temp directory once joined onto it.
+    if basename == ".." || basename.contains('\\') {
+        return Err(format!("unsafe remote filename: {basename}"));
+    }
     let temp_dir = tempfile::Builder::new()
         .prefix(&format!("wr-shell-sftp-{session_id}-"))
         .tempdir()

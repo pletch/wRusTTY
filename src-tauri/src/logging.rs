@@ -54,6 +54,16 @@ pub async fn session_log_start(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}-{}.log", sanitize(&label), timestamp()));
     let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    // Session logs can contain anything typed or displayed in the
+    // terminal — restrict to the owner, same as the vault and known_hosts
+    // files. No-op on Windows, where the per-user %APPDATA% ACL already
+    // covers this.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
     state.files.lock().await.insert(session_id, file);
     Ok(path.to_string_lossy().into_owned())
 }
