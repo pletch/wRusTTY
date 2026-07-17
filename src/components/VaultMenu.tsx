@@ -168,14 +168,18 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   }
 
   const Icon = status === 'unlocked' ? Unlock : Lock
+  const iconColorClass =
+    status === 'unlocked'
+      ? 'text-emerald-400'
+      : status === 'locked'
+        ? 'text-red-400'
+        : 'text-white/50 hover:text-white/90'
 
   return (
     <div className="relative" data-vault-menu>
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
-          status === 'unlocked' ? 'text-emerald-400' : 'text-white/50 hover:text-white/90'
-        }`}
+        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${iconColorClass}`}
         title={`Vault: ${status}`}
       >
         <Icon size={15} strokeWidth={2} />
@@ -217,6 +221,9 @@ export function VaultMenu({ status, onStatusChange }: Props) {
 
           {status === 'locked' && (
             <form onSubmit={submitUnlock} className="space-y-2">
+              <p className="flex items-center gap-1.5 text-red-400/90">
+                <Lock size={13} /> Vault is locked
+              </p>
               {osUnlockOn && (
                 <>
                   <button
