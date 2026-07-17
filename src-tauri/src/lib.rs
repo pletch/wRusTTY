@@ -1,3 +1,4 @@
+mod coalesce;
 mod connection_status;
 mod logging;
 mod profiles;

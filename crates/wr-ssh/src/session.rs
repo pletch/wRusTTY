@@ -89,11 +89,10 @@ impl SshSession {
 impl Connection for SshSession {
     type Error = SshError;
 
-    async fn connect(
-        &mut self,
-        events: mpsc::UnboundedSender<ConnectionEvent>,
-    ) -> Result<(), SshError> {
-        let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Connecting));
+    async fn connect(&mut self, events: mpsc::Sender<ConnectionEvent>) -> Result<(), SshError> {
+        let _ = events
+            .send(ConnectionEvent::Status(ConnectionStatus::Connecting))
+            .await;
 
         let host = self.config.host.clone();
         let port = self.config.port;
@@ -102,12 +101,16 @@ impl Connection for SshSession {
 
         match &result {
             Ok(()) => {
-                let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Connected));
+                let _ = events
+                    .send(ConnectionEvent::Status(ConnectionStatus::Connected))
+                    .await;
             }
             Err(e) => {
-                let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Failed(
-                    e.to_string(),
-                )));
+                let _ = events
+                    .send(ConnectionEvent::Status(ConnectionStatus::Failed(
+                        e.to_string(),
+                    )))
+                    .await;
                 tracing::warn!(%host, port, error = %e, "ssh connect failed");
             }
         }
@@ -147,7 +150,7 @@ impl Connection for SshSession {
 impl SshSession {
     async fn connect_inner(
         &mut self,
-        events: &mpsc::UnboundedSender<ConnectionEvent>,
+        events: &mpsc::Sender<ConnectionEvent>,
     ) -> Result<(), SshError> {
         let ssh_config = client::Config {
             keepalive_interval: Some(KEEPALIVE_INTERVAL),
@@ -233,12 +236,12 @@ impl SshSession {
                     msg = channel.wait() => {
                         match msg {
                             Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                                if output_events.send(ConnectionEvent::Data(data.to_vec())).is_err() {
+                                if output_events.send(ConnectionEvent::Data(data.to_vec())).await.is_err() {
                                     break;
                                 }
                             }
                             Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                                let _ = output_events.send(ConnectionEvent::Status(ConnectionStatus::Disconnected));
+                                let _ = output_events.send(ConnectionEvent::Status(ConnectionStatus::Disconnected)).await;
                                 break;
                             }
                             _ => {}

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 use crate::events::ConnectionEvent;
 
@@ -11,14 +11,17 @@ use crate::events::ConnectionEvent;
 /// Output (bytes, status changes) is pushed through `events` rather than
 /// returned from `connect`, since a session keeps producing data for its
 /// whole lifetime, not just in response to a single call.
+///
+/// Bounded (not unbounded): a fast server and a slow webview would
+/// otherwise have no backpressure, letting memory balloon under a firehose.
+/// A bounded sender's `.send().await` blocks once the channel is full,
+/// which naturally slows how fast each transport drains its own read loop
+/// — for SSH that propagates back through the channel's own flow control.
 #[async_trait]
 pub trait Connection: Send {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    async fn connect(
-        &mut self,
-        events: UnboundedSender<ConnectionEvent>,
-    ) -> Result<(), Self::Error>;
+    async fn connect(&mut self, events: Sender<ConnectionEvent>) -> Result<(), Self::Error>;
 
     async fn write(&mut self, data: &[u8]) -> Result<(), Self::Error>;
 

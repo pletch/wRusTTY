@@ -8,8 +8,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -228,24 +226,19 @@ async fn start_connection(
     let cleanup_session_id = session_id.clone();
 
     tokio::spawn(async move {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConnectionEvent>();
+        let (tx, rx) = tokio::sync::mpsc::channel::<ConnectionEvent>(
+            crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
+        );
 
         let forward_channel = channel.clone();
-        let forward = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let msg = match event {
-                    ConnectionEvent::Data(bytes) => SshEvent::Data {
-                        bytes_base64: BASE64.encode(bytes),
-                    },
-                    ConnectionEvent::Status(status) => SshEvent::Status {
-                        status: status_label(&status),
-                    },
-                };
-                if forward_channel.send(msg).is_err() {
-                    break;
-                }
-            }
-        });
+        let forward = tokio::spawn(crate::coalesce::forward_coalesced(
+            rx,
+            forward_channel,
+            |bytes_base64| SshEvent::Data { bytes_base64 },
+            |status| SshEvent::Status {
+                status: status_label(status),
+            },
+        ));
 
         let connect_result = session.lock().await.connect(tx).await;
         if connect_result.is_err() {

@@ -51,20 +51,23 @@ impl SerialSession {
 impl Connection for SerialSession {
     type Error = SerialError;
 
-    async fn connect(
-        &mut self,
-        events: mpsc::UnboundedSender<ConnectionEvent>,
-    ) -> Result<(), SerialError> {
-        let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Connecting));
+    async fn connect(&mut self, events: mpsc::Sender<ConnectionEvent>) -> Result<(), SerialError> {
+        let _ = events
+            .send(ConnectionEvent::Status(ConnectionStatus::Connecting))
+            .await;
         let result = self.connect_inner(&events);
         match &result {
             Ok(()) => {
-                let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Connected));
+                let _ = events
+                    .send(ConnectionEvent::Status(ConnectionStatus::Connected))
+                    .await;
             }
             Err(e) => {
-                let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Failed(
-                    e.to_string(),
-                )));
+                let _ = events
+                    .send(ConnectionEvent::Status(ConnectionStatus::Failed(
+                        e.to_string(),
+                    )))
+                    .await;
                 tracing::warn!(port = %self.config.port_name, error = %e, "serial connect failed");
             }
         }
@@ -91,10 +94,7 @@ impl Connection for SerialSession {
 }
 
 impl SerialSession {
-    fn connect_inner(
-        &mut self,
-        events: &mpsc::UnboundedSender<ConnectionEvent>,
-    ) -> Result<(), SerialError> {
+    fn connect_inner(&mut self, events: &mpsc::Sender<ConnectionEvent>) -> Result<(), SerialError> {
         let builder = tokio_serial::new(self.config.port_name.clone(), self.config.baud_rate)
             .data_bits(self.config.data_bits.into())
             .parity(self.config.parity.into())
@@ -119,7 +119,11 @@ impl SerialSession {
                         match result {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
-                                if output_events.send(ConnectionEvent::Data(buf[..n].to_vec())).is_err() {
+                                if output_events
+                                    .send(ConnectionEvent::Data(buf[..n].to_vec()))
+                                    .await
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }
@@ -131,7 +135,12 @@ impl SerialSession {
                                 if stream.write_all(&bytes).await.is_err() {
                                     break;
                                 }
-                                if local_echo && output_events.send(ConnectionEvent::Data(bytes)).is_err() {
+                                if local_echo
+                                    && output_events
+                                        .send(ConnectionEvent::Data(bytes))
+                                        .await
+                                        .is_err()
+                                {
                                     break;
                                 }
                             }
@@ -150,7 +159,9 @@ impl SerialSession {
                     }
                 }
             }
-            let _ = output_events.send(ConnectionEvent::Status(ConnectionStatus::Disconnected));
+            let _ = output_events
+                .send(ConnectionEvent::Status(ConnectionStatus::Disconnected))
+                .await;
         });
 
         self.input_tx = Some(tx);

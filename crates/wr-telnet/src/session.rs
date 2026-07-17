@@ -34,20 +34,23 @@ impl TelnetSession {
 impl Connection for TelnetSession {
     type Error = TelnetError;
 
-    async fn connect(
-        &mut self,
-        events: mpsc::UnboundedSender<ConnectionEvent>,
-    ) -> Result<(), TelnetError> {
-        let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Connecting));
+    async fn connect(&mut self, events: mpsc::Sender<ConnectionEvent>) -> Result<(), TelnetError> {
+        let _ = events
+            .send(ConnectionEvent::Status(ConnectionStatus::Connecting))
+            .await;
         let result = self.connect_inner(&events).await;
         match &result {
             Ok(()) => {
-                let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Connected));
+                let _ = events
+                    .send(ConnectionEvent::Status(ConnectionStatus::Connected))
+                    .await;
             }
             Err(e) => {
-                let _ = events.send(ConnectionEvent::Status(ConnectionStatus::Failed(
-                    e.to_string(),
-                )));
+                let _ = events
+                    .send(ConnectionEvent::Status(ConnectionStatus::Failed(
+                        e.to_string(),
+                    )))
+                    .await;
                 tracing::warn!(host = %self.config.host, port = self.config.port, error = %e, "telnet connect failed");
             }
         }
@@ -80,7 +83,7 @@ impl Connection for TelnetSession {
 impl TelnetSession {
     async fn connect_inner(
         &mut self,
-        events: &mpsc::UnboundedSender<ConnectionEvent>,
+        events: &mpsc::Sender<ConnectionEvent>,
     ) -> Result<(), TelnetError> {
         let addr = (self.config.host.as_str(), self.config.port);
         let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
@@ -124,7 +127,10 @@ impl TelnetSession {
                 let out = parser.feed(&buf[..n]);
 
                 if !out.data.is_empty()
-                    && output_events.send(ConnectionEvent::Data(out.data)).is_err()
+                    && output_events
+                        .send(ConnectionEvent::Data(out.data))
+                        .await
+                        .is_err()
                 {
                     break;
                 }
@@ -145,7 +151,9 @@ impl TelnetSession {
                     }
                 }
             }
-            let _ = output_events.send(ConnectionEvent::Status(ConnectionStatus::Disconnected));
+            let _ = output_events
+                .send(ConnectionEvent::Status(ConnectionStatus::Disconnected))
+                .await;
         });
 
         self.input_tx = Some(input_tx);
