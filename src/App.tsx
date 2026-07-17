@@ -208,6 +208,22 @@ function App() {
     }
   })
 
+  // The window starts hidden (see tauri.conf.json) specifically so this can
+  // show it only once real content is actually painted — tauri-plugin-
+  // window-state restores saved size/position via an on_window_ready hook
+  // that fires after the window's already been created (and, if visible by
+  // default, already shown) at tauri.conf.json's plain 800x600 fallback, so
+  // a visible-by-default window flashes at the wrong size for a moment
+  // before snapping to its restored geometry. Waiting for this effect
+  // (which only runs after the browser has painted this component's first
+  // render) means the window only ever appears already correctly sized and
+  // already showing the real UI, not a flash of blank/wrong-sized chrome.
+  useEffect(() => {
+    getCurrentWindow()
+      .show()
+      .catch(() => {})
+  }, [])
+
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.
   useEffect(() => {
