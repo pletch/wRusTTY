@@ -9,11 +9,21 @@ use crate::error::VaultError;
 pub const SALT_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 
+/// Stronger than the argon2 crate's own `Params::default()` (19 MiB, t=2,
+/// p=1 — the RFC 9106 low-memory floor), which is a bit light for a desktop
+/// vault guarding private keys. New vaults use this; existing vaults keep
+/// whatever params they were created with (stored in the vault file itself
+/// — see `VaultFile::m_cost` etc. in `vault.rs`), so bumping these later
+/// never breaks anyone's ability to decrypt their existing vault.
+pub fn default_params() -> Params {
+    Params::new(65536, 3, 1, None).expect("hardcoded Argon2 params are valid")
+}
+
 /// Explicit Argon2id + version 0x13 rather than relying on the crate's
 /// unstated `Default` — this is the one place a silent algorithm change
 /// upstream would matter most.
-fn kdf() -> Argon2<'static> {
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::default())
+fn kdf(params: Params) -> Argon2<'static> {
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }
 
 pub fn random_salt() -> [u8; SALT_LEN] {
@@ -22,9 +32,13 @@ pub fn random_salt() -> [u8; SALT_LEN] {
     salt
 }
 
-pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], VaultError> {
+pub fn derive_key(
+    password: &str,
+    salt: &[u8],
+    params: Params,
+) -> Result<[u8; KEY_LEN], VaultError> {
     let mut key = [0u8; KEY_LEN];
-    kdf()
+    kdf(params)
         .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|e| VaultError::Kdf(e.to_string()))?;
     Ok(key)

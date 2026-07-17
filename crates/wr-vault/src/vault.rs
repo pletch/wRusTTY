@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use argon2::Params;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -35,12 +36,34 @@ fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+// Matches the `argon2` crate's own `Params::default()` exactly (verified
+// directly against its source) — the parameters every vault file predating
+// this change was actually created with. A vault file missing these fields
+// must keep deriving its key with these values, not whatever
+// `crypto::default_params()` happens to return today, or it becomes
+// permanently undecryptable the moment that default is next tuned.
+fn legacy_m_cost() -> u32 {
+    19 * 1024
+}
+fn legacy_t_cost() -> u32 {
+    2
+}
+fn legacy_p_cost() -> u32 {
+    1
+}
+
 #[derive(Serialize, Deserialize)]
 struct VaultFile {
     version: u32,
     salt: String,
     nonce: String,
     ciphertext: String,
+    #[serde(default = "legacy_m_cost")]
+    m_cost: u32,
+    #[serde(default = "legacy_t_cost")]
+    t_cost: u32,
+    #[serde(default = "legacy_p_cost")]
+    p_cost: u32,
 }
 
 /// An unlocked vault: decrypted entries live in memory only for as long as
@@ -52,6 +75,12 @@ pub struct Vault {
     /// write reuses it and generates a fresh nonce (required for AEAD
     /// safety; the salt is not sensitive and doesn't need to rotate).
     salt: [u8; crypto::SALT_LEN],
+    /// Whatever params this vault was actually created with — new vaults
+    /// get `crypto::default_params()`, existing ones keep whatever's
+    /// stored in their file (or the legacy defaults, if predating this
+    /// field). Persisted on every write so a future default change can
+    /// never make an existing vault undecryptable.
+    params: Params,
     key: [u8; 32],
     entries: HashMap<String, VaultSecret>,
 }
@@ -78,10 +107,12 @@ impl Vault {
         }
 
         let salt = crypto::random_salt();
-        let key = crypto::derive_key(master_password, &salt)?;
+        let params = crypto::default_params();
+        let key = crypto::derive_key(master_password, &salt, params.clone())?;
         let vault = Self {
             path,
             salt,
+            params,
             key,
             entries: HashMap::new(),
         };
@@ -90,9 +121,9 @@ impl Vault {
     }
 
     pub fn unlock(path: impl Into<PathBuf>, master_password: &str) -> Result<Self, VaultError> {
-        let (path, salt, nonce, ciphertext) = Self::read_file(path.into())?;
-        let key = crypto::derive_key(master_password, &salt)?;
-        Self::finish_unlock(path, salt, key, &nonce, &ciphertext)
+        let (path, salt, params, nonce, ciphertext) = Self::read_file(path.into())?;
+        let key = crypto::derive_key(master_password, &salt, params.clone())?;
+        Self::finish_unlock(path, salt, params, key, &nonce, &ciphertext)
     }
 
     /// Unlocks using the raw vault key directly instead of deriving one from
@@ -101,8 +132,8 @@ impl Vault {
     /// Windows Credential Manager — so unlocking this way skips Argon2
     /// entirely and is only as strong as that OS-level protection.
     pub fn unlock_with_key(path: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, VaultError> {
-        let (path, salt, nonce, ciphertext) = Self::read_file(path.into())?;
-        Self::finish_unlock(path, salt, key, &nonce, &ciphertext)
+        let (path, salt, params, nonce, ciphertext) = Self::read_file(path.into())?;
+        Self::finish_unlock(path, salt, params, key, &nonce, &ciphertext)
     }
 
     /// A copy of the raw encryption key, for wrapping by an OS-level secret
@@ -115,7 +146,7 @@ impl Vault {
     #[allow(clippy::type_complexity)]
     fn read_file(
         path: PathBuf,
-    ) -> Result<(PathBuf, [u8; crypto::SALT_LEN], Vec<u8>, Vec<u8>), VaultError> {
+    ) -> Result<(PathBuf, [u8; crypto::SALT_LEN], Params, Vec<u8>, Vec<u8>), VaultError> {
         let contents = std::fs::read_to_string(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 VaultError::NotFound
@@ -132,6 +163,8 @@ impl Vault {
         let salt: [u8; crypto::SALT_LEN] = salt_bytes
             .try_into()
             .map_err(|_| VaultError::Corrupt("salt has unexpected length".into()))?;
+        let params = Params::new(file.m_cost, file.t_cost, file.p_cost, None)
+            .map_err(|e| VaultError::Corrupt(format!("invalid stored KDF params: {e}")))?;
         let nonce = BASE64
             .decode(&file.nonce)
             .map_err(|e| VaultError::Corrupt(e.to_string()))?;
@@ -139,12 +172,13 @@ impl Vault {
             .decode(&file.ciphertext)
             .map_err(|e| VaultError::Corrupt(e.to_string()))?;
 
-        Ok((path, salt, nonce, ciphertext))
+        Ok((path, salt, params, nonce, ciphertext))
     }
 
     fn finish_unlock(
         path: PathBuf,
         salt: [u8; crypto::SALT_LEN],
+        params: Params,
         key: [u8; 32],
         nonce: &[u8],
         ciphertext: &[u8],
@@ -156,6 +190,7 @@ impl Vault {
         Ok(Self {
             path,
             salt,
+            params,
             key,
             entries,
         })
@@ -189,6 +224,9 @@ impl Vault {
             salt: BASE64.encode(self.salt),
             nonce: BASE64.encode(nonce),
             ciphertext: BASE64.encode(ciphertext),
+            m_cost: self.params.m_cost(),
+            t_cost: self.params.t_cost(),
+            p_cost: self.params.p_cost(),
         };
 
         let contents =
@@ -327,5 +365,33 @@ mod tests {
             Err(other) => panic!("expected NotFound, got {other:?}"),
             Ok(_) => panic!("expected NotFound, got Ok"),
         }
+    }
+
+    /// A vault file predating the m_cost/t_cost/p_cost fields must keep
+    /// unlocking with the exact params it was actually encrypted with
+    /// (`argon2`'s own old `Params::default()`) — not today's stronger
+    /// defaults — or every vault created before this change becomes
+    /// permanently undecryptable.
+    #[test]
+    fn legacy_vault_file_without_kdf_params_still_unlocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+
+        let salt = crypto::random_salt();
+        let legacy_params = Params::new(19 * 1024, 2, 1, None).unwrap();
+        let key = crypto::derive_key("legacy pw", &salt, legacy_params).unwrap();
+        let plaintext = serde_json::to_vec(&HashMap::<String, VaultSecret>::new()).unwrap();
+        let (nonce, ciphertext) = crypto::encrypt(&key, &plaintext).unwrap();
+
+        let old_format_json = serde_json::json!({
+            "version": 1,
+            "salt": BASE64.encode(salt),
+            "nonce": BASE64.encode(nonce),
+            "ciphertext": BASE64.encode(ciphertext),
+        });
+        std::fs::write(&path, old_format_json.to_string()).unwrap();
+
+        let vault = Vault::unlock(&path, "legacy pw").unwrap();
+        assert!(!vault.has("anything"));
     }
 }
