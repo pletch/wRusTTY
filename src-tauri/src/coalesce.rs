@@ -41,11 +41,16 @@ pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 /// relative to the data around it), then is forwarded immediately on
 /// `status_channel`, uncoalesced — status changes are rare and meaningful,
 /// not something to batch.
+///
+/// `log_data` sees every flushed chunk before it's sent to the webview —
+/// session-transcript logging hooks in here (see `logging.rs`) so logged
+/// bytes never have to round-trip back over IPC from the frontend.
 pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     mut rx: Receiver<ConnectionEvent>,
     status_channel: Channel<E>,
     data_channel: Channel<InvokeResponseBody>,
     make_status: impl Fn(&ConnectionStatus) -> E,
+    log_data: impl Fn(&[u8]) + Send,
 ) {
     let mut buf: Vec<u8> = Vec::new();
     let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
@@ -60,12 +65,14 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
                 match maybe_event {
                     Some(ConnectionEvent::Data(bytes)) => {
                         buf.extend_from_slice(&bytes);
-                        if buf.len() >= FLUSH_SIZE_THRESHOLD && !flush(&data_channel, &mut buf) {
+                        if buf.len() >= FLUSH_SIZE_THRESHOLD
+                            && !flush(&data_channel, &mut buf, &log_data)
+                        {
                             break;
                         }
                     }
                     Some(ConnectionEvent::Status(status)) => {
-                        if !flush(&data_channel, &mut buf) {
+                        if !flush(&data_channel, &mut buf, &log_data) {
                             break;
                         }
                         if status_channel.send(make_status(&status)).is_err() {
@@ -73,13 +80,13 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
                         }
                     }
                     None => {
-                        flush(&data_channel, &mut buf);
+                        flush(&data_channel, &mut buf, &log_data);
                         break;
                     }
                 }
             }
             _ = ticker.tick() => {
-                if !buf.is_empty() && !flush(&data_channel, &mut buf) {
+                if !buf.is_empty() && !flush(&data_channel, &mut buf, &log_data) {
                     break;
                 }
             }
@@ -89,11 +96,16 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
 
 /// Returns `false` if the channel is gone (send failed) — callers stop
 /// their loop in that case, same as the old one-message-per-event code did.
-fn flush(data_channel: &Channel<InvokeResponseBody>, buf: &mut Vec<u8>) -> bool {
+fn flush(
+    data_channel: &Channel<InvokeResponseBody>,
+    buf: &mut Vec<u8>,
+    log_data: &impl Fn(&[u8]),
+) -> bool {
     if buf.is_empty() {
         return true;
     }
     let bytes = std::mem::take(buf);
+    log_data(&bytes);
     data_channel.send(InvokeResponseBody::Raw(bytes)).is_ok()
 }
 
@@ -141,6 +153,7 @@ mod tests {
             |status| TestEvent::Status {
                 status: format!("{status:?}"),
             },
+            |_: &[u8]| {},
         ));
 
         tx.send(ConnectionEvent::Data(b"hello ".to_vec()))
@@ -172,6 +185,7 @@ mod tests {
             |status| TestEvent::Status {
                 status: format!("{status:?}"),
             },
+            |_: &[u8]| {},
         ));
 
         let big = vec![b'x'; FLUSH_SIZE_THRESHOLD];
@@ -215,6 +229,7 @@ mod tests {
             |status| TestEvent::Status {
                 status: format!("{status:?}"),
             },
+            |_: &[u8]| {},
         ));
 
         tx.send(ConnectionEvent::Data(b"before".to_vec()))

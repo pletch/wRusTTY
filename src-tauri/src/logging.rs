@@ -1,18 +1,36 @@
 //! Per-session transcript logging: raw PTY/serial/telnet bytes written to a
-//! timestamped file, mirroring PuTTY's "log all session output". A plain
-//! Rust command rather than exposing the fs plugin to the frontend, so
-//! logging follows the same "Rust owns file I/O" boundary as everything else.
+//! timestamped file, mirroring PuTTY's "log all session output". The bytes
+//! are written here, on the Rust side of the coalescer (see `coalesce.rs`),
+//! not round-tripped back from the webview — the frontend only toggles
+//! logging on/off. Besides skipping a whole IPC hop (as a JSON number
+//! array, no less) on the output hot path, this means the log stays
+//! complete even if the webview stalls or drops output.
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Default)]
 pub struct LoggingState {
-    files: TokioMutex<HashMap<String, std::fs::File>>,
+    // A std (not tokio) mutex: `write` is called from the coalescer's flush
+    // path, which is synchronous, and the critical section is one file
+    // write — nothing awaits while holding it.
+    files: Mutex<HashMap<String, std::fs::File>>,
+}
+
+/// Appends `bytes` to `session_id`'s log file, if logging is active for
+/// that session (silently a no-op otherwise). Called by the coalescer on
+/// every flush, so PTY output is logged exactly as it's sent to the UI.
+pub(crate) fn write(state: &LoggingState, session_id: &str, bytes: &[u8]) {
+    let mut files = state.files.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(file) = files.get_mut(session_id) {
+        if let Err(e) = file.write_all(bytes) {
+            log::warn!("session log write failed for {session_id}: {e}");
+        }
+    }
 }
 
 fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -64,21 +82,12 @@ pub async fn session_log_start(
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(|e| e.to_string())?;
     }
-    state.files.lock().await.insert(session_id, file);
+    state
+        .files
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(session_id, file);
     Ok(path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub async fn session_log_write(
-    session_id: String,
-    data: Vec<u8>,
-    state: State<'_, LoggingState>,
-) -> Result<(), String> {
-    let mut files = state.files.lock().await;
-    if let Some(file) = files.get_mut(&session_id) {
-        file.write_all(&data).map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -86,6 +95,10 @@ pub async fn session_log_stop(
     session_id: String,
     state: State<'_, LoggingState>,
 ) -> Result<(), String> {
-    state.files.lock().await.remove(&session_id);
+    state
+        .files
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&session_id);
     Ok(())
 }

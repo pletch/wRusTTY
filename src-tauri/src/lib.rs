@@ -74,7 +74,6 @@ pub fn run() {
             vault::vault_disable_os_unlock,
             vault::vault_unlock_with_os,
             logging::session_log_start,
-            logging::session_log_write,
             logging::session_log_stop,
         ])
         .setup(|app| {

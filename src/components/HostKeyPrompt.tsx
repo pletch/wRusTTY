@@ -5,10 +5,19 @@ interface Props {
   port: number
   fingerprint: string
   status: 'unknown' | 'changed'
+  /** For 'changed' only: the fingerprint previously on record. */
+  storedFingerprint: string | null
   onAnswer: (accept: boolean) => void
 }
 
-export function HostKeyPrompt({ host, port, fingerprint, status, onAnswer }: Props) {
+export function HostKeyPrompt({
+  host,
+  port,
+  fingerprint,
+  status,
+  storedFingerprint,
+  onAnswer,
+}: Props) {
   const isChanged = status === 'changed'
 
   return (
@@ -35,6 +44,18 @@ export function HostKeyPrompt({ host, port, fingerprint, status, onAnswer }: Pro
           {isChanged ? 'does not match the key on record' : "can't be established"}.
         </p>
 
+        {isChanged && storedFingerprint && (
+          <div className="space-y-1">
+            <p className="text-[11px] uppercase tracking-wide text-white/40">Key on record</p>
+            <p className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-white/60">
+              <KeyRound size={12} className="shrink-0 text-white/40" />
+              <span className="break-all line-through decoration-red-400/50">
+                {storedFingerprint}
+              </span>
+            </p>
+            <p className="text-[11px] uppercase tracking-wide text-white/40">Offered now</p>
+          </div>
+        )}
         <p className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-white/80">
           <KeyRound size={12} className="shrink-0 text-white/40" />
           <span className="break-all">{fingerprint}</span>

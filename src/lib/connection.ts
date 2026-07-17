@@ -18,6 +18,8 @@ export type ConnEvent =
       port: number
       fingerprint: string
       status: 'unknown' | 'changed'
+      /** For 'changed' only: the fingerprint previously on record. */
+      storedFingerprint: string | null
     }
 
 export function connect(

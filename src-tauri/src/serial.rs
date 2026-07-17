@@ -68,12 +68,21 @@ pub async fn serial_connect(
             crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
         );
 
+        let log_app = app.clone();
+        let log_session_id = cleanup_session_id.clone();
         let forward = tokio::spawn(crate::coalesce::forward_coalesced(
             rx,
             channel,
             data_channel,
             |status| SerialEvent::Status {
                 status: status_label(status),
+            },
+            move |bytes| {
+                crate::logging::write(
+                    &log_app.state::<crate::logging::LoggingState>(),
+                    &log_session_id,
+                    bytes,
+                )
             },
         ));
 

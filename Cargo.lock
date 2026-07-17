@@ -6997,6 +6997,7 @@ dependencies = [
  "tracing",
  "wr-core",
  "wr-sftp",
+ "zeroize",
 ]
 
 [[package]]

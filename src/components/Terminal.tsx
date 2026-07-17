@@ -31,6 +31,7 @@ interface PendingHostKey {
   port: number
   fingerprint: string
   status: 'unknown' | 'changed'
+  storedFingerprint: string | null
 }
 
 function countLines(text: string): number {
@@ -160,6 +161,7 @@ export function Terminal({
             port: event.port,
             fingerprint: event.fingerprint,
             status: event.status,
+            storedFingerprint: event.storedFingerprint,
           })
           break
       }
@@ -167,11 +169,12 @@ export function Terminal({
 
     // PTY output arrives on its own raw-bytes channel (see lib/connection.ts)
     // rather than as a base64 string on `onEvent` — no decode step needed.
+    // Session logging happens Rust-side before these bytes are even sent,
+    // so there's nothing to do here beyond rendering.
     const onData = (bytes: Uint8Array) => {
       if (disposed) return
       setConnecting(false)
       term.write(bytes)
-      if (loggingActive && sessionId) sessionLog.write(sessionId, bytes).catch(() => {})
     }
 
     // Readline/Readline-hex (serial only) buffer keystrokes locally and
@@ -417,6 +420,7 @@ export function Terminal({
           port={hostKeyPrompt.port}
           fingerprint={hostKeyPrompt.fingerprint}
           status={hostKeyPrompt.status}
+          storedFingerprint={hostKeyPrompt.storedFingerprint}
           onAnswer={(accept) => {
             conn.respondHostKey(hostKeyPrompt.requestId, accept)
             setHostKeyPrompt(null)

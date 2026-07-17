@@ -43,6 +43,13 @@ enum State {
     SubnegIac(u8),
 }
 
+/// The subnegotiations we actually consume (terminal-type SEND) are a few
+/// bytes; anything approaching this is a broken or hostile peer that opened
+/// `IAC SB` and never sent `IAC SE`, which would otherwise buffer the rest
+/// of the connection's bytes into memory forever. On overflow the
+/// subnegotiation is abandoned and parsing resumes as plain data.
+const MAX_SUBNEG_LEN: usize = 4096;
+
 /// Incremental parser: feed it arbitrary-sized chunks and it survives IAC
 /// sequences split across reads (TCP gives no framing guarantees).
 #[derive(Debug)]
@@ -111,6 +118,9 @@ impl Parser {
                 State::Subneg(option) => {
                     if byte == IAC {
                         self.state = State::SubnegIac(option);
+                    } else if self.subneg_buf.len() >= MAX_SUBNEG_LEN {
+                        self.subneg_buf.clear();
+                        self.state = State::Data;
                     } else {
                         self.subneg_buf.push(byte);
                     }
@@ -126,8 +136,13 @@ impl Parser {
                         self.state = State::Data;
                     }
                     IAC => {
-                        self.subneg_buf.push(IAC);
-                        self.state = State::Subneg(option);
+                        if self.subneg_buf.len() >= MAX_SUBNEG_LEN {
+                            self.subneg_buf.clear();
+                            self.state = State::Data;
+                        } else {
+                            self.subneg_buf.push(IAC);
+                            self.state = State::Subneg(option);
+                        }
                     }
                     _ => {
                         // Malformed (IAC followed by neither SE nor IAC
@@ -201,6 +216,28 @@ pub fn encode_terminal_type(term: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A peer that opens `IAC SB` and never closes it must not buffer the
+    /// rest of the connection into memory — the parser abandons the
+    /// subnegotiation at the cap and resumes treating bytes as data.
+    #[test]
+    fn unterminated_subnegotiation_is_capped_not_buffered_forever() {
+        let mut p = Parser::new();
+        let out = p.feed(&[IAC, SB, OPT_TERMINAL_TYPE]);
+        assert!(out.data.is_empty());
+
+        let flood = vec![b'x'; MAX_SUBNEG_LEN * 3];
+        let out = p.feed(&flood);
+        assert!(p.subneg_buf.len() <= MAX_SUBNEG_LEN);
+        // Everything past the cap resumes flowing as plain data (the byte
+        // that tripped the cap is discarded along with the abandoned
+        // subnegotiation, hence the extra -1).
+        assert_eq!(out.data.len(), flood.len() - MAX_SUBNEG_LEN - 1);
+
+        // And the parser is genuinely back to normal afterwards.
+        let out = p.feed(b"hello");
+        assert_eq!(out.data, b"hello");
+    }
 
     #[test]
     fn plain_data_passes_through() {

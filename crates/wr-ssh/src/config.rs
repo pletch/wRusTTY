@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use zeroize::ZeroizeOnDrop;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
@@ -24,7 +25,12 @@ impl Default for SshConfig {
 /// How to authenticate once the transport (and, for SSH, the host key) is
 /// trusted. Kept in `wr-ssh` rather than `wr-core` since telnet/serial have
 /// no equivalent concept.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `ZeroizeOnDrop` because these carry live secrets (passwords,
+/// passphrases, whole private keys) cloned out of the vault at connect
+/// time — the vault's own copies are zeroized on lock, and these
+/// short-lived copies shouldn't be the ones left lingering in freed heap.
+#[derive(Debug, Clone, Serialize, Deserialize, ZeroizeOnDrop)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
     Password {

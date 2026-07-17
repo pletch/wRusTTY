@@ -44,6 +44,9 @@ pub enum SshEvent {
         /// "unknown" (first connection) or "changed" (possible MITM or
         /// host reprovision) — the frontend must word these very differently.
         status: String,
+        /// For "changed" only: the fingerprint previously on record, so the
+        /// user can compare old vs. new instead of judging the new key blind.
+        stored_fingerprint: Option<String>,
     },
 }
 
@@ -74,10 +77,10 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
             .await
             .insert(request_id.clone(), tx);
 
-        let status = match prompt.status {
-            HostKeyStatus::Unknown => "unknown",
-            HostKeyStatus::Changed { .. } => "changed",
-            HostKeyStatus::Trusted => "unknown", // verify() is never called when already trusted
+        let (status, stored_fingerprint) = match prompt.status {
+            HostKeyStatus::Unknown => ("unknown", None),
+            HostKeyStatus::Changed { stored_fingerprint } => ("changed", Some(stored_fingerprint)),
+            HostKeyStatus::Trusted => ("unknown", None), // verify() is never called when already trusted
         };
 
         if self
@@ -88,6 +91,7 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
                 port: prompt.port,
                 fingerprint: prompt.fingerprint,
                 status: status.to_string(),
+                stored_fingerprint,
             })
             .is_err()
         {
@@ -231,12 +235,21 @@ async fn start_connection(
             crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
         );
 
+        let log_app = app.clone();
+        let log_session_id = cleanup_session_id.clone();
         let forward = tokio::spawn(crate::coalesce::forward_coalesced(
             rx,
             channel,
             data_channel,
             |status| SshEvent::Status {
                 status: status_label(status),
+            },
+            move |bytes| {
+                crate::logging::write(
+                    &log_app.state::<crate::logging::LoggingState>(),
+                    &log_session_id,
+                    bytes,
+                )
             },
         ));
 
