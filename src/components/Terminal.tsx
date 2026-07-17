@@ -424,6 +424,16 @@ export function Terminal({
           onAnswer={(accept) => {
             conn.respondHostKey(hostKeyPrompt.requestId, accept)
             setHostKeyPrompt(null)
+            // The initial auto-focus (in the connect().then() below) fires
+            // as soon as the session id comes back, which for a fresh host
+            // is *before* the SSH handshake actually finishes — host-key
+            // verification blocks inside connect() itself, not before it's
+            // called. Clicking Accept/Reject on this dialog's own button
+            // steals focus, and once the button unmounts the browser drops
+            // it to <body> with nothing left to reclaim it. Re-focus here,
+            // right as the dialog closes, so the terminal is left with
+            // focus regardless of which one of these two fired first.
+            termRef.current?.focus()
           }}
         />
       )}
