@@ -147,6 +147,12 @@ export function Terminal({
       if (disposed) return
       setConnecting(false)
       switch (event.type) {
+        case 'data': {
+          const bytes = conn.decodeBase64(event.bytesBase64)
+          term.write(bytes)
+          if (loggingActive && sessionId) sessionLog.write(sessionId, bytes).catch(() => {})
+          break
+        }
         case 'status':
           onStatusRef.current?.(event.status)
           if (event.status.startsWith('failed') || event.status === 'disconnected') {
@@ -163,15 +169,6 @@ export function Terminal({
           })
           break
       }
-    }
-
-    // PTY output arrives on its own raw-bytes channel (see lib/connection.ts)
-    // rather than as a base64 string on `onEvent` — no decode step needed.
-    const onData = (bytes: Uint8Array) => {
-      if (disposed) return
-      setConnecting(false)
-      term.write(bytes)
-      if (loggingActive && sessionId) sessionLog.write(sessionId, bytes).catch(() => {})
     }
 
     // Readline/Readline-hex (serial only) buffer keystrokes locally and
@@ -200,7 +197,7 @@ export function Terminal({
         : null
 
     conn
-      .connect(source, onEvent, onData)
+      .connect(source, onEvent)
       .then((id) => {
         if (disposed) {
           conn.disconnect(source, id).catch(() => {})

@@ -30,9 +30,11 @@ use crate::vault::VaultState;
     rename_all_fields = "camelCase"
 )]
 pub enum SshEvent {
-    // PTY output travels on its own raw-bytes Channel<InvokeResponseBody>
-    // instead (see coalesce.rs) — no base64/JSON overhead for what's
-    // already just bytes.
+    /// Base64-encoded PTY bytes — cheaper over IPC than a JSON number array
+    /// and, unlike UTF-8 lossy conversion, doesn't corrupt binary output.
+    Data {
+        bytes_base64: String,
+    },
     Status {
         status: String,
     },
@@ -125,10 +127,9 @@ pub async fn ssh_connect(
     app: AppHandle,
     config: SshConfig,
     channel: Channel<SshEvent>,
-    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, SshState>,
 ) -> Result<String, String> {
-    start_connection(app, config, channel, data_channel, &state).await
+    start_connection(app, config, channel, &state).await
 }
 
 /// Connects using a saved session profile's vault-stored credential,
@@ -139,7 +140,6 @@ pub async fn ssh_connect_profile(
     app: AppHandle,
     profile_id: String,
     channel: Channel<SshEvent>,
-    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, SshState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
@@ -151,7 +151,7 @@ pub async fn ssh_connect_profile(
         username: profile.username,
         auth,
     };
-    start_connection(app, config, channel, data_channel, &state).await
+    start_connection(app, config, channel, &state).await
 }
 
 async fn resolve_auth(
@@ -205,7 +205,6 @@ async fn start_connection(
     app: AppHandle,
     config: SshConfig,
     channel: Channel<SshEvent>,
-    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: &State<'_, SshState>,
 ) -> Result<String, String> {
     let session_id = state.next_session_id();
@@ -231,10 +230,11 @@ async fn start_connection(
             crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
         );
 
+        let forward_channel = channel.clone();
         let forward = tokio::spawn(crate::coalesce::forward_coalesced(
             rx,
-            channel,
-            data_channel,
+            forward_channel,
+            |bytes_base64| SshEvent::Data { bytes_base64 },
             |status| SshEvent::Status {
                 status: status_label(status),
             },

@@ -22,8 +22,7 @@ use crate::connection_status::status_label;
     rename_all_fields = "camelCase"
 )]
 pub enum SerialEvent {
-    // PTY output travels on its own raw-bytes Channel<InvokeResponseBody>
-    // instead (see coalesce.rs).
+    Data { bytes_base64: String },
     Status { status: String },
 }
 
@@ -49,7 +48,6 @@ pub async fn serial_connect(
     app: AppHandle,
     config: SerialConfig,
     channel: Channel<SerialEvent>,
-    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
     let session_id = state.next_session_id();
@@ -68,10 +66,11 @@ pub async fn serial_connect(
             crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
         );
 
+        let forward_channel = channel.clone();
         let forward = tokio::spawn(crate::coalesce::forward_coalesced(
             rx,
-            channel,
-            data_channel,
+            forward_channel,
+            |bytes_base64| SerialEvent::Data { bytes_base64 },
             |status| SerialEvent::Status {
                 status: status_label(status),
             },
