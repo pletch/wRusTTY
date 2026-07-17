@@ -51,11 +51,31 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
             targetPort: Number(targetPort) || 0,
           }
     try {
-      const id = await forward.addForward(sessionId, spec)
+      const id = await addForwardConfirmingIfNeeded(spec)
+      if (id === null) return
       setActive((prev) => [...prev, { id, spec }])
       toast.success(`Forwarding ${describe(spec)}`)
     } catch (err) {
       setError(String(err))
+    }
+  }
+
+  // A non-loopback bind host (0.0.0.0, a LAN IP, ...) exposes the forward
+  // beyond this machine — for a SOCKS5 dynamic forward that's an
+  // unauthenticated proxy onto whatever the SSH server can reach, so this
+  // asks first rather than silently standing one up.
+  async function addForwardConfirmingIfNeeded(spec: ForwardSpec): Promise<string | null> {
+    try {
+      return await forward.addForward(sessionId, spec)
+    } catch (err) {
+      if (String(err) !== forward.NON_LOOPBACK_BIND_ERROR) throw err
+      const ok = window.confirm(
+        `${spec.bindHost} isn't a loopback address — this exposes the forward to your network` +
+          (spec.type === 'dynamic' ? ' as an unauthenticated proxy' : '') +
+          '. Continue?',
+      )
+      if (!ok) return null
+      return await forward.addForward(sessionId, spec, true)
     }
   }
 

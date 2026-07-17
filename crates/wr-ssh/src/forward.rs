@@ -49,6 +49,31 @@ pub enum ForwardSpec {
     Dynamic { bind_host: String, bind_port: u16 },
 }
 
+impl ForwardSpec {
+    pub fn bind_host(&self) -> &str {
+        match self {
+            ForwardSpec::Local { bind_host, .. }
+            | ForwardSpec::Remote { bind_host, .. }
+            | ForwardSpec::Dynamic { bind_host, .. } => bind_host,
+        }
+    }
+}
+
+/// `Local`/`Dynamic` bind on this machine; `Remote` asks the SSH *server* to
+/// bind (the OpenSSH `GatewayPorts` case) — either way, a non-loopback bind
+/// host means something other than "just this machine" can reach the
+/// forward, and `Dynamic`'s SOCKS5 proxy offers no authentication at all.
+/// Anything that doesn't clearly parse as loopback is treated as
+/// non-loopback (fail closed), including plain hostnames.
+pub fn is_loopback_bind_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 pub struct ForwardHandle {
     accept_task: JoinHandle<()>,
     handle: Arc<Handle<ClientHandler>>,
@@ -346,5 +371,28 @@ pub(crate) async fn pipe(stream: TcpStream, channel: russh::Channel<russh::clien
     tokio::select! {
         _ = to_ssh => {}
         _ = to_tcp => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_ips_and_localhost_are_recognized() {
+        assert!(is_loopback_bind_host("127.0.0.1"));
+        assert!(is_loopback_bind_host("127.5.6.7"));
+        assert!(is_loopback_bind_host("::1"));
+        assert!(is_loopback_bind_host("localhost"));
+        assert!(is_loopback_bind_host("LOCALHOST"));
+    }
+
+    #[test]
+    fn non_loopback_and_unparseable_hosts_are_rejected() {
+        assert!(!is_loopback_bind_host("0.0.0.0"));
+        assert!(!is_loopback_bind_host("192.168.1.5"));
+        assert!(!is_loopback_bind_host("::"));
+        assert!(!is_loopback_bind_host("example.com"));
+        assert!(!is_loopback_bind_host(""));
     }
 }

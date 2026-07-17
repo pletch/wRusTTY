@@ -321,14 +321,26 @@ pub async fn ssh_disconnect(
     Ok(())
 }
 
+/// Non-loopback binds (`0.0.0.0`, a LAN IP, ...) expose the forward beyond
+/// this machine — for `Dynamic` that's an unauthenticated SOCKS5 proxy onto
+/// whatever the SSH server can reach. Recognized by the frontend to prompt
+/// for confirmation before retrying with `confirmed: true` — checked here
+/// too regardless, since this is the actual enforcement point, not just a
+/// UI speed bump.
+pub const NON_LOOPBACK_BIND_ERROR: &str = "non-loopback bind host requires confirmation";
+
 /// Starts a local, remote, or dynamic (SOCKS5) port forward on an active
 /// session. Returns a forward id used to stop it later.
 #[tauri::command]
 pub async fn ssh_add_forward(
     session_id: String,
     spec: ForwardSpec,
+    confirmed: bool,
     state: State<'_, SshState>,
 ) -> Result<String, String> {
+    if !confirmed && !wr_ssh::is_loopback_bind_host(spec.bind_host()) {
+        return Err(NON_LOOPBACK_BIND_ERROR.to_string());
+    }
     let session = lookup(&state, &session_id).await?;
     let forward = session
         .lock()

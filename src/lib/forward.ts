@@ -5,8 +5,12 @@ export type ForwardSpec =
   | { type: 'remote'; bindHost: string; bindPort: number; targetHost: string; targetPort: number }
   | { type: 'dynamic'; bindHost: string; bindPort: number }
 
-export function addForward(sessionId: string, spec: ForwardSpec) {
-  return invoke<string>('ssh_add_forward', { sessionId, spec })
+// Matches src-tauri/src/ssh.rs's NON_LOOPBACK_BIND_ERROR — recognized by
+// callers to prompt for confirmation before retrying with confirmed: true.
+export const NON_LOOPBACK_BIND_ERROR = 'non-loopback bind host requires confirmation'
+
+export function addForward(sessionId: string, spec: ForwardSpec, confirmed = false) {
+  return invoke<string>('ssh_add_forward', { sessionId, spec, confirmed })
 }
 
 export function removeForward(forwardId: string) {
