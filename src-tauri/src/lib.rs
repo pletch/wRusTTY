@@ -2,6 +2,7 @@ mod connection_status;
 mod logging;
 mod profiles;
 mod serial;
+mod session_lock;
 mod sftp;
 mod ssh;
 mod telnet;
@@ -83,6 +84,7 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            session_lock::register(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())
