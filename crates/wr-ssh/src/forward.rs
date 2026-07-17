@@ -7,9 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use russh::client::Handle;
-use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -334,44 +333,28 @@ async fn start_remote(
 }
 
 /// Bidirectionally copies bytes between a local TCP stream and an SSH
-/// `direct-tcpip`/`forwarded-tcpip` channel until either side closes.
+/// `direct-tcpip`/`forwarded-tcpip` channel until both sides are done.
 pub(crate) async fn pipe(stream: TcpStream, channel: russh::Channel<russh::client::Msg>) {
-    let (mut tcp_read, mut tcp_write) = tokio::io::split(stream);
-    let mut writer = channel.make_writer();
-    let mut channel = channel;
+    pipe_streams(stream, channel.into_stream()).await;
+}
 
-    let to_ssh = async {
-        let mut buf = [0u8; 8192];
-        loop {
-            match tcp_read.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if writer.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    };
-
-    let to_tcp = async {
-        loop {
-            match channel.wait().await {
-                Some(ChannelMsg::Data { data }) => {
-                    if tcp_write.write_all(&data).await.is_err() {
-                        break;
-                    }
-                }
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                _ => {}
-            }
-        }
-    };
-
-    tokio::select! {
-        _ = to_ssh => {}
-        _ = to_tcp => {}
-    }
+/// The actual copy, generic over both sides so it's directly unit-testable
+/// with two `tokio::io::duplex()` pairs (see the tests below) rather than
+/// needing a live TCP connection and SSH channel.
+///
+/// Previously hand-rolled as two racing futures under `tokio::select!`,
+/// which drops whichever direction was still running the instant the
+/// *other* one finished — e.g. the local TCP side reaching EOF while
+/// SSH-side data was still in flight, silently truncating it.
+/// `copy_bidirectional` shuts each direction's write half down
+/// independently on EOF and waits for both to finish, which is the correct
+/// half-close behavior.
+async fn pipe_streams<A, B>(mut a: A, mut b: B)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
 }
 
 #[cfg(test)]
@@ -394,5 +377,44 @@ mod tests {
         assert!(!is_loopback_bind_host("::"));
         assert!(!is_loopback_bind_host("example.com"));
         assert!(!is_loopback_bind_host(""));
+    }
+
+    /// The bug this guards against: the old implementation raced two
+    /// futures under `tokio::select!`, dropping whichever direction was
+    /// still running the instant the *other* one finished — so data sent
+    /// from one side, still in flight, could be silently lost if the other
+    /// side happened to reach EOF first. `copy_bidirectional` must instead
+    /// keep relaying a still-open direction until it's actually done.
+    #[tokio::test]
+    async fn half_close_does_not_truncate_in_flight_data() {
+        let (a1, a2) = tokio::io::duplex(1024);
+        let (b1, b2) = tokio::io::duplex(1024);
+
+        let handle = tokio::spawn(pipe_streams(a1, b1));
+
+        let (mut a2_read, a2_write) = tokio::io::split(a2);
+        let (_b2_read, mut b2_write) = tokio::io::split(b2);
+
+        // The "SSH side" sends a chunk toward the "TCP side" ...
+        b2_write.write_all(b"hello from ssh").await.unwrap();
+        // ... and, before it's necessarily been relayed yet, the "TCP
+        // side" reaches EOF by having its write half dropped (a duplex
+        // stream's read half sees EOF once its peer's write half closes)
+        // — the exact race the old select!-based code lost data to.
+        tokio::task::yield_now().await;
+        drop(a2_write);
+
+        let mut received = vec![0u8; b"hello from ssh".len()];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            a2_read.read_exact(&mut received),
+        )
+        .await
+        .expect("timed out waiting for in-flight data")
+        .unwrap();
+        assert_eq!(&received, b"hello from ssh");
+
+        drop(b2_write);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), handle).await;
     }
 }
