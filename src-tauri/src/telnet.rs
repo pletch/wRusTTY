@@ -21,7 +21,8 @@ use crate::connection_status::status_label;
     rename_all_fields = "camelCase"
 )]
 pub enum TelnetEvent {
-    Data { bytes_base64: String },
+    // PTY output travels on its own raw-bytes Channel<InvokeResponseBody>
+    // instead (see coalesce.rs).
     Status { status: String },
 }
 
@@ -42,6 +43,7 @@ pub async fn telnet_connect(
     app: AppHandle,
     config: TelnetConfig,
     channel: Channel<TelnetEvent>,
+    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, TelnetState>,
 ) -> Result<String, String> {
     let session_id = state.next_session_id();
@@ -60,11 +62,10 @@ pub async fn telnet_connect(
             crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
         );
 
-        let forward_channel = channel.clone();
         let forward = tokio::spawn(crate::coalesce::forward_coalesced(
             rx,
-            forward_channel,
-            |bytes_base64| TelnetEvent::Data { bytes_base64 },
+            channel,
+            data_channel,
             |status| TelnetEvent::Status {
                 status: status_label(status),
             },

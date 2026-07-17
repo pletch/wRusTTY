@@ -7,13 +7,19 @@
 //! the render side (`term.write`), so the win is entirely here, in the
 //! forwarder. Shared by the ssh/telnet/serial Tauri command layers, which
 //! otherwise differ only in their own `XxxEvent` type.
+//!
+//! `Data` chunks travel on their own `Channel<InvokeResponseBody>` as raw
+//! bytes (`InvokeResponseBody::Raw`) rather than base64-encoded JSON on the
+//! same channel as `Status`/`HostKeyPrompt` — base64 alone inflates a
+//! coalesced buffer by 33%, on top of the encode/decode cost, and none of
+//! that is needed for a payload that's already just bytes. `Status`/
+//! `HostKeyPrompt` stay on the original JSON channel, where serde typing is
+//! actually useful.
 
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use serde::Serialize;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::mpsc::Receiver;
 use wr_core::{ConnectionEvent, ConnectionStatus};
 
@@ -28,16 +34,17 @@ const FLUSH_SIZE_THRESHOLD: usize = 32 * 1024;
 pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 
 /// Drains `rx` until it closes, coalescing consecutive `Data` chunks and
-/// flushing (base64-encoding, then sending one `make_data(...)` message)
-/// whenever either the flush interval elapses or the buffered size crosses
-/// the threshold, whichever comes first. A `Status` event flushes whatever
-/// is pending first (to preserve ordering relative to the data around it),
-/// then is forwarded immediately, uncoalesced — status changes are rare and
-/// meaningful, not something to batch.
+/// flushing (sending one raw `InvokeResponseBody::Raw` message on
+/// `data_channel`) whenever either the flush interval elapses or the
+/// buffered size crosses the threshold, whichever comes first. A `Status`
+/// event flushes whatever data is pending first (to preserve ordering
+/// relative to the data around it), then is forwarded immediately on
+/// `status_channel`, uncoalesced — status changes are rare and meaningful,
+/// not something to batch.
 pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     mut rx: Receiver<ConnectionEvent>,
-    channel: Channel<E>,
-    make_data: impl Fn(String) -> E,
+    status_channel: Channel<E>,
+    data_channel: Channel<InvokeResponseBody>,
     make_status: impl Fn(&ConnectionStatus) -> E,
 ) {
     let mut buf: Vec<u8> = Vec::new();
@@ -53,26 +60,26 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
                 match maybe_event {
                     Some(ConnectionEvent::Data(bytes)) => {
                         buf.extend_from_slice(&bytes);
-                        if buf.len() >= FLUSH_SIZE_THRESHOLD && !flush(&channel, &mut buf, &make_data) {
+                        if buf.len() >= FLUSH_SIZE_THRESHOLD && !flush(&data_channel, &mut buf) {
                             break;
                         }
                     }
                     Some(ConnectionEvent::Status(status)) => {
-                        if !flush(&channel, &mut buf, &make_data) {
+                        if !flush(&data_channel, &mut buf) {
                             break;
                         }
-                        if channel.send(make_status(&status)).is_err() {
+                        if status_channel.send(make_status(&status)).is_err() {
                             break;
                         }
                     }
                     None => {
-                        flush(&channel, &mut buf, &make_data);
+                        flush(&data_channel, &mut buf);
                         break;
                     }
                 }
             }
             _ = ticker.tick() => {
-                if !buf.is_empty() && !flush(&channel, &mut buf, &make_data) {
+                if !buf.is_empty() && !flush(&data_channel, &mut buf) {
                     break;
                 }
             }
@@ -82,23 +89,18 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
 
 /// Returns `false` if the channel is gone (send failed) — callers stop
 /// their loop in that case, same as the old one-message-per-event code did.
-fn flush<E: Serialize + Clone>(
-    channel: &Channel<E>,
-    buf: &mut Vec<u8>,
-    make_data: &impl Fn(String) -> E,
-) -> bool {
+fn flush(data_channel: &Channel<InvokeResponseBody>, buf: &mut Vec<u8>) -> bool {
     if buf.is_empty() {
         return true;
     }
     let bytes = std::mem::take(buf);
-    channel.send(make_data(BASE64.encode(bytes))).is_ok()
+    data_channel.send(InvokeResponseBody::Raw(bytes)).is_ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use tauri::ipc::InvokeResponseBody;
 
     #[derive(Clone, Serialize)]
     #[serde(
@@ -107,23 +109,19 @@ mod tests {
         rename_all_fields = "camelCase"
     )]
     enum TestEvent {
-        Data { bytes_base64: String },
         Status { status: String },
     }
 
-    /// Records each message's decoded base64 payload (for `Data` messages)
-    /// as plain bytes, in send order — good enough to assert both "how many
-    /// separate sends happened" and "what ended up in each one".
+    /// Records each raw `Data` message's bytes, in send order — good enough
+    /// to assert both "how many separate sends happened" and "what ended up
+    /// in each one".
     #[allow(clippy::type_complexity)]
-    fn recording_channel() -> (Channel<TestEvent>, Arc<Mutex<Vec<Vec<u8>>>>) {
+    fn recording_data_channel() -> (Channel<InvokeResponseBody>, Arc<Mutex<Vec<Vec<u8>>>>) {
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let recorded = received.clone();
         let channel = Channel::new(move |body| {
-            if let InvokeResponseBody::Json(json) = body {
-                let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-                if let Some(b64) = value.get("bytesBase64").and_then(|v| v.as_str()) {
-                    recorded.lock().unwrap().push(BASE64.decode(b64).unwrap());
-                }
+            if let InvokeResponseBody::Raw(bytes) = body {
+                recorded.lock().unwrap().push(bytes);
             }
             Ok(())
         });
@@ -133,12 +131,13 @@ mod tests {
     #[tokio::test]
     async fn small_chunks_under_the_size_threshold_are_coalesced() {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let (channel, received) = recording_channel();
+        let status_channel = Channel::new(|_| Ok(()));
+        let (data_channel, received) = recording_data_channel();
 
         let handle = tokio::spawn(forward_coalesced(
             rx,
-            channel,
-            |bytes_base64| TestEvent::Data { bytes_base64 },
+            status_channel,
+            data_channel,
             |status| TestEvent::Status {
                 status: format!("{status:?}"),
             },
@@ -163,12 +162,13 @@ mod tests {
     #[tokio::test]
     async fn exceeding_the_size_threshold_flushes_immediately() {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let (channel, received) = recording_channel();
+        let status_channel = Channel::new(|_| Ok(()));
+        let (data_channel, received) = recording_data_channel();
 
         let handle = tokio::spawn(forward_coalesced(
             rx,
-            channel,
-            |bytes_base64| TestEvent::Data { bytes_base64 },
+            status_channel,
+            data_channel,
             |status| TestEvent::Status {
                 status: format!("{status:?}"),
             },
@@ -198,12 +198,20 @@ mod tests {
     #[tokio::test]
     async fn status_event_flushes_pending_data_first_preserving_order() {
         let (tx, rx) = tokio::sync::mpsc::channel(16);
-        let (channel, received) = recording_channel();
+        let status_received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let status_recorded = status_received.clone();
+        let status_channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(json) = body {
+                status_recorded.lock().unwrap().push(json);
+            }
+            Ok(())
+        });
+        let (data_channel, data_received) = recording_data_channel();
 
         let handle = tokio::spawn(forward_coalesced(
             rx,
-            channel,
-            |bytes_base64| TestEvent::Data { bytes_base64 },
+            status_channel,
+            data_channel,
             |status| TestEvent::Status {
                 status: format!("{status:?}"),
             },
@@ -218,8 +226,17 @@ mod tests {
         drop(tx);
         handle.await.unwrap();
 
-        let received = received.lock().unwrap();
-        assert_eq!(received.len(), 1, "the data chunk should have been flushed");
-        assert_eq!(received[0], b"before");
+        let data_received = data_received.lock().unwrap();
+        assert_eq!(
+            data_received.len(),
+            1,
+            "the data chunk should have been flushed"
+        );
+        assert_eq!(data_received[0], b"before");
+        assert_eq!(
+            status_received.lock().unwrap().len(),
+            1,
+            "the status event should still have been forwarded"
+        );
     }
 }
