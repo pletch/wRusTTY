@@ -56,7 +56,7 @@ unsafe extern "system" fn subclass_proc(
     _uidsubclass: usize,
     dwrefdata: usize,
 ) -> windows::Win32::Foundation::LRESULT {
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
     use windows::Win32::UI::Shell::DefSubclassProc;
     use windows::Win32::UI::WindowsAndMessaging::{
         WM_WTSSESSION_CHANGE, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
@@ -70,6 +70,12 @@ unsafe extern "system" fn subclass_proc(
             let app = unsafe { &*(dwrefdata as *const tauri::AppHandle) }.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = crate::vault::vault_lock(app.state::<crate::vault::VaultState>()).await;
+                // vault_lock only updates Rust-side state — nothing tells the
+                // frontend this happened on its own, since no command
+                // invocation triggered it. Without this, the vault menu keeps
+                // showing "unlocked" (and the lock button) until something
+                // else happens to re-fetch status.
+                let _ = app.emit("vault-locked", ());
             });
         }
     }

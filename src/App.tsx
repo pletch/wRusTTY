@@ -9,6 +9,7 @@ import { VaultMenu } from './components/VaultMenu'
 import { ToastHost } from './components/ToastHost'
 import { WindowControls } from './components/WindowControls'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { listen } from '@tauri-apps/api/event'
 import {
   TerminalSquare,
   SplitSquareHorizontal,
@@ -235,6 +236,18 @@ function App() {
 
   useEffect(() => {
     refreshVaultStatus()
+  }, [])
+
+  // The vault can also get locked from the Rust side with no frontend
+  // command in flight (Windows session-lock auto-lock) — without this, the
+  // vault menu would keep showing "unlocked" until something unrelated
+  // happened to trigger a refresh.
+  useEffect(() => {
+    const unlisten = listen('vault-locked', () => refreshVaultStatus())
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function newTab() {
