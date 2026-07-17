@@ -289,6 +289,19 @@ impl SshSession {
                     )
                     .await?
             }
+            AuthMethod::PublicKeyMaterial {
+                key_material,
+                passphrase,
+            } => {
+                let key = parse_private_key(key_material, passphrase.as_deref())?;
+
+                handle
+                    .authenticate_publickey(
+                        &self.config.username,
+                        PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256)),
+                    )
+                    .await?
+            }
             AuthMethod::KeyboardInteractive => {
                 // Wired up to a real prompt round-trip once the UI layer
                 // (task #10) can relay server prompts to the user.
@@ -324,15 +337,24 @@ fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<PrivateK
         return Err(SshError::KeyNotFound(key_path.to_string()));
     }
     let key_content = std::fs::read_to_string(&expanded)?.replace("\r\n", "\n");
-    if is_ppk(&key_content) {
-        PrivateKey::from_ppk(&key_content, passphrase.map(str::to_string))
+    parse_private_key(&key_content, passphrase)
+}
+
+/// Parses already-in-hand key content (from disk or from the vault),
+/// dispatching to PuTTY's `.ppk` decoder or OpenSSH/PEM's depending on the
+/// content's own header. Public so `src-tauri`'s vault-key-import command
+/// can validate a key (and its passphrase) before storing it, without this
+/// crate needing to know anything about the vault.
+pub fn parse_private_key(content: &str, passphrase: Option<&str>) -> Result<PrivateKey, SshError> {
+    if is_ppk(content) {
+        PrivateKey::from_ppk(content, passphrase.map(str::to_string))
             .map_err(|e| SshError::KeyLoad(e.to_string()))
     } else {
-        decode_secret_key(&key_content, passphrase).map_err(|e| SshError::KeyLoad(e.to_string()))
+        decode_secret_key(content, passphrase).map_err(|e| SshError::KeyLoad(e.to_string()))
     }
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
+pub fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);

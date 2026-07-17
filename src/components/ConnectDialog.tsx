@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { open } from '@tauri-apps/plugin-dialog'
 import {
   Terminal as TerminalIcon,
   Radio,
@@ -6,6 +7,7 @@ import {
   Save,
   Plug,
   Folder,
+  FolderOpen,
   Server,
   Lock,
   Pencil,
@@ -35,6 +37,13 @@ interface Props {
   onConnect: (source: ConnectionSource) => void
   onSaveProfile?: (profile: SessionProfile) => void
   onSaveCredential?: (profileId: string, secret: VaultSecret) => void
+  /** Reads a key file server-side and stores it whole in the vault, as an
+   * alternative to referencing a path — the plaintext key never comes
+   * through this form. */
+  onImportKeyToVault?: (profileId: string, keyPath: string, passphrase: string | null) => void
+  /** Clears a profile's vault entry — used when switching a vaulted-key
+   * session back to a plain on-disk path, so the old key doesn't linger. */
+  onDeleteCredential?: (profileId: string) => void
   vaultUnlocked?: boolean
   initial?: ConnectDialogInitial
   error?: string | null
@@ -80,6 +89,8 @@ export function ConnectDialog({
   onConnect,
   onSaveProfile,
   onSaveCredential,
+  onImportKeyToVault,
+  onDeleteCredential,
   vaultUnlocked,
   initial,
   error,
@@ -101,7 +112,17 @@ export function ConnectDialog({
     initial?.authType ?? 'Password',
   )
   const [password, setPassword] = useState('')
-  const [keyPath, setKeyPath] = useState(initial?.keyPath ?? '~/.ssh/id_ed25519')
+  // A public-key profile with no keyPath and an existing vault credential
+  // means the key itself already lives in the vault — the default path
+  // placeholder would be misleading there, so leave it blank instead.
+  const isInitiallyVaulted =
+    initial?.authType === 'PublicKey' && initial?.keyPath === undefined && !!initial?.hasCredential
+  const [keyPath, setKeyPath] = useState(
+    initial?.keyPath ?? (isInitiallyVaulted ? '' : '~/.ssh/id_ed25519'),
+  )
+  const [keyStorage, setKeyStorage] = useState<'path' | 'vault'>(
+    isInitiallyVaulted ? 'vault' : 'path',
+  )
   const [passphrase, setPassphrase] = useState('')
   const [label, setLabel] = useState(initial?.label ?? '')
   // Defaults on whenever we're prefilled from a known profile (picked from
@@ -152,6 +173,12 @@ export function ConnectDialog({
     }
   }
 
+  async function browseForKey() {
+    const picked = await open({ multiple: false })
+    if (!picked || Array.isArray(picked)) return
+    setKeyPath(picked)
+  }
+
   async function submitUnlockWithOs() {
     if (!pendingUnlock || !onUnlockWithOsAndSelectSession) return
     setUnlocking(true)
@@ -188,16 +215,32 @@ export function ConnectDialog({
         // the host is always present and is what the sidebar would show
         // as the subtitle anyway.
         const resolvedLabel = label.trim() || host
+        const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
         // A public key with no passphrase has no secret to store — nothing
         // actually gets saved to the vault in that case even with the
         // checkbox on, so hasCredential has to agree, or the sidebar would
         // offer to "unlock the vault" for a session that never put
-        // anything there.
+        // anything there. Vault-mode keys have their own hasCredential
+        // logic below instead, since the key itself is the stored secret.
         const willSaveCredential =
+          !usingVaultKey &&
           saveCredential &&
           Boolean(onSaveCredential) &&
           vaultUnlocked &&
           (authType === 'Password' || Boolean(passphrase))
+
+        if (usingVaultKey && keyPath && onImportKeyToVault) {
+          // The key and its own passphrase travel together as one vault
+          // secret, separate from the generic password/passphrase
+          // credential path above.
+          onImportKeyToVault(profileId, keyPath, passphrase || null)
+        } else if (!usingVaultKey && isInitiallyVaulted && onDeleteCredential) {
+          // Switched back to a plain on-disk path — the previously vaulted
+          // key is no longer referenced by anything, so don't leave it
+          // behind as an orphaned vault entry.
+          onDeleteCredential(profileId)
+        }
+
         onSaveProfile({
           id: profileId,
           label: resolvedLabel,
@@ -206,11 +249,13 @@ export function ConnectDialog({
           port: Number(port) || 22,
           username,
           authType: authType === 'Password' ? 'password' : 'public_key',
-          keyPath: authType === 'PublicKey' ? keyPath : null,
+          keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
           // Preserves a prior credential's flag across an unrelated edit —
           // there's no "forget stored credential" affordance yet, so saving
           // shouldn't silently lose track of one that already exists.
-          hasCredential: willSaveCredential || Boolean(initial?.hasCredential),
+          hasCredential: usingVaultKey
+            ? Boolean(keyPath) || isInitiallyVaulted
+            : willSaveCredential || Boolean(initial?.hasCredential),
         })
 
         if (willSaveCredential && onSaveCredential) {
@@ -436,12 +481,27 @@ export function ConnectDialog({
                     />
                   ) : (
                     <>
-                      <input
-                        className={`${inputClass} w-full`}
-                        placeholder="key path"
-                        value={keyPath}
-                        onChange={(e) => setKeyPath(e.target.value)}
-                      />
+                      <div className="flex gap-1.5">
+                        <input
+                          className={`${inputClass} w-full flex-1`}
+                          placeholder={
+                            keyStorage === 'vault' && isInitiallyVaulted && !keyPath
+                              ? 'browse to replace the vaulted key'
+                              : 'key path'
+                          }
+                          value={keyPath}
+                          onChange={(e) => setKeyPath(e.target.value)}
+                          required={saveProfile && keyStorage === 'vault' && !isInitiallyVaulted}
+                        />
+                        <button
+                          type="button"
+                          onClick={browseForKey}
+                          title="Browse for key file"
+                          className="flex shrink-0 items-center justify-center rounded border border-white/10 bg-black/20 px-2 text-white/50 transition-colors duration-100 hover:text-white/90"
+                        >
+                          <FolderOpen size={13} />
+                        </button>
+                      </div>
                       <input
                         className={`${inputClass} w-full`}
                         placeholder="passphrase (optional)"
@@ -449,6 +509,11 @@ export function ConnectDialog({
                         value={passphrase}
                         onChange={(e) => setPassphrase(e.target.value)}
                       />
+                      {keyStorage === 'vault' && isInitiallyVaulted && !keyPath && (
+                        <p className="text-xs text-white/40">
+                          Key is stored in the vault — browse above to replace it.
+                        </p>
+                      )}
                     </>
                   )}
                 </>
@@ -476,7 +541,7 @@ export function ConnectDialog({
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
                   />
-                  {onSaveCredential && (
+                  {onSaveCredential && (authType === 'Password' || keyStorage === 'path') && (
                     <label
                       className={`flex items-center gap-2 text-xs ${
                         vaultUnlocked ? 'text-white/70' : 'text-white/30'
@@ -493,6 +558,33 @@ export function ConnectDialog({
                         ? 'Also save credential to vault (next open skips this form)'
                         : 'Unlock the vault to also save the credential'}
                     </label>
+                  )}
+                  {authType === 'PublicKey' && onImportKeyToVault && (
+                    <div className="flex gap-3 text-xs text-white/70">
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="radio"
+                          className="accent-sky-400"
+                          checked={keyStorage === 'path'}
+                          onChange={() => setKeyStorage('path')}
+                        />
+                        Key file on disk
+                      </label>
+                      <label
+                        className={`flex items-center gap-1.5 ${
+                          vaultUnlocked ? '' : 'text-white/30'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          className="accent-sky-400"
+                          checked={keyStorage === 'vault'}
+                          disabled={!vaultUnlocked}
+                          onChange={() => setKeyStorage('vault')}
+                        />
+                        Store key in vault (portable)
+                      </label>
+                    </div>
                   )}
                 </>
               )}

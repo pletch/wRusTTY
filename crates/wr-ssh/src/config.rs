@@ -34,6 +34,14 @@ pub enum AuthMethod {
         key_path: String,
         passphrase: Option<String>,
     },
+    /// Same as `PublicKey` but the key itself is already in hand (loaded
+    /// from the vault) rather than needing to be read from disk — built
+    /// only on the Rust side (`resolve_auth`), never sent from or parsed on
+    /// the frontend.
+    PublicKeyMaterial {
+        key_material: String,
+        passphrase: Option<String>,
+    },
     /// PAM/2FA-style challenge-response auth. The actual prompt/response
     /// round-trip happens through `HostKeyVerifier`'s sibling in the
     /// session layer (Phase 1 follow-up); this variant just selects it.

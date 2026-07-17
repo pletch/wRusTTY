@@ -601,6 +601,17 @@ function App() {
       .catch((err) => toast.error(`Couldn't save credential: ${err}`))
   }
 
+  function importKeyToVault(profileId: string, keyPath: string, passphrase: string | null) {
+    vault
+      .importKey(profileId, keyPath, passphrase)
+      .then(() => toast.success('Key stored in vault'))
+      .catch((err) => toast.error(`Couldn't store key in vault: ${err}`))
+  }
+
+  function deleteCredentialFromVault(profileId: string) {
+    vault.deleteCredential(profileId).catch(() => {})
+  }
+
   function openPalette() {
     setPaletteOpen(true)
   }
@@ -817,6 +828,8 @@ function App() {
                 }
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
+                onImportKeyToVault={importKeyToVault}
+                onDeleteCredential={deleteCredentialFromVault}
                 onCloseForwards={closeForwards}
                 onCloseFiles={closeFiles}
                 onSlotRef={registerSlot}

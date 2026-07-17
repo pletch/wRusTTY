@@ -173,20 +173,32 @@ async fn resolve_auth(
                     .to_string(),
             ),
         },
-        "public_key" => {
-            let key_path = profile
-                .key_path
-                .clone()
-                .ok_or("session has no key path configured")?;
-            let passphrase = match vault.get(&profile.id) {
-                Some(VaultSecret::Passphrase { passphrase }) => Some(passphrase.clone()),
-                _ => None,
-            };
-            Ok(AuthMethod::PublicKey {
-                key_path,
-                passphrase,
-            })
-        }
+        "public_key" => match &profile.key_path {
+            Some(key_path) => {
+                let passphrase = match vault.get(&profile.id) {
+                    Some(VaultSecret::Passphrase { passphrase }) => Some(passphrase.clone()),
+                    _ => None,
+                };
+                Ok(AuthMethod::PublicKey {
+                    key_path: key_path.clone(),
+                    passphrase,
+                })
+            }
+            // No path means the key itself lives in the vault instead.
+            None => match vault.get(&profile.id) {
+                Some(VaultSecret::PrivateKey {
+                    key_material,
+                    passphrase,
+                }) => Ok(AuthMethod::PublicKeyMaterial {
+                    key_material: key_material.clone(),
+                    passphrase: passphrase.clone(),
+                }),
+                _ => Err(
+                    "session's key is stored in the vault, but none was found — re-import it by editing the session"
+                        .to_string(),
+                ),
+            },
+        },
         other => Err(format!("unknown auth type: {other}")),
     }
 }

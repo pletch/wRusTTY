@@ -5,6 +5,7 @@ export type VaultStatus = 'uninitialized' | 'locked' | 'unlocked'
 export type VaultSecret =
   | { type: 'Password'; password: string }
   | { type: 'Passphrase'; passphrase: string }
+  | { type: 'PrivateKey'; keyMaterial: string; passphrase: string | null }
 
 export function status() {
   return invoke<VaultStatus>('vault_status')
@@ -48,6 +49,12 @@ export function unlockWithOs() {
 
 export function setCredential(sessionId: string, secret: VaultSecret) {
   return invoke<void>('vault_set_credential', { sessionId, secret })
+}
+
+/** Reads and validates a key file server-side and vaults it whole — the
+ * plaintext key never crosses into this (webview) process at all. */
+export function importKey(profileId: string, keyPath: string, passphrase: string | null) {
+  return invoke<void>('vault_import_key', { profileId, keyPath, passphrase })
 }
 
 export function deleteCredential(sessionId: string) {

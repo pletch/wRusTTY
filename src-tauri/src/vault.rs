@@ -284,6 +284,42 @@ pub async fn vault_set_credential(
     vault.set(session_id, secret).map_err(|e| e.to_string())
 }
 
+/// Reads a key file from disk, validates it parses (and, if it's encrypted,
+/// that the passphrase actually decrypts it) before storing anything, and
+/// vaults the whole key — never round-tripping the plaintext key material
+/// back into the webview process.
+#[tauri::command]
+pub async fn vault_import_key(
+    profile_id: String,
+    key_path: String,
+    passphrase: Option<String>,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let expanded = wr_ssh::expand_tilde(&key_path);
+    let mut key_material = std::fs::read_to_string(&expanded)
+        .map_err(|_| format!("could not read key file: {key_path}"))?
+        .replace("\r\n", "\n");
+
+    if let Err(e) = wr_ssh::parse_private_key(&key_material, passphrase.as_deref()) {
+        key_material.zeroize();
+        return Err(e.to_string());
+    }
+
+    let mut guard = state.vault.lock().await;
+    let vault = guard.as_mut().ok_or("vault is locked")?;
+    let result = vault
+        .set(
+            profile_id,
+            VaultSecret::PrivateKey {
+                key_material: key_material.clone(),
+                passphrase,
+            },
+        )
+        .map_err(|e| e.to_string());
+    key_material.zeroize();
+    result
+}
+
 #[tauri::command]
 pub async fn vault_delete_credential(
     session_id: String,
