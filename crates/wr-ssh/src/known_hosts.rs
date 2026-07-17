@@ -6,10 +6,33 @@
 //! OpenSSH uses.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::PublicKey;
+
+/// Writes `contents` to `path` via a temp file in the same directory (so
+/// the final rename is atomic on the same volume) plus an fsync before the
+/// rename — a crash or power loss mid-write can otherwise leave a
+/// truncated/empty known_hosts file, silently resetting the host-key trust
+/// anchor and reopening a MITM window on the next connect. Also sets
+/// owner-only permissions on Unix.
+fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(contents)?;
+    tmp.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    tmp.persist(path)?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostKeyStatus {
@@ -84,9 +107,6 @@ impl KnownHostsStore {
     }
 
     fn persist(&self) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let mut contents = String::new();
         let mut ids: Vec<&String> = self.entries.keys().collect();
         ids.sort();
@@ -96,7 +116,7 @@ impl KnownHostsStore {
             contents.push_str(&self.entries[id]);
             contents.push('\n');
         }
-        std::fs::write(&self.path, contents)
+        atomic_write(&self.path, contents.as_bytes())
     }
 
     pub fn path(&self) -> &Path {

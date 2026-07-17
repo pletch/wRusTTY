@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -10,6 +11,29 @@ use crate::error::VaultError;
 use crate::secret::VaultSecret;
 
 const FORMAT_VERSION: u32 = 1;
+
+/// Writes `contents` to `path` via a temp file in the same directory
+/// (so the final rename is atomic on the same volume) plus an fsync before
+/// the rename — a crash or power loss mid-write can otherwise leave a
+/// truncated or empty vault file, silently destroying every stored
+/// credential. Also sets owner-only permissions on Unix (the file holds
+/// every saved credential); on Windows the per-user %APPDATA% ACL already
+/// covers this.
+fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(contents)?;
+    tmp.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    tmp.persist(path)?;
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize)]
 struct VaultFile {
@@ -167,12 +191,9 @@ impl Vault {
             ciphertext: BASE64.encode(ciphertext),
         };
 
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let contents =
             serde_json::to_string_pretty(&file).map_err(|e| VaultError::Corrupt(e.to_string()))?;
-        std::fs::write(&self.path, contents)?;
+        atomic_write(&self.path, contents.as_bytes())?;
         Ok(())
     }
 }
