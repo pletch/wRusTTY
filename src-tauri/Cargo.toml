@@ -41,6 +41,7 @@ zeroize = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 notify-debouncer-full = "0.3"
 tempfile = "3"
+tauri-plugin-window-state = "2.4.1"
 
 [target.'cfg(windows)'.dependencies]
 # Pinned to match whatever version wr-ssh's russh/pageant dependency

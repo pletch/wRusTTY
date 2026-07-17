@@ -25,6 +25,11 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Persists window size/position/maximized-state to disk on close and
+        // restores it on the next launch — registered before the window
+        // itself is built (from tauri.conf.json, as part of .run() below),
+        // which is what lets it apply saved state to the very first window.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(ssh::SshState::default())
         .manage(telnet::TelnetState::default())
         .manage(serial::SerialState::default())
