@@ -9,7 +9,7 @@ import {
   Cable,
   TerminalSquare,
 } from 'lucide-react'
-import type { Tab } from '../types'
+import type { PaneNode, Tab } from '../types'
 import { allLeaves } from '../lib/paneTree'
 import { DRAG_TAB_MIME } from '../lib/dragTypes'
 
@@ -30,6 +30,44 @@ const protocolIcons = {
   sshProfile: TerminalIcon,
   telnet: Radio,
   serial: Cable,
+}
+
+/** Mirrors a tab's actual pane tree as nested flex rows/columns (row for a
+ * horizontal split, column for a vertical one), sized by each split's real
+ * `sizes` — so a stacked split renders as stacked segments here too,
+ * instead of every split flattening into left-right slices regardless of
+ * its real direction. `activePaneId` of `null` means this tab itself isn't
+ * focused: every leaf renders the same dim tone rather than highlighting
+ * one, since there's no meaningful "focused pane" to call out from outside
+ * the tab that's actually showing it. */
+function PaneIndicator({
+  node,
+  activePaneId,
+}: {
+  node: PaneNode
+  activePaneId: string | null
+}) {
+  if (node.type === 'leaf') {
+    const focused = activePaneId === node.id
+    return <span className={`block h-full w-full ${focused ? 'bg-sky-400' : 'bg-sky-400/30'}`} />
+  }
+  return (
+    <span
+      className={`flex h-full w-full gap-px ${
+        node.direction === 'horizontal' ? 'flex-row' : 'flex-col'
+      }`}
+    >
+      {node.children.map((child, i) => (
+        <span
+          key={child.id}
+          style={{ flexBasis: `${node.sizes[i]}%`, flexGrow: 0, flexShrink: 0 }}
+          className="min-h-0 min-w-0"
+        >
+          <PaneIndicator node={child} activePaneId={activePaneId} />
+        </span>
+      ))}
+    </span>
+  )
 }
 
 function statusDotColor(status: string | undefined): string | null {
@@ -72,7 +110,8 @@ export function TabBar({
       <div className="flex min-w-0 shrink items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
-          const leaf = allLeaves(tab.root).find((l) => l.id === tab.activePaneId)
+          const leaves = allLeaves(tab.root)
+          const leaf = leaves.find((l) => l.id === tab.activePaneId)
           const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null
           return (
@@ -118,7 +157,17 @@ export function TabBar({
                 dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''
               }`}
             >
-              {active && <span className="absolute inset-x-0 top-0 h-[2px] bg-sky-400" />}
+              {/* A single-pane tab only shows this bar when it's the active
+                  tab — plain and full-bright, same as before. A split tab
+                  always shows it (even unfocused), dimmed, purely to signal
+                  "this tab has multiple panes" at a glance; the active
+                  tab's own split additionally highlights whichever pane has
+                  keyboard focus. */}
+              {(active || leaves.length > 1) && (
+                <span className="absolute inset-x-0 top-0 h-[3px]">
+                  <PaneIndicator node={tab.root} activePaneId={active ? tab.activePaneId : null} />
+                </span>
+              )}
               {dropTargetId === tab.id && draggedId !== tab.id && (
                 <span className="absolute inset-y-0 left-0 w-0.5 bg-sky-400" />
               )}
