@@ -10,7 +10,7 @@ import {
   TerminalSquare,
 } from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
-import { allLeaves } from '../lib/paneTree'
+import { allLeaves, hasVerticalSplit } from '../lib/paneTree'
 import { DRAG_TAB_MIME } from '../lib/dragTypes'
 
 interface Props {
@@ -51,17 +51,21 @@ function PaneIndicator({
     const focused = activePaneId === node.id
     return <span className={`block h-full w-full ${focused ? 'bg-sky-400' : 'bg-sky-400/30'}`} />
   }
+  const horizontal = node.direction === 'horizontal'
   return (
-    <span
-      className={`flex h-full w-full gap-px ${
-        node.direction === 'horizontal' ? 'flex-row' : 'flex-col'
-      }`}
-    >
+    <span className={`flex h-full w-full gap-[2px] ${horizontal ? 'flex-row' : 'flex-col'}`}>
       {node.children.map((child, i) => (
         <span
           key={child.id}
           style={{ flexBasis: `${node.sizes[i]}%`, flexGrow: 0, flexShrink: 0 }}
-          className="min-h-0 min-w-0"
+          // Explicit rather than relying on flexbox's default cross-axis
+          // stretch — the parent's main axis (flexBasis, above) sets this
+          // segment's *proportional* dimension, but its other one still
+          // needs telling to actually fill 100% of the shared cross-axis,
+          // or two segments meant to look identically sized on that axis
+          // (e.g. two stacked rows, both meant to span the same width) can
+          // end up very slightly, but visibly, mismatched at this scale.
+          className={`min-h-0 min-w-0 ${horizontal ? 'h-full' : 'w-full'}`}
         >
           <PaneIndicator node={child} activePaneId={activePaneId} />
         </span>
@@ -111,6 +115,7 @@ export function TabBar({
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           const leaves = allLeaves(tab.root)
+          const tall = hasVerticalSplit(tab.root)
           const leaf = leaves.find((l) => l.id === tab.activePaneId)
           const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null
@@ -164,7 +169,7 @@ export function TabBar({
                   tab's own split additionally highlights whichever pane has
                   keyboard focus. */}
               {(active || leaves.length > 1) && (
-                <span className="absolute inset-x-0 top-0 h-[3px]">
+                <span className={`absolute inset-x-0 top-0 ${tall ? 'h-[5px]' : 'h-[2px]'}`}>
                   <PaneIndicator node={tab.root} activePaneId={active ? tab.activePaneId : null} />
                 </span>
               )}

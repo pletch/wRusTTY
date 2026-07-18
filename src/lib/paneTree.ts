@@ -27,6 +27,17 @@ export function allLeaves(node: PaneNode): PaneLeaf[] {
   return [...allLeaves(node.children[0]), ...allLeaves(node.children[1])]
 }
 
+/** Whether `node` contains a vertical (stacked top/bottom) split anywhere,
+ * at any depth — a purely horizontal (side-by-side) arrangement, however
+ * many panes wide, doesn't need any more room than a single pane does to
+ * render clearly; only a stacked split actually needs the extra height to
+ * show two rows distinctly. Used to grow a tab's indicator bar only when
+ * that's actually true, rather than for every split. */
+export function hasVerticalSplit(node: PaneNode): boolean {
+  if (node.type === 'leaf') return false
+  return node.direction === 'vertical' || node.children.some(hasVerticalSplit)
+}
+
 /** Returns a new tree with `id`'s leaf replaced via `update`. */
 export function updateLeaf(
   node: PaneNode,

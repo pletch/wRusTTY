@@ -243,6 +243,16 @@ export function ConnectDialog({
     e.preventDefault()
 
     if (protocol === 'ssh') {
+      const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
+      // Leaving the key-path field blank while "Store key in vault" is
+      // selected means "keep using whatever's already vaulted" — not "this
+      // session no longer has a key." Connecting should then go through
+      // the saved profile (which resolves the credential from the vault,
+      // server-side) rather than building a manual AuthMethod::PublicKey
+      // with an empty path, which can only ever fail to find a key that
+      // was never on disk to begin with.
+      const relyOnExistingVaultedKey = usingVaultKey && isInitiallyVaulted && !keyPath.trim()
+
       const auth: AuthMethod =
         authType === 'Password'
           ? { type: 'Password', password }
@@ -255,7 +265,6 @@ export function ConnectDialog({
         // the host is always present and is what the sidebar would show
         // as the subtitle anyway.
         const resolvedLabel = label.trim() || host
-        const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
         // A public key with no passphrase has no secret to store — nothing
         // actually gets saved to the vault in that case even with the
         // checkbox on, so hasCredential has to agree, or the sidebar would
@@ -307,10 +316,14 @@ export function ConnectDialog({
         }
       }
 
-      onConnect({
-        protocol: 'ssh',
-        config: { host, port: Number(port) || 22, username, auth },
-      })
+      if (relyOnExistingVaultedKey && initial?.id) {
+        onConnect({ protocol: 'sshProfile', profileId: initial.id })
+      } else {
+        onConnect({
+          protocol: 'ssh',
+          config: { host, port: Number(port) || 22, username, auth },
+        })
+      }
     } else if (protocol === 'telnet') {
       onConnect({ protocol: 'telnet', config: { host, port: Number(port) || 23 } })
     } else {
