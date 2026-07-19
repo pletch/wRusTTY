@@ -31,6 +31,7 @@ import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
 import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
+import { DRAG_PANE_MIME } from './lib/dragTypes'
 import {
   allLeaves,
   blankLeaf,
@@ -87,6 +88,7 @@ function refit() {
 function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
+  const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
   const [statusByPane, setStatusByPane] = useState<Record<string, string>>({})
   const [loggingByPane, setLoggingByPane] = useState<Record<string, boolean>>({})
   const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
@@ -861,8 +863,31 @@ function App() {
         />
         <div
           data-tauri-drag-region
-          className="min-w-0 flex-1"
+          className={`min-w-0 flex-1 transition-colors duration-100 ${
+            paneDragOverSpacer ? 'bg-sky-400/10' : ''
+          }`}
           onDoubleClick={() => getCurrentWindow().toggleMaximize()}
+          // The rest of what visually reads as "the tab bar" — everything
+          // to the right of the last real tab/the "+" button — is this
+          // separate drag-region spacer, not part of <TabBar> itself, so it
+          // needs its own acceptance of a pane being dragged out of a split
+          // (see the grip in Pane.tsx) or dropping anywhere here would
+          // silently do nothing.
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes(DRAG_PANE_MIME)) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'move'
+            setPaneDragOverSpacer(true)
+          }}
+          onDragLeave={() => setPaneDragOverSpacer(false)}
+          onDrop={(e) => {
+            setPaneDragOverSpacer(false)
+            const raw = e.dataTransfer.getData(DRAG_PANE_MIME)
+            if (!raw) return
+            e.preventDefault()
+            const { tabId, paneId } = JSON.parse(raw) as { tabId: string; paneId: string }
+            popPaneToNewTab(tabId, paneId)
+          }}
         />
         {activeTab && (
           <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
