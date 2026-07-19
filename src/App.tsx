@@ -18,8 +18,6 @@ import {
   ScrollText,
   ArrowLeftRight,
   Folder,
-  ExternalLink,
-  X,
 } from 'lucide-react'
 import { toast } from './lib/toast'
 import * as profiles from './lib/profiles'
@@ -812,7 +810,6 @@ function App() {
   const activeIsSsh =
     activeLeaf?.source?.protocol === 'ssh' || activeLeaf?.source?.protocol === 'sshProfile'
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
-  const activeTabHasSplit = activeTab ? allLeaves(activeTab.root).length > 1 : false
 
   // Flat list of every live (source-holding) pane across every tab — the
   // pool that Terminal instances are portaled from. See the `slots` comment
@@ -948,24 +945,6 @@ function App() {
             >
               <SplitSquareVertical size={15} strokeWidth={2} />
             </button>
-            {activeTabHasSplit && (
-              <>
-                <button
-                  className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
-                  title="Move this pane to a new tab"
-                  onClick={() => activeTab && activePaneId && popPaneToNewTab(activeTab.id, activePaneId)}
-                >
-                  <ExternalLink size={15} strokeWidth={2} />
-                </button>
-                <button
-                  className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-red-500/25 hover:text-white"
-                  title="Close this pane"
-                  onClick={() => activeTab && activePaneId && closePane(activeTab.id, activePaneId)}
-                >
-                  <X size={15} strokeWidth={2} />
-                </button>
-              </>
-            )}
           </div>
         )}
         <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">

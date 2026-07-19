@@ -119,12 +119,14 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
       onMouseDown={() => onFocusPane(node.id)}
     >
       {tabHasSplit && (
-        // Hover-only and tucked in a corner rather than anywhere over the
-        // terminal's own content area — dragging inside a terminal already
-        // means "select text," so this needs its own dedicated grab target
-        // rather than trying to distinguish drag-to-move from
-        // drag-to-select within the same region.
-        <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+        // A real flex-flow sibling (not an absolute overlay) reserving
+        // actual layout space above the content, rather than floating on
+        // top of it — so the icons, even hidden, can never land on a real
+        // row of terminal text no matter what's scrolled into view. Kept
+        // hover-only (not shown by default) since the fixed strip alone is
+        // enough of a visual tell that something's there, without needing
+        // the icons themselves visible at all times.
+        <div className="relative z-10 flex h-5 shrink-0 items-center justify-end gap-0.5 px-1">
           <span
             draggable
             onDragStart={(e) => {
@@ -133,7 +135,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             }}
             onMouseDown={(e) => e.stopPropagation()}
             title="Drag to move this pane to a new tab"
-            className="cursor-grab rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm transition-colors duration-100 hover:bg-black/60 hover:text-white/90 active:cursor-grabbing"
+            className="cursor-grab rounded p-1 text-white/50 opacity-0 transition-opacity duration-150 hover:bg-black/40 hover:text-white/90 group-hover:opacity-100 active:cursor-grabbing"
           >
             <GripVertical size={12} />
           </span>
@@ -145,7 +147,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             }}
             onMouseDown={(e) => e.stopPropagation()}
             title="Close this pane"
-            className="rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm transition-colors duration-100 hover:bg-red-500/60 hover:text-white"
+            className="rounded p-1 text-white/50 opacity-0 transition-opacity duration-150 hover:bg-red-500/60 hover:text-white group-hover:opacity-100"
           >
             <X size={12} />
           </button>
@@ -159,10 +161,10 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         // the terminal's real home, moving it between tabs (a totally
         // separate React subtree per tab) would force an unmount/remount,
         // tearing down the live session to move it.
-        <div ref={slotRef} className="relative h-full w-full" />
+        <div ref={slotRef} className="relative min-h-0 w-full flex-1" />
       ) : (
         <div
-          className={`h-full w-full transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
+          className={`min-h-0 w-full flex-1 transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes(DRAG_TAB_MIME)) return
             e.preventDefault()
