@@ -219,19 +219,9 @@ function App() {
   // render) means the window only ever appears already correctly sized and
   // already showing the real UI, not a flash of blank/wrong-sized chrome.
   useEffect(() => {
-    const win = getCurrentWindow()
-    win
+    getCurrentWindow()
       .show()
-      .then(() => win.setFocus())
       .catch(() => {})
-    // show() alone doesn't guarantee the window actually receives OS-level
-    // keyboard focus on every window manager, so the very first tab's
-    // term.focus() call (in Terminal.tsx, once it connects) can land on a
-    // window that isn't focused yet — the DOM focus "succeeds" but keys go
-    // nowhere until the user clicks in. Later tabs don't hit this because
-    // creating one requires already having clicked into the app, which
-    // gives the window OS focus as a side effect. Explicitly requesting
-    // focus here closes that race for the first tab too.
   }, [])
 
   // Rounded corners only make sense for a floating window — a maximized
@@ -342,6 +332,14 @@ function App() {
   async function unlockWithOsAndRestoreSessions() {
     if (!pendingRestore) return
     await vault.unlockWithOs()
+    // The Windows Hello/PIN prompt is a native OS-level dialog, not an
+    // in-page one — closing it doesn't hand keyboard focus back to our
+    // window the way dismissing a normal modal does, so without this the
+    // terminal's own auto-focus (in Terminal.tsx, once it connects) lands
+    // on a window that isn't actually focused.
+    getCurrentWindow()
+      .setFocus()
+      .catch(() => {})
     refreshVaultStatus()
     applyRestore(pendingRestore)
   }
@@ -666,6 +664,13 @@ function App() {
     profile: SessionProfile,
   ) {
     await vault.unlockWithOs()
+    // See the identical comment in unlockWithOsAndRestoreSessions — the
+    // native OS unlock prompt doesn't return keyboard focus to our window
+    // on its own, which otherwise left the freshly-connected terminal's
+    // auto-focus call landing on an unfocused window.
+    getCurrentWindow()
+      .setFocus()
+      .catch(() => {})
     refreshVaultStatus()
     const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
     const source: ConnectionSource | null = hasCredential
