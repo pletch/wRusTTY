@@ -71,6 +71,16 @@ fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
 
         let _ = SetForegroundWindow(hwnd);
         let _ = BringWindowToTop(hwnd);
+        // SetForegroundWindow activates the top-level window, but that's a
+        // different thing from keyboard focus actually landing back inside
+        // it — WebView2 is a child control, and reactivating its parent
+        // doesn't reliably re-establish which child/element had focus once
+        // that tracking was blown away by a separate process's window
+        // taking over. An explicit SetFocus (only meaningful now, while
+        // still attached to the foreground thread's input queue) targets
+        // keyboard focus directly instead of relying on activation to
+        // imply it.
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hwnd));
 
         if attached {
             let _ = AttachThreadInput(current_thread, foreground_thread, false);
