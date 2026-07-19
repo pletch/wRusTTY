@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Plus,
   X,
@@ -95,6 +95,8 @@ export function TabBar({
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const tabsContainerRef = useRef<HTMLDivElement>(null)
+  const [overflowing, setOverflowing] = useState(false)
 
   useEffect(() => {
     if (!menu) return
@@ -102,6 +104,21 @@ export function TabBar({
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [menu])
+
+  // Only fade the tabs container's right edge once it's actually
+  // scrollable — otherwise every tab fits and there's nothing partially
+  // clipped for the fade to hide, so it'd just needlessly dim the last tab.
+  // A ResizeObserver (rather than just watching `tabs`) also catches the
+  // window itself being resized narrower/wider with the same tab count.
+  useEffect(() => {
+    const el = tabsContainerRef.current
+    if (!el) return
+    const checkOverflow = () => setOverflowing(el.scrollWidth > el.clientWidth)
+    checkOverflow()
+    const observer = new ResizeObserver(checkOverflow)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [tabs])
 
   return (
     <div className="relative flex min-w-0 shrink items-stretch">
@@ -115,14 +132,21 @@ export function TabBar({
        * partially scrolled into view from ending in a harsh mid-content
        * clip — one that, at just the wrong container width, would slice
        * straight through that tab's close button and leave half of it
-       * rendered. Harmless when nothing overflows: no content, whole or
-       * partial, sits under the faded region. */}
+       * rendered. Only applied once `overflowing` is actually true — with
+       * every tab fully visible there's nothing partially clipped for it
+       * to hide, so it'd just needlessly dim the last tab. */}
       <div
+        ref={tabsContainerRef}
         className="flex min-w-0 shrink items-stretch overflow-x-auto"
-        style={{
-          WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
-          maskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
-        }}
+        style={
+          overflowing
+            ? {
+                WebkitMaskImage:
+                  'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+                maskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+              }
+            : undefined
+        }
       >
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
