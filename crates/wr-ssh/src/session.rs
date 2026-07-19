@@ -258,7 +258,6 @@ impl SshSession {
         self.resize_tx = Some(resize_tx);
         Ok(())
     }
-
 }
 
 /// Connects and fully authenticates a fresh TCP connection to `config`,

@@ -40,7 +40,9 @@ pub(crate) fn migrate_os_unlock_key() {
     let Ok(password) = old_entry.get_password() else {
         return;
     };
-    let Ok(new_entry) = keyring_entry() else { return };
+    let Ok(new_entry) = keyring_entry() else {
+        return;
+    };
     if new_entry.get_password().is_ok() {
         return;
     }
