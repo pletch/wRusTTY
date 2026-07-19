@@ -51,6 +51,33 @@ pub(crate) fn migrate_os_unlock_key() {
     }
 }
 
+/// Forces `hwnd` to the foreground even though we didn't receive the last
+/// input event (the Windows Hello broker did) — see the call site in
+/// `verify_windows_hello_blocking` for why a plain `SetForegroundWindow`
+/// isn't enough on its own.
+#[cfg(target_os = "windows")]
+fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
+
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let current_thread = GetCurrentThreadId();
+        let attached = foreground_thread != current_thread
+            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
+
+        let _ = SetForegroundWindow(hwnd);
+        let _ = BringWindowToTop(hwnd);
+
+        if attached {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
+    }
+}
+
 /// Gates OS-unlock on a fresh, per-use Windows Hello (or PIN/password,
 /// whatever's configured) challenge — without this, DPAPI alone would
 /// silently hand back the stored key to *any* process running under the
@@ -111,20 +138,21 @@ fn verify_windows_hello_blocking(
     }
     .and_then(|op| op.join())
     .map_err(|e| e.to_string())?;
-    // Being an owned/parented window would normally mean Windows hands
-    // keyboard focus back to `hwnd` on its own once the prompt closes, but
-    // that didn't hold up in practice — the app window was left unfocused
-    // behind the scenes, so the terminal's own post-connect focus() call
-    // (over on the JS side) landed on a window that wasn't actually
-    // foreground. Doing it from JS afterward (an IPC round-trip and several
-    // event-loop turns removed from the prompt actually closing) is exactly
-    // the kind of delay Windows' foreground-lock heuristic tends to reject
-    // — calling it here, synchronously, right as the prompt hands control
-    // back, is as close to "still holds the right to reclaim it" as this
-    // gets.
-    unsafe {
-        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
-    }
+    // A plain SetForegroundWindow(hwnd) here — tried first — didn't help:
+    // the consent prompt is hosted by a separate broker process, so it (not
+    // us) received the last input event, which is exactly the condition
+    // Windows' foreground-lock heuristic checks before honoring an
+    // unsolicited SetForegroundWindow call. Denied requests don't error,
+    // they just silently no-op (or flash the taskbar icon), which is why
+    // this looked fixed in the code but never actually took effect.
+    //
+    // The standard workaround: temporarily attach our thread's input queue
+    // to the current foreground thread's. Shared input state is one of the
+    // conditions the heuristic *does* accept, so SetForegroundWindow starts
+    // working for the duration of the attachment. This is the same trick
+    // Windows Terminal and other apps use to reclaim focus after a native
+    // dialog closes.
+    force_foreground(hwnd);
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
             "Windows Hello verification didn't succeed ({result:?})"
