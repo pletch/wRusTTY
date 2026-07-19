@@ -142,6 +142,14 @@ export function Terminal({
     // as its own function since onResize below needs to redo this same
     // setup when it tears down and rebuilds the addon after a move.
     function loadWebgl(): WebglAddon | null {
+      // TEMPORARY diagnostic build: skip WebGL entirely when translucent,
+      // to confirm whether the WebGL addon's own canvas is what's
+      // rendering fully opaque (ruled out: xterm's theme config, its DOM
+      // color application, and its element stacking are all confirmed
+      // correct — see the Windows/WebView2 transparency investigation).
+      // xterm's plain 2D canvas fallback creates its context with
+      // `alpha: allowTransparency` directly. Revert this once we know.
+      if (settingsRef.current.backgroundOpacity < 1) return null
       try {
         const addon = new WebglAddon()
         addon.onContextLoss(() => {
