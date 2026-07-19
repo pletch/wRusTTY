@@ -10,7 +10,11 @@
 use tauri::{AppHandle, Manager};
 
 #[tauri::command]
-pub fn set_window_vibrancy(app: AppHandle, mode: String, tint: Option<(u8, u8, u8, u8)>) -> Result<(), String> {
+pub fn set_window_vibrancy(
+    app: AppHandle,
+    mode: String,
+    tint: Option<(u8, u8, u8, u8)>,
+) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or("main window not found")?;
