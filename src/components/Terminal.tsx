@@ -87,6 +87,12 @@ export function Terminal({
   const activeRef = useRef(active)
   activeRef.current = active
 
+  // Set inside the connect effect below; lets the vibrancy-toggle effect
+  // above reach into that closure's webglAddon/loadWebgl without being
+  // part of the same effect (which would tear down and reconnect the
+  // session on every vibrancy change).
+  const reloadWebglRef = useRef<(() => void) | null>(null)
+
   // Theme updates apply live to the existing terminal instance instead of
   // tearing down and reconnecting the session.
   useEffect(() => {
@@ -98,6 +104,13 @@ export function Terminal({
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
   }, [searchOpen])
+
+  // Swaps the renderer live when vibrancy is toggled, instead of waiting
+  // for the next reconnect — same WebGL/DWM compositing conflict as the
+  // check inside loadWebgl() below.
+  useEffect(() => {
+    reloadWebglRef.current?.()
+  }, [settings.vibrancyMode])
 
   useEffect(() => {
     const container = containerRef.current
@@ -137,6 +150,12 @@ export function Terminal({
     // as its own function since onResize below needs to redo this same
     // setup when it tears down and rebuilds the addon after a move.
     function loadWebgl(): WebglAddon | null {
+      // WebView2 on Windows composites a hardware-accelerated WebGL canvas
+      // as opaque against a transparent window, even with alpha requested —
+      // it silently defeats the acrylic/mica effect underneath. Falling
+      // back to xterm's Canvas 2D renderer while vibrancy is active avoids
+      // that broken compositing path entirely.
+      if (settingsRef.current.vibrancyMode !== 'off') return null
       try {
         const addon = new WebglAddon()
         addon.onContextLoss(() => {
@@ -151,6 +170,12 @@ export function Terminal({
       }
     }
     let webglAddon = loadWebgl()
+
+    reloadWebglRef.current = () => {
+      webglAddon?.dispose()
+      webglAddon = loadWebgl()
+      term.refresh(0, term.rows - 1)
+    }
 
     fitAddon.fit()
 
@@ -351,6 +376,7 @@ export function Terminal({
       onSessionIdRef.current?.(null)
       termRef.current = null
       searchAddonRef.current = null
+      reloadWebglRef.current = null
       term.dispose()
     }
     // `label` is display-only text for the "Connecting to..." line, not a
