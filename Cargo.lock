@@ -6968,38 +6968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wr-shell"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "keyring",
- "log",
- "notify-debouncer-full",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-dialog",
- "tauri-plugin-log",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-window-state",
- "tempfile",
- "tokio",
- "windows 0.62.2",
- "windows-future 0.3.2",
- "wr-core",
- "wr-serial",
- "wr-sftp",
- "wr-ssh",
- "wr-telnet",
- "wr-vault",
- "zeroize",
-]
-
-[[package]]
 name = "wr-ssh"
 version = "0.1.0"
 dependencies = [
@@ -7047,6 +7015,38 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "wrustty"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "keyring",
+ "log",
+ "notify-debouncer-full",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-dialog",
+ "tauri-plugin-log",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
+ "tempfile",
+ "tokio",
+ "windows 0.62.2",
+ "windows-future 0.3.2",
+ "wr-core",
+ "wr-serial",
+ "wr-sftp",
+ "wr-ssh",
+ "wr-telnet",
+ "wr-vault",
+ "zeroize",
+]
 
 [[package]]
 name = "wry"

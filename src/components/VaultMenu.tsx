@@ -132,12 +132,12 @@ export function VaultMenu({ status, onStatusChange }: Props) {
 
   async function doExport() {
     const dest = await save({
-      defaultPath: 'wr-shell-export.wrb',
+      defaultPath: 'wrustty-export.wrb',
       // Saved session profiles reference vault entries by id and are
       // meaningless without each other, so the export bundles both — a
       // plain `.wrv` (vault-only) export from an older build isn't
       // importable here anymore, hence the distinct extension.
-      filters: [{ name: 'wr-shell export bundle', extensions: ['wrb'] }],
+      filters: [{ name: 'wRusTTY export bundle', extensions: ['wrb'] }],
     })
     if (!dest) return
     try {
@@ -151,7 +151,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   async function doImport() {
     const src = await open({
       multiple: false,
-      filters: [{ name: 'wr-shell export bundle', extensions: ['wrb'] }],
+      filters: [{ name: 'wRusTTY export bundle', extensions: ['wrb'] }],
     })
     if (!src || Array.isArray(src)) return
     const ok = window.confirm(

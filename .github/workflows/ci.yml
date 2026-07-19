@@ -69,7 +69,7 @@ jobs:
           args: --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v7
         with:
-          name: wr-shell-windows-installer
+          name: wrustty-windows-installer
           # src-tauri is a member of the root Cargo workspace, so build
           # output lands in the workspace-root `target/`, not a nested
           # `src-tauri/target/`.

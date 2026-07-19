@@ -12,18 +12,23 @@ export interface TerminalSettings {
   restoreSessionsOnLaunch: boolean
 }
 
-const STORAGE_KEY = 'wr-shell.terminal-settings'
+const STORAGE_KEY = 'wrustty.terminal-settings'
+// Pre-rebrand key (was wr-shell) — read as a fallback so existing settings
+// aren't silently dropped by the rename; loadSettings never writes back to
+// it, so it's naturally retired once saveSettings runs once under the new
+// key.
+const PREVIOUS_STORAGE_KEY = 'wr-shell.terminal-settings'
 
 const defaults: TerminalSettings = {
   copyOnSelect: true,
   rightClickPaste: true,
-  themeName: 'wr-shell Dark',
+  themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
 }
 
 export function loadSettings(): TerminalSettings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
     if (!raw) return defaults
     return { ...defaults, ...JSON.parse(raw) }
   } catch {

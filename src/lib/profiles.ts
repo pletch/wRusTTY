@@ -15,6 +15,9 @@ export interface SessionProfile {
   // session's entry in the sidebar prompt "unlock to connect automatically"
   // instead of just silently falling back to the manual form.
   hasCredential: boolean
+  /** Id of another saved profile to jump through (SSH ProxyJump) before
+   * reaching this one — `null` connects directly. */
+  jumpProfileId: string | null
 }
 
 export function listSessions() {

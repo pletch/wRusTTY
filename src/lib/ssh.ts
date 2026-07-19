@@ -8,4 +8,5 @@ export interface SshConfig {
   port: number
   username: string
   auth: AuthMethod
+  jump?: SshConfig | null
 }

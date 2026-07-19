@@ -71,7 +71,7 @@ export function SettingsMenu({ settings, onChange }: Props) {
             <span className="text-white/80">
               Restore sessions on launch
               <span className="block text-white/40">
-                Offers to reopen open tabs next time you start wr-shell.
+                Offers to reopen open tabs next time you start wRusTTY.
               </span>
             </span>
           </label>

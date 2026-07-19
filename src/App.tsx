@@ -551,6 +551,7 @@ function App() {
       authType: profile.authType === 'password' ? 'Password' : 'PublicKey',
       keyPath: profile.keyPath ?? undefined,
       hasCredential: profile.hasCredential,
+      jumpProfileId: profile.jumpProfileId,
     }
   }
 

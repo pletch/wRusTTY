@@ -1,4 +1,4 @@
-# wr-shell — Project Plan
+# wRusTTY — Project Plan
 
 A lightweight, security-focused SSH / Telnet / Serial client for Windows 11 with a
 modern GUI, tabbed session management, an encrypted credential vault, and
@@ -31,7 +31,7 @@ remote file editing.
 ### Rust workspace layout (modularity is enforced by crate boundaries)
 
 ```
-wr-shell/
+wrustty/
 ├── src-tauri/            # Tauri app: commands, state, window mgmt (thin glue only)
 ├── crates/
 │   ├── wr-core/          # Session model, connection trait, events, config types
@@ -175,9 +175,9 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - xterm.js + WebGL addon rendering a local echo loop through a Tauri channel
   (proves the byte-stream IPC path and GPU rendering end-to-end)
 - CI (fmt, clippy, tests, frontend lint/build), Windows build artifact
-- App identity: product name **wr-shell**, bundle ID `sh.wrshell.app` (or
-  similar reverse-DNS you own), icon placeholder. Repo directory remains
-  `wr-term`; that's just the checkout path and doesn't need to match.
+- App identity: product name **wRusTTY**, bundle ID `sh.wrustty.app`, icon
+  in `docs/branding/`. Repo directory may remain `wr-term`; that's just the
+  checkout path and doesn't need to match.
 
 ### Phase 1 — SSH core (the heart)
 - `wr-ssh`: connect, password + public-key auth, keyboard-interactive,

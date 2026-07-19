@@ -23,7 +23,7 @@ export interface TerminalTheme {
 
 export const PRESET_THEMES: TerminalTheme[] = [
   {
-    name: 'wr-shell Dark',
+    name: 'wRusTTY Dark',
     background: '#16171d',
     foreground: '#e5e4e7',
     cursor: '#e5e4e7',

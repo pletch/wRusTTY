@@ -24,6 +24,11 @@ pub struct SessionProfile {
     /// `default` so profiles saved before this field existed still parse.
     #[serde(rename = "hasCredential", default)]
     pub has_credential: bool,
+    /// Id of another saved profile to jump through (SSH ProxyJump) before
+    /// reaching this one — `None` connects directly. `default` so profiles
+    /// saved before this field existed still parse.
+    #[serde(rename = "jumpProfileId", default)]
+    pub jump_profile_id: Option<String>,
 }
 
 #[derive(Default)]

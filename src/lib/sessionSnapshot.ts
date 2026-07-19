@@ -2,7 +2,11 @@ import type { ConnectionSource } from './connection'
 import type { PaneNode, Tab } from '../types'
 import { allLeaves } from './paneTree'
 
-const STORAGE_KEY = 'wr-shell.session-snapshot'
+const STORAGE_KEY = 'wrustty.session-snapshot'
+// Pre-rebrand key (was wr-shell) — read as a fallback so an existing
+// snapshot isn't silently dropped by the rename; the very next saveSnapshot
+// call naturally retires it by writing under the new key instead.
+const PREVIOUS_STORAGE_KEY = 'wr-shell.session-snapshot'
 
 /** Only these protocols can be reconnected without ever collecting a
  * plaintext secret outside the vault — a manually-typed SSH connection's
@@ -62,7 +66,7 @@ export function saveSnapshot(tabs: Tab[], activeTabId: string | null) {
 
 export function loadSnapshot(): SessionSnapshot | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
     return raw ? JSON.parse(raw) : null
   } catch {
     return null

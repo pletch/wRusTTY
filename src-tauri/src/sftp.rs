@@ -157,7 +157,7 @@ pub async fn sftp_edit_file(
         return Err(format!("unsafe remote filename: {basename}"));
     }
     let temp_dir = tempfile::Builder::new()
-        .prefix(&format!("wr-shell-sftp-{session_id}-"))
+        .prefix(&format!("wrustty-sftp-{session_id}-"))
         .tempdir()
         .map_err(|e| e.to_string())?;
     let local_path = temp_dir.path().join(basename);

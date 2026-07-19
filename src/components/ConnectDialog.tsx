@@ -33,6 +33,7 @@ export interface ConnectDialogInitial {
   keyPath?: string
   folder?: string | null
   hasCredential?: boolean
+  jumpProfileId?: string | null
 }
 
 interface Props {
@@ -75,7 +76,7 @@ interface Props {
   onReorderSessions?: (draggedId: string, targetId: string) => void
 }
 
-const COLLAPSED_FOLDERS_KEY = 'wr-shell.collapsed-session-folders'
+const COLLAPSED_FOLDERS_KEY = 'wrustty.collapsed-session-folders'
 
 function loadCollapsedFolders(): Set<string> {
   try {
@@ -151,6 +152,7 @@ export function ConnectDialog({
   const [passphrase, setPassphrase] = useState('')
   const [label, setLabel] = useState(initial?.label ?? '')
   const [folder, setFolder] = useState(initial?.folder ?? '')
+  const [jumpProfileId, setJumpProfileId] = useState(initial?.jumpProfileId ?? '')
   const [isNewFolder, setIsNewFolder] = useState(false)
   // Defaults on whenever we're prefilled from a known profile (picked from
   // the sidebar, or via Edit) — connecting then naturally writes any
@@ -305,6 +307,7 @@ export function ConnectDialog({
           hasCredential: usingVaultKey
             ? Boolean(keyPath) || isInitiallyVaulted
             : willSaveCredential || Boolean(initial?.hasCredential),
+          jumpProfileId: jumpProfileId || null,
         })
 
         if (willSaveCredential && onSaveCredential) {
@@ -670,6 +673,23 @@ export function ConnectDialog({
                         </option>
                       ))}
                       <option value="__new__">+ New folder...</option>
+                    </select>
+                  )}
+                  {sessions && sessions.filter((s) => s.id !== initial?.id).length > 0 && (
+                    <select
+                      className={`${inputClass} w-full`}
+                      value={jumpProfileId}
+                      onChange={(e) => setJumpProfileId(e.target.value)}
+                      title="Connect through another saved session first (SSH ProxyJump), e.g. a Tailscale-reachable machine that can reach this host"
+                    >
+                      <option value="">No jump host</option>
+                      {sessions
+                        .filter((s) => s.id !== initial?.id)
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            Jump via {s.label} ({s.host})
+                          </option>
+                        ))}
                     </select>
                   )}
                   {onSaveCredential && (authType === 'Password' || keyStorage === 'path') && (

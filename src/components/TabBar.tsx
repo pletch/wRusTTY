@@ -1,17 +1,9 @@
 import { useEffect, useState } from 'react'
-import {
-  Plus,
-  X,
-  RotateCw,
-  Copy,
-  Terminal as TerminalIcon,
-  Radio,
-  Cable,
-  TerminalSquare,
-} from 'lucide-react'
+import { Plus, X, RotateCw, Copy, Terminal as TerminalIcon, Radio, Cable } from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
-import { allLeaves, hasVerticalSplit } from '../lib/paneTree'
+import { allLeaves, isTopSplitVertical } from '../lib/paneTree'
 import { DRAG_TAB_MIME } from '../lib/dragTypes'
+import appIcon from '../assets/wrustty-icon.png'
 
 interface Props {
   tabs: Tab[]
@@ -105,17 +97,17 @@ export function TabBar({
 
   return (
     <div className="relative flex min-w-0 shrink items-stretch">
-      {/* Placeholder app icon — swap for the real logo later. Also gives
-       * the tab strip natural clearance from the window's rounded corner,
-       * replacing what used to just be an empty sliver of padding. */}
-      <div className="flex shrink-0 items-center pl-2.5 pr-1.5 text-sky-400">
-        <TerminalSquare size={16} strokeWidth={2} />
+      {/* Also gives the tab strip natural clearance from the window's
+       * rounded corner, replacing what used to just be an empty sliver of
+       * padding. */}
+      <div className="flex shrink-0 items-center pl-2.5 pr-1.5">
+        <img src={appIcon} alt="wRusTTY" className="h-4 w-4 rounded-[3px]" />
       </div>
       <div className="flex min-w-0 shrink items-stretch overflow-x-auto">
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           const leaves = allLeaves(tab.root)
-          const tall = hasVerticalSplit(tab.root)
+          const tall = isTopSplitVertical(tab.root)
           const leaf = leaves.find((l) => l.id === tab.activePaneId)
           const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null

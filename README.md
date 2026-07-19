@@ -1,4 +1,6 @@
-# wr-shell
+# wRusTTY
+
+![wRusTTY](docs/branding/wrustty-wordmark.png)
 
 A lightweight SSH / Telnet / Serial client for Windows 11: modern GUI,
 tabbed sessions, encrypted local credential vault, GPU-accelerated terminal.
@@ -38,7 +40,7 @@ Argon2id-derived key; secrets are decrypted only in the Rust process and
 never sent back to the webview. One deliberate tradeoff to be aware of:
 the optional **"Unlock with Windows sign-in"** convenience stores the raw
 vault key in Windows Credential Manager (DPAPI). The Windows Hello/PIN
-challenge shown at unlock is enforced by wr-shell's own code — DPAPI
+challenge shown at unlock is enforced by wRusTTY's own code — DPAPI
 itself will hand that stored key to *any* process running in your
 logged-in Windows session, with no Hello prompt. If your threat model
 includes malware already running as your user, don't enable OS unlock;

@@ -148,14 +148,32 @@ pub async fn ssh_connect_profile(
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
     let profile = profiles::get_profile(&app, &profile_id)?;
-    let auth = resolve_auth(&profile, &vault_state).await?;
-    let config = SshConfig {
-        host: profile.host,
-        port: profile.port,
-        username: profile.username,
-        auth,
-    };
+    let mut config = build_ssh_config(&profile, &vault_state).await?;
+    if let Some(jump_id) = &profile.jump_profile_id {
+        let jump_profile = profiles::get_profile(&app, jump_id)?;
+        let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
+        config.jump = Some(Box::new(jump_config));
+    }
     start_connection(app, config, channel, data_channel, &state).await
+}
+
+/// Resolves `profile`'s own auth from the vault and builds a plain
+/// (non-jumping) `SshConfig` for it — used both for the profile being
+/// connected to and, if it names one, for its jump-host profile. A jump
+/// profile's own `jump_profile_id`, if any, is ignored: only a single hop
+/// is supported.
+async fn build_ssh_config(
+    profile: &profiles::SessionProfile,
+    vault_state: &State<'_, VaultState>,
+) -> Result<SshConfig, String> {
+    let auth = resolve_auth(profile, vault_state).await?;
+    Ok(SshConfig {
+        host: profile.host.clone(),
+        port: profile.port,
+        username: profile.username.clone(),
+        auth,
+        jump: None,
+    })
 }
 
 async fn resolve_auth(

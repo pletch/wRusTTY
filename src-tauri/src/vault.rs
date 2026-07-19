@@ -17,11 +17,36 @@ use zeroize::Zeroize;
 
 // A single fixed entry, not one per vault file — this app only ever manages
 // one vault at a time (at `vault_path`), so there's nothing to key it by.
-const KEYRING_SERVICE: &str = "sh.wrshell.app";
+const KEYRING_SERVICE: &str = "sh.wrustty.app";
 const KEYRING_USER: &str = "vault-key";
+// Previous bundle identifier's keyring service name, from before the
+// wRusTTY rebrand — see `migrate_os_unlock_key`.
+const PREVIOUS_KEYRING_SERVICE: &str = "sh.wrshell.app";
 
 fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())
+}
+
+/// One-time migration for the `sh.wrshell.app` → `sh.wrustty.app` rebrand:
+/// an OS-unlock key stored under the old service name is invisible to
+/// `keyring_entry()` now that it looks under the new one — without this,
+/// "Unlock with Windows sign-in" would silently stop working for anyone who
+/// already had it enabled. Safe to call on every launch: a no-op once the
+/// old entry is gone (or was never set).
+pub(crate) fn migrate_os_unlock_key() {
+    let Ok(old_entry) = keyring::Entry::new(PREVIOUS_KEYRING_SERVICE, KEYRING_USER) else {
+        return;
+    };
+    let Ok(password) = old_entry.get_password() else {
+        return;
+    };
+    let Ok(new_entry) = keyring_entry() else { return };
+    if new_entry.get_password().is_ok() {
+        return;
+    }
+    if new_entry.set_password(&password).is_ok() {
+        let _ = old_entry.delete_credential();
+    }
 }
 
 /// Gates OS-unlock on a fresh, per-use Windows Hello (or PIN/password,
@@ -260,7 +285,7 @@ pub async fn vault_unlock_with_os(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    verify_windows_hello(&app, "Unlock wr-shell's credential vault").await?;
+    verify_windows_hello(&app, "Unlock wRusTTY's credential vault").await?;
     let encoded = keyring_entry()?.get_password().map_err(|e| e.to_string())?;
     let mut key_vec = BASE64.decode(&encoded).map_err(|e| e.to_string())?;
     let key: [u8; 32] = key_vec
@@ -391,7 +416,7 @@ pub async fn vault_import(
     }
     let contents = std::fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
     let bundle: ExportBundle =
-        serde_json::from_str(&contents).map_err(|_| "not a wr-shell export file".to_string())?;
+        serde_json::from_str(&contents).map_err(|_| "not a valid vault export file".to_string())?;
     if bundle.format != EXPORT_FORMAT {
         return Err(format!("unsupported export format: {}", bundle.format));
     }

@@ -7,6 +7,12 @@ pub struct SshConfig {
     pub port: u16,
     pub username: String,
     pub auth: AuthMethod,
+    /// An SSH hop to connect and authenticate to first, tunneling this
+    /// connection's own handshake through a `direct-tcpip` channel opened
+    /// on it — the same shape as OpenSSH's `-J`/`ProxyJump`. `None` connects
+    /// directly. Boxed since it's the same type one level down.
+    #[serde(default)]
+    pub jump: Option<Box<SshConfig>>,
 }
 
 impl Default for SshConfig {
@@ -18,6 +24,7 @@ impl Default for SshConfig {
             auth: AuthMethod::Password {
                 password: String::new(),
             },
+            jump: None,
         }
     }
 }

@@ -152,60 +152,52 @@ impl SshSession {
         &mut self,
         events: &mpsc::Sender<ConnectionEvent>,
     ) -> Result<(), SshError> {
-        let ssh_config = client::Config {
-            keepalive_interval: Some(KEEPALIVE_INTERVAL),
-            keepalive_max: KEEPALIVE_MAX,
-            ..Default::default()
-        };
+        let handle = match &self.config.jump {
+            None => {
+                connect_direct(
+                    &self.config,
+                    self.known_hosts.clone(),
+                    self.verifier.clone(),
+                    self.remote_forwards.clone(),
+                )
+                .await?
+            }
+            Some(jump_config) => {
+                // The jump hop gets its own throwaway remote-forward
+                // registry — incoming forwarded-tcpip requests are only
+                // meaningful on the final hop, which is what
+                // `self.remote_forwards` is shared with.
+                let jump_handle = connect_direct(
+                    jump_config,
+                    self.known_hosts.clone(),
+                    self.verifier.clone(),
+                    Arc::new(Mutex::new(HashMap::new())),
+                )
+                .await?;
 
-        let verify_started = Arc::new(tokio::sync::Notify::new());
-        let handler = ClientHandler::new(
-            self.config.host.clone(),
-            self.config.port,
-            self.known_hosts.clone(),
-            self.verifier.clone(),
-            self.remote_forwards.clone(),
-            verify_started.clone(),
-        );
+                // Same primitive as an SSH port forward (see forward.rs): a
+                // `direct-tcpip` channel on the jump host's connection,
+                // piped into the target's own SSH handshake instead of a
+                // fresh TCP socket — the standard ProxyJump shape.
+                let channel = jump_handle
+                    .channel_open_direct_tcpip(
+                        self.config.host.clone(),
+                        self.config.port as u32,
+                        "127.0.0.1",
+                        0,
+                    )
+                    .await?;
 
-        let connect_fut = client::connect(
-            Arc::new(ssh_config),
-            (self.config.host.as_str(), self.config.port),
-            handler,
-        );
-        tokio::pin!(connect_fut);
-
-        // CONNECT_TIMEOUT bounds the network-level connect + key exchange —
-        // it must stop counting once we're waiting on a human to accept or
-        // reject a host key (see ClientHandler::verify_started), or every
-        // first-time connection to an unknown host would time out before
-        // anyone had a chance to read the fingerprint and click Accept.
-        let mut awaiting_verification = false;
-        let mut handle = loop {
-            tokio::select! {
-                result = &mut connect_fut => break result?,
-                () = tokio::time::sleep(CONNECT_TIMEOUT), if !awaiting_verification => {
-                    return Err(SshError::Timeout {
-                        host: self.config.host.clone(),
-                        port: self.config.port,
-                    });
-                }
-                () = verify_started.notified(), if !awaiting_verification => {
-                    awaiting_verification = true;
-                }
+                connect_via_stream(
+                    &self.config,
+                    channel.into_stream(),
+                    self.known_hosts.clone(),
+                    self.verifier.clone(),
+                    self.remote_forwards.clone(),
+                )
+                .await?
             }
         };
-
-        // No prior art for how long auth should take, but unlike host-key
-        // verification this isn't waiting on a human — a real hang here
-        // (bad server, network stall) should surface as an error rather
-        // than leaving the UI stuck on "Connecting..." forever.
-        tokio::time::timeout(AUTH_TIMEOUT, self.authenticate(&mut handle))
-            .await
-            .map_err(|_| SshError::AuthTimeout {
-                host: self.config.host.clone(),
-                port: self.config.port,
-            })??;
 
         let channel = handle.channel_open_session().await?;
         channel
@@ -267,55 +259,167 @@ impl SshSession {
         Ok(())
     }
 
-    async fn authenticate(
-        &self,
-        handle: &mut client::Handle<ClientHandler>,
-    ) -> Result<(), SshError> {
-        use russh::client::AuthResult;
+}
 
-        let result = match &self.config.auth {
-            AuthMethod::Password { password } => {
-                handle
-                    .authenticate_password(&self.config.username, password)
-                    .await?
-            }
-            AuthMethod::PublicKey {
-                key_path,
-                passphrase,
-            } => {
-                let key = load_private_key(key_path, passphrase.as_deref())?;
+/// Connects and fully authenticates a fresh TCP connection to `config`,
+/// sharing `known_hosts`/`verifier` (host-key trust) and `remote_forwards`
+/// (which registry incoming `forwarded-tcpip` requests get matched against)
+/// with whatever's driving this hop. Used directly for a plain connection,
+/// and as the first hop of a jump connection (see `connect_via_stream`).
+async fn connect_direct(
+    config: &SshConfig,
+    known_hosts: Arc<Mutex<KnownHostsStore>>,
+    verifier: Arc<dyn HostKeyVerifier>,
+    remote_forwards: forward::RemoteForwardRegistry,
+) -> Result<client::Handle<ClientHandler>, SshError> {
+    let ssh_config = Arc::new(client::Config {
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: KEEPALIVE_MAX,
+        ..Default::default()
+    });
 
-                handle
-                    .authenticate_publickey(
-                        &self.config.username,
-                        PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256)),
-                    )
-                    .await?
-            }
-            AuthMethod::PublicKeyMaterial {
-                key_material,
-                passphrase,
-            } => {
-                let key = parse_private_key(key_material, passphrase.as_deref())?;
+    let verify_started = Arc::new(tokio::sync::Notify::new());
+    let handler = ClientHandler::new(
+        config.host.clone(),
+        config.port,
+        known_hosts,
+        verifier,
+        remote_forwards,
+        verify_started.clone(),
+    );
 
-                handle
-                    .authenticate_publickey(
-                        &self.config.username,
-                        PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256)),
-                    )
-                    .await?
-            }
-            AuthMethod::KeyboardInteractive => {
-                // Wired up to a real prompt round-trip once the UI layer
-                // (task #10) can relay server prompts to the user.
-                return Err(SshError::AuthFailed);
-            }
-        };
+    let connect_fut = client::connect(ssh_config, (config.host.as_str(), config.port), handler);
+    await_handshake(config, connect_fut, verify_started).await
+}
 
-        match result {
-            AuthResult::Success => Ok(()),
-            AuthResult::Failure { .. } => Err(SshError::AuthFailed),
+/// Same as `connect_direct`, but runs the handshake over an already-open
+/// stream rather than opening a fresh TCP socket — the `direct-tcpip`
+/// channel from a jump hop, in this crate's case. This is the whole trick
+/// behind ProxyJump: `russh::client::connect_stream` doesn't care whether
+/// its stream is a raw TCP socket or a channel tunneled through another SSH
+/// connection.
+async fn connect_via_stream<S>(
+    config: &SshConfig,
+    stream: S,
+    known_hosts: Arc<Mutex<KnownHostsStore>>,
+    verifier: Arc<dyn HostKeyVerifier>,
+    remote_forwards: forward::RemoteForwardRegistry,
+) -> Result<client::Handle<ClientHandler>, SshError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let ssh_config = Arc::new(client::Config {
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: KEEPALIVE_MAX,
+        ..Default::default()
+    });
+
+    let verify_started = Arc::new(tokio::sync::Notify::new());
+    let handler = ClientHandler::new(
+        config.host.clone(),
+        config.port,
+        known_hosts,
+        verifier,
+        remote_forwards,
+        verify_started.clone(),
+    );
+
+    let connect_fut = client::connect_stream(ssh_config, stream, handler);
+    await_handshake(config, connect_fut, verify_started).await
+}
+
+/// Shared by `connect_direct` and `connect_via_stream`: waits for the
+/// handshake future to resolve (bounded by `CONNECT_TIMEOUT`, except while
+/// waiting on a human to accept/reject an unknown host key — see
+/// `verify_started`), then authenticates (bounded by `AUTH_TIMEOUT`).
+async fn await_handshake<F>(
+    config: &SshConfig,
+    connect_fut: F,
+    verify_started: Arc<tokio::sync::Notify>,
+) -> Result<client::Handle<ClientHandler>, SshError>
+where
+    F: std::future::Future<Output = Result<client::Handle<ClientHandler>, SshError>>,
+{
+    tokio::pin!(connect_fut);
+
+    let mut awaiting_verification = false;
+    let mut handle = loop {
+        tokio::select! {
+            result = &mut connect_fut => break result?,
+            () = tokio::time::sleep(CONNECT_TIMEOUT), if !awaiting_verification => {
+                return Err(SshError::Timeout {
+                    host: config.host.clone(),
+                    port: config.port,
+                });
+            }
+            () = verify_started.notified(), if !awaiting_verification => {
+                awaiting_verification = true;
+            }
         }
+    };
+
+    // No prior art for how long auth should take, but unlike host-key
+    // verification this isn't waiting on a human — a real hang here (bad
+    // server, network stall) should surface as an error rather than
+    // leaving the UI stuck on "Connecting..." forever.
+    tokio::time::timeout(AUTH_TIMEOUT, authenticate(config, &mut handle))
+        .await
+        .map_err(|_| SshError::AuthTimeout {
+            host: config.host.clone(),
+            port: config.port,
+        })??;
+
+    Ok(handle)
+}
+
+async fn authenticate(
+    config: &SshConfig,
+    handle: &mut client::Handle<ClientHandler>,
+) -> Result<(), SshError> {
+    use russh::client::AuthResult;
+
+    let result = match &config.auth {
+        AuthMethod::Password { password } => {
+            handle
+                .authenticate_password(&config.username, password)
+                .await?
+        }
+        AuthMethod::PublicKey {
+            key_path,
+            passphrase,
+        } => {
+            let key = load_private_key(key_path, passphrase.as_deref())?;
+
+            handle
+                .authenticate_publickey(
+                    &config.username,
+                    PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256)),
+                )
+                .await?
+        }
+        AuthMethod::PublicKeyMaterial {
+            key_material,
+            passphrase,
+        } => {
+            let key = parse_private_key(key_material, passphrase.as_deref())?;
+
+            handle
+                .authenticate_publickey(
+                    &config.username,
+                    PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256)),
+                )
+                .await?
+        }
+        AuthMethod::KeyboardInteractive => {
+            // Wired up to a real prompt round-trip once the UI layer
+            // (task #10) can relay server prompts to the user.
+            return Err(SshError::AuthFailed);
+        }
+    };
+
+    match result {
+        AuthResult::Success => Ok(()),
+        AuthResult::Failure { .. } => Err(SshError::AuthFailed),
     }
 }
 

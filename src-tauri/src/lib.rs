@@ -83,6 +83,8 @@ pub fn run() {
             logging::session_log_stop,
         ])
         .setup(|app| {
+            migrate_from_previous_identifier(app.handle());
+            vault::migrate_os_unlock_key();
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -95,4 +97,36 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// One-time migration for the `sh.wrshell.app` → `sh.wrustty.app` rebrand:
+/// `app_data_dir`/`app_config_dir` are `${base}/${identifier}` (see Tauri's
+/// `PathResolver`), so changing the identifier alone would silently orphan
+/// every existing saved session, vault file, known_hosts store, and
+/// window-state file at the old path. Relocates them in place if they're
+/// still there and nothing's already at the new path; a no-op on every
+/// later launch once that's done. Best-effort — a failure here (e.g. no
+/// prior install) shouldn't block startup.
+fn migrate_from_previous_identifier(app: &tauri::AppHandle) {
+    const PREVIOUS_IDENTIFIER: &str = "sh.wrshell.app";
+
+    let path = app.path();
+    let bases = [path.data_dir(), path.config_dir()];
+    let new_dirs = [path.app_data_dir(), path.app_config_dir()];
+
+    for (old_base, new_dir) in bases.into_iter().zip(new_dirs) {
+        let (Ok(old_base), Ok(new_dir)) = (old_base, new_dir) else {
+            continue;
+        };
+        let old_dir = old_base.join(PREVIOUS_IDENTIFIER);
+        if old_dir.exists() && !new_dir.exists() {
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                log::warn!(
+                    "failed to migrate app data from {} to {}: {e}",
+                    old_dir.display(),
+                    new_dir.display()
+                );
+            }
+        }
+    }
 }

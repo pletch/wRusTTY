@@ -62,7 +62,7 @@ export function RestoreSessionsPrompt({
           </span>
         </div>
         <p className="text-xs leading-relaxed text-white/50">
-          {count === 1 ? 'A session was' : 'Sessions were'} open when wr-shell last closed.
+          {count === 1 ? 'A session was' : 'Sessions were'} open when wRusTTY last closed.
         </p>
 
         {needsVaultUnlock ? (
