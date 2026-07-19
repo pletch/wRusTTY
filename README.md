@@ -1,7 +1,5 @@
 # wRusTTY
 
-![wRusTTY](docs/branding/wrustty-wordmark.png)
-
 A lightweight SSH / Telnet / Serial client for Windows 11: modern GUI,
 tabbed sessions, encrypted local credential vault, GPU-accelerated terminal.
 Built with Tauri 2 (Rust) + React.

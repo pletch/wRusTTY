@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Plus, X, RotateCw, Copy, Terminal as TerminalIcon, Radio, Cable } from 'lucide-react'
+import {
+  Plus,
+  X,
+  RotateCw,
+  Copy,
+  Terminal as TerminalIcon,
+  Radio,
+  Cable,
+  TerminalSquare,
+} from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
 import { allLeaves, isTopSplitVertical } from '../lib/paneTree'
 import { DRAG_TAB_MIME } from '../lib/dragTypes'
-import appIcon from '../assets/wrustty-icon.png'
 
 interface Props {
   tabs: Tab[]
@@ -100,10 +108,22 @@ export function TabBar({
       {/* Also gives the tab strip natural clearance from the window's
        * rounded corner, replacing what used to just be an empty sliver of
        * padding. */}
-      <div className="flex shrink-0 items-center pl-2.5 pr-1.5">
-        <img src={appIcon} alt="wRusTTY" className="h-4 w-4 rounded-[3px]" />
+      <div className="flex shrink-0 items-center pl-2.5 pr-1.5 text-[#b7410e]">
+        <TerminalSquare size={16} strokeWidth={2} />
       </div>
-      <div className="flex min-w-0 shrink items-stretch overflow-x-auto">
+      {/* The fade mask (not just a visual flourish) keeps a tab that's only
+       * partially scrolled into view from ending in a harsh mid-content
+       * clip — one that, at just the wrong container width, would slice
+       * straight through that tab's close button and leave half of it
+       * rendered. Harmless when nothing overflows: no content, whole or
+       * partial, sits under the faded region. */}
+      <div
+        className="flex min-w-0 shrink items-stretch overflow-x-auto"
+        style={{
+          WebkitMaskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+          maskImage: 'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
+        }}
+      >
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           const leaves = allLeaves(tab.root)
