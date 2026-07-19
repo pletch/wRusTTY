@@ -21,7 +21,13 @@ export default defineConfig({
         }
       : undefined,
     watch: {
-      ignored: ['**/src-tauri/**'],
+      // src-tauri/ itself never has watchable frontend files, but more
+      // importantly: this is a Cargo workspace with src-tauri as a member,
+      // not the root, so the actual build output (target/) lives at the
+      // repo root rather than under src-tauri/ — without excluding it too,
+      // Vite's watcher can grab a file handle on a build artifact mid-link,
+      // right as cargo has it locked, and crash with EBUSY.
+      ignored: ['**/src-tauri/**', '**/target/**'],
     },
   },
 })
