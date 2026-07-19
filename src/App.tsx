@@ -406,7 +406,19 @@ function App() {
     setTabs((prev) =>
       prev.map((t) =>
         t.id === id
-          ? { ...t, root: updateLeaf(t.root, t.activePaneId, (l) => ({ ...l, generation: l.generation + 1 })) }
+          ? {
+              ...t,
+              root: updateLeaf(t.root, t.activePaneId, (l) => ({
+                ...l,
+                // Re-resolve from the profile instead of replaying the source
+                // baked in at the original connect time — otherwise editing a
+                // profile's host/port after connecting has no effect on
+                // Reconnect, since sshProfile sources are the only ones
+                // re-read fresh from disk on connect.
+                source: l.initial?.id ? { protocol: 'sshProfile', profileId: l.initial.id } : l.source,
+                generation: l.generation + 1,
+              })),
+            }
           : t,
       ),
     )

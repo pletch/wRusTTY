@@ -4,7 +4,7 @@ import type { TelnetConfig } from './telnet'
 import type { SerialConfig } from './serial'
 
 export type ConnectionSource =
-  | { protocol: 'ssh'; config: SshConfig }
+  | { protocol: 'ssh'; config: SshConfig; jumpProfileId?: string | null }
   | { protocol: 'sshProfile'; profileId: string }
   | { protocol: 'telnet'; config: TelnetConfig }
   | { protocol: 'serial'; config: SerialConfig }
@@ -40,7 +40,12 @@ export function connect(
 
   switch (source.protocol) {
     case 'ssh':
-      return invoke<string>('ssh_connect', { config: source.config, channel, dataChannel })
+      return invoke<string>('ssh_connect', {
+        config: source.config,
+        jumpProfileId: source.jumpProfileId ?? null,
+        channel,
+        dataChannel,
+      })
     case 'sshProfile':
       return invoke<string>('ssh_connect_profile', {
         profileId: source.profileId,

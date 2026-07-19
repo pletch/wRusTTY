@@ -325,6 +325,7 @@ export function ConnectDialog({
         onConnect({
           protocol: 'ssh',
           config: { host, port: Number(port) || 22, username, auth },
+          jumpProfileId: jumpProfileId || null,
         })
       }
     } else if (protocol === 'telnet') {
@@ -564,13 +565,22 @@ export function ConnectDialog({
                   </div>
 
                   {authType === 'Password' ? (
-                    <input
-                      className={`${inputClass} w-full`}
-                      placeholder="password"
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
+                    <>
+                      <input
+                        className={`${inputClass} w-full`}
+                        placeholder={
+                          initial?.hasCredential ? '•••••••• (saved — leave blank to keep)' : 'password'
+                        }
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                      />
+                      {initial?.hasCredential && !password && (
+                        <p className="text-xs text-white/40">
+                          Password is stored in the vault — enter a new one to replace it.
+                        </p>
+                      )}
+                    </>
                   ) : (
                     <>
                       <div className="flex gap-1.5">
@@ -596,7 +606,11 @@ export function ConnectDialog({
                       </div>
                       <input
                         className={`${inputClass} w-full`}
-                        placeholder="passphrase (optional)"
+                        placeholder={
+                          initial?.hasCredential && keyPath
+                            ? '•••••••• (saved — leave blank to keep)'
+                            : 'passphrase (optional)'
+                        }
                         type="password"
                         value={passphrase}
                         onChange={(e) => setPassphrase(e.target.value)}

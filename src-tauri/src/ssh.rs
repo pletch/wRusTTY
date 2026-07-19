@@ -127,11 +127,21 @@ fn known_hosts_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
-    config: SshConfig,
+    mut config: SshConfig,
+    jump_profile_id: Option<String>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, SshState>,
+    vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
+    // A manual/one-off connection can still jump through a saved profile —
+    // resolved here, same as ssh_connect_profile, so the jump host's
+    // vault-stored credential never has to cross into the webview.
+    if let Some(jump_id) = &jump_profile_id {
+        let jump_profile = profiles::get_profile(&app, jump_id)?;
+        let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
+        config.jump = Some(Box::new(jump_config));
+    }
     start_connection(app, config, channel, data_channel, &state).await
 }
 
