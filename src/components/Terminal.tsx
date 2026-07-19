@@ -105,12 +105,13 @@ export function Terminal({
     if (searchOpen) searchInputRef.current?.focus()
   }, [searchOpen])
 
-  // Swaps the renderer live when vibrancy is toggled, instead of waiting
-  // for the next reconnect — same WebGL/DWM compositing conflict as the
-  // check inside loadWebgl() below.
+  // Swaps the renderer live when vibrancy or opacity crosses the
+  // transparent/opaque boundary, instead of waiting for the next reconnect —
+  // same WebGL/DWM compositing conflict as the check inside loadWebgl()
+  // below.
   useEffect(() => {
     reloadWebglRef.current?.()
-  }, [settings.vibrancyMode])
+  }, [settings.vibrancyMode, settings.backgroundOpacity < 1])
 
   useEffect(() => {
     const container = containerRef.current
@@ -152,10 +153,14 @@ export function Terminal({
     function loadWebgl(): WebglAddon | null {
       // WebView2 on Windows composites a hardware-accelerated WebGL canvas
       // as opaque against a transparent window, even with alpha requested —
-      // it silently defeats the acrylic/mica effect underneath. Falling
-      // back to xterm's Canvas 2D renderer while vibrancy is active avoids
-      // that broken compositing path entirely.
-      if (settingsRef.current.vibrancyMode !== 'off') return null
+      // regardless of whether the transparency comes from acrylic/mica or
+      // just the plain opacity slider, since the OS window is transparent
+      // (tauri.conf.json's `transparent: true`) either way. Falling back to
+      // xterm's Canvas 2D renderer whenever either is active avoids that
+      // broken compositing path entirely.
+      if (settingsRef.current.vibrancyMode !== 'off' || settingsRef.current.backgroundOpacity < 1) {
+        return null
+      }
       try {
         const addon = new WebglAddon()
         addon.onContextLoss(() => {
