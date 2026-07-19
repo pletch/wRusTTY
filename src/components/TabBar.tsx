@@ -143,7 +143,13 @@ export function TabBar({
        * to hide, so it'd just needlessly dim the last tab. */}
       <div
         ref={tabsContainerRef}
-        className="flex min-w-0 shrink items-stretch overflow-x-auto"
+        // The fade above is the intended overflow affordance — the native
+        // scrollbar this row would otherwise grow underneath it (styled
+        // 10px tall in index.css) doesn't fit a 40px tab strip, and shows
+        // up even for the ~1px subpixel-rounding gaps that aren't real
+        // overflow at all. Wheel/trackpad scrolling still works with it
+        // hidden; only the visible bar is gone.
+        className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto"
         style={
           overflowing
             ? {

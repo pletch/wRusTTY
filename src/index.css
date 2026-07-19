@@ -56,6 +56,18 @@ body {
   background: transparent;
 }
 
+/* The tab strip signals overflow with its own right-edge fade instead of a
+   scrollbar — the global 10px one above doesn't fit inside its 40px-tall
+   row, and would show up even for sub-pixel rounding gaps that aren't real
+   overflow. Scrolling (wheel/trackpad/programmatic) still works either way;
+   this only hides the bar itself. */
+.tab-strip-scroll {
+  scrollbar-width: none;
+}
+.tab-strip-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 @media (prefers-color-scheme: light) {
   ::-webkit-scrollbar-thumb {
     background-color: rgba(0, 0, 0, 0.32);
