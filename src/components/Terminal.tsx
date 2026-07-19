@@ -119,11 +119,6 @@ export function Terminal({
       theme: themeWithOpacity(settingsRef.current.themeName, settingsRef.current.backgroundOpacity),
     })
     termRef.current = term
-    // Temporary diagnostic hook for inspecting the live theme/config from
-    // devtools while chasing the Windows/WebView2 transparency gap — not
-    // meant to stay long-term, but exposing this directly is far more
-    // conclusive than inferring state from computed styles or canvas reads.
-    ;(window as unknown as { __debugTerm?: typeof term }).__debugTerm = term
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
