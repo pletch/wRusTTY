@@ -39,7 +39,7 @@ pub fn register(app: &tauri::AppHandle) {
     let app_ptr = Box::leak(Box::new(app.clone())) as *mut tauri::AppHandle as usize;
 
     unsafe {
-        SetWindowSubclass(hwnd, Some(subclass_proc), 1, app_ptr);
+        let _ = SetWindowSubclass(hwnd, Some(subclass_proc), 1, app_ptr);
         let _ = windows::Win32::System::RemoteDesktop::WTSRegisterSessionNotification(
             hwnd,
             windows::Win32::System::RemoteDesktop::NOTIFY_FOR_THIS_SESSION,
