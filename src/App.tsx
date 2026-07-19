@@ -219,9 +219,19 @@ function App() {
   // render) means the window only ever appears already correctly sized and
   // already showing the real UI, not a flash of blank/wrong-sized chrome.
   useEffect(() => {
-    getCurrentWindow()
+    const win = getCurrentWindow()
+    win
       .show()
+      .then(() => win.setFocus())
       .catch(() => {})
+    // show() alone doesn't guarantee the window actually receives OS-level
+    // keyboard focus on every window manager, so the very first tab's
+    // term.focus() call (in Terminal.tsx, once it connects) can land on a
+    // window that isn't focused yet — the DOM focus "succeeds" but keys go
+    // nowhere until the user clicks in. Later tabs don't hit this because
+    // creating one requires already having clicked into the app, which
+    // gives the window OS focus as a side effect. Explicitly requesting
+    // focus here closes that race for the first tab too.
   }, [])
 
   // Rounded corners only make sense for a floating window — a maximized
