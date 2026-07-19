@@ -53,7 +53,17 @@ function PaneIndicator({
   }
   const horizontal = node.direction === 'horizontal'
   return (
-    <span className={`flex h-full w-full gap-[2px] ${horizontal ? 'flex-row' : 'flex-col'}`}>
+    // overflow-hidden: children's flexBasis percentages sum to 100% of this
+    // row on their own, on top of which the gap below adds further width
+    // that flexGrow/flexShrink:0 can't absorb — so each split level
+    // genuinely overflows its own box by (children - 1) * 2px. Left
+    // unclipped, that bleeds outward through every ancestor (invisibly,
+    // since it's solid same-toned overflow) and was inflating the real tab
+    // strip's scrollWidth enough, after a second nested split, to trip the
+    // overflow-fade check below even with nothing actually clipped.
+    <span
+      className={`flex h-full w-full gap-[2px] overflow-hidden ${horizontal ? 'flex-row' : 'flex-col'}`}
+    >
       {node.children.map((child, i) => (
         <span
           key={child.id}
