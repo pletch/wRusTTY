@@ -111,6 +111,20 @@ fn verify_windows_hello_blocking(
     }
     .and_then(|op| op.join())
     .map_err(|e| e.to_string())?;
+    // Being an owned/parented window would normally mean Windows hands
+    // keyboard focus back to `hwnd` on its own once the prompt closes, but
+    // that didn't hold up in practice — the app window was left unfocused
+    // behind the scenes, so the terminal's own post-connect focus() call
+    // (over on the JS side) landed on a window that wasn't actually
+    // foreground. Doing it from JS afterward (an IPC round-trip and several
+    // event-loop turns removed from the prompt actually closing) is exactly
+    // the kind of delay Windows' foreground-lock heuristic tends to reject
+    // — calling it here, synchronously, right as the prompt hands control
+    // back, is as close to "still holds the right to reclaim it" as this
+    // gets.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+    }
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
             "Windows Hello verification didn't succeed ({result:?})"
