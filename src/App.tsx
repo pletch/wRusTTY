@@ -29,6 +29,8 @@ import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
+import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
+import { setWindowVibrancy } from './lib/windowEffects'
 import {
   allLeaves,
   blankLeaf,
@@ -100,6 +102,14 @@ function App() {
     profiles.listSessions().then(setSessions).catch(() => setSessions([]))
   }, [profilesVersion])
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
+  // Mirrors vibrancyMode/theme/opacity to the native window on every change
+  // ('off' still round-trips through the Rust side, which clears both
+  // effects unconditionally — the no-op case just costs one IPC call).
+  useEffect(() => {
+    const { backgroundOpacity, themeName, vibrancyMode } = terminalSettings
+    const tint = backgroundTint(findTheme(themeName), backgroundOpacity)
+    setWindowVibrancy(vibrancyMode, tint).catch(() => {})
+  }, [terminalSettings.backgroundOpacity, terminalSettings.themeName, terminalSettings.vibrancyMode])
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
@@ -826,9 +836,15 @@ function App() {
 
   return (
     <div
-      className={`flex h-screen w-screen flex-col overflow-hidden bg-[#16171d] ${
+      className={`flex h-screen w-screen flex-col overflow-hidden ${
         maximized ? '' : 'rounded-lg border border-white/10'
       }`}
+      style={{
+        background: backgroundWithOpacity(
+          findTheme(terminalSettings.themeName),
+          terminalSettings.backgroundOpacity,
+        ),
+      }}
     >
       <div className="flex h-10 shrink-0 items-stretch border-b border-white/10 bg-black/20">
         <TabBar

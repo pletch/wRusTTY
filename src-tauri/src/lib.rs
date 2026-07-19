@@ -8,6 +8,7 @@ mod sftp;
 mod ssh;
 mod telnet;
 mod vault;
+mod window_effects;
 
 use tauri::Manager;
 
@@ -81,6 +82,7 @@ pub fn run() {
             vault::vault_unlock_with_os,
             logging::session_log_start,
             logging::session_log_stop,
+            window_effects::set_window_vibrancy,
         ])
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());

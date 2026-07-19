@@ -91,6 +91,53 @@ export function SettingsMenu({ settings, onChange }: Props) {
               </select>
             </label>
           </div>
+          <div className="mt-1 px-1 pt-1.5">
+            <label className="flex items-center justify-between gap-2 text-white/80">
+              <span>Background opacity</span>
+              <span className="text-white/50">{Math.round(settings.backgroundOpacity * 100)}%</span>
+            </label>
+            <input
+              type="range"
+              min={40}
+              max={100}
+              step={5}
+              className="mt-1 w-full accent-sky-400"
+              value={Math.round(settings.backgroundOpacity * 100)}
+              onChange={(e) => onChange({ ...settings, backgroundOpacity: Number(e.target.value) / 100 })}
+            />
+          </div>
+          <div className="mt-1.5 px-1">
+            <span className="text-white/80">Window effect</span>
+            <div className="mt-1 flex gap-1 rounded-md bg-black/20 p-1">
+              {(
+                [
+                  ['off', 'Off'],
+                  ['acrylic', 'Acrylic'],
+                  ['mica', 'Mica'],
+                ] as const
+              ).map(([mode, mLabel]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onChange({ ...settings, vibrancyMode: mode })}
+                  className={`flex-1 rounded py-1 transition-colors duration-150 ${
+                    settings.vibrancyMode === mode
+                      ? 'bg-white/15 text-white'
+                      : 'text-white/40 hover:text-white/70'
+                  }`}
+                >
+                  {mLabel}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-white/40">
+              {settings.vibrancyMode === 'acrylic'
+                ? 'Live blur-behind, at opacity below 100% — Windows has a documented lag bug on some builds while resizing/dragging.'
+                : settings.vibrancyMode === 'mica'
+                  ? "A one-time wallpaper-color tint, not a live blur — won't show desktop content moving behind the window."
+                  : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
+            </p>
+          </div>
         </div>
       )}
     </div>

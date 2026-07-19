@@ -137,3 +137,26 @@ export const PRESET_THEMES: TerminalTheme[] = [
 export function findTheme(name: string): TerminalTheme {
   return PRESET_THEMES.find((t) => t.name === name) ?? PRESET_THEMES[0]
 }
+
+function hexToRgb(hex: string): [number, number, number] {
+  const n = hex.replace('#', '')
+  return [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)]
+}
+
+/** `theme.background` as an rgba() string carrying the given alpha (0-1) —
+ * used both for xterm's own theme (with `allowTransparency` on, it respects
+ * alpha instead of flattening to opaque) and for the DOM chrome painted
+ * around it, so the two layers match. */
+export function backgroundWithOpacity(theme: TerminalTheme, opacity: number): string {
+  const [r, g, b] = hexToRgb(theme.background)
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`
+}
+
+/** Same color as an (r, g, b, a 0-255) tuple, for window-vibrancy's acrylic
+ * tint — a separate, OS-compositor-level parameter from the DOM alpha
+ * above, but kept in sync with it so the whole window reads as one
+ * consistent translucency rather than two different alpha layers. */
+export function backgroundTint(theme: TerminalTheme, opacity: number): [number, number, number, number] {
+  const [r, g, b] = hexToRgb(theme.background)
+  return [r, g, b, Math.round(opacity * 255)]
+}

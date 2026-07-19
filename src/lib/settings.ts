@@ -1,3 +1,5 @@
+import type { VibrancyMode } from './windowEffects'
+
 export interface TerminalSettings {
   /** Selecting text immediately copies it to the clipboard. */
   copyOnSelect: boolean
@@ -10,6 +12,17 @@ export interface TerminalSettings {
    * live sessions on launch) with a security angle (may need to unlock the
    * vault to do it), so it's opt-in rather than assumed. */
   restoreSessionsOnLaunch: boolean
+  /** 1 = fully opaque (default). Below 1, the app background/terminal both
+   * get an alpha-blended background. With `vibrancyMode` off this is plain
+   * unblurred glass (the window was already OS-transparent for the rounded
+   * corners); with acrylic/mica it's layered under that OS effect instead,
+   * so the two read as one consistent translucent window. */
+  backgroundOpacity: number
+  /** 'off' skips the native call entirely. 'acrylic' is live blur-behind
+   * (the classic Windows Terminal look) but has a documented Microsoft
+   * resize/drag perf bug on Win10 1903+/Win11 22000+. 'mica' has no such
+   * bug but also no live blur — just a one-time wallpaper-color tint. */
+  vibrancyMode: VibrancyMode
 }
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
@@ -24,6 +37,8 @@ const defaults: TerminalSettings = {
   rightClickPaste: true,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
+  backgroundOpacity: 1,
+  vibrancyMode: 'off',
 }
 
 export function loadSettings(): TerminalSettings {

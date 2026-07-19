@@ -10,7 +10,7 @@ import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import type { TerminalSettings } from '../lib/settings'
-import { findTheme } from '../lib/theme'
+import { findTheme, backgroundWithOpacity } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 
@@ -36,6 +36,11 @@ interface PendingHostKey {
 
 function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
+}
+
+function themeWithOpacity(themeName: string, opacity: number) {
+  const theme = findTheme(themeName)
+  return { ...theme, background: backgroundWithOpacity(theme, opacity) }
 }
 
 export function Terminal({
@@ -86,9 +91,9 @@ export function Terminal({
   // tearing down and reconnecting the session.
   useEffect(() => {
     if (termRef.current) {
-      termRef.current.options.theme = findTheme(settings.themeName)
+      termRef.current.options.theme = themeWithOpacity(settings.themeName, settings.backgroundOpacity)
     }
-  }, [settings.themeName])
+  }, [settings.themeName, settings.backgroundOpacity])
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
@@ -106,7 +111,12 @@ export function Terminal({
       cursorBlink: true,
       fontFamily: 'ui-monospace, Consolas, monospace',
       fontSize: 14,
-      theme: findTheme(settingsRef.current.themeName),
+      // Harmless at the default opacity of 1 (an alpha-1 color renders
+      // identically either way) — always on so a live opacity change via
+      // the settings effect above doesn't need to also recreate the
+      // terminal just to flip this.
+      allowTransparency: true,
+      theme: themeWithOpacity(settingsRef.current.themeName, settingsRef.current.backgroundOpacity),
     })
     termRef.current = term
 
@@ -361,7 +371,7 @@ export function Terminal({
       // never drift out of sync with whatever the terminal itself paints,
       // which a previous attempt at this (matching color one level up, in
       // App.tsx) did the moment a non-default theme was actually tested.
-      style={{ background: findTheme(settings.themeName).background }}
+      style={{ background: backgroundWithOpacity(findTheme(settings.themeName), settings.backgroundOpacity) }}
     >
       <div ref={containerRef} className="h-full w-full" />
       {connecting && (

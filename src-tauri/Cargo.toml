@@ -42,6 +42,10 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 notify-debouncer-full = "0.3"
 tempfile = "3"
 tauri-plugin-window-state = "2.4.1"
+# Acrylic blur-behind for the background-transparency setting. Builds on
+# every platform (its own platform-specific bits are internally cfg-gated),
+# though only the Windows path is wired up here.
+window-vibrancy = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 # Pinned to match whatever version wr-ssh's russh/pageant dependency
