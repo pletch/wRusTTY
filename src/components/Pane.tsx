@@ -111,46 +111,54 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     [node.id, onSlotRef],
   )
   const [dragOver, setDragOver] = useState(false)
+  const [gripHover, setGripHover] = useState(false)
 
   return (
     <div
-      className="group relative flex h-full w-full flex-col"
+      className="relative flex h-full w-full flex-col"
       onFocusCapture={() => onFocusPane(node.id)}
       onMouseDown={() => onFocusPane(node.id)}
     >
       {tabHasSplit && (
-        // A real flex-flow sibling (not an absolute overlay) reserving
-        // actual layout space above the content, rather than floating on
-        // top of it — so the icons, even hidden, can never land on a real
-        // row of terminal text no matter what's scrolled into view. Kept
-        // hover-only (not shown by default) since the fixed strip alone is
-        // enough of a visual tell that something's there, without needing
-        // the icons themselves visible at all times.
-        <div className="relative z-10 flex h-5 shrink-0 items-center justify-end gap-0.5 px-1">
-          <span
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.effectAllowed = 'move'
-              e.dataTransfer.setData(DRAG_PANE_MIME, JSON.stringify({ tabId, paneId: node.id }))
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            title="Drag to move this pane to a new tab"
-            className="cursor-grab rounded p-1 text-white/50 opacity-0 transition-opacity duration-150 hover:bg-black/40 hover:text-white/90 group-hover:opacity-100 active:cursor-grabbing"
-          >
-            <GripVertical size={12} />
-          </span>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onClosePane(node.id)
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            title="Close this pane"
-            className="rounded p-1 text-white/50 opacity-0 transition-opacity duration-150 hover:bg-red-500/60 hover:text-white group-hover:opacity-100"
-          >
-            <X size={12} />
-          </button>
+        // A small dedicated hotzone in the corner, not the whole pane —
+        // hovering over the terminal's actual content shouldn't reveal
+        // anything, only being right up in this corner should. Overlays
+        // directly on the content's own (already correctly themed)
+        // background rather than reserving separate space for it, so
+        // there's no color seam or lost vertical room to account for.
+        <div
+          className="absolute right-0 top-0 z-10 flex h-6 w-14 items-start justify-end gap-0.5 p-1"
+          onMouseEnter={() => setGripHover(true)}
+          onMouseLeave={() => setGripHover(false)}
+        >
+          {gripHover && (
+            <>
+              <span
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData(DRAG_PANE_MIME, JSON.stringify({ tabId, paneId: node.id }))
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Drag to move this pane to a new tab"
+                className="cursor-grab rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm hover:bg-black/60 hover:text-white/90 active:cursor-grabbing"
+              >
+                <GripVertical size={12} />
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClosePane(node.id)
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Close this pane"
+                className="rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm hover:bg-red-500/60 hover:text-white"
+              >
+                <X size={12} />
+              </button>
+            </>
+          )}
         </div>
       )}
       {node.source ? (
@@ -161,10 +169,10 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         // the terminal's real home, moving it between tabs (a totally
         // separate React subtree per tab) would force an unmount/remount,
         // tearing down the live session to move it.
-        <div ref={slotRef} className="relative min-h-0 w-full flex-1" />
+        <div ref={slotRef} className="relative h-full w-full" />
       ) : (
         <div
-          className={`min-h-0 w-full flex-1 transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
+          className={`h-full w-full transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes(DRAG_TAB_MIME)) return
             e.preventDefault()
