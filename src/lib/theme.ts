@@ -143,13 +143,20 @@ function hexToRgb(hex: string): [number, number, number] {
   return [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)]
 }
 
-/** `theme.background` as an rgba() string carrying the given alpha (0-1) —
- * used both for xterm's own theme (with `allowTransparency` on, it respects
- * alpha instead of flattening to opaque) and for the DOM chrome painted
- * around it, so the two layers match. */
+/** `theme.background` as an 8-digit #RRGGBBAA hex string carrying the given
+ * alpha (0-1) — used both for xterm's own theme (with `allowTransparency`
+ * on, it respects alpha instead of flattening to opaque) and for the DOM
+ * chrome painted around it, so the two layers match. Hex8 rather than
+ * `rgba()`: xterm's color parser matches hex on an exact fast path, while
+ * `rgba()` goes through a separate regex — functionally equivalent for the
+ * alpha values this app actually produces, but hex sidesteps that second
+ * path entirely. */
 export function backgroundWithOpacity(theme: TerminalTheme, opacity: number): string {
   const [r, g, b] = hexToRgb(theme.background)
-  return `rgba(${r}, ${g}, ${b}, ${opacity})`
+  const alphaHex = Math.round(opacity * 255)
+    .toString(16)
+    .padStart(2, '0')
+  return `${theme.background}${alphaHex}`
 }
 
 /** Same color as an (r, g, b, a 0-255) tuple, for window-vibrancy's acrylic
