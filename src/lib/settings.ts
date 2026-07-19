@@ -20,8 +20,10 @@ export interface TerminalSettings {
   backgroundOpacity: number
   /** 'off' skips the native call entirely. 'acrylic' is live blur-behind
    * (the classic Windows Terminal look) but has a documented Microsoft
-   * resize/drag perf bug on Win10 1903+/Win11 22000+. 'mica' has no such
-   * bug but also no live blur — just a one-time wallpaper-color tint. */
+   * resize/drag perf bug on Win10 1903+/Win11 22000+. 'mica' and 'tabbed'
+   * have no such bug but also no live blur — just a one-time
+   * wallpaper-color tint; 'tabbed' is the same tint tuned for windows with
+   * a tab strip (this one's), giving it a subtly different tone. */
   vibrancyMode: VibrancyMode
 }
 

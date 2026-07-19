@@ -114,6 +114,7 @@ export function SettingsMenu({ settings, onChange }: Props) {
                   ['off', 'Off'],
                   ['acrylic', 'Acrylic'],
                   ['mica', 'Mica'],
+                  ['tabbed', 'Tabbed'],
                 ] as const
               ).map(([mode, mLabel]) => (
                 <button
@@ -135,7 +136,9 @@ export function SettingsMenu({ settings, onChange }: Props) {
                 ? 'Live blur-behind, at opacity below 100% — Windows has a documented lag bug on some builds while resizing/dragging.'
                 : settings.vibrancyMode === 'mica'
                   ? "A one-time wallpaper-color tint, not a live blur — won't show desktop content moving behind the window."
-                  : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
+                  : settings.vibrancyMode === 'tabbed'
+                    ? 'Same one-time tint as Mica, tuned for windows with a tab strip — no live blur either. Windows 11 only.'
+                    : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
             </p>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 
-export type VibrancyMode = 'off' | 'acrylic' | 'mica'
+export type VibrancyMode = 'off' | 'acrylic' | 'mica' | 'tabbed'
 
 /** Applies (or clears) the main window's OS-level vibrancy effect. Errors on
  * platforms other than Windows — callers should treat that as expected, not
