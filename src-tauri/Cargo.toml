@@ -74,3 +74,12 @@ windows = { version = "=0.62.2", features = [
 # to it by this crate name directly (not re-exported through
 # `windows::Foundation`), so we need it as a direct dependency to name it.
 windows-future = "=0.3.2"
+# For ICoreWebView2Controller::MoveFocus (see verify_windows_hello_blocking
+# in vault.rs) — already in the dependency graph transitively via wry, so
+# this just names it as a direct dependency rather than pulling anything
+# new in. Its own `windows` version (0.61.x, per its Cargo.toml) differs
+# from the one pinned above, so this is a second copy of that crate in the
+# graph — harmless here since nothing crosses between the two; we only
+# call methods directly on the `ICoreWebView2Controller` this crate hands
+# back, never mix its types with our own `windows::Win32::Foundation::HWND`.
+webview2-com = "=0.38.2"

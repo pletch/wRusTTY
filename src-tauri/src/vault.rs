@@ -103,6 +103,7 @@ fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
 /// can open behind the app with no indication it's even there.
 #[cfg(target_os = "windows")]
 fn verify_windows_hello_blocking(
+    window: &tauri::WebviewWindow,
     hwnd: windows::Win32::Foundation::HWND,
     message: String,
 ) -> Result<(), String> {
@@ -163,6 +164,23 @@ fn verify_windows_hello_blocking(
     // Windows Terminal and other apps use to reclaim focus after a native
     // dialog closes.
     force_foreground(hwnd);
+    // Being the OS foreground window still isn't the same thing as WebView2
+    // actually having keyboard focus on some element inside it — WebView2
+    // keeps its own internal focus manager, and there's no guarantee
+    // reactivating the parent HWND alone reaches into it correctly after a
+    // different process's window (this same consent prompt) held focus.
+    // MoveFocus is WebView2's own API for exactly this: hand focus back in
+    // directly, landing on whichever element had it before (or the default
+    // one), instead of going through Win32 activation and hoping it
+    // cascades down into the webview correctly.
+    let _ = window.with_webview(|webview| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
+        unsafe {
+            let _ = webview
+                .controller()
+                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+        }
+    });
     if result != UserConsentVerificationResult::Verified {
         return Err(format!(
             "Windows Hello verification didn't succeed ({result:?})"
@@ -173,14 +191,15 @@ fn verify_windows_hello_blocking(
 
 #[cfg(target_os = "windows")]
 async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), String> {
-    let hwnd = app
+    let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "no main window".to_string())?
-        .hwnd()
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| "no main window".to_string())?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     // HWND isn't necessarily Send, and this needs to run on a different
     // thread (spawn_blocking, below) — round-trip through a plain isize
     // instead of moving the HWND value itself across that boundary.
+    // `WebviewWindow` itself is Send (it's just handles/ids under the
+    // hood), so it moves into the closure directly.
     let hwnd_value = hwnd.0 as isize;
     let message = message.to_string();
     // RequestVerificationForWindowAsync's `.join()` blocks the calling
@@ -189,7 +208,7 @@ async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), Stri
     // however long the user takes to respond.
     tokio::task::spawn_blocking(move || {
         let hwnd = windows::Win32::Foundation::HWND(hwnd_value as _);
-        verify_windows_hello_blocking(hwnd, message)
+        verify_windows_hello_blocking(&window, hwnd, message)
     })
     .await
     .map_err(|e| e.to_string())?
