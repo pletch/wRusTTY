@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
 import { allLeaves, isTopSplitVertical } from '../lib/paneTree'
-import { DRAG_TAB_MIME } from '../lib/dragTypes'
+import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
 
 interface Props {
   tabs: Tab[]
@@ -23,6 +23,7 @@ interface Props {
   onDuplicate: (id: string) => void
   onReconnect: (id: string) => void
   onReorder: (draggedId: string, targetId: string) => void
+  onDropPaneAsNewTab: (tabId: string, paneId: string) => void
 }
 
 const protocolIcons = {
@@ -101,10 +102,12 @@ export function TabBar({
   onDuplicate,
   onReconnect,
   onReorder,
+  onDropPaneAsNewTab,
 }: Props) {
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const [paneDragOver, setPaneDragOver] = useState(false)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
 
@@ -137,7 +140,29 @@ export function TabBar({
   }, [tabs])
 
   return (
-    <div className="relative flex min-w-0 shrink items-stretch">
+    <div
+      className={`relative flex min-w-0 shrink items-stretch transition-colors duration-100 ${
+        paneDragOver ? 'bg-sky-400/10' : ''
+      }`}
+      // Drop target for a pane dragged out of a split (see the grip in
+      // Pane.tsx) — anywhere on the tab strip works, not just onto an
+      // existing tab, since the point is to create a *new* one.
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes(DRAG_PANE_MIME)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        setPaneDragOver(true)
+      }}
+      onDragLeave={() => setPaneDragOver(false)}
+      onDrop={(e) => {
+        setPaneDragOver(false)
+        const raw = e.dataTransfer.getData(DRAG_PANE_MIME)
+        if (!raw) return
+        e.preventDefault()
+        const { tabId, paneId } = JSON.parse(raw) as { tabId: string; paneId: string }
+        onDropPaneAsNewTab(tabId, paneId)
+      }}
+    >
       {/* Also gives the tab strip natural clearance from the window's
        * rounded corner, replacing what used to just be an empty sliver of
        * padding. */}

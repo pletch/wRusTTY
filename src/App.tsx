@@ -857,6 +857,7 @@ function App() {
           onDuplicate={duplicateTab}
           onReconnect={reconnectTab}
           onReorder={reorderTabs}
+          onDropPaneAsNewTab={popPaneToNewTab}
         />
         <div
           data-tauri-drag-region
@@ -968,6 +969,9 @@ function App() {
             >
               <Pane
                 node={tab.root}
+                tabId={tab.id}
+                tabHasSplit={allLeaves(tab.root).length > 1}
+                onClosePane={(paneId) => closePane(tab.id, paneId)}
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 forwardsOpenByPane={forwardsOpenByPane}
                 filesOpenByPane={filesOpenByPane}

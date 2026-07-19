@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
+import { GripVertical, X } from 'lucide-react'
 import { ConnectDialog } from './ConnectDialog'
 import { ForwardPanel } from './ForwardPanel'
 import { FilesPanel } from './FilesPanel'
@@ -7,10 +8,17 @@ import type { PaneLeaf, PaneNode } from '../types'
 import type { ConnectionSource } from '../lib/connection'
 import type { SessionProfile } from '../lib/profiles'
 import type { VaultSecret } from '../lib/vault'
-import { DRAG_TAB_MIME } from '../lib/dragTypes'
+import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
 
 interface Props {
   node: PaneNode
+  tabId: string
+  /** Whether the tab this pane belongs to currently has more than one pane
+   * — the drag/close grip is only offered then, matching the toolbar's
+   * existing "move to new tab"/"close pane" buttons (a single, unsplit pane
+   * has nowhere more useful to go and nothing to close it back down to). */
+  tabHasSplit: boolean
+  onClosePane: (paneId: string) => void
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
   filesOpenByPane: Record<string, boolean>
@@ -66,6 +74,9 @@ export function Pane(props: Props) {
 function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   const {
     node,
+    tabId,
+    tabHasSplit,
+    onClosePane,
     vaultUnlocked,
     forwardsOpenByPane,
     filesOpenByPane,
@@ -103,10 +114,43 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
 
   return (
     <div
-      className="relative flex h-full w-full flex-col"
+      className="group relative flex h-full w-full flex-col"
       onFocusCapture={() => onFocusPane(node.id)}
       onMouseDown={() => onFocusPane(node.id)}
     >
+      {tabHasSplit && (
+        // Hover-only and tucked in a corner rather than anywhere over the
+        // terminal's own content area — dragging inside a terminal already
+        // means "select text," so this needs its own dedicated grab target
+        // rather than trying to distinguish drag-to-move from
+        // drag-to-select within the same region.
+        <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+          <span
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'move'
+              e.dataTransfer.setData(DRAG_PANE_MIME, JSON.stringify({ tabId, paneId: node.id }))
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            title="Drag to move this pane to a new tab"
+            className="cursor-grab rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm transition-colors duration-100 hover:bg-black/60 hover:text-white/90 active:cursor-grabbing"
+          >
+            <GripVertical size={12} />
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onClosePane(node.id)
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            title="Close this pane"
+            className="rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm transition-colors duration-100 hover:bg-red-500/60 hover:text-white"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
       {node.source ? (
         // The actual <Terminal> lives in a single flat pool rendered once at
         // the App root (see App.tsx) and is portaled in here — not mounted
