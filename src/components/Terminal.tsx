@@ -137,6 +137,17 @@ export function Terminal({
     // as its own function since onResize below needs to redo this same
     // setup when it tears down and rebuilds the addon after a move.
     function loadWebgl(): WebglAddon | null {
+      // Skip WebGL entirely once the background is translucent: its
+      // rectangle-based background fill renders correctly alpha-blended
+      // against an *opaque* page in isolation (verified directly), but
+      // WebView2's compositor doesn't reliably carry a GPU-accelerated
+      // canvas layer's alpha through an OS-level transparent window the
+      // way it does plain CSS-painted DOM — which is exactly why the tab
+      // bar/chrome show through but a connected terminal's own canvas
+      // didn't. xterm's plain 2D canvas fallback creates its context with
+      // `alpha: allowTransparency` directly, which is the more standard,
+      // reliable path for this.
+      if (settingsRef.current.backgroundOpacity < 1) return null
       try {
         const addon = new WebglAddon()
         addon.onContextLoss(() => {
