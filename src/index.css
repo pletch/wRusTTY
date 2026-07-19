@@ -15,6 +15,11 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* Chromium's built-in swipe-to-navigate gesture (two-finger trackpad swipe
+     = browser back/forward) otherwise slides the whole page to preview the
+     destination — with no actual browser history to navigate to here, that
+     just reads as the app's content sliding out past its own window frame. */
+  overscroll-behavior: none;
 }
 
 body {
