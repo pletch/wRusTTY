@@ -348,10 +348,16 @@ export function ConnectDialog({
 
   if (pendingUnlock) {
     return (
-      <div className="flex h-full w-full items-center justify-center">
+      // overflow-auto + m-auto on the card (instead of items/justify-center
+      // on this wrapper) so a pane too short/narrow to fit the card doesn't
+      // strand its top/bottom off-screen with no way to reach it — flex
+      // centering via items-center/justify-center clips overflow at the
+      // *start* of each axis when content is bigger than the container,
+      // which auto margins on the child don't.
+      <div className="flex h-full w-full overflow-auto p-4">
         <form
           onSubmit={submitUnlock}
-          className="w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl duration-150"
+          className="m-auto w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl duration-150"
         >
           <div className="flex items-center gap-2 text-white/90">
             <Lock size={15} className="text-amber-400" />
@@ -419,8 +425,10 @@ export function ConnectDialog({
   }
 
   return (
-    <div className="flex h-full w-full items-center justify-center">
-      <div className="animate-in fade-in zoom-in-95 flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
+    // See the pendingUnlock branch above for why this is overflow-auto +
+    // m-auto on the card rather than items-center/justify-center here.
+    <div className="flex h-full w-full overflow-auto p-4">
+      <div className="animate-in fade-in zoom-in-95 m-auto flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
         {sessions && sessions.length > 0 && (
           // Fixed width, scrolls independently of the form — so having a
           // handful of saved sessions or a hundred never pushes the connect
