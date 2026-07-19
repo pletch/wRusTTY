@@ -20,7 +20,8 @@
         "decorations": false,
         "transparent": true,
         "dragDropEnabled": false,
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-compositing --disable-direct-composition"
       }
     ],
     "security": {
