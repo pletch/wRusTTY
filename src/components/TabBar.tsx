@@ -113,7 +113,13 @@ export function TabBar({
   useEffect(() => {
     const el = tabsContainerRef.current
     if (!el) return
-    const checkOverflow = () => setOverflowing(el.scrollWidth > el.clientWidth)
+    // >1 (not >0): scrollWidth rounds up and clientWidth rounds down from
+    // the same fractional layout independently, so a container that's
+    // genuinely fully visible can still come out exactly 1px "over" —
+    // e.g. revealing the split-pane action icons shifts things by a
+    // fraction of a pixel with nothing actually clipped. That's not
+    // scrollable, just rounding noise; only a real gap should fade it.
+    const checkOverflow = () => setOverflowing(el.scrollWidth - el.clientWidth > 1)
     checkOverflow()
     const observer = new ResizeObserver(checkOverflow)
     observer.observe(el)
