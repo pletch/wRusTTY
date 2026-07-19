@@ -225,6 +225,18 @@ export function TabBar({
                 setDropTargetId(null)
               }}
               onDragOver={(e) => {
+                // A pane being dragged out of a split (see the grip in
+                // Pane.tsx) has no `draggedId` of its own — that's only
+                // tracked for *tab* reordering — so without this check,
+                // hovering directly over an existing tab (rather than the
+                // strip's empty space) never calls preventDefault() here
+                // and the browser shows a "not allowed" cursor despite the
+                // container's own handler being able to accept it.
+                if (e.dataTransfer.types.includes(DRAG_PANE_MIME)) {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  return
+                }
                 if (!draggedId || draggedId === tab.id) return
                 e.preventDefault()
                 e.dataTransfer.dropEffect = 'move'
@@ -232,6 +244,13 @@ export function TabBar({
               }}
               onDragLeave={() => setDropTargetId((id) => (id === tab.id ? null : id))}
               onDrop={(e) => {
+                const rawPane = e.dataTransfer.getData(DRAG_PANE_MIME)
+                if (rawPane) {
+                  e.preventDefault()
+                  const { tabId, paneId } = JSON.parse(rawPane) as { tabId: string; paneId: string }
+                  onDropPaneAsNewTab(tabId, paneId)
+                  return
+                }
                 e.preventDefault()
                 if (draggedId) onReorder(draggedId, tab.id)
                 setDraggedId(null)
