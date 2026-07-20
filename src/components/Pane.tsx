@@ -134,7 +134,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
           // z-30 (above the scrollbar's z-20) is what actually guarantees the
           // grip/close icons stay clickable/visible on top even if that
           // dynamic width ends up wider than this offset assumes.
-          className="absolute right-5 top-0 z-30 flex h-6 w-14 items-start justify-end gap-0.5 p-1"
+          className="absolute right-3 top-0 z-30 flex h-6 w-14 items-start justify-end gap-0.5 p-1"
           onMouseEnter={() => setGripHover(true)}
           onMouseLeave={() => setGripHover(false)}
         >
