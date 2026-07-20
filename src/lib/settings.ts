@@ -5,6 +5,11 @@ export interface TerminalSettings {
   copyOnSelect: boolean
   /** Right-click pastes clipboard contents instead of opening a menu. */
   rightClickPaste: boolean
+  /** When a connection ends cleanly (the remote shell exits or the server
+   * hangs up), automatically close the pane after a brief moment. Off leaves
+   * the pane open showing Reconnect / connection-settings actions instead.
+   * On by default — the long-standing behavior. */
+  closeOnDisconnect: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -37,6 +42,7 @@ const PREVIOUS_STORAGE_KEY = 'wr-shell.terminal-settings'
 const defaults: TerminalSettings = {
   copyOnSelect: true,
   rightClickPaste: true,
+  closeOnDisconnect: true,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

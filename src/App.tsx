@@ -9,6 +9,7 @@ import { VaultMenu } from './components/VaultMenu'
 import { ToastHost } from './components/ToastHost'
 import { WindowControls } from './components/WindowControls'
 import { RestoreSessionsPrompt } from './components/RestoreSessionsPrompt'
+import { StatusBar } from './components/StatusBar'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
 import {
@@ -18,6 +19,7 @@ import {
   ScrollText,
   ArrowLeftRight,
   Folder,
+  Search,
 } from 'lucide-react'
 import { toast } from './lib/toast'
 import * as profiles from './lib/profiles'
@@ -62,6 +64,12 @@ function leafTitle(leaf: PaneLeaf, fallback: string): string {
   return fallback
 }
 
+// Serial data-bits enum → the digit used in conventional framing notation
+// (e.g. the "8" in "8N1"), for the status bar's serial detail string.
+function dataBitsDigit(bits: 'Five' | 'Six' | 'Seven' | 'Eight'): number {
+  return { Five: 5, Six: 6, Seven: 7, Eight: 8 }[bits]
+}
+
 function blankTab(): Tab {
   const leaf = blankLeaf()
   return { id: newTabId(), title: 'New Connection', root: leaf, activePaneId: leaf.id }
@@ -88,6 +96,18 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
   const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
   const [statusByPane, setStatusByPane] = useState<Record<string, string>>({})
+  // Set by the toolbar search button to ask one specific pane's terminal to
+  // open its search box (the box itself is per-Terminal local state, so this
+  // is how an App-level control reaches into it). Targeted by pane id — not a
+  // broadcast — because every tab has its own focused pane, so a plain signal
+  // would open search in background tabs too. The nonce lets a repeat click on
+  // the same pane re-fire.
+  const [searchRequest, setSearchRequest] = useState<{ nonce: number; paneId: string } | null>(null)
+  // Epoch ms a pane reached 'connected', for the status bar's uptime readout.
+  // Set on the connected transition, cleared on any other status (see the
+  // onStatus handler) so a reconnect restarts the clock rather than counting
+  // through the outage.
+  const [connectedAtByPane, setConnectedAtByPane] = useState<Record<string, number>>({})
   const [loggingByPane, setLoggingByPane] = useState<Record<string, boolean>>({})
   const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
   const [filesOpenByPane, setFilesOpenByPane] = useState<Record<string, boolean>>({})
@@ -411,14 +431,15 @@ function App() {
     setActiveTabId(tab.id)
   }
 
-  /** Reconnects the tab's active pane in place. */
-  function reconnectTab(id: string) {
+  /** Reconnects one specific pane in place (generation bump remounts its
+   * Terminal, which reconnects). */
+  function reconnectPane(tabId: string, paneId: string) {
     setTabs((prev) =>
       prev.map((t) =>
-        t.id === id
+        t.id === tabId
           ? {
               ...t,
-              root: updateLeaf(t.root, t.activePaneId, (l) => ({
+              root: updateLeaf(t.root, paneId, (l) => ({
                 ...l,
                 // Re-resolve from the profile instead of replaying the source
                 // baked in at the original connect time — otherwise editing a
@@ -432,6 +453,12 @@ function App() {
           : t,
       ),
     )
+  }
+
+  /** Reconnects the tab's active pane in place (the tab-context-menu action). */
+  function reconnectTab(id: string) {
+    const tab = tabs.find((t) => t.id === id)
+    if (tab) reconnectPane(id, tab.activePaneId)
   }
 
   function connectPane(tabId: string, paneId: string, source: ConnectionSource) {
@@ -848,6 +875,40 @@ function App() {
     activeLeaf?.source?.protocol === 'ssh' || activeLeaf?.source?.protocol === 'sshProfile'
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
 
+  // Status-bar readout for the active pane: a display protocol tag plus a
+  // resolved target string. sshProfile carries only an id, so its label is
+  // looked up from saved sessions; serial appends its baud + framing (e.g.
+  // "115200 8N1") since that's the identifying detail for a serial link.
+  const activePaneLeaves = activeTab ? allLeaves(activeTab.root) : []
+  const statusBarConn = ((): { protocol: string; target: string } | null => {
+    const src = activeLeaf?.source
+    if (!src) return null
+    switch (src.protocol) {
+      case 'ssh':
+        // sourceLabel gives user@host; append the port here so the status bar
+        // shows the full endpoint (useful when it isn't the default 22).
+        return { protocol: 'SSH', target: `${sourceLabel(src)}:${src.config.port}` }
+      case 'sshProfile': {
+        const p = sessions.find((s) => s.id === src.profileId)
+        // Show the resolved endpoint (user@host:port), matching the direct-ssh
+        // case, rather than the profile's display label. Falls back to the raw
+        // id only if the profile can't be found (then its fields are gone too).
+        const target = p ? `${p.username}@${p.host}:${p.port}` : src.profileId
+        return { protocol: 'SSH', target }
+      }
+      case 'telnet':
+        return { protocol: 'TELNET', target: sourceLabel(src) }
+      case 'serial': {
+        const c = src.config
+        const framing = `${dataBitsDigit(c.dataBits)}${c.parity[0]}${c.stopBits === 'Two' ? 2 : 1}`
+        return { protocol: 'SERIAL', target: `${c.portName} · ${c.baudRate} ${framing}` }
+      }
+    }
+  })()
+  const activePaneIndex = activePaneId
+    ? activePaneLeaves.findIndex((l) => l.id === activePaneId) + 1
+    : 0
+
   // Flat list of every live (source-holding) pane across every tab — the
   // pool that Terminal instances are portaled from. See the `slots` comment
   // above for why this exists instead of rendering Terminal inline per tab.
@@ -925,6 +986,18 @@ function App() {
         />
         {activeTab && (
           <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
+            {activeLeaf?.source && (
+              <button
+                className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
+                title="Find in terminal (Ctrl+Shift+F)"
+                onClick={() =>
+                  activePaneId &&
+                  setSearchRequest((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, paneId: activePaneId }))
+                }
+              >
+                <Search size={15} strokeWidth={2} />
+              </button>
+            )}
             {activeLeaf?.source && (
               <button
                 className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
@@ -1012,6 +1085,7 @@ function App() {
                 node={tab.root}
                 tabId={tab.id}
                 tabHasSplit={allLeaves(tab.root).length > 1}
+                activePaneId={tab.activePaneId}
                 onClosePane={(paneId) => closePane(tab.id, paneId)}
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 forwardsOpenByPane={forwardsOpenByPane}
@@ -1072,8 +1146,22 @@ function App() {
                   settings={terminalSettings}
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}
+                  paneId={leaf.id}
+                  searchRequest={searchRequest}
                   onStatus={(s) => {
                     setStatusByPane((prev) => ({ ...prev, [leaf.id]: s }))
+                    // Stamp the connect time once per connected run; drop it on
+                    // anything else so the uptime clock resets on reconnect and
+                    // disappears while disconnected/failed.
+                    setConnectedAtByPane((prev) => {
+                      if (s === 'connected') {
+                        return leaf.id in prev ? prev : { ...prev, [leaf.id]: Date.now() }
+                      }
+                      if (!(leaf.id in prev)) return prev
+                      const next = { ...prev }
+                      delete next[leaf.id]
+                      return next
+                    })
                     // Surfaced even for background tabs — otherwise a
                     // failed connection in a tab you're not looking at is
                     // silent.
@@ -1084,12 +1172,13 @@ function App() {
                     // — but only a clean disconnect, not a failure, since
                     // the error should stay visible until the user
                     // dismisses it themselves.
-                    if (s === 'disconnected') {
+                    if (s === 'disconnected' && terminalSettings.closeOnDisconnect) {
                       setTimeout(() => closePane(tab.id, leaf.id), 800)
                     }
                   }}
                   onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
                   onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
+                  onReconnect={() => reconnectPane(tab.id, leaf.id)}
                 />
               </div>,
               slot,
@@ -1108,22 +1197,18 @@ function App() {
           />
         )}
       </div>
-      {(() => {
-        const activeTab = tabs.find((t) => t.id === activeTabId)
-        const status = activeTab && statusByPane[activeTab.activePaneId]
-        if (!status) return null
-        const dotColor = status === 'connected'
-          ? 'bg-emerald-400'
-          : status.startsWith('failed') || status === 'disconnected'
-            ? 'bg-red-400'
-            : 'bg-amber-400'
-        return (
-          <footer className="flex shrink-0 items-center gap-1.5 border-t border-white/10 px-3 py-1.5 text-xs text-white/40">
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColor} transition-colors duration-300`} />
-            {status}
-          </footer>
-        )
-      })()}
+      {tabs.length > 0 && (
+        <StatusBar
+          protocol={statusBarConn?.protocol ?? null}
+          target={statusBarConn?.target ?? null}
+          status={activePaneId ? statusByPane[activePaneId] : undefined}
+          connectedAt={activePaneId ? (connectedAtByPane[activePaneId] ?? null) : null}
+          logging={activePaneId ? (loggingByPane[activePaneId] ?? false) : false}
+          paneIndex={activePaneIndex}
+          paneCount={activePaneLeaves.length}
+          tabCount={tabs.length}
+        />
+      )}
       <ToastHost />
       {pendingRestore && (
         <RestoreSessionsPrompt

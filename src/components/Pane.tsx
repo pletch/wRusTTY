@@ -18,6 +18,10 @@ interface Props {
    * existing "move to new tab"/"close pane" buttons (a single, unsplit pane
    * has nowhere more useful to go and nothing to close it back down to). */
   tabHasSplit: boolean
+  /** The id of the pane that currently holds focus within this tab. Used to
+   * draw the active-pane focus ring (and, on the others, a faint scrim) so
+   * which pane input goes to reads at a glance in a split. */
+  activePaneId: string
   onClosePane: (paneId: string) => void
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
@@ -76,6 +80,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     node,
     tabId,
     tabHasSplit,
+    activePaneId,
     onClosePane,
     vaultUnlocked,
     forwardsOpenByPane,
@@ -112,6 +117,10 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   )
   const [dragOver, setDragOver] = useState(false)
   const [gripHover, setGripHover] = useState(false)
+  // Only meaningful once the tab is actually split — a lone pane is trivially
+  // "the active one" and needs no highlight (matches how the grip/close
+  // hotzone is gated on tabHasSplit too).
+  const isActive = tabHasSplit && node.id === activePaneId
 
   return (
     <div
@@ -227,6 +236,23 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             onReorderSessions={onReorderSessions}
           />
         </div>
+      )}
+      {tabHasSplit && (
+        // Focus affordance for splits, drawn as a single pointer-events-none
+        // overlay *above* the terminal rather than a ring on the wrapper:
+        // the terminal is a WebGL canvas that fills the pane, so an inset
+        // box-shadow on the wrapper would be painted underneath it. Always
+        // mounted (color/scrim toggled, never unmounted) so moving focus
+        // between panes cross-fades via the shared motion tokens instead of
+        // popping. z-20 keeps it clear of the z-30 grip hotzone. The inactive
+        // scrim is deliberately faint — enough to recede, not so much it
+        // hurts reading a second pane you're only watching.
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-0 z-20 ring-1 ring-inset transition-[box-shadow,background-color] duration-base ease-swift ${
+            isActive ? 'ring-sky-400/45' : 'bg-black/15 ring-transparent'
+          }`}
+        />
       )}
       {forwardsOpenByPane[node.id] && sessionId && (
         <ForwardPanel sessionId={sessionId} onClose={() => onCloseForwards(node.id)} />

@@ -3,7 +3,18 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
-import { Search, ChevronUp, ChevronDown, X, Loader2, AlertTriangle } from 'lucide-react'
+import {
+  Search,
+  ChevronUp,
+  ChevronDown,
+  X,
+  Loader2,
+  AlertTriangle,
+  CaseSensitive,
+  Regex,
+  RotateCw,
+  Unplug,
+} from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
@@ -21,6 +32,12 @@ interface Props {
   logging?: boolean
   /** Whether this is the focused pane within its (possibly split) tab. */
   active?: boolean
+  /** This pane's id, so a targeted searchRequest can address exactly it. */
+  paneId: string
+  /** Set by App's toolbar search button. When it targets this pane's id with
+   * a nonce not seen before, the search box opens (the box is per-Terminal
+   * local state, so this is how an App-level control reaches into it). */
+  searchRequest?: { nonce: number; paneId: string } | null
   onStatus?: (status: string) => void
   onSessionId?: (id: string | null) => void
   /** A failed connection (bad credential, unreachable host, etc.) otherwise
@@ -28,6 +45,9 @@ interface Props {
    * connect dialog short of closing the whole pane — this reopens it in
    * place instead. */
   onBackToConnect?: () => void
+  /** Retry the same connection in place — surfaced on the failed/disconnected
+   * overlays as a "Reconnect" action. */
+  onReconnect?: () => void
 }
 
 interface PendingHostKey {
@@ -48,15 +68,32 @@ function themeWithOpacity(themeName: string, opacity: number) {
   return { ...theme, background: backgroundWithOpacity(theme, opacity) }
 }
 
+// Passing `decorations` to the search addon is what turns on highlight-*all*
+// (every match painted, not just the one the viewport jumped to). Amber reads
+// as "search hit" on any preset theme without colliding with the sky accent
+// the app uses for focus/selection; the active match is the brighter fill.
+// The overview-ruler fields are required by the addon whenever decorations
+// are supplied — they mark hits in xterm's own right gutter, which this app's
+// custom scrollbar overlay largely masks, but they're harmless to include.
+const SEARCH_DECORATIONS = {
+  matchBackground: '#5c4a1c',
+  matchOverviewRuler: '#d9a441',
+  activeMatchBackground: '#d9a441',
+  activeMatchColorOverviewRuler: '#ffd479',
+}
+
 export function Terminal({
   source,
   label,
   settings,
   logging,
   active,
+  paneId,
+  searchRequest,
   onStatus,
   onSessionId,
   onBackToConnect,
+  onReconnect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -65,6 +102,14 @@ export function Terminal({
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  // Result position for the "N/M" count, fed by the addon's onDidChangeResults
+  // (set up in the connect effect). index is 0-based, -1 when there are none.
+  const [searchResults, setSearchResults] = useState<{ index: number; count: number }>({
+    index: -1,
+    count: 0,
+  })
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
+  const [searchRegex, setSearchRegex] = useState(false)
   // Reinitializes to true on every mount, which is what we want — Pane.tsx
   // remounts this component (via a `key` bump) on every reconnect.
   const [connecting, setConnecting] = useState(true)
@@ -73,6 +118,11 @@ export function Terminal({
   // dialog" affordance below instead of leaving a dead terminal with no way
   // out short of closing the whole pane.
   const [connectFailed, setConnectFailed] = useState<string | null>(null)
+  // A clean remote-initiated disconnect while "close pane on disconnect" is
+  // off — shows the Reconnect / connection-settings overlay instead of
+  // leaving a dead terminal (or auto-closing, which App does when the setting
+  // is on). Reset to false on every remount, i.e. every reconnect.
+  const [disconnected, setDisconnected] = useState(false)
 
   // Settings can change without reconnecting the session, so they're read
   // through a ref rather than added to the effect's dependency array.
@@ -97,6 +147,20 @@ export function Terminal({
 
   const activeRef = useRef(active)
   activeRef.current = active
+
+  // Open the search box when App's toolbar button issues a request addressed
+  // to this pane. The nonce guards against re-firing on unrelated re-renders
+  // and lets a repeat click on the same pane reopen/refocus.
+  const searchReqSeen = useRef(0)
+  useEffect(() => {
+    if (!searchRequest || searchRequest.paneId !== paneId) return
+    if (searchRequest.nonce === searchReqSeen.current) return
+    searchReqSeen.current = searchRequest.nonce
+    setSearchOpen(true)
+    // Refocus the input if the box was already open (setSearchOpen is a no-op
+    // then, so the searchOpen effect below won't fire to do it).
+    searchInputRef.current?.focus()
+  }, [searchRequest, paneId])
 
   // Set inside the connect effect below; lets the theme-update effect above
   // reach into that closure's scrollbar-coloring function without being
@@ -124,9 +188,62 @@ export function Terminal({
     updateScrollbarFocusRef.current?.(!!active)
   }, [active])
 
+  // Runs a search through the addon with the current toggle state, always
+  // supplying decorations so every match stays highlighted (not just the one
+  // scrolled to). `next`/`incremental` mirror the addon's own findNext/
+  // findPrevious semantics. An empty query (or one that doesn't compile as a
+  // regex) clears highlights and the count rather than throwing.
+  function runSearch(
+    query: string,
+    opts: { back?: boolean; incremental?: boolean; caseSensitive?: boolean; regex?: boolean } = {},
+  ) {
+    const addon = searchAddonRef.current
+    if (!addon) return
+    if (!query) {
+      addon.clearDecorations()
+      setSearchResults({ index: -1, count: 0 })
+      return
+    }
+    const options = {
+      caseSensitive: opts.caseSensitive ?? searchCaseSensitive,
+      regex: opts.regex ?? searchRegex,
+      incremental: opts.incremental,
+      decorations: SEARCH_DECORATIONS,
+    }
+    try {
+      if (opts.back) addon.findPrevious(query, options)
+      else addon.findNext(query, options)
+    } catch {
+      // A half-typed regex (e.g. an unclosed group) throws — treat it as
+      // simply "no matches yet" until it becomes valid.
+      setSearchResults({ index: -1, count: 0 })
+    }
+  }
+
   useEffect(() => {
-    if (searchOpen) searchInputRef.current?.focus()
+    if (searchOpen) {
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+      // Restore highlights for a query still in the box from last time it
+      // was open, rather than making the user retype to see them again.
+      if (searchQuery) runSearch(searchQuery, { incremental: true })
+    } else {
+      // Leaving search shouldn't leave the whole scrollback stippled with
+      // highlights behind you.
+      searchAddonRef.current?.clearDecorations()
+      setSearchResults({ index: -1, count: 0 })
+    }
+    // Only meant to fire when the box opens/closes — searchQuery is read as a
+    // one-shot restore, not a trigger (keystrokes drive search via onChange).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchOpen])
+
+  // Re-run the current query when a toggle flips so the highlights/count
+  // reflect the new mode immediately, without waiting for the next keystroke.
+  useEffect(() => {
+    if (searchOpen && searchQuery) runSearch(searchQuery, { incremental: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchCaseSensitive, searchRegex])
 
   useEffect(() => {
     const container = containerRef.current
@@ -138,6 +255,11 @@ export function Terminal({
 
     const term = new XTerm({
       cursorBlink: true,
+      // When this terminal isn't the focused one (e.g. the other half of a
+      // split), xterm dims its cursor to a hollow outline instead of a solid
+      // block — a zero-cost, natively-rendered reinforcement of which pane is
+      // active that pairs with the sky focus ring drawn in Pane.tsx.
+      cursorInactiveStyle: 'outline',
       fontFamily: 'ui-monospace, Consolas, monospace',
       fontSize: 14,
       // xterm.js defaults to 1000 — counted in wrapped rows, not logical
@@ -149,6 +271,12 @@ export function Terminal({
       // the settings effect above doesn't need to also recreate the
       // terminal just to flip this.
       allowTransparency: true,
+      // Required by the search addon's highlight-all decorations: they call
+      // the core registerDecoration API, which is gated behind this flag and
+      // throws ("You must set the allowProposedApi option to true") without
+      // it — which the search box's try/catch would otherwise swallow as a
+      // silent "no results".
+      allowProposedApi: true,
       theme: themeWithOpacity(settingsRef.current.themeName, settingsRef.current.backgroundOpacity),
     })
     termRef.current = term
@@ -158,6 +286,12 @@ export function Terminal({
     const searchAddon = new SearchAddon()
     term.loadAddon(searchAddon)
     searchAddonRef.current = searchAddon
+    // Drives the "N/M" match count in the search box. resultIndex is -1 with
+    // no matches; the UI turns that into "None".
+    const searchResultsListener = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      if (disposed) return
+      setSearchResults({ index: resultIndex, count: resultCount })
+    })
     term.open(container)
 
     // A lost GPU context (driver reset, resource exhaustion — plausible with
@@ -400,6 +534,10 @@ export function Terminal({
           }
           if (event.status.startsWith('failed')) {
             setConnectFailed(event.status.replace(/^failed: /, ''))
+          } else if (event.status === 'disconnected' && !settingsRef.current.closeOnDisconnect) {
+            // When auto-close is on, App closes the pane instead — no overlay
+            // (it'd only flash for the ~800ms before the pane vanishes).
+            setDisconnected(true)
           }
           break
         case 'hostKeyPrompt':
@@ -587,6 +725,7 @@ export function Terminal({
       dataListener.dispose()
       scrollListener.dispose()
       writeParsedListener.dispose()
+      searchResultsListener.dispose()
       upBtn.removeEventListener('mousedown', onUpMouseDown)
       downBtn.removeEventListener('mousedown', onDownMouseDown)
       track.removeEventListener('mousedown', onTrackMouseDown)
@@ -614,6 +753,31 @@ export function Terminal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source])
 
+  // Shared by both the failed and clean-disconnect overlays: retry the same
+  // host, or drop back to the (pre-filled) connect dialog to change it.
+  const disconnectActions = (
+    <div className="flex items-center gap-2">
+      {onReconnect && (
+        <button
+          type="button"
+          onClick={onReconnect}
+          className="flex items-center gap-1.5 rounded-md bg-sky-500/90 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-fast ease-swift hover:bg-sky-500"
+        >
+          <RotateCw size={14} /> Reconnect
+        </button>
+      )}
+      {onBackToConnect && (
+        <button
+          type="button"
+          onClick={onBackToConnect}
+          className="rounded-md bg-white/10 px-3 py-1.5 text-sm font-medium text-white/80 transition-colors duration-fast ease-swift hover:bg-white/15 hover:text-white"
+        >
+          Connection settings
+        </button>
+      )}
+    </div>
+  )
+
   return (
     <div
       className="relative h-full w-full px-1.5 pt-3"
@@ -637,34 +801,35 @@ export function Terminal({
         // etc.) leaves this pane stuck showing a dead terminal with no way
         // back to the connect dialog short of closing the whole pane —
         // which, in a split, takes any sibling panes down with it too.
-        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-150">
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-fast">
           <AlertTriangle size={20} className="text-red-400" />
           <p className="max-w-xs text-white/70">{connectFailed}</p>
-          {onBackToConnect && (
-            <button
-              type="button"
-              onClick={onBackToConnect}
-              className="rounded-md bg-sky-500/90 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500"
-            >
-              Return to connect screen
-            </button>
-          )}
+          {disconnectActions}
+        </div>
+      )}
+      {disconnected && !connectFailed && (
+        // A clean remote-initiated disconnect with auto-close turned off:
+        // offer to reconnect or reopen the connect dialog rather than leaving
+        // a dead terminal behind.
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-fast">
+          <Unplug size={20} className="text-white/40" />
+          <p className="max-w-xs text-white/70">Connection closed.</p>
+          {disconnectActions}
         </div>
       )}
       {searchOpen && (
-        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-100">
+        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-fast ease-swift">
           <Search size={13} className="mr-1 text-white/40" />
           <input
             ref={searchInputRef}
             value={searchQuery}
             onChange={(e) => {
               setSearchQuery(e.target.value)
-              searchAddonRef.current?.findNext(e.target.value, { incremental: true })
+              runSearch(e.target.value, { incremental: true })
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
-                if (e.shiftKey) searchAddonRef.current?.findPrevious(searchQuery)
-                else searchAddonRef.current?.findNext(searchQuery)
+                runSearch(searchQuery, { back: e.shiftKey })
               } else if (e.key === 'Escape') {
                 setSearchOpen(false)
               }
@@ -672,23 +837,52 @@ export function Terminal({
             placeholder="Find..."
             className="w-40 bg-transparent text-white/90 outline-none placeholder:text-white/30"
           />
+          <span className="mx-1 min-w-[3.25rem] shrink-0 text-right tabular-nums text-white/40">
+            {searchResults.count > 0
+              ? `${searchResults.index + 1}/${searchResults.count}`
+              : searchQuery
+                ? 'None'
+                : ''}
+          </span>
           <button
-            onClick={() => searchAddonRef.current?.findPrevious(searchQuery)}
-            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
+            onClick={() => setSearchCaseSensitive((v) => !v)}
+            className={`flex items-center justify-center rounded p-1 transition-colors duration-fast ease-swift ${
+              searchCaseSensitive
+                ? 'bg-sky-500/25 text-sky-200'
+                : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+            }`}
+            title="Match case"
+          >
+            <CaseSensitive size={14} />
+          </button>
+          <button
+            onClick={() => setSearchRegex((v) => !v)}
+            className={`flex items-center justify-center rounded p-1 transition-colors duration-fast ease-swift ${
+              searchRegex
+                ? 'bg-sky-500/25 text-sky-200'
+                : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+            }`}
+            title="Use regular expression"
+          >
+            <Regex size={14} />
+          </button>
+          <button
+            onClick={() => runSearch(searchQuery, { back: true })}
+            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
             title="Previous (Shift+Enter)"
           >
             <ChevronUp size={14} />
           </button>
           <button
-            onClick={() => searchAddonRef.current?.findNext(searchQuery)}
-            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
+            onClick={() => runSearch(searchQuery)}
+            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
             title="Next (Enter)"
           >
             <ChevronDown size={14} />
           </button>
           <button
             onClick={() => setSearchOpen(false)}
-            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
             title="Close (Esc)"
           >
             <X size={14} />

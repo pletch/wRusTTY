@@ -38,6 +38,21 @@ body {
   }
 }
 
+/* Honor the OS "reduce motion" preference in one place rather than auditing
+   every component: collapse all transitions/animations to effectively
+   instant. Kept as a global catch-all so any new UI is covered by default,
+   including the shared motion tokens in tailwind.config.js. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Slim, low-contrast scrollbars for plain `overflow` UI (session sidebar,
    settings panels, etc.) — the OS-default ones read as dated next to
    everything else here. No arrow buttons here; those are specific to the

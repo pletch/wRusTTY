@@ -63,6 +63,21 @@ export function SettingsMenu({ settings, onChange }: Props) {
             <input
               type="checkbox"
               className="mt-0.5 accent-sky-400"
+              checked={settings.closeOnDisconnect}
+              onChange={(e) => onChange({ ...settings, closeOnDisconnect: e.target.checked })}
+            />
+            <span className="text-white/80">
+              Close pane on disconnect
+              <span className="block text-white/40">
+                When a connection is lost, close the pane automatically instead
+                of showing Reconnect actions.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-sky-400"
               checked={settings.restoreSessionsOnLaunch}
               onChange={(e) =>
                 onChange({ ...settings, restoreSessionsOnLaunch: e.target.checked })
