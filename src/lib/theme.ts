@@ -138,7 +138,7 @@ export function findTheme(name: string): TerminalTheme {
   return PRESET_THEMES.find((t) => t.name === name) ?? PRESET_THEMES[0]
 }
 
-function hexToRgb(hex: string): [number, number, number] {
+export function hexToRgb(hex: string): [number, number, number] {
   const n = hex.replace('#', '')
   return [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)]
 }

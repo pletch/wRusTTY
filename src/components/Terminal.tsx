@@ -10,7 +10,7 @@ import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import type { TerminalSettings } from '../lib/settings'
-import { findTheme, backgroundWithOpacity } from '../lib/theme'
+import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 
@@ -93,13 +93,29 @@ export function Terminal({
   // session on every vibrancy change).
   const reloadWebglRef = useRef<(() => void) | null>(null)
 
+  // Same idea as reloadWebglRef, for the custom scrollbar's theme-derived
+  // colors (see the connect effect below).
+  const updateScrollbarColorsRef = useRef<(() => void) | null>(null)
+
+  // Same idea again, for showing/hiding the custom scrollbar based on
+  // whether this pane is the focused one (see the connect effect below).
+  const updateScrollbarFocusRef = useRef<((active: boolean) => void) | null>(null)
+
   // Theme updates apply live to the existing terminal instance instead of
   // tearing down and reconnecting the session.
   useEffect(() => {
     if (termRef.current) {
       termRef.current.options.theme = themeWithOpacity(settings.themeName, settings.backgroundOpacity)
     }
+    updateScrollbarColorsRef.current?.()
   }, [settings.themeName, settings.backgroundOpacity])
+
+  // Only the focused pane's scrollbar is shown — a background pane's
+  // scrollbar would otherwise be a distracting, non-interactive-feeling
+  // artifact sitting on content you're not looking at.
+  useEffect(() => {
+    updateScrollbarFocusRef.current?.(!!active)
+  }, [active])
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
@@ -125,6 +141,10 @@ export function Terminal({
       cursorBlink: true,
       fontFamily: 'ui-monospace, Consolas, monospace',
       fontSize: 14,
+      // xterm.js defaults to 1000 — counted in wrapped rows, not logical
+      // lines, so verbose output with long lines (dmesg, etc.) fills that
+      // up in well under 1000 actual lines.
+      scrollback: 10000,
       // Harmless at the default opacity of 1 (an alpha-1 color renders
       // identically either way) — always on so a live opacity change via
       // the settings effect above doesn't need to also recreate the
@@ -155,9 +175,13 @@ export function Terminal({
       // as opaque against a transparent window, even with alpha requested —
       // regardless of whether the transparency comes from acrylic/mica or
       // just the plain opacity slider, since the OS window is transparent
-      // (tauri.conf.json's `transparent: true`) either way. Falling back to
-      // xterm's Canvas 2D renderer whenever either is active avoids that
-      // broken compositing path entirely.
+      // (tauri.conf.json's `transparent: true`) either way — falling back
+      // to xterm's built-in Canvas 2D renderer whenever either is active is
+      // the only other rendering path xterm.js has (there's no true DOM
+      // renderer in this version), so it's what's left to try. Not
+      // confirmed fixed on real WebView2 hardware as of this writing — if
+      // the compositing bug also affects Canvas 2D (both are `<canvas>`
+      // elements), transparency won't take effect via either renderer.
       if (settingsRef.current.vibrancyMode !== 'off' || settingsRef.current.backgroundOpacity < 1) {
         return null
       }
@@ -183,6 +207,149 @@ export function Terminal({
     }
 
     fitAddon.fit()
+
+    // Custom scrollbar overlay — xterm.js's own scrollbar widget explicitly
+    // doesn't support arrow buttons (its bundled source throws if
+    // `verticalHasArrows` is ever set), so this rebuilds one that does,
+    // styled to match native Windows console scrollbars. See the
+    // .term-scrollbar-* rules in index.css, which also hide xterm's own
+    // scrollbar entirely so the two don't overlap.
+    container.style.position = 'relative'
+    const scrollbarEl = document.createElement('div')
+    scrollbarEl.className = 'term-scrollbar'
+    const upBtn = document.createElement('div')
+    upBtn.className = 'term-scrollbar-btn up'
+    const track = document.createElement('div')
+    track.className = 'term-scrollbar-track'
+    const thumb = document.createElement('div')
+    thumb.className = 'term-scrollbar-thumb'
+    track.appendChild(thumb)
+    const downBtn = document.createElement('div')
+    downBtn.className = 'term-scrollbar-btn down'
+    scrollbarEl.append(upBtn, track, downBtn)
+    container.appendChild(scrollbarEl)
+
+    // Colored from the active theme's foreground (matching xterm's own
+    // default scrollbarSliderBackground behavior) rather than a fixed
+    // light/dark guess, so it stays legible against any preset theme.
+    function updateScrollbarColors() {
+      const [r, g, b] = hexToRgb(findTheme(settingsRef.current.themeName).foreground)
+      scrollbarEl.style.setProperty('--term-scrollbar-fg', `${r}, ${g}, ${b}`)
+    }
+    updateScrollbarColors()
+    updateScrollbarColorsRef.current = updateScrollbarColors
+
+    // Shown only when there's actual scrollback to reach (updateThumb) *and*
+    // this is the focused pane (updateScrollbarFocusRef) — a background
+    // pane's scrollbar would otherwise sit there as a non-interactive-feeling
+    // distraction on content you're not looking at.
+    // `visibility` rather than `display`: reading layout (track.clientHeight,
+    // below) from a `display: none` subtree always returns 0, which would
+    // corrupt the thumb's position/size if updateThumb() ever runs while
+    // hidden (e.g. this pane's container resizing when a sibling pane is
+    // split off it, while this one isn't the newly-focused pane) — and
+    // nothing would recompute it again until the next scroll/write, leaving
+    // the wrong position baked in even after this pane regains focus.
+    // `visibility: hidden` keeps real layout geometry available throughout,
+    // and is equally non-interactive/invisible.
+    let hasOverflow = false
+    let isFocused = activeRef.current ?? false
+    function applyScrollbarVisibility() {
+      scrollbarEl.style.visibility = hasOverflow && isFocused ? 'visible' : 'hidden'
+    }
+
+    function updateThumb() {
+      const total = term.buffer.active.length
+      const rows = term.rows
+      hasOverflow = total > rows
+      applyScrollbarVisibility()
+      if (!hasOverflow) return
+      const trackHeight = track.clientHeight
+      const thumbHeight = Math.max(20, (rows / total) * trackHeight)
+      const maxScroll = total - rows
+      const maxThumbTop = trackHeight - thumbHeight
+      const thumbTop = maxScroll > 0 ? (term.buffer.active.viewportY / maxScroll) * maxThumbTop : 0
+      thumb.style.height = `${thumbHeight}px`
+      thumb.style.top = `${thumbTop}px`
+    }
+    updateThumb()
+
+    updateScrollbarFocusRef.current = (nextActive) => {
+      isFocused = nextActive
+      applyScrollbarVisibility()
+    }
+
+    // Hold-to-repeat for the arrow buttons, matching native scroll-arrow feel.
+    function startRepeat(action: () => void) {
+      action()
+      let timeoutId: number
+      const step = () => {
+        action()
+        timeoutId = window.setTimeout(step, 60)
+      }
+      timeoutId = window.setTimeout(step, 350)
+      const stop = () => {
+        clearTimeout(timeoutId)
+        window.removeEventListener('mouseup', stop)
+      }
+      window.addEventListener('mouseup', stop)
+    }
+    // preventDefault on mousedown (rather than an explicit refocus after)
+    // is what stops the browser from shifting focus off the terminal when
+    // clicking these — the standard scrollbar-widget trick.
+    const onUpMouseDown = (e: MouseEvent) => {
+      e.preventDefault()
+      startRepeat(() => term.scrollLines(-1))
+    }
+    const onDownMouseDown = (e: MouseEvent) => {
+      e.preventDefault()
+      startRepeat(() => term.scrollLines(1))
+    }
+    upBtn.addEventListener('mousedown', onUpMouseDown)
+    downBtn.addEventListener('mousedown', onDownMouseDown)
+
+    // Page up/down when clicking the track itself, above/below the thumb —
+    // dragging the thumb is handled separately below.
+    const onTrackMouseDown = (e: MouseEvent) => {
+      if (e.target !== track) return
+      e.preventDefault()
+      if (e.clientY - track.getBoundingClientRect().top < thumb.offsetTop) {
+        term.scrollLines(-term.rows)
+      } else {
+        term.scrollLines(term.rows)
+      }
+    }
+    track.addEventListener('mousedown', onTrackMouseDown)
+
+    let dragMoveHandler: ((e: MouseEvent) => void) | null = null
+    let dragUpHandler: (() => void) | null = null
+    const onThumbMouseDown = (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const startY = e.clientY
+      const startTop = thumb.offsetTop
+      const trackHeight = track.clientHeight
+      const thumbHeight = thumb.clientHeight
+      const maxThumbTop = trackHeight - thumbHeight
+      const maxScroll = term.buffer.active.length - term.rows
+      dragMoveHandler = (moveEv: MouseEvent) => {
+        const newTop = Math.min(Math.max(0, startTop + (moveEv.clientY - startY)), maxThumbTop)
+        const ratio = maxThumbTop > 0 ? newTop / maxThumbTop : 0
+        term.scrollToLine(Math.round(ratio * maxScroll))
+      }
+      dragUpHandler = () => {
+        if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
+        if (dragUpHandler) window.removeEventListener('mouseup', dragUpHandler)
+        dragMoveHandler = null
+        dragUpHandler = null
+      }
+      window.addEventListener('mousemove', dragMoveHandler)
+      window.addEventListener('mouseup', dragUpHandler)
+    }
+    thumb.addEventListener('mousedown', onThumbMouseDown)
+
+    const scrollListener = term.onScroll(() => updateThumb())
+    const writeParsedListener = term.onWriteParsed(() => updateThumb())
 
     const onEvent = (event: ConnEvent) => {
       if (disposed) return
@@ -346,6 +513,7 @@ export function Terminal({
         webglAddon = loadWebgl()
       }
       term.refresh(0, term.rows - 1)
+      updateThumb()
       // This only reaches here on a real (non-zero) resize, which is
       // exactly what happens when a hidden tab becomes visible again
       // (App.tsx's refit() dispatches a resize event on tab switch) — so
@@ -374,6 +542,15 @@ export function Terminal({
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()
       dataListener.dispose()
+      scrollListener.dispose()
+      writeParsedListener.dispose()
+      upBtn.removeEventListener('mousedown', onUpMouseDown)
+      downBtn.removeEventListener('mousedown', onDownMouseDown)
+      track.removeEventListener('mousedown', onTrackMouseDown)
+      thumb.removeEventListener('mousedown', onThumbMouseDown)
+      if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
+      if (dragUpHandler) window.removeEventListener('mouseup', dragUpHandler)
+      scrollbarEl.remove()
       if (sessionId) {
         conn.disconnect(source, sessionId).catch(() => {})
         if (loggingActive) sessionLog.stop(sessionId).catch(() => {})
@@ -382,6 +559,8 @@ export function Terminal({
       termRef.current = null
       searchAddonRef.current = null
       reloadWebglRef.current = null
+      updateScrollbarColorsRef.current = null
+      updateScrollbarFocusRef.current = null
       term.dispose()
     }
     // `label` is display-only text for the "Connecting to..." line, not a

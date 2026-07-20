@@ -428,7 +428,13 @@ export function ConnectDialog({
     // See the pendingUnlock branch above for why this is overflow-auto +
     // m-auto on the card rather than items-center/justify-center here.
     <div className="flex h-full w-full overflow-auto p-4">
-      <div className="animate-in fade-in zoom-in-95 m-auto flex overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
+      {/* shrink-0: this card's own `overflow-hidden` (just for clipping the
+          sidebar/form's rounded corners) resets its flex automatic min-width
+          to 0 per spec, so without shrink-0 a too-narrow pane would shrink
+          the card itself down to fit — clipping whatever doesn't fit via
+          that same overflow-hidden — instead of the parent's overflow-auto
+          ever seeing an overflow to scroll to. */}
+      <div className="animate-in fade-in zoom-in-95 m-auto flex shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
         {sessions && sessions.length > 0 && (
           // Fixed width, scrolls independently of the form — so having a
           // handful of saved sessions or a hundred never pushes the connect
