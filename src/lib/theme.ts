@@ -152,7 +152,6 @@ export function hexToRgb(hex: string): [number, number, number] {
  * alpha values this app actually produces, but hex sidesteps that second
  * path entirely. */
 export function backgroundWithOpacity(theme: TerminalTheme, opacity: number): string {
-  const [r, g, b] = hexToRgb(theme.background)
   const alphaHex = Math.round(opacity * 255)
     .toString(16)
     .padStart(2, '0')

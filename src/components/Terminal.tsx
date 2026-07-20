@@ -218,7 +218,7 @@ export function Terminal({
     // right edge and sizing this overlay to close that exact gap covers it
     // precisely regardless of font size or how wide that leftover sliver
     // happens to be, rather than assuming a fixed width matches.
-    function updateScrollbarGeometry() {
+    const updateScrollbarGeometry = () => {
       let canvasRight = 0
       for (const canvas of container.querySelectorAll('canvas')) {
         const rect = canvas.getBoundingClientRect()
