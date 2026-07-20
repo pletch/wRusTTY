@@ -3,7 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
-import { Search, ChevronUp, ChevronDown, X, Loader2 } from 'lucide-react'
+import { Search, ChevronUp, ChevronDown, X, Loader2, AlertTriangle } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
@@ -23,6 +23,11 @@ interface Props {
   active?: boolean
   onStatus?: (status: string) => void
   onSessionId?: (id: string | null) => void
+  /** A failed connection (bad credential, unreachable host, etc.) otherwise
+   * leaves this pane stuck showing a dead terminal with no way back to the
+   * connect dialog short of closing the whole pane — this reopens it in
+   * place instead. */
+  onBackToConnect?: () => void
 }
 
 interface PendingHostKey {
@@ -51,6 +56,7 @@ export function Terminal({
   active,
   onStatus,
   onSessionId,
+  onBackToConnect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -62,6 +68,11 @@ export function Terminal({
   // Reinitializes to true on every mount, which is what we want — Pane.tsx
   // remounts this component (via a `key` bump) on every reconnect.
   const [connecting, setConnecting] = useState(true)
+  // Set once a connection attempt fails and never cleared by anything short
+  // of a remount (a fresh connect/reconnect) — surfaces the "back to connect
+  // dialog" affordance below instead of leaving a dead terminal with no way
+  // out short of closing the whole pane.
+  const [connectFailed, setConnectFailed] = useState<string | null>(null)
 
   // Settings can change without reconnecting the session, so they're read
   // through a ref rather than added to the effect's dependency array.
@@ -189,7 +200,16 @@ export function Terminal({
     // styled to match native Windows console scrollbars. See the
     // .term-scrollbar-* rules in index.css, which also hide xterm's own
     // scrollbar entirely so the two don't overlap.
+    // z-index (not just position) is what actually matters here: without an
+    // explicit value, this element doesn't establish its own CSS stacking
+    // context, so the scrollbar's z-index below "escapes" it and competes
+    // for paint order against its own siblings — the connecting/
+    // connectFailed/searchOpen overlay divs in the JSX below, none of which
+    // set an explicit z-index either — painting over them and silently
+    // eating clicks meant for whatever's underneath instead of respecting
+    // DOM order like a plain position:relative box would.
     container.style.position = 'relative'
+    container.style.zIndex = '0'
     const scrollbarEl = document.createElement('div')
     scrollbarEl.className = 'term-scrollbar'
     // Fixed-width inner box for the actual visible/interactive controls,
@@ -378,6 +398,9 @@ export function Terminal({
           if (event.status.startsWith('failed') || event.status === 'disconnected') {
             term.writeln(`\r\n[${event.status}]`)
           }
+          if (event.status.startsWith('failed')) {
+            setConnectFailed(event.status.replace(/^failed: /, ''))
+          }
           break
         case 'hostKeyPrompt':
           setHostKeyPrompt({
@@ -457,6 +480,7 @@ export function Terminal({
         if (!disposed) {
           setConnecting(false)
           term.writeln(`\r\n[connect error] ${String(err)}`)
+          setConnectFailed(String(err))
         }
       })
 
@@ -606,6 +630,25 @@ export function Terminal({
         <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">
           <Loader2 size={20} className="animate-spin text-sky-400" />
           Connecting to {label}...
+        </div>
+      )}
+      {connectFailed && (
+        // Otherwise a failed connection (bad credential, unreachable host,
+        // etc.) leaves this pane stuck showing a dead terminal with no way
+        // back to the connect dialog short of closing the whole pane —
+        // which, in a split, takes any sibling panes down with it too.
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-150">
+          <AlertTriangle size={20} className="text-red-400" />
+          <p className="max-w-xs text-white/70">{connectFailed}</p>
+          {onBackToConnect && (
+            <button
+              type="button"
+              onClick={onBackToConnect}
+              className="rounded-md bg-sky-500/90 px-3 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500"
+            >
+              Return to connect screen
+            </button>
+          )}
         </div>
       )}
       {searchOpen && (

@@ -446,6 +446,27 @@ function App() {
     )
   }
 
+  /** Clears a pane's connection back to blank (reopening the connect
+   * dialog in place) without touching the rest of the tab/tree — the only
+   * way back for a pane whose connection failed (bad credential, unreachable
+   * host, etc.), since closing it would otherwise take any sibling panes in
+   * the same split down with it too, and simply retrying replays the exact
+   * same failing source. `initial` is kept (not cleared) so the dialog
+   * reopens pre-filled with the same profile, in case the fix is just
+   * editing it (e.g. re-importing a missing vaulted key) rather than
+   * picking something else entirely. */
+  function disconnectPane(tabId: string, paneId: string) {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t
+        const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source: null }))
+        const leaf = allLeaves(root).find((l) => l.id === paneId)
+        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
+        return { ...t, root, title }
+      }),
+    )
+  }
+
   function focusPane(tabId: string, paneId: string) {
     setTabs((prev) =>
       prev.map((t) => {
@@ -505,7 +526,13 @@ function App() {
       return
     }
     const activePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
-    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, root: newRoot, activePaneId } : t)))
+    // Same reasoning as popPaneToNewTab below: the tab's title may have been
+    // describing the pane that just closed (e.g. you closed the one that was
+    // focused), so it needs to follow whichever pane is left behind as
+    // active now instead of staying stuck on the closed pane's old title.
+    const activeLeaf = allLeaves(newRoot).find((l) => l.id === activePaneId)
+    const title = activeLeaf ? leafTitle(activeLeaf, tab.title) : tab.title
+    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, root: newRoot, activePaneId, title } : t)))
     refit()
   }
 
@@ -1052,6 +1079,7 @@ function App() {
                     }
                   }}
                   onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
+                  onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
                 />
               </div>,
               slot,
