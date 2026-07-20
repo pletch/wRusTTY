@@ -87,14 +87,10 @@ export function Terminal({
   const activeRef = useRef(active)
   activeRef.current = active
 
-  // Set inside the connect effect below; lets the vibrancy-toggle effect
-  // above reach into that closure's webglAddon/loadWebgl without being
+  // Set inside the connect effect below; lets the theme-update effect above
+  // reach into that closure's scrollbar-coloring function without being
   // part of the same effect (which would tear down and reconnect the
-  // session on every vibrancy change).
-  const reloadWebglRef = useRef<(() => void) | null>(null)
-
-  // Same idea as reloadWebglRef, for the custom scrollbar's theme-derived
-  // colors (see the connect effect below).
+  // session on every theme change).
   const updateScrollbarColorsRef = useRef<(() => void) | null>(null)
 
   // Same idea again, for showing/hiding the custom scrollbar based on
@@ -120,14 +116,6 @@ export function Terminal({
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
   }, [searchOpen])
-
-  // Swaps the renderer live when vibrancy or opacity crosses the
-  // transparent/opaque boundary, instead of waiting for the next reconnect —
-  // same WebGL/DWM compositing conflict as the check inside loadWebgl()
-  // below.
-  useEffect(() => {
-    reloadWebglRef.current?.()
-  }, [settings.vibrancyMode, settings.backgroundOpacity < 1])
 
   useEffect(() => {
     const container = containerRef.current
@@ -170,21 +158,14 @@ export function Terminal({
     // what happens when WebGL wasn't available to begin with. Pulled out
     // as its own function since onResize below needs to redo this same
     // setup when it tears down and rebuilds the addon after a move.
+    //
+    // Always attempted regardless of vibrancy/opacity settings: WebView2 on
+    // Windows composites a hardware-accelerated canvas as opaque against a
+    // transparent window no matter which xterm renderer draws it (confirmed
+    // on real hardware — the opacity slider had zero visible effect on
+    // these panes under Canvas 2D either), so there's no transparency
+    // benefit left to trade WebGL's performance away for.
     function loadWebgl(): WebglAddon | null {
-      // WebView2 on Windows composites a hardware-accelerated WebGL canvas
-      // as opaque against a transparent window, even with alpha requested —
-      // regardless of whether the transparency comes from acrylic/mica or
-      // just the plain opacity slider, since the OS window is transparent
-      // (tauri.conf.json's `transparent: true`) either way — falling back
-      // to xterm's built-in Canvas 2D renderer whenever either is active is
-      // the only other rendering path xterm.js has (there's no true DOM
-      // renderer in this version), so it's what's left to try. Not
-      // confirmed fixed on real WebView2 hardware as of this writing — if
-      // the compositing bug also affects Canvas 2D (both are `<canvas>`
-      // elements), transparency won't take effect via either renderer.
-      if (settingsRef.current.vibrancyMode !== 'off' || settingsRef.current.backgroundOpacity < 1) {
-        return null
-      }
       try {
         const addon = new WebglAddon()
         addon.onContextLoss(() => {
@@ -200,12 +181,6 @@ export function Terminal({
     }
     let webglAddon = loadWebgl()
 
-    reloadWebglRef.current = () => {
-      webglAddon?.dispose()
-      webglAddon = loadWebgl()
-      term.refresh(0, term.rows - 1)
-    }
-
     fitAddon.fit()
 
     // Custom scrollbar overlay — xterm.js's own scrollbar widget explicitly
@@ -217,6 +192,11 @@ export function Terminal({
     container.style.position = 'relative'
     const scrollbarEl = document.createElement('div')
     scrollbarEl.className = 'term-scrollbar'
+    // Fixed-width inner box for the actual visible/interactive controls,
+    // anchored to the right edge of the (dynamically wider) outer masking
+    // box — see the .term-scrollbar-inner comment in index.css.
+    const innerEl = document.createElement('div')
+    innerEl.className = 'term-scrollbar-inner'
     const upBtn = document.createElement('div')
     upBtn.className = 'term-scrollbar-btn up'
     const track = document.createElement('div')
@@ -226,23 +206,57 @@ export function Terminal({
     track.appendChild(thumb)
     const downBtn = document.createElement('div')
     downBtn.className = 'term-scrollbar-btn down'
-    scrollbarEl.append(upBtn, track, downBtn)
+    innerEl.append(upBtn, track, downBtn)
+    scrollbarEl.append(innerEl)
     container.appendChild(scrollbarEl)
 
-    // Colored from the active theme's foreground (matching xterm's own
-    // default scrollbarSliderBackground behavior) rather than a fixed
-    // light/dark guess, so it stays legible against any preset theme.
+    // The CSS width above is only a fallback — FitAddon reserves gutter
+    // space for "wherever a scrollbar will go", but the terminal's actual
+    // rendered canvas (cols * cellWidth) essentially never lands exactly on
+    // that boundary, since an integer column count almost always leaves a
+    // few leftover pixels of a partial column. Measuring the canvas's real
+    // right edge and sizing this overlay to close that exact gap covers it
+    // precisely regardless of font size or how wide that leftover sliver
+    // happens to be, rather than assuming a fixed width matches.
+    function updateScrollbarGeometry() {
+      let canvasRight = 0
+      for (const canvas of container.querySelectorAll('canvas')) {
+        const rect = canvas.getBoundingClientRect()
+        if (rect.width > 0) canvasRight = Math.max(canvasRight, rect.right)
+      }
+      if (canvasRight === 0) return
+      const width = container.getBoundingClientRect().right - canvasRight
+      if (width > 0) scrollbarEl.style.width = `${width}px`
+    }
+
+    // Foreground for the thumb/arrows (matching xterm's own default
+    // scrollbarSliderBackground behavior) so they stay legible against any
+    // preset theme; background for the widget's own base fill, covering
+    // FitAddon's reserved gutter (see the .term-scrollbar width comment in
+    // index.css) with the pane's actual background rather than leaving it
+    // transparent — WebView2 doesn't reliably render that reserved-but-
+    // unused canvas strip as the real background color, so painting over
+    // it here is what actually makes it match instead of just hoping the
+    // canvas underneath already does.
     function updateScrollbarColors() {
-      const [r, g, b] = hexToRgb(findTheme(settingsRef.current.themeName).foreground)
-      scrollbarEl.style.setProperty('--term-scrollbar-fg', `${r}, ${g}, ${b}`)
+      const theme = findTheme(settingsRef.current.themeName)
+      const [fr, fg, fb] = hexToRgb(theme.foreground)
+      const [br, bg, bb] = hexToRgb(theme.background)
+      scrollbarEl.style.setProperty('--term-scrollbar-fg', `${fr}, ${fg}, ${fb}`)
+      scrollbarEl.style.setProperty('--term-scrollbar-bg', `${br}, ${bg}, ${bb}`)
     }
     updateScrollbarColors()
     updateScrollbarColorsRef.current = updateScrollbarColors
 
-    // Shown only when there's actual scrollback to reach (updateThumb) *and*
-    // this is the focused pane (updateScrollbarFocusRef) — a background
-    // pane's scrollbar would otherwise sit there as a non-interactive-feeling
-    // distraction on content you're not looking at.
+    // The interactive controls (thumb + arrows) are shown only when there's
+    // actual scrollback to reach (updateThumb) *and* this is the focused
+    // pane (updateScrollbarFocusRef) — a background pane's scrollbar would
+    // otherwise sit there as a non-interactive-feeling distraction on
+    // content you're not looking at. `.term-scrollbar` itself (the
+    // background mask covering FitAddon's reserved gutter — see index.css)
+    // stays visible unconditionally: it's not optional decoration, it's
+    // what keeps that gutter matching the pane's background at all, needed
+    // even when nothing is scrollable or focused.
     // `visibility` rather than `display`: reading layout (track.clientHeight,
     // below) from a `display: none` subtree always returns 0, which would
     // corrupt the thumb's position/size if updateThumb() ever runs while
@@ -255,7 +269,10 @@ export function Terminal({
     let hasOverflow = false
     let isFocused = activeRef.current ?? false
     function applyScrollbarVisibility() {
-      scrollbarEl.style.visibility = hasOverflow && isFocused ? 'visible' : 'hidden'
+      const visibility = hasOverflow && isFocused ? 'visible' : 'hidden'
+      upBtn.style.visibility = visibility
+      downBtn.style.visibility = visibility
+      thumb.style.visibility = visibility
     }
 
     function updateThumb() {
@@ -272,6 +289,7 @@ export function Terminal({
       thumb.style.height = `${thumbHeight}px`
       thumb.style.top = `${thumbTop}px`
     }
+    updateScrollbarGeometry()
     updateThumb()
 
     updateScrollbarFocusRef.current = (nextActive) => {
@@ -513,6 +531,7 @@ export function Terminal({
         webglAddon = loadWebgl()
       }
       term.refresh(0, term.rows - 1)
+      updateScrollbarGeometry()
       updateThumb()
       // This only reaches here on a real (non-zero) resize, which is
       // exactly what happens when a hidden tab becomes visible again
@@ -558,7 +577,6 @@ export function Terminal({
       onSessionIdRef.current?.(null)
       termRef.current = null
       searchAddonRef.current = null
-      reloadWebglRef.current = null
       updateScrollbarColorsRef.current = null
       updateScrollbarFocusRef.current = null
       term.dispose()

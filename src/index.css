@@ -87,16 +87,31 @@ body {
   top: 0;
   right: 0;
   bottom: 0;
-  width: 10px;
-  display: flex;
-  flex-direction: column;
+  /* Sized dynamically by updateScrollbarGeometry() in Terminal.tsx to
+     exactly match FitAddon's reserved gutter plus whatever fractional-
+     column remainder is left over (see the width comment there) — this
+     box exists purely to mask that whole area with the pane's actual
+     background (see --term-scrollbar-bg), since WebView2 doesn't reliably
+     render that reserved-but-unused canvas strip as the real background
+     color on its own. The *visible* controls are a fixed, narrower width
+     regardless (.term-scrollbar-inner below) — this outer box is wider
+     than they need to look, just to fully cover the masking area. */
   z-index: 20;
   user-select: none;
+  background-color: rgb(var(--term-scrollbar-bg, 22, 23, 29));
+}
+.term-scrollbar-inner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  display: flex;
+  flex-direction: column;
 }
 .term-scrollbar-track {
   position: relative;
   flex: 1 1 auto;
-  background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.08);
   cursor: default;
 }
 .term-scrollbar-thumb {
@@ -111,16 +126,15 @@ body {
   background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.5);
 }
 .term-scrollbar-btn {
-  flex: 0 0 10px;
-  width: 10px;
+  flex: 0 0 8px;
   cursor: pointer;
   background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.55);
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-position: center;
   mask-position: center;
-  -webkit-mask-size: 8px 8px;
-  mask-size: 8px 8px;
+  -webkit-mask-size: 6px 6px;
+  mask-size: 6px 6px;
 }
 .term-scrollbar-btn:hover {
   background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.8);
