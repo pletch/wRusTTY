@@ -42,8 +42,8 @@ body {
    everything else here. WebView2 (Windows) and every dev browser used to
    test this are Chromium-based, so the ::-webkit-scrollbar API applies. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

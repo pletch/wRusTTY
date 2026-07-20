@@ -115,7 +115,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
 
   return (
     <div
-      className="relative flex h-full w-full flex-col"
+      className="relative flex h-full w-full min-w-0 flex-col"
       onFocusCapture={() => onFocusPane(node.id)}
       onMouseDown={() => onFocusPane(node.id)}
     >
@@ -172,7 +172,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         <div ref={slotRef} className="relative h-full w-full" />
       ) : (
         <div
-          className={`h-full w-full transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
+          className={`h-full w-full min-w-0 transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes(DRAG_TAB_MIME)) return
             e.preventDefault()
