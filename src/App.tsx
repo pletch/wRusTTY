@@ -580,12 +580,22 @@ function App() {
     const next = withoutDragged.map((t) => {
       if (!findLeaf(t.root, targetPaneId)) return t
       const root = updateLeaf(t.root, targetPaneId, () => draggedLeaf)
+      // The attached leaf keeps the dragged leaf's own id (not
+      // targetPaneId) — see the comment above this function — so
+      // activePaneId, if it was pointing at targetPaneId, is left
+      // referencing an id that no longer exists anywhere in the tree
+      // unless it's remapped onto the new one here. Left stale, it
+      // silently breaks every later lookup keyed off activePaneId — not
+      // just the active-pane highlight, but e.g. popPaneToNewTab's title
+      // recompute too, since its "is this the pane that's active" check
+      // can never match again.
+      const activePaneId = t.activePaneId === targetPaneId ? draggedLeaf.id : t.activePaneId
       // Same reasoning as connectPane: only follow the newly-attached
       // connection if it landed on the tab's actual active pane, so an
       // attach into some other (non-focused) split pane doesn't rename a
       // tab that's still showing something else.
       const title = targetPaneId === t.activePaneId ? leafTitle(draggedLeaf, t.title) : t.title
-      return { ...t, root, title }
+      return { ...t, root, activePaneId, title }
     })
     setTabs(next)
     if (activeTabId === draggedTabId) {
