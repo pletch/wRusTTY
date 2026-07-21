@@ -46,7 +46,33 @@ import {
 } from './lib/paneTree'
 import * as sessionSnapshot from './lib/sessionSnapshot'
 import type { SessionSnapshot } from './lib/sessionSnapshot'
-import type { PaneLeaf, Tab } from './types'
+import type { PaneLeaf, PaneNode, Tab } from './types'
+
+/** Blanks the panes whose connection can only be resolved with an unlocked
+ * vault, leaving everything else (telnet especially) intact. Those panes then
+ * open on their connect form — which offers to unlock — instead of connecting
+ * and failing.
+ *
+ * `prefill` rebuilds the form contents from the profile the pane referenced.
+ * Without it a pane that was connected straight from the form (rather than
+ * from the sidebar) carries no `initial`, and blanking its source would leave
+ * an empty form with the host and username to re-enter by hand. */
+function withoutVaultBoundSources(
+  node: PaneNode,
+  prefill: (profileId: string) => PaneLeaf['initial'],
+): PaneNode {
+  if (node.type === 'leaf') {
+    if (node.source?.protocol !== 'sshProfile') return node
+    return { ...node, source: null, initial: node.initial ?? prefill(node.source.profileId) }
+  }
+  return {
+    ...node,
+    children: [
+      withoutVaultBoundSources(node.children[0], prefill),
+      withoutVaultBoundSources(node.children[1], prefill),
+    ],
+  }
+}
 
 function newTabId() {
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -142,6 +168,8 @@ function App() {
   // can't have its own answer overwritten by the still-default blank tab
   // underneath it.
   const [pendingRestore, setPendingRestore] = useState<SessionSnapshot | null>(null)
+  /** A workspace waiting on a vault unlock before its tabs are materialised. */
+  const [pendingWorkspace, setPendingWorkspace] = useState<Workspace | null>(null)
   const [restoreDecided, setRestoreDecided] = useState(false)
   // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
   // by pane id, and portaled into whichever "slot" div currently represents
@@ -471,19 +499,65 @@ function App() {
    * duplicate tabs, which is visible and closable — the opposite mistake
    * isn't recoverable.
    *
-   * Panes mount with their saved `source` already set, so each connects the
-   * way it would if picked from the sidebar: profiles resolve their
-   * credential on the Rust side, and anything needing a locked vault lands on
-   * its connect form instead of failing.
+   * When `vaultUsable` is false, panes that would need the vault open on
+   * their (prefilled) connect form instead of carrying a source that can only
+   * fail. Mounting them with the source intact is what made every tab in a
+   * workspace come up as "vault is locked" with no way forward.
    */
-  function openWorkspace(workspace: Workspace) {
+  function materializeWorkspace(workspace: Workspace, vaultUsable: boolean) {
     const restored: Tab[] = workspace.tabs.map((t) => {
-      const root = reidentify(t.root)
+      const root = reidentify(
+        vaultUsable
+          ? t.root
+          : withoutVaultBoundSources(t.root, (profileId) => {
+              const p = sessions.find((s) => s.id === profileId)
+              return p ? profileToInitial(p) : undefined
+            }),
+      )
       return { ...t, id: newTabId(), root, activePaneId: firstLeaf(root).id }
     })
     if (restored.length === 0) return
     setTabs((prev) => [...prev, ...restored])
     setActiveTabId(restored[0].id)
+  }
+
+  /** Gates on the vault the same way the launch-restore flow does, rather
+   * than letting each pane discover the lock separately and fail. */
+  function openWorkspace(workspace: Workspace) {
+    // Only 'locked' is worth prompting for. With no vault created at all
+    // there is nothing to unlock, so those panes go straight to their connect
+    // forms rather than showing an unlock dialog that can't help.
+    if (sessionSnapshot.needsVaultUnlock(workspace.tabs) && vaultStatus === 'locked') {
+      setPendingWorkspace(workspace)
+      return
+    }
+    materializeWorkspace(workspace, vaultStatus === 'unlocked')
+  }
+
+  function openPendingWorkspace() {
+    if (!pendingWorkspace) return
+    materializeWorkspace(pendingWorkspace, vaultStatus === 'unlocked')
+    setPendingWorkspace(null)
+  }
+
+  async function unlockAndOpenWorkspace(password: string) {
+    if (!pendingWorkspace) return
+    await vault.unlock(password)
+    refreshVaultStatus()
+    materializeWorkspace(pendingWorkspace, true)
+    setPendingWorkspace(null)
+  }
+
+  async function unlockWithOsAndOpenWorkspace() {
+    if (!pendingWorkspace) return
+    await vault.unlockWithOs()
+    // Same native-prompt focus problem as the launch-restore path.
+    getCurrentWindow()
+      .setFocus()
+      .catch(() => {})
+    refreshVaultStatus()
+    materializeWorkspace(pendingWorkspace, true)
+    setPendingWorkspace(null)
   }
 
   function connectPane(
@@ -1307,6 +1381,22 @@ function App() {
           onUnlockAndRestore={unlockAndRestoreSessions}
           onUnlockWithOsAndRestore={unlockWithOsAndRestoreSessions}
           onDiscard={discardRestore}
+        />
+      )}
+      {pendingWorkspace && (
+        <RestoreSessionsPrompt
+          count={sessionSnapshot.countSessions(pendingWorkspace.tabs)}
+          // Always true here — openWorkspace only sets this state when the
+          // vault is locked and the workspace needs it.
+          needsVaultUnlock
+          osUnlockAvailable={osUnlockAvailable}
+          title={`Open "${pendingWorkspace.name}"?`}
+          body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
+          cancelLabel="Open anyway — without unlocking"
+          onRestore={openPendingWorkspace}
+          onUnlockAndRestore={unlockAndOpenWorkspace}
+          onUnlockWithOsAndRestore={unlockWithOsAndOpenWorkspace}
+          onDiscard={openPendingWorkspace}
         />
       )}
     </div>

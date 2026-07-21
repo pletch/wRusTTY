@@ -9,6 +9,13 @@ interface Props {
   onUnlockAndRestore: (password: string) => Promise<void>
   onUnlockWithOsAndRestore: () => Promise<void>
   onDiscard: () => void
+  /** Overrides the launch-restore wording when these sessions come from
+   * somewhere else — a saved workspace opened mid-run. The mechanics are
+   * identical (same vault gate, same unlock paths), only the sentence
+   * differs, so this reuses the component rather than cloning it. */
+  title?: string
+  body?: string
+  cancelLabel?: string
 }
 
 const inputClass =
@@ -22,6 +29,9 @@ export function RestoreSessionsPrompt({
   onUnlockAndRestore,
   onUnlockWithOsAndRestore,
   onDiscard,
+  title,
+  body,
+  cancelLabel,
 }: Props) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -58,11 +68,12 @@ export function RestoreSessionsPrompt({
         <div className="flex items-center gap-2 text-white/90">
           <RotateCcw size={15} className="text-sky-400" />
           <span className="font-medium">
-            Restore {count} session{count === 1 ? '' : 's'}?
+            {title ?? `Restore ${count} session${count === 1 ? '' : 's'}?`}
           </span>
         </div>
         <p className="text-xs leading-relaxed text-white/50">
-          {count === 1 ? 'A session was' : 'Sessions were'} open when wRusTTY last closed.
+          {body ??
+            `${count === 1 ? 'A session was' : 'Sessions were'} open when wRusTTY last closed.`}
         </p>
 
         {needsVaultUnlock ? (
@@ -106,7 +117,7 @@ export function RestoreSessionsPrompt({
               onClick={onDiscard}
               className="w-full text-center text-xs text-white/40 hover:text-white/70"
             >
-              Cancel — start fresh instead
+              {cancelLabel ?? 'Cancel — start fresh instead'}
             </button>
           </form>
         ) : (
