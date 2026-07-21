@@ -8,6 +8,22 @@ export function blankLeaf(): PaneLeaf {
   return { type: 'leaf', id: newPaneId(), source: null, generation: 0 }
 }
 
+/** Rebuilds a tree with fresh ids, preserving structure, sources and split
+ * sizes. Required when materialising a saved workspace: its stored ids were
+ * generated in a previous run and can collide with live panes — including
+ * with itself, if the same workspace is opened twice. `generation` resets so
+ * the restored panes mount and connect as new sessions. */
+export function reidentify(node: PaneNode): PaneNode {
+  if (node.type === 'leaf') {
+    return { ...node, id: newPaneId(), generation: 0 }
+  }
+  return {
+    ...node,
+    id: newPaneId(),
+    children: [reidentify(node.children[0]), reidentify(node.children[1])],
+  }
+}
+
 export function findLeaf(node: PaneNode, id: string): PaneLeaf | null {
   if (node.type === 'leaf') return node.id === id ? node : null
   for (const child of node.children) {

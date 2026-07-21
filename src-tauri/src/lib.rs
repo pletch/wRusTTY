@@ -13,6 +13,7 @@ mod vault;
 #[cfg(target_os = "windows")]
 mod win_focus;
 mod window_effects;
+mod workspaces;
 
 use tauri::Manager;
 
@@ -39,6 +40,7 @@ pub fn run() {
         .manage(telnet::TelnetState::default())
         .manage(serial::SerialState::default())
         .manage(profiles::ProfileState::default())
+        .manage(workspaces::WorkspaceState::default())
         .manage(vault::VaultState::default())
         .manage(logging::LoggingState::default())
         .manage(sftp::SftpState::default())
@@ -70,6 +72,9 @@ pub fn run() {
             profiles::save_session,
             profiles::delete_session,
             profiles::reorder_sessions,
+            workspaces::list_workspaces,
+            workspaces::save_workspace,
+            workspaces::delete_workspace,
             vault::vault_status,
             vault::vault_create,
             vault::vault_unlock,

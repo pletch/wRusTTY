@@ -6,6 +6,8 @@ import { TabBar } from './components/TabBar'
 import { QuickConnectPalette } from './components/QuickConnectPalette'
 import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
+import { WorkspaceMenu } from './components/WorkspaceMenu'
+import type { Workspace } from './lib/workspaces'
 import { ToastHost } from './components/ToastHost'
 import { WindowControls } from './components/WindowControls'
 import { RestoreSessionsPrompt } from './components/RestoreSessionsPrompt'
@@ -38,6 +40,7 @@ import {
   closeLeaf,
   findLeaf,
   firstLeaf,
+  reidentify,
   splitLeaf,
   updateLeaf,
 } from './lib/paneTree'
@@ -459,6 +462,28 @@ function App() {
   function reconnectTab(id: string) {
     const tab = tabs.find((t) => t.id === id)
     if (tab) reconnectPane(id, tab.activePaneId)
+  }
+
+  /** Adds a saved workspace's tabs to the window and focuses its first.
+   *
+   * Additive rather than replacing: opening a workspace must never close live
+   * sessions someone is in the middle of. Opening the same one twice gives
+   * duplicate tabs, which is visible and closable — the opposite mistake
+   * isn't recoverable.
+   *
+   * Panes mount with their saved `source` already set, so each connects the
+   * way it would if picked from the sidebar: profiles resolve their
+   * credential on the Rust side, and anything needing a locked vault lands on
+   * its connect form instead of failing.
+   */
+  function openWorkspace(workspace: Workspace) {
+    const restored: Tab[] = workspace.tabs.map((t) => {
+      const root = reidentify(t.root)
+      return { ...t, id: newTabId(), root, activePaneId: firstLeaf(root).id }
+    })
+    if (restored.length === 0) return
+    setTabs((prev) => [...prev, ...restored])
+    setActiveTabId(restored[0].id)
   }
 
   function connectPane(
@@ -1110,6 +1135,7 @@ function App() {
           </div>
         )}
         <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
+          <WorkspaceMenu tabs={tabs} onOpen={openWorkspace} />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>

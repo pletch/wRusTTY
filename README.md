@@ -85,6 +85,13 @@ old key stops being useful at that moment — including the one that earlier
 versions of "Unlock with Windows sign-in" left sitting in Credential
 Manager.
 
+**Workspaces** save the whole arrangement — which sessions are open together
+and how the panes are split — under a name, and reopen it later. Opening one
+adds its tabs alongside whatever is already open rather than replacing them.
+Panes that can't be reconnected without a secret typed at connect time are
+skipped, as are serial connections: a COM number is only meaningful until an
+adapter moves to a different socket, so serial stays ad-hoc.
+
 **Saved sessions** cover SSH and telnet. They share one list, grouped by
 whatever folders you create rather than by protocol — folders are the
 organisation you chose and mean something; the transport is an attribute of
