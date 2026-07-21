@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    # Tags are what now trigger an actual installer build — see windows-build.
+    tags: ['v*']
   pull_request:
+  # Lets windows-build be run on demand without cutting a tag, for when you
+  # want an installer out of CI mid-stream.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -39,19 +44,18 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
-  security-audit:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
   windows-build:
     needs: [frontend, rust]
+    # Not on every push. windows-latest bills at a 2x minute multiplier, and
+    # a full Tauri release build plus NSIS/MSI bundling is by far the longest
+    # job here — on a private repo that was the bulk of the Actions spend.
+    #
+    # It earned that cost back when development happened on Linux and this
+    # was the only way to get a Windows installer at all. Development is on
+    # Windows now, so a local `npm run tauri build` covers the day-to-day
+    # case, and CI only needs to produce the artifact when there's a release
+    # to hand someone.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7

@@ -1,0 +1,46 @@
+name: Security audit
+
+# Split out of ci.yml rather than living there as a job: `paths` filters are
+# a workflow-level trigger, not something a single job can carry.
+#
+# A dependency audit's answer only changes when the dependency graph changes
+# or when a new advisory is published. Running it on every push spent ~6
+# minutes re-deriving an unchanged result — real money on a private repo — so
+# it now runs when the manifests move, plus a weekly sweep to catch
+# advisories filed against dependencies that haven't moved at all.
+on:
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/audit.yml'
+  schedule:
+    # Mondays, 07:00 UTC. GitHub disables scheduled workflows after 60 days
+    # with no repository activity — re-enable from the Actions tab if this
+    # goes quiet during a long break.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned to v2.0.0 because that is the newest release; it targets Node
+      # 20, which GitHub has deprecated and currently force-runs on Node 24.
+      # Nothing to upgrade to yet — revisit if the shim is withdrawn.
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
