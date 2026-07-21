@@ -9,25 +9,28 @@ import { toast } from '../lib/toast'
 interface Props {
   /** Live tabs, captured when the user saves. */
   tabs: Tab[]
+  /** Owned by App so this menu and the connect dialog's sidebar show the
+   * same list. */
+  saved: Workspace[]
   /** Adds a workspace's tabs to the window. Additive rather than replacing:
    * opening a workspace must never close live sessions the user is in the
    * middle of. */
   onOpen: (workspace: Workspace) => void
+  /** Signals App to re-read the list after a save or delete. */
+  onChanged: () => void
 }
 
 const secondaryButton =
   'flex w-full items-center gap-1.5 rounded py-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white/90'
 
-export function WorkspaceMenu({ tabs, onOpen }: Props) {
+export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
   const [open, setOpen] = useState(false)
-  const [saved, setSaved] = useState<Workspace[]>([])
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setName('')
-    workspaces.listWorkspaces().then(setSaved).catch(() => {})
   }, [open])
 
   useEffect(() => {
@@ -53,7 +56,7 @@ export function WorkspaceMenu({ tabs, onOpen }: Props) {
         name: name.trim() || `Workspace ${saved.length + 1}`,
         tabs: capturable,
       })
-      setSaved(await workspaces.listWorkspaces())
+      onChanged()
       setName('')
       toast.success('Workspace saved')
     } catch (err) {
@@ -66,7 +69,7 @@ export function WorkspaceMenu({ tabs, onOpen }: Props) {
   async function doDelete(w: Workspace) {
     try {
       await workspaces.deleteWorkspace(w.id)
-      setSaved(await workspaces.listWorkspaces())
+      onChanged()
     } catch (err) {
       toast.error(String(err))
     }

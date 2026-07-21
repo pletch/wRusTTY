@@ -10,6 +10,7 @@ import {
   FolderOpen,
   Server,
   Network,
+  LayoutGrid,
   Lock,
   Pencil,
   Trash2,
@@ -20,6 +21,7 @@ import {
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
 import { profileSubtitle } from '../lib/profiles'
+import type { Workspace } from '../lib/workspaces'
 import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
 import { defaultSerialConfig } from '../lib/serial'
@@ -91,6 +93,9 @@ interface Props {
     logSession: boolean,
     paneOptions?: { backspaceSendsCtrlH: boolean | null },
   ) => void
+  /** Saved workspaces, listed above the sessions. Absent hides the section. */
+  workspaces?: Workspace[]
+  onOpenWorkspace?: (workspace: Workspace) => void
   /** Awaited before connecting when the connection will go through the saved
    * profile — otherwise the write races the read and the session connects
    * with the values it had *before* this edit. */
@@ -176,6 +181,8 @@ export function ConnectDialog({
   initial,
   error,
   sessions,
+  workspaces,
+  onOpenWorkspace,
   onSelectSession,
   onEditSession,
   onDeleteSession,
@@ -613,6 +620,31 @@ export function ConnectDialog({
           // are opened, rather than a panel whose own framing grows and
           // shrinks and leaves an edge partway down the dialog.
           <div className="w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
+            {/* Above the session folders, because a workspace is the larger
+                unit — "open all of this" rather than "open one of these" —
+                and because arriving at a blank tab and having to leave the
+                dialog for the toolbar to open one is the wrong first move. */}
+            {workspaces && workspaces.length > 0 && onOpenWorkspace && (
+              <div className="mb-1 border-b border-white/10 pb-1.5">
+                <div className="px-2 py-1 font-medium tracking-wide text-white/30">WORKSPACES</div>
+                {workspaces.map((w) => (
+                  <div
+                    key={w.id}
+                    onClick={() => onOpenWorkspace(w)}
+                    className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
+                    title={`Open ${w.name}`}
+                  >
+                    <LayoutGrid size={11} className="mt-0.5 shrink-0 text-sky-400/40" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-white/90">{w.name}</div>
+                      <div className="truncate text-white/40">
+                        {w.tabs.length === 1 ? '1 tab' : `${w.tabs.length} tabs`}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {[...groups.entries()].map(([folderName, items]) => {
               const collapsed = collapsedFolders.has(folderName)
               return (

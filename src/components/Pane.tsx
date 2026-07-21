@@ -7,6 +7,7 @@ import { FilesPanel } from './FilesPanel'
 import type { PaneLeaf, PaneNode } from '../types'
 import type { ConnectionSource } from '../lib/connection'
 import type { SessionProfile } from '../lib/profiles'
+import type { Workspace } from '../lib/workspaces'
 import type { VaultSecret } from '../lib/vault'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
 
@@ -28,6 +29,8 @@ interface Props {
   filesOpenByPane: Record<string, boolean>
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
+  workspaces: Workspace[]
+  onOpenWorkspace: (workspace: Workspace) => void
   onFocusPane: (id: string) => void
   onConnect: (
     paneId: string,
@@ -92,6 +95,8 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     filesOpenByPane,
     sessionIdByPane,
     sessions,
+    workspaces,
+    onOpenWorkspace,
     onFocusPane,
     onConnect,
     onSelectSession,
@@ -223,6 +228,8 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             initial={node.initial}
             vaultUnlocked={vaultUnlocked}
             sessions={sessions}
+            workspaces={workspaces}
+            onOpenWorkspace={onOpenWorkspace}
             onConnect={(source, logSession, paneOptions) =>
               onConnect(node.id, source, logSession, paneOptions)
             }

@@ -8,6 +8,7 @@ import { SettingsMenu } from './components/SettingsMenu'
 import { VaultMenu } from './components/VaultMenu'
 import { WorkspaceMenu } from './components/WorkspaceMenu'
 import type { Workspace } from './lib/workspaces'
+import * as workspaceApi from './lib/workspaces'
 import { ToastHost } from './components/ToastHost'
 import { WindowControls } from './components/WindowControls'
 import { RestoreSessionsPrompt } from './components/RestoreSessionsPrompt'
@@ -150,6 +151,17 @@ function App() {
   useEffect(() => {
     profiles.listSessions().then(setSessions).catch(() => setSessions([]))
   }, [profilesVersion])
+  // Held here rather than fetched by WorkspaceMenu, so the connect dialog's
+  // sidebar and the toolbar menu read the same list and a save in one is
+  // immediately visible in the other.
+  const [workspacesVersion, setWorkspacesVersion] = useState(0)
+  const [savedWorkspaces, setSavedWorkspaces] = useState<Workspace[]>([])
+  useEffect(() => {
+    workspaceApi
+      .listWorkspaces()
+      .then(setSavedWorkspaces)
+      .catch(() => setSavedWorkspaces([]))
+  }, [workspacesVersion])
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
   // Mirrors vibrancyMode/theme/opacity to the native window on every change
   // ('off' still round-trips through the Rust side, which clears both
@@ -1209,7 +1221,12 @@ function App() {
           </div>
         )}
         <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
-          <WorkspaceMenu tabs={tabs} onOpen={openWorkspace} />
+          <WorkspaceMenu
+            tabs={tabs}
+            saved={savedWorkspaces}
+            onOpen={openWorkspace}
+            onChanged={() => setWorkspacesVersion((v) => v + 1)}
+          />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
           <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
         </div>
@@ -1244,6 +1261,8 @@ function App() {
                 filesOpenByPane={filesOpenByPane}
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
+                workspaces={savedWorkspaces}
+                onOpenWorkspace={openWorkspace}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
                 onConnect={(paneId, config, logSession) => connectPane(tab.id, paneId, config, logSession)}
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
