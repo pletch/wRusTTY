@@ -1,3 +1,4 @@
+mod atomic_file;
 mod coalesce;
 mod connection_status;
 #[cfg(target_os = "windows")]

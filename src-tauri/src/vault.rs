@@ -729,8 +729,10 @@ pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), Strin
         sessions,
         workspaces,
     };
-    let contents = serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?;
-    std::fs::write(dest_path, contents).map_err(|e| e.to_string())
+    // Atomic like every other store here: the destination is often an
+    // existing bundle being refreshed, and a crash part-way through must not
+    // consume the previous backup to produce a truncated replacement.
+    crate::atomic_file::write_json_atomic(std::path::Path::new(&dest_path), &bundle)
 }
 
 /// Importing replaces the vault file, the session profile list, and the
@@ -739,6 +741,14 @@ pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), Strin
 /// must unlock again with the imported file's password. Any stored OS-unlock
 /// key is cleared too, since it wrapped the *old* file's key and can't unlock
 /// the replacement.
+///
+/// The whole bundle is parsed before anything is written, so a malformed file
+/// is rejected without having touched a thing, and each of the three writes is
+/// individually atomic. What's *not* covered is atomicity across all three: a
+/// crash between them leaves the new vault beside the old sessions. Closing
+/// that would mean staging all three and renaming them together, which isn't
+/// something a filesystem offers — and the recovery is to re-run the import,
+/// since the bundle is still sitting there.
 #[tauri::command]
 pub async fn vault_import(
     app: AppHandle,
@@ -755,12 +765,10 @@ pub async fn vault_import(
         return Err(format!("unsupported export format: {}", bundle.format));
     }
 
-    let vault_contents = serde_json::to_string_pretty(&bundle.vault).map_err(|e| e.to_string())?;
-    let vault_dest = vault_path(&app)?;
-    if let Some(parent) = vault_dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&vault_dest, vault_contents).map_err(|e| e.to_string())?;
+    // The vault is the one file here with no other copy — a truncated write
+    // loses every stored credential — so it goes through the same atomic
+    // replace as the other two rather than a plain overwrite.
+    crate::atomic_file::write_json_atomic(&vault_path(&app)?, &bundle.vault)?;
 
     let profiles_dest = crate::profiles::profiles_path(&app)?;
     crate::profiles::write_profiles(&profiles_dest, &bundle.sessions)?;

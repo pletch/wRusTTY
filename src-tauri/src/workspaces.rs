@@ -51,24 +51,48 @@ pub(crate) fn read_workspaces(path: &PathBuf) -> Result<Vec<Workspace>, String> 
     }
 }
 
-/// Same temp-file + fsync + rename pattern as `sessions.json`, the vault, and
-/// known_hosts — a crash mid-write must not leave a truncated file and lose
-/// every saved workspace.
-pub(crate) fn write_workspaces(path: &PathBuf, workspaces: &[Workspace]) -> Result<(), String> {
-    use std::io::Write;
+/// Atomic (see `atomic_file`) — a crash mid-write must not leave a truncated
+/// file and lose every saved workspace.
+pub(crate) fn write_workspaces(
+    path: &std::path::Path,
+    workspaces: &[Workspace],
+) -> Result<(), String> {
+    crate::atomic_file::write_json_atomic(path, &workspaces)
+}
 
-    let dir = path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let contents = serde_json::to_string_pretty(workspaces).map_err(|e| e.to_string())?;
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
-    tmp.write_all(contents.as_bytes())
-        .map_err(|e| e.to_string())?;
-    tmp.as_file().sync_all().map_err(|e| e.to_string())?;
-    tmp.persist(path).map_err(|e| e.to_string())?;
-    Ok(())
+/// Names are how the user tells workspaces apart — the menu and the connect
+/// dialog show nothing else but a tab count — so two sharing one name leaves
+/// no way to know which is which. Compared case-insensitively and trimmed,
+/// since "Prod" and "prod " being distinct entries would be just as confusing
+/// as an exact duplicate.
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// Insert or replace by id, rejecting a name another workspace already holds.
+/// Split out from the command so the rule is testable without an AppHandle.
+///
+/// Only enforced on write: a file that already contains duplicates (written
+/// before this existed) still loads, and stays loadable until one of them is
+/// saved over.
+fn upsert(mut workspaces: Vec<Workspace>, workspace: Workspace) -> Result<Vec<Workspace>, String> {
+    let name = workspace.name.trim().to_string();
+    if name.is_empty() {
+        return Err("workspace name cannot be empty".to_string());
+    }
+    if workspaces
+        .iter()
+        .any(|w| w.id != workspace.id && name_key(&w.name) == name_key(&name))
+    {
+        return Err(format!("a workspace named \"{name}\" already exists"));
+    }
+
+    let workspace = Workspace { name, ..workspace };
+    match workspaces.iter_mut().find(|w| w.id == workspace.id) {
+        Some(existing) => *existing = workspace,
+        None => workspaces.push(workspace),
+    }
+    Ok(workspaces)
 }
 
 #[tauri::command]
@@ -81,7 +105,8 @@ pub async fn list_workspaces(
 }
 
 /// Insert or replace by id, so renaming or re-capturing an existing workspace
-/// is the same call as creating one.
+/// is the same call as creating one. Errors if the name is blank or belongs
+/// to a different workspace (see `upsert`).
 #[tauri::command]
 pub async fn save_workspace(
     app: AppHandle,
@@ -90,11 +115,7 @@ pub async fn save_workspace(
 ) -> Result<(), String> {
     let _guard = state.lock.lock().await;
     let path = workspaces_path(&app)?;
-    let mut workspaces = read_workspaces(&path)?;
-    match workspaces.iter_mut().find(|w| w.id == workspace.id) {
-        Some(existing) => *existing = workspace,
-        None => workspaces.push(workspace),
-    }
+    let workspaces = upsert(read_workspaces(&path)?, workspace)?;
     write_workspaces(&path, &workspaces)
 }
 
@@ -122,4 +143,71 @@ pub async fn delete_workspace(
     let mut workspaces = read_workspaces(&path)?;
     workspaces.retain(|w| w.id != id);
     write_workspaces(&path, &workspaces)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ws(id: &str, name: &str) -> Workspace {
+        Workspace {
+            id: id.to_string(),
+            name: name.to_string(),
+            tabs: serde_json::json!([]),
+        }
+    }
+
+    #[test]
+    fn adds_a_new_workspace() {
+        let out = upsert(vec![], ws("a", "Prod")).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "Prod");
+    }
+
+    /// The whole point of the replace affordance: same id, new tabs, no
+    /// "already exists" complaint about its own name.
+    #[test]
+    fn replaces_in_place_by_id() {
+        let existing = vec![ws("a", "Prod"), ws("b", "Lab")];
+        let mut updated = ws("a", "Prod");
+        updated.tabs = serde_json::json!([{ "id": "t1" }]);
+        let out = upsert(existing, updated).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].tabs, serde_json::json!([{ "id": "t1" }]));
+        // Order is the menu's display order — replacing must not reshuffle it.
+        assert_eq!(out[1].id, "b");
+    }
+
+    #[test]
+    fn rejects_a_name_another_workspace_holds() {
+        let existing = vec![ws("a", "Prod")];
+        let err = upsert(existing, ws("b", "Prod")).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+    }
+
+    #[test]
+    fn name_comparison_ignores_case_and_surrounding_space() {
+        let existing = vec![ws("a", "Prod")];
+        assert!(upsert(existing.clone(), ws("b", "  prod ")).is_err());
+        assert!(upsert(existing, ws("b", "Prod 2")).is_ok());
+    }
+
+    /// Renaming a workspace to something free is still just an upsert.
+    #[test]
+    fn allows_renaming_to_an_unused_name() {
+        let existing = vec![ws("a", "Prod"), ws("b", "Lab")];
+        let out = upsert(existing, ws("a", "Staging")).unwrap();
+        assert_eq!(out[0].name, "Staging");
+    }
+
+    #[test]
+    fn stores_the_trimmed_name() {
+        let out = upsert(vec![], ws("a", "  Prod  ")).unwrap();
+        assert_eq!(out[0].name, "Prod");
+    }
+
+    #[test]
+    fn rejects_a_blank_name() {
+        assert!(upsert(vec![], ws("a", "   ")).is_err());
+    }
 }

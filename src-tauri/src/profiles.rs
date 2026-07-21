@@ -77,24 +77,13 @@ pub(crate) fn read_profiles(path: &PathBuf) -> Result<Vec<SessionProfile>, Strin
     }
 }
 
-/// Same temp-file + fsync + rename pattern as the vault and known_hosts
-/// stores (wr-vault/wr-ssh) — a crash or power loss mid-write must not
+/// Atomic (see `atomic_file`) — a crash or power loss mid-write must not
 /// leave a truncated `sessions.json`, silently losing every saved session.
-pub(crate) fn write_profiles(path: &PathBuf, profiles: &[SessionProfile]) -> Result<(), String> {
-    use std::io::Write;
-
-    let dir = path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let contents = serde_json::to_string_pretty(profiles).map_err(|e| e.to_string())?;
-    let mut tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
-    tmp.write_all(contents.as_bytes())
-        .map_err(|e| e.to_string())?;
-    tmp.as_file().sync_all().map_err(|e| e.to_string())?;
-    tmp.persist(path).map_err(|e| e.to_string())?;
-    Ok(())
+pub(crate) fn write_profiles(
+    path: &std::path::Path,
+    profiles: &[SessionProfile],
+) -> Result<(), String> {
+    crate::atomic_file::write_json_atomic(path, &profiles)
 }
 
 #[tauri::command]

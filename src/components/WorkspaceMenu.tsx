@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { LayoutGrid, Save, Trash2 } from 'lucide-react'
+import { LayoutGrid, RefreshCw, Save, Trash2 } from 'lucide-react'
 import * as workspaces from '../lib/workspaces'
 import type { Workspace } from '../lib/workspaces'
 import type { Tab } from '../types'
@@ -45,25 +45,53 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
   const capturable = workspaces.captureTabs(tabs)
   const paneCount = capturable.reduce((n, t) => n + allLeaves(t.root).length, 0)
   const dropped = workspaces.countDropped(tabs)
+  const nothingToSave = capturable.length === 0
+  const arrangement = `${paneCount === 1 ? '1 pane' : `${paneCount} panes`} across ${
+    capturable.length === 1 ? '1 tab' : `${capturable.length} tabs`
+  }`
+  // Names are unique, so typing one that exists can only mean "replace that
+  // one" — offered as such instead of letting the save come back as an error.
+  const collision = workspaces.findByName(saved, name)
 
-  async function doSave(e: React.FormEvent) {
-    e.preventDefault()
-    if (capturable.length === 0) return
+  /** Replacing discards a stored arrangement with no undo, so it always asks
+   * — including from the save form, where the collision may well be a
+   * surprise rather than the intent. */
+  function confirmReplace(w: Workspace) {
+    return window.confirm(
+      `Replace "${w.name}" with the current ${arrangement}? Its saved arrangement is discarded.`,
+    )
+  }
+
+  async function persist(id: string, workspaceName: string, replacing: boolean) {
     setBusy(true)
     try {
-      await workspaces.saveWorkspace({
-        id: crypto.randomUUID(),
-        name: name.trim() || `Workspace ${saved.length + 1}`,
-        tabs: capturable,
-      })
+      await workspaces.saveWorkspace({ id, name: workspaceName, tabs: capturable })
       onChanged()
       setName('')
-      toast.success('Workspace saved')
+      toast.success(replacing ? `Replaced "${workspaceName}"` : 'Workspace saved')
     } catch (err) {
       toast.error(String(err))
     } finally {
       setBusy(false)
     }
+  }
+
+  async function doSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (nothingToSave) return
+    if (collision) {
+      if (!confirmReplace(collision)) return
+      await persist(collision.id, collision.name, true)
+      return
+    }
+    await persist(crypto.randomUUID(), name.trim() || workspaces.defaultName(saved), false)
+  }
+
+  /** Re-capture over an existing workspace, keeping its id and name. Without
+   * this the only way to update one was to delete it and save again. */
+  async function doReplace(w: Workspace) {
+    if (nothingToSave || !confirmReplace(w)) return
+    await persist(w.id, w.name, true)
   }
 
   async function doDelete(w: Workspace) {
@@ -110,6 +138,18 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
                     </span>
                   </button>
                   <button
+                    onClick={() => doReplace(w)}
+                    disabled={busy || nothingToSave}
+                    title={
+                      nothingToSave
+                        ? 'Nothing open that can be saved'
+                        : `Replace with the current ${arrangement}`
+                    }
+                    className="shrink-0 text-white/25 opacity-0 transition-opacity duration-100 hover:text-sky-300 disabled:cursor-not-allowed disabled:hover:text-white/25 group-hover:opacity-100"
+                  >
+                    <RefreshCw size={12} />
+                  </button>
+                  <button
                     onClick={() => doDelete(w)}
                     title="Delete workspace"
                     className="shrink-0 text-white/25 opacity-0 transition-opacity duration-100 hover:text-red-300 group-hover:opacity-100"
@@ -123,11 +163,7 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
 
           <form onSubmit={doSave} className="space-y-2 border-t border-white/10 pt-2.5">
             <p className="text-white/60">
-              {capturable.length === 0
-                ? 'Nothing open that can be saved.'
-                : `Save ${paneCount === 1 ? '1 pane' : `${paneCount} panes`} across ${
-                    capturable.length === 1 ? '1 tab' : `${capturable.length} tabs`
-                  }.`}
+              {nothingToSave ? 'Nothing open that can be saved.' : `Save ${arrangement}.`}
             </p>
             {/* Said before saving, not discovered on reopen. Both causes are
                 things the user can act on — save the session as a profile, or
@@ -146,10 +182,18 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
             />
             <button
               type="submit"
-              disabled={busy || capturable.length === 0}
+              disabled={busy || nothingToSave}
               className={`${secondaryButton} justify-center disabled:cursor-not-allowed disabled:opacity-40`}
             >
-              <Save size={13} /> Save current arrangement
+              {collision ? (
+                <>
+                  <RefreshCw size={13} /> Replace &ldquo;{collision.name}&rdquo;
+                </>
+              ) : (
+                <>
+                  <Save size={13} /> Save current arrangement
+                </>
+              )}
             </button>
           </form>
         </div>
