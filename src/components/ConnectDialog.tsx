@@ -690,17 +690,32 @@ export function ConnectDialog({
                     </select>
                   )}
 
-                  {/* Blank is the common case, so this stays an unobtrusive
-                      optional field rather than a dropdown implying a choice
-                      has to be made. It exists for gear that renders badly —
-                      or refuses a PTY — under anything but vt100. */}
+                  {/* A datalist, not a <select>: the common values are worth
+                      offering (nobody recalls them, and a typo degrades the
+                      session silently rather than erroring), but the set is
+                      genuinely open — screen-256color, tmux-256color, and
+                      vendor-specific values are all legitimate, and a closed
+                      dropdown would make them unreachable. Blank stays the
+                      normal answer. */}
                   <input
                     className={`${inputClass} w-full`}
+                    list="wr-term-types"
                     placeholder="terminal type (default xterm-256color)"
                     value={termType}
                     onChange={(e) => setTermType(e.target.value)}
                     title="Sets TERM for the remote session. Leave blank unless the device misbehaves — some network and embedded gear needs vt100."
                   />
+                  <datalist id="wr-term-types">
+                    <option value="xterm-256color">default — 256 colours</option>
+                    <option value="xterm-direct">24-bit colour via terminfo</option>
+                    <option value="xterm">PuTTY&apos;s default</option>
+                    <option value="vt100">older network / embedded gear</option>
+                    <option value="vt220" />
+                    <option value="ansi" />
+                    <option value="linux" />
+                    <option value="screen-256color" />
+                    <option value="tmux-256color" />
+                  </datalist>
                 </>
               )}
             </>

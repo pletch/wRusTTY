@@ -200,6 +200,22 @@ impl SshSession {
         };
 
         let channel = handle.channel_open_session().await?;
+        // Advertise 24-bit colour. The terminal has always rendered it —
+        // xterm.js handles `ESC[38;2;R;G;Bm` directly — but remote programs
+        // won't *emit* it unless something says the terminal can: vim,
+        // neovim, tmux, bat and friends all key off `COLORTERM`, and `TERM`
+        // alone can't express it (`xterm-256color` says 256 and means it).
+        //
+        // Sent with `want_reply: false` because this legitimately fails on
+        // most servers and must not be treated as an error: sshd only honours
+        // variables listed in `AcceptEnv`, which defaults to `LANG LC_*`. It
+        // costs one message to try and silently does nothing when refused;
+        // where it matters, the fix is server-side (`AcceptEnv COLORTERM`),
+        // in the remote shell's rc, or `TERM=xterm-direct`.
+        //
+        // Must precede `request_shell` — environment set after the shell
+        // starts cannot reach it.
+        let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
         channel
             .request_pty(false, self.config.term_type(), 80, 24, 0, 0, &[])
             .await?;

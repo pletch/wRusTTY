@@ -97,8 +97,16 @@ smartcard. Note that servers cap authentication attempts (OpenSSH's
 off before the right one is reached.
 
 **Terminal type.** Sessions send `TERM=xterm-256color` unless overridden per
-session. Some network and embedded gear renders badly, or refuses a PTY,
-under anything but `vt100`.
+session (the field suggests common values but accepts any). Some network and
+embedded gear renders badly, or refuses a PTY, under anything but `vt100`.
+
+**24-bit colour.** The terminal renders it natively, and sessions request
+`COLORTERM=truecolor` so remote programs know to emit it. That request is
+advisory: sshd only forwards variables listed in `AcceptEnv`, which defaults
+to `LANG LC_*`, so it is frequently ignored. If colours look limited, either
+add `AcceptEnv COLORTERM` to the server's `sshd_config`, export it from the
+remote shell's rc, or set this session's terminal type to `xterm-direct`,
+which advertises direct colour through terminfo instead.
 
 **Backspace.** Defaults to `^?` (DEL), which is what modern Unix expects.
 Gear that wants `^H` — much network equipment and older Unix — is handled by
