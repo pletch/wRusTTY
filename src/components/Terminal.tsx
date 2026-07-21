@@ -132,6 +132,45 @@ export function Terminal({
   const loggingRef = useRef(logging)
   loggingRef.current = logging
 
+  // Read by applyLogging (below) so logging can start/stop against the live
+  // session from outside the connect effect's local `sessionId`.
+  const sessionIdRef = useRef<string | null>(null)
+  // Whether a log file is currently open for this session — the single source
+  // of truth that keeps the connect-time start and the mid-session toggle
+  // from double-starting or double-stopping. Fresh (false) on every mount,
+  // i.e. every reconnect.
+  const loggingActiveRef = useRef(false)
+  // label feeds the log filename; read through a ref so a mid-session start
+  // uses the current label without making it a dependency anywhere.
+  const labelRef = useRef(label)
+  labelRef.current = label
+
+  // Starts or stops session logging to match `want`, idempotently. Shared by
+  // the connect handler (for "logging already on at connect") and the effect
+  // below (for toggling it during a live session). loggingActiveRef is set
+  // optimistically before the async start so a near-simultaneous second call
+  // can't open a second log file for the same session.
+  function applyLogging(sessionId: string, want: boolean | undefined) {
+    if (want && !loggingActiveRef.current) {
+      loggingActiveRef.current = true
+      sessionLog.start(sessionId, labelRef.current, settingsRef.current.logPlainText).catch(() => {
+        loggingActiveRef.current = false
+      })
+    } else if (!want && loggingActiveRef.current) {
+      loggingActiveRef.current = false
+      sessionLog.stop(sessionId).catch(() => {})
+    }
+  }
+
+  // Toggling the logging setting now takes effect on the live session instead
+  // of only at the next connect. No-op until the session id is known; the
+  // connect handler applies the initial state once it is.
+  useEffect(() => {
+    const id = sessionIdRef.current
+    if (id) applyLogging(id, logging)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logging])
+
   // Pane.tsx passes these as fresh inline closures on every render, so
   // including them in the connect effect's dependency array below would
   // tear down and reconnect the session on every status update it reports
@@ -251,7 +290,6 @@ export function Terminal({
 
     let disposed = false
     let sessionId: string | null = null
-    let loggingActive = false
 
     const term = new XTerm({
       cursorBlink: true,
@@ -597,6 +635,7 @@ export function Terminal({
         }
         setConnecting(false)
         sessionId = id
+        sessionIdRef.current = id
         onSessionIdRef.current?.(id)
         const { cols, rows } = term
         conn.resize(source, id, cols, rows).catch(() => {})
@@ -605,14 +644,7 @@ export function Terminal({
         // actually usable.
         term.focus()
         lineEditor?.start()
-        if (loggingRef.current) {
-          sessionLog
-            .start(id, label)
-            .then(() => {
-              loggingActive = true
-            })
-            .catch(() => {})
-        }
+        applyLogging(id, loggingRef.current)
       })
       .catch((err) => {
         if (!disposed) {
@@ -735,8 +767,10 @@ export function Terminal({
       scrollbarEl.remove()
       if (sessionId) {
         conn.disconnect(source, sessionId).catch(() => {})
-        if (loggingActive) sessionLog.stop(sessionId).catch(() => {})
+        if (loggingActiveRef.current) sessionLog.stop(sessionId).catch(() => {})
       }
+      loggingActiveRef.current = false
+      sessionIdRef.current = null
       onSessionIdRef.current?.(null)
       termRef.current = null
       searchAddonRef.current = null

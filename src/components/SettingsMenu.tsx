@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Settings } from 'lucide-react'
+import { Settings, FolderOpen } from 'lucide-react'
 import type { TerminalSettings } from '../lib/settings'
 import { PRESET_THEMES } from '../lib/theme'
+import { revealLogs } from '../lib/logging'
+import { toast } from '../lib/toast'
 
 interface Props {
   settings: TerminalSettings
@@ -30,7 +32,7 @@ export function SettingsMenu({ settings, onChange }: Props) {
         <Settings size={15} strokeWidth={2} />
       </button>
       {open && (
-        <div className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-64 origin-top-right rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100">
+        <div className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 max-h-[calc(100vh-4rem)] w-64 origin-top-right overflow-y-auto overscroll-contain rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100">
           <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
             <input
               type="checkbox"
@@ -71,6 +73,21 @@ export function SettingsMenu({ settings, onChange }: Props) {
               <span className="block text-white/40">
                 When a connection is lost, close the pane automatically instead
                 of showing Reconnect actions.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-sky-400"
+              checked={settings.logPlainText}
+              onChange={(e) => onChange({ ...settings, logPlainText: e.target.checked })}
+            />
+            <span className="text-white/80">
+              Plain-text session logs
+              <span className="block text-white/40">
+                Strip color/escape codes so logs read as text. Off keeps the
+                raw stream. Applies to the next log started.
               </span>
             </span>
           </label>
@@ -155,6 +172,24 @@ export function SettingsMenu({ settings, onChange }: Props) {
                     ? 'Same one-time tint as Mica, tuned for windows with a tab strip — no live blur either. Windows 11 only.'
                     : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
             </p>
+          </div>
+          <div className="mt-2 border-t border-white/10 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                revealLogs().catch((e) => toast.error(`Couldn't open logs folder: ${e}`))
+                setOpen(false)
+              }}
+              className="flex w-full items-start gap-2 rounded px-1 py-1.5 text-left transition-colors duration-fast ease-swift hover:bg-white/5"
+            >
+              <FolderOpen size={14} className="mt-0.5 shrink-0 text-white/50" />
+              <span className="text-white/80">
+                Open logs folder
+                <span className="block text-white/40">
+                  Where session transcripts are saved.
+                </span>
+              </span>
+            </button>
           </div>
         </div>
       )}

@@ -461,7 +461,17 @@ function App() {
     if (tab) reconnectPane(id, tab.activePaneId)
   }
 
-  function connectPane(tabId: string, paneId: string, source: ConnectionSource) {
+  function connectPane(
+    tabId: string,
+    paneId: string,
+    source: ConnectionSource,
+    logSession = false,
+  ) {
+    // Set logging state before the source, so the Terminal mounts with logging
+    // already armed and captures output from the first byte (batched with the
+    // setTabs below in the same event, so it's a single render). The toolbar
+    // icon then reflects this and can stop it mid-session.
+    setLoggingByPane((prev) => ({ ...prev, [paneId]: logSession }))
     setTabs((prev) =>
       prev.map((t) => {
         if (t.id !== tabId) return t
@@ -1007,8 +1017,8 @@ function App() {
                 }`}
                 title={
                   activePaneId && loggingByPane[activePaneId]
-                    ? 'Session logging on (applies from next connect)'
-                    : 'Log session output to file (applies from next connect)'
+                    ? 'Session logging on — click to stop'
+                    : 'Log session output to a file'
                 }
                 onClick={() => activePaneId && toggleLogging(activePaneId)}
               >
@@ -1093,7 +1103,7 @@ function App() {
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
-                onConnect={(paneId, config) => connectPane(tab.id, paneId, config)}
+                onConnect={(paneId, config, logSession) => connectPane(tab.id, paneId, config, logSession)}
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}

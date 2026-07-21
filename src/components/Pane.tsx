@@ -29,7 +29,7 @@ interface Props {
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
   onFocusPane: (id: string) => void
-  onConnect: (paneId: string, source: ConnectionSource) => void
+  onConnect: (paneId: string, source: ConnectionSource, logSession: boolean) => void
   onSelectSession: (paneId: string, profile: SessionProfile) => void
   onEditSession: (paneId: string, profile: SessionProfile) => void
   onDeleteSession: (profile: SessionProfile) => void
@@ -218,7 +218,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             initial={node.initial}
             vaultUnlocked={vaultUnlocked}
             sessions={sessions}
-            onConnect={(source) => onConnect(node.id, source)}
+            onConnect={(source, logSession) => onConnect(node.id, source, logSession)}
             onSelectSession={(profile) => onSelectSession(node.id, profile)}
             onEditSession={(profile) => onEditSession(node.id, profile)}
             onDeleteSession={onDeleteSession}

@@ -10,6 +10,11 @@ export interface TerminalSettings {
    * the pane open showing Reconnect / connection-settings actions instead.
    * On by default — the long-standing behavior. */
   closeOnDisconnect: boolean
+  /** Session logs strip terminal escape sequences (colors, cursor moves,
+   * title sequences) so the file is readable text. Off logs the raw PTY
+   * stream verbatim (PuTTY "all session output" style) for exact fidelity /
+   * replay. Applies to the next log started, not one already running. */
+  logPlainText: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -43,6 +48,7 @@ const defaults: TerminalSettings = {
   copyOnSelect: true,
   rightClickPaste: true,
   closeOnDisconnect: true,
+  logPlainText: true,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

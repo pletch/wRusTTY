@@ -37,7 +37,7 @@ export interface ConnectDialogInitial {
 }
 
 interface Props {
-  onConnect: (source: ConnectionSource) => void
+  onConnect: (source: ConnectionSource, logSession: boolean) => void
   onSaveProfile?: (profile: SessionProfile) => void
   onSaveCredential?: (profileId: string, secret: VaultSecret) => void
   /** Reads a key file server-side and stores it whole in the vault, as an
@@ -154,6 +154,12 @@ export function ConnectDialog({
   const [folder, setFolder] = useState(initial?.folder ?? '')
   const [jumpProfileId, setJumpProfileId] = useState(initial?.jumpProfileId ?? '')
   const [isNewFolder, setIsNewFolder] = useState(false)
+  // Ad-hoc "log this whole session from the start" — an alternative to the
+  // toolbar toggle (which can only arm logging after a session is already
+  // connected, so it can't catch the login banner/MOTD). Enabling here sets
+  // the pane's logging state before it connects, so the very first bytes are
+  // captured; the toolbar icon then shows active and can stop it mid-session.
+  const [logSession, setLogSession] = useState(false)
   // Defaults on whenever we're prefilled from a known profile (picked from
   // the sidebar, or via Edit) — connecting then naturally writes any
   // tweaks back to that same profile instead of leaving them stranded in
@@ -320,18 +326,21 @@ export function ConnectDialog({
       }
 
       if (relyOnExistingVaultedKey && initial?.id) {
-        onConnect({ protocol: 'sshProfile', profileId: initial.id })
+        onConnect({ protocol: 'sshProfile', profileId: initial.id }, logSession)
       } else {
-        onConnect({
-          protocol: 'ssh',
-          config: { host, port: Number(port) || 22, username, auth },
-          jumpProfileId: jumpProfileId || null,
-        })
+        onConnect(
+          {
+            protocol: 'ssh',
+            config: { host, port: Number(port) || 22, username, auth },
+            jumpProfileId: jumpProfileId || null,
+          },
+          logSession,
+        )
       }
     } else if (protocol === 'telnet') {
-      onConnect({ protocol: 'telnet', config: { host, port: Number(port) || 23 } })
+      onConnect({ protocol: 'telnet', config: { host, port: Number(port) || 23 } }, logSession)
     } else {
-      onConnect({ protocol: 'serial', config: serialConfig })
+      onConnect({ protocol: 'serial', config: serialConfig }, logSession)
     }
   }
 
@@ -772,6 +781,16 @@ export function ConnectDialog({
           )}
 
           {error && <p className="text-xs text-red-400">{error}</p>}
+
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-white/70">
+            <input
+              type="checkbox"
+              className="accent-sky-400"
+              checked={logSession}
+              onChange={(e) => setLogSession(e.target.checked)}
+            />
+            Log this session to a file (from connect)
+          </label>
 
           <button
             type="submit"

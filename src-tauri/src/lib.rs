@@ -82,6 +82,7 @@ pub fn run() {
             vault::vault_unlock_with_os,
             logging::session_log_start,
             logging::session_log_stop,
+            logging::reveal_session_logs,
             window_effects::set_window_vibrancy,
         ])
         .setup(|app| {
