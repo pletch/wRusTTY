@@ -722,7 +722,8 @@ pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), Strin
     let vault: serde_json::Value =
         serde_json::from_str(&vault_contents).map_err(|e| e.to_string())?;
     let sessions = crate::profiles::read_profiles(&crate::profiles::profiles_path(&app)?)?;
-    let workspaces = crate::workspaces::read_workspaces(&crate::workspaces::workspaces_path(&app)?)?;
+    let workspaces =
+        crate::workspaces::read_workspaces(&crate::workspaces::workspaces_path(&app)?)?;
     let bundle = ExportBundle {
         format: EXPORT_FORMAT.to_string(),
         vault,
