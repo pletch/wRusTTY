@@ -37,6 +37,26 @@ export interface ConnectDialogInitial {
   termType?: string | null
 }
 
+/** Terminal types offered in the session form, most useful first. Blank means
+ * "send the default", so it heads the list rather than being a separate
+ * concept. Not exhaustive — hence the Custom entry, since the set genuinely
+ * isn't closed (vendor strings, `putty-256color`, and so on). */
+const TERM_TYPES: { value: string; label: string }[] = [
+  { value: '', label: 'xterm-256color (default)' },
+  { value: 'xterm-direct', label: 'xterm-direct — 24-bit colour via terminfo' },
+  { value: 'xterm', label: "xterm — PuTTY's default" },
+  { value: 'vt100', label: 'vt100 — older network / embedded gear' },
+  { value: 'vt220', label: 'vt220' },
+  { value: 'ansi', label: 'ansi' },
+  { value: 'linux', label: 'linux' },
+  { value: 'screen-256color', label: 'screen-256color' },
+  { value: 'tmux-256color', label: 'tmux-256color' },
+]
+
+/** Sentinel for the Custom row. Can't collide with a real TERM value — the
+ * leading underscores aren't valid in a terminfo entry name. */
+const TERM_CUSTOM = '__custom__'
+
 interface Props {
   onConnect: (source: ConnectionSource, logSession: boolean) => void
   /** Awaited before connecting when the connection will go through the saved
@@ -142,6 +162,11 @@ export function ConnectDialog({
     initial?.authType ?? 'Password',
   )
   const [termType, setTermType] = useState(initial?.termType ?? '')
+  // A saved session carrying a value that isn't on the list opens straight
+  // into the free-text field, rather than silently snapping to the default.
+  const [termCustom, setTermCustom] = useState(
+    Boolean(initial?.termType) && !TERM_TYPES.some((t) => t.value === initial?.termType),
+  )
   const [password, setPassword] = useState('')
   // A public-key profile with no keyPath and an existing vault credential
   // means the key itself already lives in the vault — the default path
@@ -732,32 +757,40 @@ export function ConnectDialog({
                     </select>
                   )}
 
-                  {/* A datalist, not a <select>: the common values are worth
-                      offering (nobody recalls them, and a typo degrades the
-                      session silently rather than erroring), but the set is
-                      genuinely open — screen-256color, tmux-256color, and
-                      vendor-specific values are all legitimate, and a closed
-                      dropdown would make them unreachable. Blank stays the
-                      normal answer. */}
-                  <input
+                  {/* A select with an explicit Custom row, not a datalist.
+                      A datalist looks right but behaves as an autocomplete
+                      filter: once the field holds a value it only offers
+                      options matching that text, so picking one collapses the
+                      list to a single entry and the control appears broken
+                      until the field is cleared. */}
+                  <select
                     className={`${inputClass} w-full`}
-                    list="wr-term-types"
-                    placeholder="terminal type (default xterm-256color)"
-                    value={termType}
-                    onChange={(e) => setTermType(e.target.value)}
-                    title="Sets TERM for the remote session. Leave blank unless the device misbehaves — some network and embedded gear needs vt100."
-                  />
-                  <datalist id="wr-term-types">
-                    <option value="xterm-256color">default — 256 colours</option>
-                    <option value="xterm-direct">24-bit colour via terminfo</option>
-                    <option value="xterm">PuTTY&apos;s default</option>
-                    <option value="vt100">older network / embedded gear</option>
-                    <option value="vt220" />
-                    <option value="ansi" />
-                    <option value="linux" />
-                    <option value="screen-256color" />
-                    <option value="tmux-256color" />
-                  </datalist>
+                    value={termCustom ? TERM_CUSTOM : termType}
+                    onChange={(e) => {
+                      const next = e.target.value
+                      setTermCustom(next === TERM_CUSTOM)
+                      // Clearing on entry to Custom avoids the free-text box
+                      // opening pre-filled with the value just replaced.
+                      setTermType(next === TERM_CUSTOM ? '' : next)
+                    }}
+                    title="Sets TERM for the remote session. The default suits almost everything — some network and embedded gear needs vt100."
+                  >
+                    {TERM_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                    <option value={TERM_CUSTOM}>Custom…</option>
+                  </select>
+                  {termCustom && (
+                    <input
+                      className={`${inputClass} w-full`}
+                      placeholder="terminal type, e.g. putty-256color"
+                      value={termType}
+                      onChange={(e) => setTermType(e.target.value)}
+                      autoFocus
+                    />
+                  )}
                 </>
               )}
             </>
