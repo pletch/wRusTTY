@@ -98,6 +98,19 @@ pub async fn save_workspace(
     write_workspaces(&path, &workspaces)
 }
 
+/// Overwrite the whole list, taking the same lock the commands do. Used by
+/// vault import, which replaces every file in the set at once; going through
+/// here rather than calling `write_workspaces` directly keeps it from racing
+/// a concurrent `save_workspace`.
+pub(crate) async fn replace_all(
+    app: &AppHandle,
+    state: &tauri::State<'_, WorkspaceState>,
+    workspaces: &[Workspace],
+) -> Result<(), String> {
+    let _guard = state.lock.lock().await;
+    write_workspaces(&workspaces_path(app)?, workspaces)
+}
+
 #[tauri::command]
 pub async fn delete_workspace(
     app: AppHandle,

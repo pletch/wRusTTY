@@ -151,16 +151,17 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   async function doExport() {
     const dest = await save({
       defaultPath: 'wrustty-export.wrb',
-      // Saved session profiles reference vault entries by id and are
-      // meaningless without each other, so the export bundles both — a
-      // plain `.wrv` (vault-only) export from an older build isn't
-      // importable here anymore, hence the distinct extension.
+      // Saved session profiles reference vault entries by id, and
+      // workspaces reference session profiles by id — each is meaningless
+      // without the others, so the export bundles all three. A plain `.wrv`
+      // (vault-only) export from an older build isn't importable here
+      // anymore, hence the distinct extension.
       filters: [{ name: 'wRusTTY export bundle', extensions: ['wrb'] }],
     })
     if (!dest) return
     try {
       await vault.exportVault(dest)
-      toast.success('Vault and saved sessions exported')
+      toast.success('Vault, saved sessions, and workspaces exported')
     } catch (err) {
       setError(String(err))
     }
@@ -173,13 +174,15 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     })
     if (!src || Array.isArray(src)) return
     const ok = window.confirm(
-      'Importing replaces the current vault and saved sessions. You will need the imported file\'s master password to unlock it. Continue?',
+      'Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file\'s master password to unlock it. Continue?',
     )
     if (!ok) return
     try {
       await vault.importVault(src)
       onStatusChange()
-      toast.info('Vault and saved sessions imported — unlock the vault with its master password')
+      toast.info(
+        'Vault, saved sessions, and workspaces imported — unlock the vault with its master password',
+      )
     } catch (err) {
       setError(String(err))
     }

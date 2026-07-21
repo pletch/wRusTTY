@@ -341,10 +341,12 @@ function App() {
       .osUnlockAvailable()
       .then(setOsUnlockAvailable)
       .catch(() => setOsUnlockAvailable(false))
-    // A vault import replaces sessions.json too (they're exported as one
-    // bundle — see vault_export/vault_import), so anything that can change
-    // vault status also potentially changed the saved-sessions list.
+    // A vault import replaces sessions.json and workspaces.json too (all
+    // three travel as one bundle — see vault_export/vault_import), so
+    // anything that can change vault status also potentially changed the
+    // saved-sessions and saved-workspace lists.
     setProfilesVersion((v) => v + 1)
+    setWorkspacesVersion((v) => v + 1)
   }
 
   useEffect(() => {

@@ -692,18 +692,24 @@ pub async fn vault_has_credential(
     Ok(guard.as_ref().is_some_and(|v| v.has(&session_id)))
 }
 
-/// The two files are meaningless apart: session profiles reference vault
-/// entries by id via `hasCredential`, and a vault full of credentials with
-/// no profiles naming the hosts they're for isn't useful either. Exporting
-/// just the vault (the old behavior) left you stranded on a new machine —
-/// so the export bundles both, encoding the already-encrypted vault file's
-/// contents as a nested JSON value (it's already a small JSON document,
-/// nesting it avoids a redundant base64 layer).
+/// The three files are meaningless apart: session profiles reference vault
+/// entries by id via `hasCredential`, workspaces reference session profiles
+/// by id, and a vault full of credentials with no profiles naming the hosts
+/// they're for isn't useful either. Exporting just the vault (the old
+/// behavior) left you stranded on a new machine — so the export bundles all
+/// three, encoding the already-encrypted vault file's contents as a nested
+/// JSON value (it's already a small JSON document, nesting it avoids a
+/// redundant base64 layer).
 #[derive(Serialize, serde::Deserialize)]
 struct ExportBundle {
     format: String,
     vault: serde_json::Value,
     sessions: Vec<crate::profiles::SessionProfile>,
+    /// Added after the format was already in the wild. Defaulted rather than
+    /// version-bumped so bundles written before workspaces existed still
+    /// import (as "no workspaces") instead of being rejected outright.
+    #[serde(default)]
+    workspaces: Vec<crate::workspaces::Workspace>,
 }
 
 const EXPORT_FORMAT: &str = "wr-shell-export-v1";
@@ -716,26 +722,29 @@ pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), Strin
     let vault: serde_json::Value =
         serde_json::from_str(&vault_contents).map_err(|e| e.to_string())?;
     let sessions = crate::profiles::read_profiles(&crate::profiles::profiles_path(&app)?)?;
+    let workspaces = crate::workspaces::read_workspaces(&crate::workspaces::workspaces_path(&app)?)?;
     let bundle = ExportBundle {
         format: EXPORT_FORMAT.to_string(),
         vault,
         sessions,
+        workspaces,
     };
     let contents = serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?;
     std::fs::write(dest_path, contents).map_err(|e| e.to_string())
 }
 
-/// Importing replaces both the vault file and the session profile list
-/// outright, and forces a re-lock (the in-memory vault, if any, belonged to
-/// the old file and its key no longer applies) — the caller must unlock
-/// again with the imported file's password. Any stored OS-unlock key is
-/// cleared too, since it wrapped the *old* file's key and can't unlock the
-/// replacement.
+/// Importing replaces the vault file, the session profile list, and the
+/// saved workspaces outright, and forces a re-lock (the in-memory vault, if
+/// any, belonged to the old file and its key no longer applies) — the caller
+/// must unlock again with the imported file's password. Any stored OS-unlock
+/// key is cleared too, since it wrapped the *old* file's key and can't unlock
+/// the replacement.
 #[tauri::command]
 pub async fn vault_import(
     app: AppHandle,
     src_path: String,
     state: State<'_, VaultState>,
+    workspace_state: State<'_, crate::workspaces::WorkspaceState>,
 ) -> Result<(), String> {
     *state.vault.lock().await = None;
     forget_os_unlock_kek()?;
@@ -755,6 +764,8 @@ pub async fn vault_import(
 
     let profiles_dest = crate::profiles::profiles_path(&app)?;
     crate::profiles::write_profiles(&profiles_dest, &bundle.sessions)?;
+
+    crate::workspaces::replace_all(&app, &workspace_state, &bundle.workspaces).await?;
 
     Ok(())
 }
