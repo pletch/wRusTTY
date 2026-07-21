@@ -21,6 +21,9 @@ export interface SessionProfile {
   /** Overrides the `TERM` sent with the PTY request — `null` sends
    * `xterm-256color`. */
   termType: string | null
+  /** Which byte Backspace sends: `true` = ^H, `false` = ^?, `null` = follow
+   * the global terminal setting. */
+  backspaceSendsCtrlH: boolean | null
 }
 
 export function listSessions() {

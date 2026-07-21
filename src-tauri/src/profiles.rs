@@ -34,6 +34,11 @@ pub struct SessionProfile {
     /// field existed still parse.
     #[serde(rename = "termType", default)]
     pub term_type: Option<String>,
+    /// Which byte Backspace sends: `Some(true)` = ^H, `Some(false)` = ^?,
+    /// `None` = follow the global terminal setting. Purely a frontend
+    /// concern — stored here only so it travels with the session profile.
+    #[serde(rename = "backspaceSendsCtrlH", default)]
+    pub backspace_sends_ctrl_h: Option<bool>,
 }
 
 #[derive(Default)]

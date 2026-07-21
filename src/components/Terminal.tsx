@@ -29,6 +29,10 @@ interface Props {
   source: ConnectionSource
   label: string
   settings: TerminalSettings
+  /** Overrides `settings.backspaceSendsCtrlH` for this pane. `null`/absent
+   * follows the global setting — which is what every session did before the
+   * option became per-session, so existing profiles keep their behaviour. */
+  backspaceSendsCtrlH?: boolean | null
   logging?: boolean
   /** Whether this is the focused pane within its (possibly split) tab. */
   active?: boolean
@@ -86,6 +90,7 @@ export function Terminal({
   source,
   label,
   settings,
+  backspaceSendsCtrlH,
   logging,
   active,
   paneId,
@@ -128,6 +133,11 @@ export function Terminal({
   // through a ref rather than added to the effect's dependency array.
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+
+  // Same live-ref treatment as `settings`: read inside the connection effect,
+  // which must not re-run (and tear down the session) when this changes.
+  const backspaceRef = useRef(backspaceSendsCtrlH)
+  backspaceRef.current = backspaceSendsCtrlH
 
   const loggingRef = useRef(logging)
   loggingRef.current = logging
@@ -664,8 +674,10 @@ export function Terminal({
       }
       // Applied here rather than via a key handler so it covers every route
       // xterm takes to produce the byte, and only on what actually goes out
-      // on the wire.
-      const out = settingsRef.current.backspaceSendsCtrlH ? data.replaceAll('\x7f', '\b') : data
+      // on the wire. The per-session value wins when set; null means this
+      // session never expressed a preference, so follow the global one.
+      const ctrlH = backspaceRef.current ?? settingsRef.current.backspaceSendsCtrlH
+      const out = ctrlH ? data.replaceAll('\x7f', '\b') : data
       if (sessionId) conn.write(source, sessionId, new TextEncoder().encode(out))
     })
 

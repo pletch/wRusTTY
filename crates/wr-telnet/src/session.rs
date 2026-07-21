@@ -115,6 +115,10 @@ impl TelnetSession {
         let output_events = events.clone();
         let last_size = self.last_size.clone();
         let reply_tx = input_tx.clone();
+        // Resolved here rather than inside the loop: the reply task outlives
+        // this borrow of `self`, and the answer can't change mid-session
+        // anyway (a server may ask more than once, but our answer is fixed).
+        let term_type = self.config.term_type().to_string();
         tokio::spawn(async move {
             let mut parser = Parser::new();
             let mut buf = [0u8; 4096];
@@ -138,7 +142,7 @@ impl TelnetSession {
                     break;
                 }
                 if out.terminal_type_requested {
-                    let bytes = protocol::encode_terminal_type("xterm-256color");
+                    let bytes = protocol::encode_terminal_type(&term_type);
                     if reply_tx.send(bytes).await.is_err() {
                         break;
                     }

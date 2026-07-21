@@ -466,6 +466,7 @@ function App() {
     paneId: string,
     source: ConnectionSource,
     logSession = false,
+    paneOptions?: { backspaceSendsCtrlH: boolean | null },
   ) {
     // Set logging state before the source, so the Terminal mounts with logging
     // already armed and captures output from the first byte (batched with the
@@ -475,7 +476,11 @@ function App() {
     setTabs((prev) =>
       prev.map((t) => {
         if (t.id !== tabId) return t
-        const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source }))
+        const root = updateLeaf(t.root, paneId, (l) => ({
+          ...l,
+          source,
+          backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
+        }))
         const leaf = allLeaves(root).find((l) => l.id === paneId)
         const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
         return { ...t, root, title }
@@ -662,6 +667,7 @@ function App() {
       hasCredential: profile.hasCredential,
       jumpProfileId: profile.jumpProfileId,
       termType: profile.termType,
+      backspaceSendsCtrlH: profile.backspaceSendsCtrlH,
     }
   }
 
@@ -718,7 +724,15 @@ function App() {
     setTabs((prev) =>
       prev.map((t) => {
         if (t.id !== tabId) return t
-        const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source: source ?? l.source, initial }))
+        // Also carried onto the leaf directly: connecting straight from the
+        // sidebar never opens the dialog, so this is the only path by which
+        // a saved session's backspace preference reaches its terminal.
+        const root = updateLeaf(t.root, paneId, (l) => ({
+          ...l,
+          source: source ?? l.source,
+          initial,
+          backspaceSendsCtrlH: initial?.backspaceSendsCtrlH ?? null,
+        }))
         const leaf = allLeaves(root).find((l) => l.id === paneId)
         const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
         return { ...t, root, title }
@@ -1168,6 +1182,7 @@ function App() {
                   source={leaf.source}
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
                   settings={terminalSettings}
+                  backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}
                   paneId={leaf.id}

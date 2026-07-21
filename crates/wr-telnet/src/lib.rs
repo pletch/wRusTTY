@@ -7,6 +7,6 @@ mod error;
 mod protocol;
 mod session;
 
-pub use config::TelnetConfig;
+pub use config::{TelnetConfig, DEFAULT_TERM_TYPE};
 pub use error::TelnetError;
 pub use session::TelnetSession;

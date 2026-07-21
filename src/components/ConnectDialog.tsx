@@ -35,6 +35,7 @@ export interface ConnectDialogInitial {
   hasCredential?: boolean
   jumpProfileId?: string | null
   termType?: string | null
+  backspaceSendsCtrlH?: boolean | null
 }
 
 /** Terminal types offered in the session form, most useful first. Blank means
@@ -61,8 +62,32 @@ const TERM_TYPES: { value: string; label: string }[] = [
  * leading underscores aren't valid in a terminfo entry name. */
 const TERM_CUSTOM = '__custom__'
 
+/** Three-state, because "follow the global setting" has to stay expressible:
+ * every session that predates this option has no stored preference, and must
+ * keep tracking the Settings menu rather than silently freezing at whatever
+ * the global happened to be the day it was edited. */
+const BACKSPACE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'inherit', label: 'Use global setting' },
+  { value: 'del', label: '^? (DEL) — modern Unix' },
+  { value: 'ctrlh', label: '^H (Ctrl-H) — network / legacy gear' },
+]
+
+function backspaceToValue(v: boolean | null | undefined): string {
+  return v == null ? 'inherit' : v ? 'ctrlh' : 'del'
+}
+
+function backspaceFromValue(v: string): boolean | null {
+  return v === 'inherit' ? null : v === 'ctrlh'
+}
+
 interface Props {
-  onConnect: (source: ConnectionSource, logSession: boolean) => void
+  /** `paneOptions` carries terminal-side behaviour that isn't part of any
+   * protocol's config — see `PaneLeaf.backspaceSendsCtrlH`. */
+  onConnect: (
+    source: ConnectionSource,
+    logSession: boolean,
+    paneOptions?: { backspaceSendsCtrlH: boolean | null },
+  ) => void
   /** Awaited before connecting when the connection will go through the saved
    * profile — otherwise the write races the read and the session connects
    * with the values it had *before* this edit. */
@@ -166,6 +191,7 @@ export function ConnectDialog({
     initial?.authType ?? 'Password',
   )
   const [termType, setTermType] = useState(initial?.termType ?? '')
+  const [backspace, setBackspace] = useState(backspaceToValue(initial?.backspaceSendsCtrlH))
   // A saved session carrying a value that isn't on the list opens straight
   // into the free-text field, rather than silently snapping to the default.
   const [termCustom, setTermCustom] = useState(
@@ -288,6 +314,7 @@ export function ConnectDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
+    const paneOptions = { backspaceSendsCtrlH: backspaceFromValue(backspace) }
 
     if (protocol === 'ssh') {
       const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
@@ -380,6 +407,7 @@ export function ConnectDialog({
             authType === 'Agent' ? 'agent' : authType === 'Password' ? 'password' : 'public_key',
           keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
           termType: termType.trim() || null,
+          backspaceSendsCtrlH: backspaceFromValue(backspace),
           // Preserves a prior credential's flag across an unrelated edit —
           // there's no "forget stored credential" affordance yet, so saving
           // shouldn't silently lose track of one that already exists.
@@ -399,7 +427,7 @@ export function ConnectDialog({
       }
 
       if (relyOnSavedCredential && initial?.id) {
-        onConnect({ protocol: 'sshProfile', profileId: initial.id }, logSession)
+        onConnect({ protocol: 'sshProfile', profileId: initial.id }, logSession, paneOptions)
       } else {
         onConnect(
           {
@@ -417,12 +445,20 @@ export function ConnectDialog({
             jumpProfileId: jumpProfileId || null,
           },
           logSession,
+          paneOptions,
         )
       }
     } else if (protocol === 'telnet') {
-      onConnect({ protocol: 'telnet', config: { host, port: Number(port) || 23 } }, logSession)
+      onConnect(
+        {
+          protocol: 'telnet',
+          config: { host, port: Number(port) || 23, term_type: termType.trim() || null },
+        },
+        logSession,
+        paneOptions,
+      )
     } else {
-      onConnect({ protocol: 'serial', config: serialConfig }, logSession)
+      onConnect({ protocol: 'serial', config: serialConfig }, logSession, paneOptions)
     }
   }
 
@@ -786,51 +822,82 @@ export function ConnectDialog({
                     </label>
                   )}
 
-                  {/* A select with an explicit Custom row, not a datalist.
-                      A datalist looks right but behaves as an autocomplete
-                      filter: once the field holds a value it only offers
-                      options matching that text, so picking one collapses the
-                      list to a single entry and the control appears broken
-                      until the field is cleared. */}
-                  <label className="block space-y-1">
-                    <span className="text-xs text-white/40">Terminal type</span>
-                    <select
-                      // pr-7 rather than inputClass's px-2: a native select
-                      // draws its indicator inside the padding box, so the
-                      // shared input padding leaves the longest label running
-                      // underneath the arrow.
-                      className={`${inputClass} w-full truncate pr-7`}
-                      value={termCustom ? TERM_CUSTOM : termType}
-                      onChange={(e) => {
-                        const next = e.target.value
-                        setTermCustom(next === TERM_CUSTOM)
-                        // Clearing on entry to Custom avoids the free-text box
-                        // opening pre-filled with the value just replaced.
-                        setTermType(next === TERM_CUSTOM ? '' : next)
-                      }}
-                      title="Sets TERM for the remote session. The default suits almost everything — some network and embedded gear needs vt100."
-                    >
-                      {TERM_TYPES.map((t) => (
-                        <option key={t.value} value={t.value}>
-                          {t.label}
-                        </option>
-                      ))}
-                      <option value={TERM_CUSTOM}>Custom…</option>
-                    </select>
-                  </label>
-                  {termCustom && (
-                    <input
-                      className={`${inputClass} w-full`}
-                      placeholder="terminal type, e.g. putty-256color"
-                      value={termType}
-                      onChange={(e) => setTermType(e.target.value)}
-                      autoFocus
-                    />
-                  )}
                 </>
               )}
             </>
           )}
+
+          {/* Terminal behaviour, shared across protocols rather than nested
+              inside the SSH branch where these started.
+
+              Terminal type reaches SSH through the PTY request and telnet
+              through RFC 1091 option negotiation — different wire mechanisms,
+              same user-facing question. Serial has neither: it's a raw byte
+              stream with nothing to negotiate with, so the control is hidden
+              rather than shown and ignored. */}
+          {protocol !== 'serial' && (
+            <>
+              {/* A select with an explicit Custom row, not a datalist.
+                  A datalist looks right but behaves as an autocomplete
+                  filter: once the field holds a value it only offers
+                  options matching that text, so picking one collapses the
+                  list to a single entry and the control appears broken
+                  until the field is cleared. */}
+              <label className="block space-y-1">
+                <span className="text-xs text-white/40">Terminal type</span>
+                <select
+                  // pr-7 rather than inputClass's px-2: a native select
+                  // draws its indicator inside the padding box, so the
+                  // shared input padding leaves the longest label running
+                  // underneath the arrow.
+                  className={`${inputClass} w-full truncate pr-7`}
+                  value={termCustom ? TERM_CUSTOM : termType}
+                  onChange={(e) => {
+                    const next = e.target.value
+                    setTermCustom(next === TERM_CUSTOM)
+                    // Clearing on entry to Custom avoids the free-text box
+                    // opening pre-filled with the value just replaced.
+                    setTermType(next === TERM_CUSTOM ? '' : next)
+                  }}
+                  title="Sets TERM for the remote session. The default suits almost everything — some network and embedded gear needs vt100."
+                >
+                  {TERM_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                  <option value={TERM_CUSTOM}>Custom…</option>
+                </select>
+              </label>
+              {termCustom && (
+                <input
+                  className={`${inputClass} w-full`}
+                  placeholder="terminal type, e.g. putty-256color"
+                  value={termType}
+                  onChange={(e) => setTermType(e.target.value)}
+                  autoFocus
+                />
+              )}
+            </>
+          )}
+
+          {/* Applies to every protocol: this is the local terminal choosing
+              which byte to emit, not anything negotiated with the far end. */}
+          <label className="block space-y-1">
+            <span className="text-xs text-white/40">Backspace key sends</span>
+            <select
+              className={`${inputClass} w-full truncate pr-7`}
+              value={backspace}
+              onChange={(e) => setBackspace(e.target.value)}
+              title="Which byte the Backspace key sends. Switch to ^H if backspace does nothing or echoes ^? on the far end."
+            >
+              {BACKSPACE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
 
           {protocol === 'ssh' && onSaveProfile && (
             <div className="space-y-2 border-t border-white/10 pt-2.5">

@@ -10,6 +10,15 @@ export interface PaneLeaf {
   generation: number
   /** Pre-fills the connect form when opening a saved session profile. */
   initial?: ConnectDialogInitial
+  /** Per-pane override for the global "backspace sends Ctrl-H" setting,
+   * resolved at connect time from the session profile or the connect form.
+   * `null`/absent follows the global setting.
+   *
+   * Lives on the pane rather than in the connection config because it is a
+   * terminal-side concern: nothing is sent to the far end, the local terminal
+   * simply emits a different byte. It applies to SSH, telnet, and serial
+   * alike, which is why it isn't a field on any one protocol's config. */
+  backspaceSendsCtrlH?: boolean | null
 }
 
 /** Always exactly 2 children — nesting splits produces arbitrary layouts,

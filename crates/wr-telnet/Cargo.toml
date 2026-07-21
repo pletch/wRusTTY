@@ -13,3 +13,9 @@ tokio.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The frontend sends TelnetConfig as JSON, including from saved session
+# snapshots written by older builds, so its serde shape is a compatibility
+# surface worth pinning here.
+serde_json.workspace = true
