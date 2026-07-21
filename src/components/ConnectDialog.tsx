@@ -9,6 +9,7 @@ import {
   Folder,
   FolderOpen,
   Server,
+  Network,
   Lock,
   Pencil,
   Trash2,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile } from '../lib/profiles'
+import { profileSubtitle } from '../lib/profiles'
 import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
 import { defaultSerialConfig } from '../lib/serial'
@@ -25,6 +27,9 @@ import { SerialFields } from './SerialFields'
 
 export interface ConnectDialogInitial {
   id?: string
+  /** Opens the form on this protocol's tab — a saved telnet session must not
+   * land on the SSH form with its host prefilled and its port wrong. */
+  protocol?: 'ssh' | 'telnet'
   label?: string
   host?: string
   port?: number
@@ -179,7 +184,7 @@ export function ConnectDialog({
   onUnlockWithOsAndSelectSession,
   onReorderSessions,
 }: Props) {
-  const [protocol, setProtocol] = useState<Protocol>('ssh')
+  const [protocol, setProtocol] = useState<Protocol>(initial?.protocol ?? 'ssh')
 
   // SSH + telnet share host/port.
   const [host, setHost] = useState(initial?.host ?? '')
@@ -411,6 +416,7 @@ export function ConnectDialog({
           folder: folder.trim() || null,
           host,
           port: Number(port) || 22,
+          protocol: 'ssh',
           username,
           authType:
             authType === 'Agent' ? 'agent' : authType === 'Password' ? 'password' : 'public_key',
@@ -458,6 +464,26 @@ export function ConnectDialog({
         )
       }
     } else if (protocol === 'telnet') {
+      // No credential half to any of this: telnet has no auth of its own, so
+      // saving is purely "remember this endpoint and how to drive its
+      // terminal" and never touches the vault.
+      if (saveProfile && onSaveProfile) {
+        await onSaveProfile({
+          id: initial?.id ?? crypto.randomUUID(),
+          label: label.trim() || host,
+          folder: folder.trim() || null,
+          host,
+          port: Number(port) || 23,
+          protocol: 'telnet',
+          username: '',
+          authType: '',
+          keyPath: null,
+          hasCredential: false,
+          jumpProfileId: null,
+          termType: termType.trim() || null,
+          backspaceSendsCtrlH: backspace === 'ctrlh',
+        })
+      }
       onConnect(
         {
           protocol: 'telnet',
@@ -635,12 +661,22 @@ export function ConnectDialog({
                         } ${dropTargetId === s.id && draggedId !== s.id ? 'bg-sky-400/10' : ''}`}
                         title={`${s.username}@${s.host}:${s.port}`}
                       >
-                        <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
+                        {/* Protocol shows as a per-item icon, not as its own
+                            grouping level. Folders are what the user chose to
+                            mean something ("Datacenter A", a customer); the
+                            transport is an attribute of one entry. Grouping by
+                            the attribute would override the organisation they
+                            actually built — and would split the same device
+                            reachable both ways into separate sections, which
+                            is precisely when you want them adjacent. */}
+                        {s.protocol === 'telnet' ? (
+                          <Network size={11} className="mt-0.5 shrink-0 text-amber-400/40" />
+                        ) : (
+                          <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-white/90">{s.label}</div>
-                          <div className="truncate text-white/40">
-                            {s.username}@{s.host}
-                          </div>
+                          <div className="truncate text-white/40">{profileSubtitle(s)}</div>
                         </div>
                         {s.hasCredential && (
                           <Lock size={10} className="mt-0.5 shrink-0 text-white/25" />
@@ -908,7 +944,7 @@ export function ConnectDialog({
             </select>
           </label>
 
-          {protocol === 'ssh' && onSaveProfile && (
+          {protocol !== 'serial' && onSaveProfile && (
             <div className="space-y-2 border-t border-white/10 pt-2.5">
               <label className="flex items-center gap-2 text-xs text-white/70">
                 <input

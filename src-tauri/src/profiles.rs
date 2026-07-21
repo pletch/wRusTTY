@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
+/// Every profile written before telnet became saveable is an SSH one, so
+/// this is what a missing `protocol` field means.
+fn default_protocol() -> String {
+    "ssh".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionProfile {
     pub id: String,
@@ -15,9 +21,19 @@ pub struct SessionProfile {
     pub folder: Option<String>,
     pub host: String,
     pub port: u16,
+    /// `"ssh"` or `"telnet"`. A discriminator rather than a tagged enum per
+    /// protocol: the two share everything that matters here (label, folder,
+    /// host, port, terminal behaviour) and differ only in whether the auth
+    /// fields below mean anything, so splitting the type would duplicate far
+    /// more than it separated.
+    #[serde(default = "default_protocol")]
+    pub protocol: String,
+    /// SSH only — empty for telnet, which has no user concept of its own.
+    #[serde(default)]
     pub username: String,
-    #[serde(rename = "authType")]
-    pub auth_type: String, // "password" | "public_key" | "agent"
+    /// SSH only. `"password" | "public_key" | "agent"`, empty for telnet.
+    #[serde(rename = "authType", default)]
+    pub auth_type: String,
     #[serde(rename = "keyPath")]
     pub key_path: Option<String>,
     /// Whether a credential for this profile is stored in the vault.
@@ -34,9 +50,9 @@ pub struct SessionProfile {
     /// field existed still parse.
     #[serde(rename = "termType", default)]
     pub term_type: Option<String>,
-    /// Which byte Backspace sends: `Some(true)` = ^H, `Some(false)` = ^?,
-    /// `None` = follow the global terminal setting. Purely a frontend
-    /// concern — stored here only so it travels with the session profile.
+    /// Which byte Backspace sends: `Some(true)` = ^H, `Some(false)`/`None`
+    /// = ^?. Purely a frontend concern — stored here only so it travels with
+    /// the session profile.
     #[serde(rename = "backspaceSendsCtrlH", default)]
     pub backspace_sends_ctrl_h: Option<bool>,
 }

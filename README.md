@@ -85,6 +85,13 @@ old key stops being useful at that moment — including the one that earlier
 versions of "Unlock with Windows sign-in" left sitting in Credential
 Manager.
 
+**Saved sessions** cover SSH and telnet. They share one list, grouped by
+whatever folders you create rather than by protocol — folders are the
+organisation you chose and mean something; the transport is an attribute of
+one entry, shown as a per-item icon. The same device reachable both ways ends
+up adjacent, which is where you want it. Serial connections aren't saveable
+yet.
+
 ### Compatibility notes
 
 **SSH agent.** Selecting "SSH agent" as a session's auth method delegates to

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Server } from 'lucide-react'
+import { Search, Server, Network } from 'lucide-react'
 import type { SessionProfile } from '../lib/profiles'
+import { profileSubtitle } from '../lib/profiles'
 
 interface Props {
   sessions: SessionProfile[]
@@ -20,9 +21,7 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return sessions
-    return sessions.filter((s) =>
-      `${s.label} ${s.username}@${s.host}`.toLowerCase().includes(q),
-    )
+    return sessions.filter((s) => `${s.label} ${profileSubtitle(s)}`.toLowerCase().includes(q))
   }, [sessions, query])
 
   useEffect(() => {
@@ -78,12 +77,14 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
                 i === index ? 'bg-white/10 text-white' : 'text-white/70'
               }`}
             >
-              <Server size={13} className="shrink-0 text-white/30" />
+              {s.protocol === 'telnet' ? (
+                <Network size={13} className="shrink-0 text-amber-400/40" />
+              ) : (
+                <Server size={13} className="shrink-0 text-white/30" />
+              )}
               <div className="min-w-0">
                 <div className="truncate">{s.label}</div>
-                <div className="truncate text-white/40">
-                  {s.username}@{s.host}
-                </div>
+                <div className="truncate text-white/40">{profileSubtitle(s)}</div>
               </div>
             </div>
           ))}

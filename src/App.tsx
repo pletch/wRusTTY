@@ -652,6 +652,7 @@ function App() {
   function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
     return {
       id: profile.id,
+      protocol: profile.protocol,
       label: profile.label,
       folder: profile.folder,
       host: profile.host,
@@ -691,6 +692,19 @@ function App() {
   // the key — so it always connects direct, and notably does *not* wait on
   // the vault the way the other two do.
   async function resolveProfileSource(profile: SessionProfile) {
+    // Telnet has no credential to resolve and nothing for the Rust side to
+    // look up, so it connects straight from the profile's own fields — no
+    // vault involvement, and no `telnetProfile` source variant needed.
+    if (profile.protocol === 'telnet') {
+      return {
+        source: {
+          protocol: 'telnet' as const,
+          config: { host: profile.host, port: profile.port, term_type: profile.termType },
+        },
+        initial: profileToInitial(profile),
+      }
+    }
+
     const canConnectDirect =
       profile.authType === 'agent' ||
       (vaultStatus === 'unlocked' &&

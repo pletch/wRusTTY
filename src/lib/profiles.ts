@@ -6,8 +6,14 @@ export interface SessionProfile {
   folder: string | null
   host: string
   port: number
+  /** Which transport this profile opens. A discriminator rather than a union
+   * type: the two share everything that matters (label, folder, host, port,
+   * terminal behaviour) and differ only in whether the auth fields apply. */
+  protocol: 'ssh' | 'telnet'
+  /** SSH only — empty string for telnet. */
   username: string
-  authType: 'password' | 'public_key' | 'agent'
+  /** SSH only — empty string for telnet. */
+  authType: 'password' | 'public_key' | 'agent' | ''
   keyPath: string | null
   // Whether a credential for this profile is stored in the vault. Tracked
   // here (not just inferred by asking the vault) because the vault can't
@@ -24,6 +30,13 @@ export interface SessionProfile {
   /** Which byte Backspace sends: `true` = ^H, `false` = ^?, `null` = follow
    * the global terminal setting. */
   backspaceSendsCtrlH: boolean | null
+}
+
+/** One-line endpoint description for a saved session. Shared by the sidebar
+ * and the quick-connect palette so the two can't drift — and so adding a
+ * third protocol later is one edit, not a hunt. */
+export function profileSubtitle(p: SessionProfile): string {
+  return p.protocol === 'telnet' ? `telnet ${p.host}:${p.port}` : `${p.username}@${p.host}`
 }
 
 export function listSessions() {
