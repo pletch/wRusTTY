@@ -33,16 +33,50 @@ npm run dev           # frontend only, in a browser
 
 ### Security model notes
 
-The credential vault is encrypted with XChaCha20-Poly1305 under an
-Argon2id-derived key; secrets are decrypted only in the Rust process and
-never sent back to the webview. One deliberate tradeoff to be aware of:
-the optional **"Unlock with Windows sign-in"** convenience stores the raw
-vault key in Windows Credential Manager (DPAPI). The Windows Hello/PIN
-challenge shown at unlock is enforced by wRusTTY's own code — DPAPI
-itself will hand that stored key to *any* process running in your
-logged-in Windows session, with no Hello prompt. If your threat model
-includes malware already running as your user, don't enable OS unlock;
-the master-password path keeps the key derivable only via Argon2.
+The vault holds one random data key that encrypts every stored secret
+(XChaCha20-Poly1305), plus one *wrapper* per enabled unlock method, each
+holding its own encrypted copy of that data key. Secrets are decrypted only
+in the Rust process and never sent back to the webview. Enabling or removing
+an unlock method — or changing the master password — rewraps 32 bytes and
+re-encrypts no credentials.
+
+**Master password.** Argon2id. Always present and deliberately not
+removable: it is the fallback that makes every hardware-backed method safe
+to depend on. Cost parameters are stored per wrapper, so raising the
+defaults never strands an existing vault.
+
+**Windows Hello** (optional, Windows only). Enrols a key credential whose
+private key is held by the TPM and gated on a Hello gesture, then derives
+the wrapping key by signing a stored challenge:
+
+```text
+KEK = HKDF-SHA256(RequestSignAsync(challenge), salt, "wrustty vault kek v1")
+```
+
+Nothing recoverable sits at rest — obtaining the key needs a live gesture at
+the machine, and the TPM's anti-hammering bounds guessing. The challenge is
+stored in the clear and is not a secret. Two consequences worth knowing:
+
+- The credential is **machine-bound**. A vault copied elsewhere opens with
+  the master password, and Hello is enrolled again on that machine.
+- The scheme assumes signatures are **deterministic**. That holds for the
+  RSA PKCS#1 v1.5 signatures Windows produces today, but is not a documented
+  guarantee. If it ever stops holding, unlock says so explicitly instead of
+  sending you round a re-enrolment loop, and the master password is
+  unaffected.
+
+**Windows sign-in** (fallback where Hello is unavailable). Stores a random
+wrapping key in Credential Manager, protected by DPAPI. Any process running
+in your logged-in session can read it back with no prompt, and it is
+recoverable offline from a stolen disk given your account password — weaker
+than the master password alone. Hello is preferred automatically wherever
+the machine supports it, and the vault menu names which method is in use.
+
+Vault files predating the wrapper format are upgraded in place on the next
+master-password unlock, onto a freshly generated data key. Any copy of the
+old key stops being useful at that moment — including the one that earlier
+versions of "Unlock with Windows sign-in" left sitting in Credential
+Manager.
 
 ### Checks
 

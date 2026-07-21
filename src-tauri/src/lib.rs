@@ -1,5 +1,7 @@
 mod coalesce;
 mod connection_status;
+#[cfg(target_os = "windows")]
+mod hello;
 mod logging;
 mod profiles;
 mod serial;
@@ -8,6 +10,8 @@ mod sftp;
 mod ssh;
 mod telnet;
 mod vault;
+#[cfg(target_os = "windows")]
+mod win_focus;
 mod window_effects;
 
 use tauri::Manager;
@@ -77,6 +81,7 @@ pub fn run() {
             vault::vault_export,
             vault::vault_import,
             vault::vault_os_unlock_available,
+            vault::vault_os_unlock_method,
             vault::vault_enable_os_unlock,
             vault::vault_disable_os_unlock,
             vault::vault_unlock_with_os,

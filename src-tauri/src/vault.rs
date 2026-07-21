@@ -12,7 +12,10 @@ use base64::Engine as _;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex as TokioMutex;
-use wr_vault::{Vault, VaultSecret};
+use wr_vault::{
+    Kek, KeyProvider, ProviderError, Vault, VaultError, VaultSecret, WrapperKind, WrapperMeta,
+    WrapperParams,
+};
 use zeroize::Zeroize;
 
 // A single fixed entry, not one per vault file — this app only ever manages
@@ -27,12 +30,25 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())
 }
 
+/// Drops the OS-keyring KEK. Idempotent — a missing entry is the desired
+/// end state, not an error.
+fn forget_os_unlock_kek() -> Result<(), String> {
+    match keyring_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// One-time migration for the `sh.wrshell.app` → `sh.wrustty.app` rebrand:
 /// an OS-unlock key stored under the old service name is invisible to
 /// `keyring_entry()` now that it looks under the new one — without this,
 /// "Unlock with Windows sign-in" would silently stop working for anyone who
 /// already had it enabled. Safe to call on every launch: a no-op once the
 /// old entry is gone (or was never set).
+///
+/// Moves the bytes without caring what they mean — for a vault that hasn't
+/// been through the v2 upgrade yet they're still the old data key, and
+/// `vault_unlock` disposes of them once that upgrade happens.
 pub(crate) fn migrate_os_unlock_key() {
     let Ok(old_entry) = keyring::Entry::new(PREVIOUS_KEYRING_SERVICE, KEYRING_USER) else {
         return;
@@ -51,39 +67,23 @@ pub(crate) fn migrate_os_unlock_key() {
     }
 }
 
-/// Forces `hwnd` to the foreground even though we didn't receive the last
-/// input event (the Windows Hello broker did) — see the call site in
-/// `verify_windows_hello_blocking` for why a plain `SetForegroundWindow`
-/// isn't enough on its own.
-#[cfg(target_os = "windows")]
-fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
-    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
-    };
+/// Why a consent check failed, kept apart from a plain string because the
+/// caller reacts differently to each: a dismissed prompt is not worth
+/// surfacing at all, whereas "no Hello configured on this machine" means the
+/// unlock method should be hidden rather than retried.
+#[derive(Debug)]
+enum ConsentError {
+    Cancelled,
+    Unavailable(String),
+    Failed(String),
+}
 
-    unsafe {
-        let foreground = GetForegroundWindow();
-        let foreground_thread = GetWindowThreadProcessId(foreground, None);
-        let current_thread = GetCurrentThreadId();
-        let attached = foreground_thread != current_thread
-            && AttachThreadInput(current_thread, foreground_thread, true).as_bool();
-
-        let _ = SetForegroundWindow(hwnd);
-        let _ = BringWindowToTop(hwnd);
-        // SetForegroundWindow activates the top-level window, but that's a
-        // different thing from keyboard focus actually landing back inside
-        // it — WebView2 is a child control, and reactivating its parent
-        // doesn't reliably re-establish which child/element had focus once
-        // that tracking was blown away by a separate process's window
-        // taking over. An explicit SetFocus (only meaningful now, while
-        // still attached to the foreground thread's input queue) targets
-        // keyboard focus directly instead of relying on activation to
-        // imply it.
-        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hwnd));
-
-        if attached {
-            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+impl From<ConsentError> for ProviderError {
+    fn from(e: ConsentError) -> Self {
+        match e {
+            ConsentError::Cancelled => ProviderError::Cancelled,
+            ConsentError::Unavailable(m) => ProviderError::Unavailable(m),
+            ConsentError::Failed(m) => ProviderError::Failed(m),
         }
     }
 }
@@ -106,7 +106,7 @@ fn verify_windows_hello_blocking(
     window: &tauri::WebviewWindow,
     hwnd: windows::Win32::Foundation::HWND,
     message: String,
-) -> Result<(), String> {
+) -> Result<(), ConsentError> {
     use windows::core::HSTRING;
     use windows::Security::Credentials::UI::{
         UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
@@ -125,14 +125,16 @@ fn verify_windows_hello_blocking(
 
     let availability = UserConsentVerifier::CheckAvailabilityAsync()
         .and_then(|op| op.join())
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| ConsentError::Failed(e.to_string()))?;
     if availability != UserConsentVerifierAvailability::Available {
-        return Err(format!("Windows Hello isn't available ({availability:?})"));
+        return Err(ConsentError::Unavailable(format!(
+            "Windows Hello isn't available ({availability:?})"
+        )));
     }
 
     let class_id = HSTRING::from("Windows.Security.Credentials.UI.UserConsentVerifier");
-    let interop: IUserConsentVerifierInterop =
-        unsafe { RoGetActivationFactory(&class_id) }.map_err(|e| e.to_string())?;
+    let interop: IUserConsentVerifierInterop = unsafe { RoGetActivationFactory(&class_id) }
+        .map_err(|e| ConsentError::Failed(e.to_string()))?;
     // RequestVerificationForWindowAsync is generic over its *return*
     // interface type (bounded by `windows_core::Interface`), not over the
     // result value — so the turbofish target is
@@ -148,53 +150,35 @@ fn verify_windows_hello_blocking(
         )
     }
     .and_then(|op| op.join())
-    .map_err(|e| e.to_string())?;
-    // A plain SetForegroundWindow(hwnd) here — tried first — didn't help:
-    // the consent prompt is hosted by a separate broker process, so it (not
-    // us) received the last input event, which is exactly the condition
-    // Windows' foreground-lock heuristic checks before honoring an
-    // unsolicited SetForegroundWindow call. Denied requests don't error,
-    // they just silently no-op (or flash the taskbar icon), which is why
-    // this looked fixed in the code but never actually took effect.
-    //
-    // The standard workaround: temporarily attach our thread's input queue
-    // to the current foreground thread's. Shared input state is one of the
-    // conditions the heuristic *does* accept, so SetForegroundWindow starts
-    // working for the duration of the attachment. This is the same trick
-    // Windows Terminal and other apps use to reclaim focus after a native
-    // dialog closes.
-    force_foreground(hwnd);
-    // Being the OS foreground window still isn't the same thing as WebView2
-    // actually having keyboard focus on some element inside it — WebView2
-    // keeps its own internal focus manager, and there's no guarantee
-    // reactivating the parent HWND alone reaches into it correctly after a
-    // different process's window (this same consent prompt) held focus.
-    // MoveFocus is WebView2's own API for exactly this: hand focus back in
-    // directly, landing on whichever element had it before (or the default
-    // one), instead of going through Win32 activation and hoping it
-    // cascades down into the webview correctly.
-    let _ = window.with_webview(|webview| {
-        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
-        unsafe {
-            let _ = webview
-                .controller()
-                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
-        }
-    });
-    if result != UserConsentVerificationResult::Verified {
-        return Err(format!(
-            "Windows Hello verification didn't succeed ({result:?})"
-        ));
+    .map_err(|e| ConsentError::Failed(e.to_string()))?;
+    crate::win_focus::restore_after_broker_prompt(window, hwnd);
+    match result {
+        UserConsentVerificationResult::Verified => Ok(()),
+        // The user dismissed the prompt. Not a failure worth reporting — the
+        // caller turns this into a silent no-op rather than an error toast.
+        UserConsentVerificationResult::Canceled => Err(ConsentError::Cancelled),
+        // Structural: nothing about retrying will help until the machine's
+        // Hello configuration changes.
+        r @ (UserConsentVerificationResult::DeviceNotPresent
+        | UserConsentVerificationResult::NotConfiguredForUser
+        | UserConsentVerificationResult::DisabledByPolicy) => Err(ConsentError::Unavailable(
+            format!("Windows Hello isn't usable on this machine ({r:?})"),
+        )),
+        // Transient: a busy sensor or too many bad attempts. Worth retrying.
+        other => Err(ConsentError::Failed(format!(
+            "Windows Hello verification didn't succeed ({other:?})"
+        ))),
     }
-    Ok(())
 }
 
 #[cfg(target_os = "windows")]
-async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), String> {
+async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), ConsentError> {
     let window = app
         .get_webview_window("main")
-        .ok_or_else(|| "no main window".to_string())?;
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        .ok_or_else(|| ConsentError::Failed("no main window".to_string()))?;
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| ConsentError::Failed(e.to_string()))?;
     // HWND isn't necessarily Send, and this needs to run on a different
     // thread (spawn_blocking, below) — round-trip through a plain isize
     // instead of moving the HWND value itself across that boundary.
@@ -211,15 +195,94 @@ async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), Stri
         verify_windows_hello_blocking(&window, hwnd, message)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| ConsentError::Failed(e.to_string()))?
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn verify_windows_hello(_app: &AppHandle, _message: &str) -> Result<(), String> {
+async fn verify_windows_hello(_app: &AppHandle, _message: &str) -> Result<(), ConsentError> {
     // No equivalent local challenge exists on other platforms — the
     // OS-unlock feature this gates is Windows-only to begin with (see
     // vault_enable_os_unlock).
     Ok(())
+}
+
+/// Unlock method backed by the OS credential store, with a Windows Hello
+/// consent prompt in front of it.
+///
+/// **This is the weak one, and it is deliberately structured so it can be
+/// replaced without touching anything else.** What it stores is a random KEK,
+/// not the vault's data key — but that KEK still sits in DPAPI-protected
+/// Credential Manager, which means any process running as this user can read
+/// it back with a plain `CredRead` and no prompt whatsoever. The Hello check
+/// below is a *consent* gate on this application's own code path; an attacker
+/// simply doesn't call it. It is exactly as strong as the arrangement it
+/// replaces, and no stronger.
+///
+/// The point of routing it through `KeyProvider` is that closing that gap is
+/// now a matter of writing a sibling provider — one that derives its KEK from
+/// `KeyCredential::RequestSignAsync` over the challenge in
+/// `WrapperParams::Hello`, so that nothing recoverable at rest exists at all —
+/// and enrolling it as `WrapperKind::Hello`. The vault, the file format, and
+/// the UI all already accommodate that; only this struct is missing.
+struct OsKeyringProvider {
+    app: AppHandle,
+}
+
+/// Reads the stored KEK, zeroizing both the base64 text and the decoded
+/// bytes on the way out — `Kek` owns the only copy that survives this call.
+fn read_os_unlock_kek() -> Result<Kek, ProviderError> {
+    let entry = keyring_entry().map_err(ProviderError::Failed)?;
+    let mut encoded = match entry.get_password() {
+        Ok(v) => v,
+        Err(keyring::Error::NoEntry) => {
+            return Err(ProviderError::Invalidated(
+                "the Windows sign-in key for this vault is gone from the credential store"
+                    .to_string(),
+            ))
+        }
+        Err(e) => return Err(ProviderError::Failed(e.to_string())),
+    };
+    let decoded = BASE64.decode(&encoded);
+    encoded.zeroize();
+
+    let mut bytes = decoded.map_err(|e| ProviderError::Failed(e.to_string()))?;
+    let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        ProviderError::Invalidated("the stored key has an unexpected length".to_string())
+    })?;
+    bytes.zeroize();
+    Ok(Kek::from_bytes(key))
+}
+
+#[wr_vault::async_trait]
+impl KeyProvider for OsKeyringProvider {
+    fn kind(&self) -> WrapperKind {
+        WrapperKind::OsKeyring
+    }
+
+    async fn kek_for(&self, meta: &WrapperMeta) -> Result<Kek, ProviderError> {
+        if meta.kind() != WrapperKind::OsKeyring {
+            return Err(ProviderError::WrongKind {
+                expected: WrapperKind::OsKeyring,
+                found: meta.kind(),
+            });
+        }
+        verify_windows_hello(&self.app, "Unlock wRusTTY's credential vault").await?;
+        read_os_unlock_kek()
+    }
+
+    async fn enroll(&self) -> Result<(WrapperParams, Kek), ProviderError> {
+        // A fresh random KEK, not the vault's data key: enabling and later
+        // disabling this method leaves nothing behind that could open the
+        // vault, and the DEK never enters the credential store at all.
+        let bytes: [u8; 32] = wr_vault::random_bytes();
+        let mut encoded = BASE64.encode(bytes);
+        let stored = keyring_entry()
+            .map_err(ProviderError::Failed)?
+            .set_password(&encoded);
+        encoded.zeroize();
+        stored.map_err(|e| ProviderError::Failed(e.to_string()))?;
+        Ok((WrapperParams::OsKeyring {}, Kek::from_bytes(bytes)))
+    }
 }
 
 #[derive(Default)]
@@ -268,6 +331,15 @@ pub async fn vault_create(
     Ok(())
 }
 
+/// Also the upgrade path: unlocking a pre-v2 file here migrates it in place
+/// and re-keys the credentials onto a fresh data key.
+///
+/// That last part is why the cleanup below matters. A pre-v2 vault with
+/// "unlock with Windows sign-in" enabled had a plaintext copy of its *data
+/// key* sitting in Credential Manager — the weakness this format change
+/// exists to close. After migration that copy opens nothing, but it is still
+/// key material on disk with no owner, so it goes. The user re-enables the
+/// setting once, and gets a wrapper holding a random KEK instead.
 #[tauri::command]
 pub async fn vault_unlock(
     app: AppHandle,
@@ -275,6 +347,9 @@ pub async fn vault_unlock(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let vault = Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
+    if !vault.has_unlock_method(WrapperKind::OsKeyring) {
+        let _ = forget_os_unlock_kek();
+    }
     *state.vault.lock().await = Some(vault);
     Ok(())
 }
@@ -294,10 +369,12 @@ pub async fn vault_lock(state: State<'_, VaultState>) -> Result<(), String> {
 #[tauri::command]
 pub async fn vault_delete(app: AppHandle, state: State<'_, VaultState>) -> Result<(), String> {
     *state.vault.lock().await = None;
-    match keyring_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(e.to_string()),
-    }
+    // The vault these protected is about to cease to exist, so both become
+    // orphans — the TPM credential especially, which nothing else would ever
+    // clean up.
+    #[cfg(target_os = "windows")]
+    crate::hello::forget_credential().await;
+    forget_os_unlock_kek()?;
     match std::fs::remove_file(vault_path(&app)?) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -314,43 +391,198 @@ pub async fn vault_delete(app: AppHandle, state: State<'_, VaultState>) -> Resul
     Ok(())
 }
 
-/// Whether a convenience-unlock key is currently stored in the OS keychain
-/// (DPAPI-backed Credential Manager on Windows) — lets the UI offer
-/// "unlock with Windows sign-in" instead of the master password, and shows
-/// the current on/off state of the setting once unlocked.
-#[tauri::command]
-pub async fn vault_os_unlock_available() -> Result<bool, String> {
-    let entry = keyring_entry()?;
-    match entry.get_password() {
-        Ok(_) => Ok(true),
-        Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(e.to_string()),
+/// The passwordless unlock methods, strongest first. A vault can only ever
+/// have one of them enrolled at a time (see `vault_enable_os_unlock`), but
+/// the order matters when deciding which to *use*: a vault carried from a
+/// machine where only the keyring method was available should still open
+/// here, and a vault upgraded to Hello should never fall back.
+const PASSWORDLESS_METHODS: [WrapperKind; 2] = [WrapperKind::Hello, WrapperKind::OsKeyring];
+
+/// Whether *this build* can drive a method, as distinct from whether the
+/// vault has it enrolled. A vault created on Windows and then opened on a
+/// Linux build carries a Hello wrapper that nothing here can open; treating
+/// it as available would put a button on screen that always fails, when the
+/// honest answer is to fall back to the master password.
+fn usable_on_this_platform(kind: WrapperKind) -> bool {
+    match kind {
+        WrapperKind::Hello => cfg!(target_os = "windows"),
+        _ => true,
     }
 }
 
-/// Stores a copy of the already-unlocked vault's key in the OS keychain, so
-/// future launches can skip the master password. Security now rests on
-/// Argon2 only indirectly — retrieving the key (vault_unlock_with_os) is
-/// gated on a fresh Windows Hello/PIN challenge each time
-/// (verify_windows_hello), not just on DPAPI's own "same logged-in Windows
-/// session" check, which by itself would hand the key to anything already
-/// running as that user with no further challenge at all.
+fn enrolled_passwordless_method(app: &AppHandle) -> Result<Option<WrapperKind>, String> {
+    let path = vault_path(app)?;
+    if !wr_vault::exists(&path) {
+        return Ok(None);
+    }
+    let enrolled = wr_vault::unlock_methods_at(&path).map_err(|e| e.to_string())?;
+    Ok(PASSWORDLESS_METHODS
+        .into_iter()
+        .find(|kind| enrolled.contains(kind) && usable_on_this_platform(*kind)))
+}
+
+/// Whether this vault has a passwordless unlock method enrolled — lets the
+/// UI offer it instead of the master password, and shows the current on/off
+/// state of the setting once unlocked.
+///
+/// Answers from the vault file rather than from the credential store, which
+/// matters for a vault that hasn't been migrated yet: a pre-v2 file has no
+/// unlock methods besides the master password, however many stale keys are
+/// left lying around under our service name.
 #[tauri::command]
-pub async fn vault_enable_os_unlock(state: State<'_, VaultState>) -> Result<(), String> {
-    let guard = state.vault.lock().await;
-    let vault = guard.as_ref().ok_or("vault is locked")?;
-    let mut key = vault.key_bytes();
-    let result = keyring_entry()?.set_password(&BASE64.encode(key));
-    key.zeroize();
-    result.map_err(|e| e.to_string())
+pub async fn vault_os_unlock_available(app: AppHandle) -> Result<bool, String> {
+    let Some(kind) = enrolled_passwordless_method(&app)? else {
+        return Ok(false);
+    };
+    // A Hello wrapper travels with the vault file but its key credential does
+    // not — it lives in one machine's TPM. On any other machine the wrapper is
+    // present and permanently unopenable, so offering the button would only
+    // produce a confident click and a failure. Checking costs nothing:
+    // `OpenAsync` doesn't prompt (pinned by a test in `hello.rs`).
+    #[cfg(target_os = "windows")]
+    if kind == WrapperKind::Hello && !crate::hello::credential_exists().await {
+        return Ok(false);
+    }
+    let _ = kind;
+    Ok(true)
+}
+
+/// How the enrolled passwordless method is protected.
+///
+/// Three states, not two, because "is it Windows Hello" and "did the TPM
+/// attest it" are independent questions and conflating them produces an
+/// actively false claim. A Hello credential that failed attestation still
+/// lives in the Hello container, is still non-exportable, and still needs a
+/// gesture — it is nothing like a key sitting in Credential Manager, and
+/// telling a user otherwise would push them away from the stronger option.
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OsUnlockProtection {
+    /// Key credential in the TPM, attestation confirmed.
+    TpmAttested,
+    /// Key credential held by Windows Hello, attestation unavailable.
+    /// Usually means Windows hasn't provisioned an attestation identity key
+    /// yet, not that the key is unprotected — attestation is lazily set up
+    /// and frequently reports `TemporarilyUnavailable` on healthy hardware.
+    HelloUnattested,
+    /// A random KEK in DPAPI-backed Credential Manager, readable by any
+    /// process running as this user. The genuinely weak option.
+    CredentialManager,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsUnlockMethod {
+    /// Short human-readable name, e.g. "Windows Hello".
+    label: String,
+    protection: OsUnlockProtection,
 }
 
 #[tauri::command]
-pub async fn vault_disable_os_unlock() -> Result<(), String> {
-    match keyring_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
+pub async fn vault_os_unlock_method(app: AppHandle) -> Result<Option<OsUnlockMethod>, String> {
+    let Some(kind) = enrolled_passwordless_method(&app)? else {
+        return Ok(None);
+    };
+    let wrappers = wr_vault::wrappers_at(&vault_path(&app)?).map_err(|e| e.to_string())?;
+    // Match the wrapper actually being used, not merely any Hello wrapper
+    // present — with both methods enrolled the previous version could report
+    // one method's protection while unlocking with the other's.
+    let protection = match wrappers
+        .iter()
+        .find(|w| w.kind() == kind)
+        .map(|w| &w.params)
+    {
+        Some(WrapperParams::Hello { attested: true, .. }) => OsUnlockProtection::TpmAttested,
+        Some(WrapperParams::Hello { .. }) => OsUnlockProtection::HelloUnattested,
+        _ => OsUnlockProtection::CredentialManager,
+    };
+    Ok(Some(OsUnlockMethod {
+        label: kind.label().to_string(),
+        protection,
+    }))
+}
+
+/// Enrols the strongest passwordless unlock method this machine supports, so
+/// future launches can skip the master password. Adds a wrapper holding its
+/// own encrypted copy of the vault's data key — the data key itself never
+/// leaves this process.
+///
+/// Prefers the TPM-backed Windows Hello method and falls back to the OS
+/// keyring only where `KeyCredentialManager` is unavailable. Enrolling Hello
+/// also tears down any previously enrolled keyring wrapper: leaving it in
+/// place would keep a DPAPI-readable path into the vault open, silently
+/// capping the vault's security at the weaker method no matter what the UI
+/// says is enabled.
+#[tauri::command]
+pub async fn vault_enable_os_unlock(
+    app: AppHandle,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    // Enrolment runs with no lock held. It can block for as long as the user
+    // takes to answer a Hello prompt, and holding the vault mutex across that
+    // wedges every other vault command — including the ones the UI polls to
+    // show progress. It also turned a slow prompt into a prompt *storm*:
+    // impatient clicks piled up on the mutex and each fired its own dialog as
+    // its predecessor finished. Fail fast instead.
+    #[cfg(target_os = "windows")]
+    if crate::hello::is_supported().await {
+        use wr_vault::KeyProvider as _;
+
+        let (params, kek) = crate::hello::HelloProvider::new(app)
+            .enroll()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let mut guard = state.vault.lock().await;
+        let vault = guard.as_mut().ok_or("vault is locked")?;
+        vault
+            .add_enrolled_unlock_method(params, &kek)
+            .map_err(|e| e.to_string())?;
+        // Only after the Hello wrapper is safely on disk — dropping the old
+        // method first would leave the user with neither if enrolment failed.
+        match vault.remove_unlock_method(WrapperKind::OsKeyring) {
+            Ok(()) | Err(VaultError::NoSuchUnlockMethod(_)) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let _ = forget_os_unlock_kek();
+        return Ok(());
     }
+
+    let (params, kek) = OsKeyringProvider { app }
+        .enroll()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut guard = state.vault.lock().await;
+    let vault = guard.as_mut().ok_or("vault is locked")?;
+    vault
+        .add_enrolled_unlock_method(params, &kek)
+        .map_err(|e| e.to_string())
+}
+
+/// Requires an unlocked vault, because removing the wrapper is a change to
+/// the vault file. The stored KEK is dropped as well — either half alone is
+/// useless, but leaving key material behind for a feature the user just
+/// turned off would be careless.
+#[tauri::command]
+pub async fn vault_disable_os_unlock(state: State<'_, VaultState>) -> Result<(), String> {
+    let mut guard = state.vault.lock().await;
+    let vault = guard.as_mut().ok_or("vault is locked")?;
+    for kind in PASSWORDLESS_METHODS {
+        match vault.remove_unlock_method(kind) {
+            Ok(()) | Err(VaultError::NoSuchUnlockMethod(_)) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    // Release the vault before the credential teardown below, which talks to
+    // Windows and has no business holding this lock.
+    drop(guard);
+
+    // The wrapper is gone, so these are now unreferenced key material. Both
+    // are best-effort: failing to tidy up shouldn't fail the operation the
+    // user actually asked for, which has already succeeded on disk.
+    #[cfg(target_os = "windows")]
+    crate::hello::forget_credential().await;
+    forget_os_unlock_kek()
 }
 
 #[tauri::command]
@@ -358,15 +590,38 @@ pub async fn vault_unlock_with_os(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    verify_windows_hello(&app, "Unlock wRusTTY's credential vault").await?;
-    let encoded = keyring_entry()?.get_password().map_err(|e| e.to_string())?;
-    let mut key_vec = BASE64.decode(&encoded).map_err(|e| e.to_string())?;
-    let key: [u8; 32] = key_vec
-        .as_slice()
-        .try_into()
-        .map_err(|_| "stored key has unexpected length".to_string())?;
-    key_vec.zeroize();
-    let vault = Vault::unlock_with_key(vault_path(&app)?, key).map_err(|e| e.to_string())?;
+    let kind = enrolled_passwordless_method(&app)?
+        .ok_or("no passwordless unlock method is set up for this vault")?;
+    let path = vault_path(&app)?;
+
+    #[cfg(target_os = "windows")]
+    if kind == WrapperKind::Hello {
+        let meta = wr_vault::wrappers_at(&path)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|w| w.kind() == WrapperKind::Hello)
+            .ok_or("the Windows Hello unlock method is no longer set up for this vault")?;
+        let provider = crate::hello::HelloProvider::new(app);
+
+        let vault = match Vault::unlock_with(path, &provider).await {
+            Ok(vault) => vault,
+            // The wrapped key's AEAD tag rejected the KEK we derived. That
+            // says the signature was wrong but not why, and the two causes
+            // call for opposite advice — so pay for a diagnosis here, where
+            // the user is already stuck, rather than taxing every enrolment.
+            Err(VaultError::UnlockFailed(_)) => {
+                return Err(provider.explain_unlock_failure(&meta).await)
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        *state.vault.lock().await = Some(vault);
+        return Ok(());
+    }
+    let _ = kind;
+
+    let vault = Vault::unlock_with(path, &OsKeyringProvider { app })
+        .await
+        .map_err(|e| e.to_string())?;
     *state.vault.lock().await = Some(vault);
     Ok(())
 }
@@ -483,10 +738,7 @@ pub async fn vault_import(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     *state.vault.lock().await = None;
-    match keyring_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(e.to_string()),
-    }
+    forget_os_unlock_kek()?;
     let contents = std::fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
     let bundle: ExportBundle =
         serde_json::from_str(&contents).map_err(|_| "not a valid vault export file".to_string())?;

@@ -24,6 +24,10 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [osUnlockOn, setOsUnlockOn] = useState(false)
+  // Null whenever nothing is enrolled, so the toggle's own on/off state
+  // stays driven by `osUnlockOn` and this only ever adds detail.
+  const [osUnlockMethod, setOsUnlockMethod] = useState<vault.OsUnlockMethod | null>(null)
+  const [osUnlockBusy, setOsUnlockBusy] = useState(false)
 
   useEffect(() => {
     if (!open_) return
@@ -31,6 +35,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     setConfirmPassword('')
     setError(null)
     vault.osUnlockAvailable().then(setOsUnlockOn).catch(() => {})
+    vault.osUnlockMethod().then(setOsUnlockMethod).catch(() => {})
   }, [open_, status])
 
   useEffect(() => {
@@ -94,17 +99,30 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
+  // Enrolment raises a Windows Hello prompt and blocks until it's answered.
+  // Without this the checkbox is controlled by state that can't update until
+  // that returns, so it silently snaps back and sits there looking broken —
+  // which invites exactly the repeated clicking that used to queue up a
+  // prompt per click.
   async function toggleOsUnlock(next: boolean) {
+    if (osUnlockBusy) return
     setError(null)
+    setOsUnlockBusy(true)
     try {
       if (next) await vault.enableOsUnlock()
       else await vault.disableOsUnlock()
       setOsUnlockOn(next)
+      // Which method got enrolled is decided on the Rust side (Windows Hello
+      // where the machine supports it, Credential Manager otherwise), so read
+      // it back rather than assuming.
+      setOsUnlockMethod(next ? await vault.osUnlockMethod() : null)
       // App.tsx tracks this too (for the session-picker's locked-vault
       // unlock prompt), so it needs to hear about the change as well.
       onStatusChange()
     } catch (err) {
       setError(String(err))
+    } finally {
+      setOsUnlockBusy(false)
     }
   }
 
@@ -232,7 +250,8 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                     onClick={submitUnlockWithOs}
                     className={`${primaryButton} flex items-center justify-center gap-1.5`}
                   >
-                    <Fingerprint size={13} /> Unlock with Windows sign-in
+                    <Fingerprint size={13} />
+                    {osUnlockMethod ? `Unlock with ${osUnlockMethod.label}` : 'Unlock with Windows sign-in'}
                   </button>
                   <p className="flex items-center gap-2 text-white/30">
                     <span className="h-px flex-1 bg-white/10" /> or <span className="h-px flex-1 bg-white/10" />
@@ -270,19 +289,62 @@ export function VaultMenu({ status, onStatusChange }: Props) {
               <p className="flex items-center gap-1.5 text-emerald-400/90">
                 <Unlock size={13} /> Vault is unlocked
               </p>
-              <label className="flex items-start gap-2 py-1 text-white/70">
+              <label
+                className={`flex items-start gap-2 py-1 text-white/70 ${
+                  osUnlockBusy ? 'cursor-wait opacity-60' : ''
+                }`}
+              >
                 <input
                   type="checkbox"
                   checked={osUnlockOn}
+                  disabled={osUnlockBusy}
                   onChange={(e) => toggleOsUnlock(e.target.checked)}
                   className="mt-0.5"
                 />
                 <span>
-                  Unlock with Windows sign-in
-                  <span className="block text-white/40">
-                    Skips the master password — each unlock still requires a
-                    fresh Windows Hello/PIN check instead of Argon2.
-                  </span>
+                  Unlock without the master password
+                  {/* Deliberately spells out which of the two methods is in
+                      play and how strong it is. They are not equivalent: one
+                      keeps the key in the TPM, the other in Credential
+                      Manager where any process running as this user can read
+                      it, and silently presenting both as "Windows sign-in"
+                      would hide exactly the thing worth knowing. */}
+                  {osUnlockBusy ? (
+                    <span className="block text-sky-300/70">
+                      Waiting for Windows Hello — answer the prompt to continue. It may open
+                      behind this window.
+                    </span>
+                  ) : osUnlockOn && osUnlockMethod ? (
+                    <span className="block text-white/40">
+                      Using {osUnlockMethod.label}.{' '}
+                      {/* Non-exportability is left unsaid on purpose: it's
+                          true of every Hello credential, so stating it tells
+                          the user nothing they can act on. What isn't obvious
+                          is that the key is machine-bound, which is what they
+                          actually hit when they move the vault. */}
+                      {osUnlockMethod.protection === 'tpm-attested' && (
+                        <span className="text-emerald-400/70">
+                          Backed by this machine&apos;s TPM. Set up per machine — other devices need
+                          your master password.
+                        </span>
+                      )}
+                      {osUnlockMethod.protection === 'hello-unattested' && (
+                        <span className="text-emerald-400/70">
+                          Set up per machine — other devices need your master password.
+                        </span>
+                      )}
+                      {osUnlockMethod.protection === 'credential-manager' && (
+                        <span className="text-amber-400/70">
+                          The key is stored in Windows Credential Manager, which other programs
+                          running as you can read. Weaker than the master password alone.
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="block text-white/40">
+                      Skips the master password, using Windows Hello where this machine supports it.
+                    </span>
+                  )}
                 </span>
               </label>
               {error && <p className="text-red-400">{error}</p>}

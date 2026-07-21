@@ -31,10 +31,29 @@ export function deleteVault() {
   return invoke<void>('vault_delete')
 }
 
+/** How the vault's passwordless unlock method is protected.
+ *
+ * `hello-unattested` is deliberately distinct from `credential-manager`: the
+ * key is still held by Windows Hello and still non-exportable, only the TPM
+ * attestation is missing — which usually means Windows hasn't provisioned an
+ * attestation key rather than that anything is unprotected. */
+export type OsUnlockProtection = 'tpm-attested' | 'hello-unattested' | 'credential-manager'
+
+export interface OsUnlockMethod {
+  label: string
+  protection: OsUnlockProtection
+}
+
 export function osUnlockAvailable() {
   return invoke<boolean>('vault_os_unlock_available')
 }
 
+export function osUnlockMethod() {
+  return invoke<OsUnlockMethod | null>('vault_os_unlock_method')
+}
+
+/** Enrols the strongest method the machine supports — TPM-backed Windows
+ * Hello where available, otherwise a key held in Credential Manager. */
 export function enableOsUnlock() {
   return invoke<void>('vault_enable_os_unlock')
 }

@@ -61,6 +61,12 @@ window-vibrancy = "0.6"
 # the graph.
 windows = { version = "=0.62.2", features = [
   "Security_Credentials_UI",
+  # KeyCredentialManager and friends, for the TPM-backed vault unlock in
+  # hello.rs; CryptographicBuffer/DataReader to move bytes in and out of the
+  # IBuffers its sign API deals in.
+  "Security_Credentials",
+  "Security_Cryptography",
+  "Storage_Streams",
   "Foundation",
   "Win32_System_Com",
   "Win32_System_WinRT",

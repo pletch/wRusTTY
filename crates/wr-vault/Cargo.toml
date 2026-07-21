@@ -15,3 +15,15 @@ chacha20poly1305 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 tempfile = "3"
+# `KeyProvider::kek_for` has to be async: the Windows Hello implementation
+# blocks on a user gesture, and the external-command one blocks on a child
+# process. Neither can be honestly modelled as a sync call.
+async-trait = "0.1"
+# Used only to stretch an already-high-entropy input (a TPM signature, an
+# external command's output) into a KEK. Low-entropy inputs — i.e. anything
+# a human typed — go through Argon2id instead, never this.
+hkdf = "0.12"
+sha2 = "0.10"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
