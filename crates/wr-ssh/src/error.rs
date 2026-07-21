@@ -20,6 +20,23 @@ pub enum SshError {
     #[error("authentication failed")]
     AuthFailed,
 
+    /// Distinct from `AuthFailed` because the fix is completely different:
+    /// the server never rejected anything, we couldn't reach an agent or it
+    /// had nothing to offer.
+    #[error("{0}")]
+    AgentUnavailable(String),
+
+    /// Every key the agent holds was refused. Reports the count because the
+    /// usual cause is not "wrong key" but too many keys — servers cap
+    /// authentication attempts (OpenSSH `MaxAuthTries`, default 6), so a
+    /// well-stocked agent can be cut off before it reaches the right one.
+    #[error(
+        "the server rejected all {offered} key(s) offered by the SSH agent — if the agent holds \
+         more than a handful, the server may have cut off authentication before reaching the \
+         right one"
+    )]
+    AgentRejected { offered: usize },
+
     #[error("SSH key file not found: {0}")]
     KeyNotFound(String),
 

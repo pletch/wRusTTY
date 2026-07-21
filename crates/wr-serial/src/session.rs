@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -11,7 +13,18 @@ enum WriteCommand {
     Data(Vec<u8>),
     Dtr(bool),
     Rts(bool),
+    Break(Duration),
 }
+
+/// How long a break condition is held by default.
+///
+/// A break is the line held at logic zero for longer than one character
+/// frame — the out-of-band attention signal on a serial console. Cisco
+/// password recovery and ROMMON entry need one during boot, as do plenty of
+/// embedded bootloaders. RS-232 has no fixed duration; ~300 ms is comfortably
+/// past every receiver's detection threshold at any baud rate anyone still
+/// uses, and matches what PuTTY sends.
+pub const DEFAULT_BREAK: Duration = Duration::from_millis(300);
 
 /// A live (or not-yet-connected) serial session. Unlike SSH/telnet, all I/O
 /// and control-line access (DTR/RTS) has to live in a single task: the
@@ -42,6 +55,19 @@ impl SerialSession {
     pub async fn set_rts(&self, level: bool) -> Result<(), SerialError> {
         let tx = self.input_tx.as_ref().ok_or(SerialError::NotConnected)?;
         tx.send(WriteCommand::Rts(level))
+            .await
+            .map_err(|_| SerialError::NotConnected)
+    }
+
+    /// Holds a break condition on the line for `duration`.
+    ///
+    /// Queued through the same channel as writes rather than touching the
+    /// port directly, so it can't interleave with a write in progress — a
+    /// break landing mid-character would corrupt that character instead of
+    /// signalling cleanly.
+    pub async fn send_break(&self, duration: Duration) -> Result<(), SerialError> {
+        let tx = self.input_tx.as_ref().ok_or(SerialError::NotConnected)?;
+        tx.send(WriteCommand::Break(duration))
             .await
             .map_err(|_| SerialError::NotConnected)
     }
@@ -152,6 +178,22 @@ impl SerialSession {
                             Some(WriteCommand::Rts(level)) => {
                                 if let Err(e) = stream.write_request_to_send(level) {
                                     tracing::warn!(error = %e, "failed to set RTS");
+                                }
+                            }
+                            Some(WriteCommand::Break(duration)) => {
+                                // Deliberately blocks this loop for the
+                                // duration: a break is a line-level condition,
+                                // and holding it is the whole operation. The
+                                // OS keeps buffering inbound bytes meanwhile,
+                                // so nothing is lost — and any device that
+                                // matters is about to reset anyway.
+                                if let Err(e) = stream.set_break() {
+                                    tracing::warn!(error = %e, "failed to assert break");
+                                } else {
+                                    tokio::time::sleep(duration).await;
+                                    if let Err(e) = stream.clear_break() {
+                                        tracing::warn!(error = %e, "failed to clear break");
+                                    }
                                 }
                             }
                             None => break,

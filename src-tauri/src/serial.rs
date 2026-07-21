@@ -1,6 +1,6 @@
 //! Tauri command layer for serial sessions — same push-`Channel` shape as
-//! `ssh.rs`/`telnet.rs`, plus port enumeration and DTR/RTS control (which
-//! have no equivalent in the other transports).
+//! `ssh.rs`/`telnet.rs`, plus port enumeration and line control (DTR, RTS,
+//! break), which have no equivalent in the other transports.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,6 +133,27 @@ pub async fn serial_set_rts(
     let session = lookup(&state, &session_id).await?;
     let session = session.lock().await;
     session.set_rts(level).await.map_err(|e| e.to_string())
+}
+
+/// Asserts a break condition — the out-of-band attention signal a serial
+/// console expects for things like Cisco password recovery or dropping to a
+/// bootloader. `duration_ms` is optional; omitting it uses the default hold
+/// time, which suits every case anyone routinely needs.
+#[tauri::command]
+pub async fn serial_send_break(
+    session_id: String,
+    duration_ms: Option<u64>,
+    state: State<'_, SerialState>,
+) -> Result<(), String> {
+    let duration = duration_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(wr_serial::DEFAULT_BREAK);
+    let session = lookup(&state, &session_id).await?;
+    let session = session.lock().await;
+    session
+        .send_break(duration)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

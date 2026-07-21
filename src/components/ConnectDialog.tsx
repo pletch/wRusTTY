@@ -29,11 +29,12 @@ export interface ConnectDialogInitial {
   host?: string
   port?: number
   username?: string
-  authType?: 'Password' | 'PublicKey'
+  authType?: 'Password' | 'PublicKey' | 'Agent'
   keyPath?: string
   folder?: string | null
   hasCredential?: boolean
   jumpProfileId?: string | null
+  termType?: string | null
 }
 
 interface Props {
@@ -134,9 +135,10 @@ export function ConnectDialog({
   const [host, setHost] = useState(initial?.host ?? '')
   const [port, setPort] = useState(String(initial?.port ?? (protocol === 'telnet' ? 23 : 22)))
   const [username, setUsername] = useState(initial?.username ?? '')
-  const [authType, setAuthType] = useState<'Password' | 'PublicKey'>(
+  const [authType, setAuthType] = useState<'Password' | 'PublicKey' | 'Agent'>(
     initial?.authType ?? 'Password',
   )
+  const [termType, setTermType] = useState(initial?.termType ?? '')
   const [password, setPassword] = useState('')
   // A public-key profile with no keyPath and an existing vault credential
   // means the key itself already lives in the vault — the default path
@@ -262,9 +264,11 @@ export function ConnectDialog({
       const relyOnExistingVaultedKey = usingVaultKey && isInitiallyVaulted && !keyPath.trim()
 
       const auth: AuthMethod =
-        authType === 'Password'
-          ? { type: 'Password', password }
-          : { type: 'PublicKey', key_path: keyPath, passphrase: passphrase || null }
+        authType === 'Agent'
+          ? { type: 'Agent' }
+          : authType === 'Password'
+            ? { type: 'Password', password }
+            : { type: 'PublicKey', key_path: keyPath, passphrase: passphrase || null }
 
       if (saveProfile && onSaveProfile) {
         const profileId = initial?.id ?? crypto.randomUUID()
@@ -279,7 +283,12 @@ export function ConnectDialog({
         // offer to "unlock the vault" for a session that never put
         // anything there. Vault-mode keys have their own hasCredential
         // logic below instead, since the key itself is the stored secret.
+        // Agent auth has no secret of ours to store — the key never leaves
+        // the agent — so it must never mark the profile as having a vault
+        // credential, or the sidebar would offer to unlock the vault for a
+        // session that put nothing in it.
         const willSaveCredential =
+          authType !== 'Agent' &&
           !usingVaultKey &&
           saveCredential &&
           Boolean(onSaveCredential) &&
@@ -305,8 +314,10 @@ export function ConnectDialog({
           host,
           port: Number(port) || 22,
           username,
-          authType: authType === 'Password' ? 'password' : 'public_key',
+          authType:
+            authType === 'Agent' ? 'agent' : authType === 'Password' ? 'password' : 'public_key',
           keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
+          termType: termType.trim() || null,
           // Preserves a prior credential's flag across an unrelated edit —
           // there's no "forget stored credential" affordance yet, so saving
           // shouldn't silently lose track of one that already exists.
@@ -585,9 +596,24 @@ export function ConnectDialog({
                       />
                       Public key
                     </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        className="accent-sky-400"
+                        checked={authType === 'Agent'}
+                        onChange={() => setAuthType('Agent')}
+                      />
+                      SSH agent
+                    </label>
                   </div>
 
-                  {authType === 'Password' ? (
+                  {authType === 'Agent' ? (
+                    <p className="text-xs text-white/40">
+                      Keys come from Pageant or the Windows OpenSSH agent — whichever is running.
+                      Nothing is stored here, and hardware keys (FIDO2, PIV, YubiKey) work this way
+                      only.
+                    </p>
+                  ) : authType === 'Password' ? (
                     <>
                       <input
                         className={`${inputClass} w-full`}
@@ -663,6 +689,18 @@ export function ConnectDialog({
                         ))}
                     </select>
                   )}
+
+                  {/* Blank is the common case, so this stays an unobtrusive
+                      optional field rather than a dropdown implying a choice
+                      has to be made. It exists for gear that renders badly —
+                      or refuses a PTY — under anything but vt100. */}
+                  <input
+                    className={`${inputClass} w-full`}
+                    placeholder="terminal type (default xterm-256color)"
+                    value={termType}
+                    onChange={(e) => setTermType(e.target.value)}
+                    title="Sets TERM for the remote session. Leave blank unless the device misbehaves — some network and embedded gear needs vt100."
+                  />
                 </>
               )}
             </>

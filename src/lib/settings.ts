@@ -15,6 +15,14 @@ export interface TerminalSettings {
    * stream verbatim (PuTTY "all session output" style) for exact fidelity /
    * replay. Applies to the next log started, not one already running. */
   logPlainText: boolean
+  /** Backspace sends ^H (0x08) instead of the default ^? (0x7f, DEL).
+   *
+   * Modern Unix expects ^?, which is why that's the default. Plenty of
+   * network gear, embedded consoles, and older Unix expect ^H — and when it's
+   * wrong the symptom is that backspace does nothing or prints `^?`, which
+   * reads as "this terminal is broken" rather than "one setting is wrong".
+   * PuTTY exposes the same switch for the same reason. */
+  backspaceSendsCtrlH: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -49,6 +57,7 @@ const defaults: TerminalSettings = {
   rightClickPaste: true,
   closeOnDisconnect: true,
   logPlainText: true,
+  backspaceSendsCtrlH: false,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

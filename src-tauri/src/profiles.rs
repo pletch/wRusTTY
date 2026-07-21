@@ -17,7 +17,7 @@ pub struct SessionProfile {
     pub port: u16,
     pub username: String,
     #[serde(rename = "authType")]
-    pub auth_type: String, // "password" | "public_key"
+    pub auth_type: String, // "password" | "public_key" | "agent"
     #[serde(rename = "keyPath")]
     pub key_path: Option<String>,
     /// Whether a credential for this profile is stored in the vault.
@@ -29,6 +29,11 @@ pub struct SessionProfile {
     /// saved before this field existed still parse.
     #[serde(rename = "jumpProfileId", default)]
     pub jump_profile_id: Option<String>,
+    /// Overrides the `TERM` sent with the PTY request — see
+    /// `wr_ssh::DEFAULT_TERM_TYPE`. `default` so profiles saved before this
+    /// field existed still parse.
+    #[serde(rename = "termType", default)]
+    pub term_type: Option<String>,
 }
 
 #[derive(Default)]

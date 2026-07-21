@@ -54,3 +54,11 @@ export function setDtr(sessionId: string, level: boolean) {
 export function setRts(sessionId: string, level: boolean) {
   return invoke<void>('serial_set_rts', { sessionId, level })
 }
+
+/** Asserts a break condition on the line — the attention signal a serial
+ * console expects for Cisco password recovery, dropping to ROMMON, or
+ * entering a bootloader. Omitting `durationMs` uses the backend default,
+ * which is what you want unless a device documents otherwise. */
+export function sendBreak(sessionId: string, durationMs?: number) {
+  return invoke<void>('serial_send_break', { sessionId, durationMs })
+}

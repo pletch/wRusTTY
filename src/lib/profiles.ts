@@ -7,7 +7,7 @@ export interface SessionProfile {
   host: string
   port: number
   username: string
-  authType: 'password' | 'public_key'
+  authType: 'password' | 'public_key' | 'agent'
   keyPath: string | null
   // Whether a credential for this profile is stored in the vault. Tracked
   // here (not just inferred by asking the vault) because the vault can't
@@ -18,6 +18,9 @@ export interface SessionProfile {
   /** Id of another saved profile to jump through (SSH ProxyJump) before
    * reaching this one — `null` connects directly. */
   jumpProfileId: string | null
+  /** Overrides the `TERM` sent with the PTY request — `null` sends
+   * `xterm-256color`. */
+  termType: string | null
 }
 
 export function listSessions() {

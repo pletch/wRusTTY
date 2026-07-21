@@ -4,6 +4,13 @@ A lightweight SSH / Telnet / Serial client for Windows 11: modern GUI,
 tabbed sessions, encrypted local credential vault, GPU-accelerated terminal.
 Built with Tauri 2 (Rust) + React.
 
+Aimed squarely at replacing PuTTY and SuperPuTTY rather than at being a
+general-purpose terminal emulator. It reads PuTTY `.ppk` keys directly (v2
+and v3, encrypted or not), authenticates through Pageant or the Windows
+OpenSSH agent, and supports ProxyJump, port forwarding, and the serial
+line-control details a console cable actually needs — break signalling,
+DTR/RTS, local echo, and line-ending control.
+
 See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) for architecture,
 feature scope, and the phased build plan.
 
@@ -77,6 +84,29 @@ master-password unlock, onto a freshly generated data key. Any copy of the
 old key stops being useful at that moment — including the one that earlier
 versions of "Unlock with Windows sign-in" left sitting in Credential
 Manager.
+
+### Compatibility notes
+
+**SSH agent.** Selecting "SSH agent" as a session's auth method delegates to
+whichever agent is running — the Windows OpenSSH agent service is tried
+first, then Pageant. The agent holds the key and produces the signature, so
+no key material enters this process; it is also the only way to use a key
+that cannot be exported at all, such as a FIDO2 security key or a PIV
+smartcard. Note that servers cap authentication attempts (OpenSSH's
+`MaxAuthTries` defaults to 6), so an agent loaded with many keys can be cut
+off before the right one is reached.
+
+**Terminal type.** Sessions send `TERM=xterm-256color` unless overridden per
+session. Some network and embedded gear renders badly, or refuses a PTY,
+under anything but `vt100`.
+
+**Backspace.** Defaults to `^?` (DEL), which is what modern Unix expects.
+Gear that wants `^H` — much network equipment and older Unix — is handled by
+a setting; the symptom is backspace doing nothing or echoing `^?`.
+
+**Serial break.** The `BRK` button in the status bar holds a break condition
+on the line, for Cisco password recovery, ROMMON entry, and bootloader
+interrupts. DTR and RTS toggles sit beside it.
 
 ### Checks
 

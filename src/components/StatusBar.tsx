@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ScrollText } from 'lucide-react'
+import { ScrollText, Zap } from 'lucide-react'
+import * as serial from '../lib/serial'
+import { toast } from '../lib/toast'
 
 /** Same status→color mapping as the tab dot (TabBar.statusDotColor), plus a
  * muted resting color for "no active connection" so the bar reads as a stable
@@ -46,6 +48,11 @@ interface Props {
   paneIndex: number
   paneCount: number
   tabCount: number
+  /** Backend session id of the active pane when it is a *connected serial*
+   * session, else null. Gates the line-control cluster below — these are
+   * physical signals on a real port, so there must be no way to reach them
+   * for an SSH pane or a serial pane that isn't open. */
+  serialSessionId: string | null
 }
 
 export function StatusBar({
@@ -57,7 +64,48 @@ export function StatusBar({
   paneIndex,
   paneCount,
   tabCount,
+  serialSessionId,
 }: Props) {
+  // DTR and RTS are level-triggered and the port has no way to report their
+  // current state back, so this tracks what we last asserted. Both idle high,
+  // which is what opening a port leaves them at.
+  const [dtr, setDtr] = useState(true)
+  const [rts, setRts] = useState(true)
+  const [breaking, setBreaking] = useState(false)
+
+  useEffect(() => {
+    setDtr(true)
+    setRts(true)
+  }, [serialSessionId])
+
+  async function toggleLine(line: 'dtr' | 'rts') {
+    if (!serialSessionId) return
+    const next = line === 'dtr' ? !dtr : !rts
+    try {
+      if (line === 'dtr') {
+        await serial.setDtr(serialSessionId, next)
+        setDtr(next)
+      } else {
+        await serial.setRts(serialSessionId, next)
+        setRts(next)
+      }
+    } catch (err) {
+      toast.error(String(err))
+    }
+  }
+
+  async function doSendBreak() {
+    if (!serialSessionId || breaking) return
+    setBreaking(true)
+    try {
+      await serial.sendBreak(serialSessionId)
+      toast.info('Break sent')
+    } catch (err) {
+      toast.error(String(err))
+    } finally {
+      setBreaking(false)
+    }
+  }
   // Re-render once a second to advance the uptime clock — but only while
   // there's a connection to measure, so an idle bar never spins a timer.
   const [, tick] = useState(0)
@@ -83,6 +131,41 @@ export function StatusBar({
         </span>
       )}
       <span className="shrink-0">{statusLabel(status)}</span>
+
+      {/* Serial line controls. Placed here rather than in a menu because on a
+          console cable these are used mid-session, often urgently — a break
+          has to land inside a boot window measured in seconds. */}
+      {serialSessionId && (
+        <span className="flex shrink-0 items-center gap-1.5 border-l border-white/10 pl-2">
+          <button
+            onClick={doSendBreak}
+            disabled={breaking}
+            title="Send a break condition (Cisco password recovery, ROMMON, bootloader entry)"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-amber-300 disabled:opacity-40"
+          >
+            <Zap size={11} strokeWidth={2} />
+            BRK
+          </button>
+          <button
+            onClick={() => toggleLine('dtr')}
+            title={`Data Terminal Ready — currently ${dtr ? 'asserted' : 'deasserted'}`}
+            className={`rounded px-1.5 py-0.5 transition-colors duration-100 hover:bg-white/10 ${
+              dtr ? 'text-emerald-400/80' : 'text-white/35'
+            }`}
+          >
+            DTR
+          </button>
+          <button
+            onClick={() => toggleLine('rts')}
+            title={`Request To Send — currently ${rts ? 'asserted' : 'deasserted'}`}
+            className={`rounded px-1.5 py-0.5 transition-colors duration-100 hover:bg-white/10 ${
+              rts ? 'text-emerald-400/80' : 'text-white/35'
+            }`}
+          >
+            RTS
+          </button>
+        </span>
+      )}
 
       {/* Right-aligned cluster: live details that don't identify the target. */}
       <span className="ml-auto flex shrink-0 items-center gap-3">

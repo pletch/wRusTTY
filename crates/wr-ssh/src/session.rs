@@ -201,7 +201,7 @@ impl SshSession {
 
         let channel = handle.channel_open_session().await?;
         channel
-            .request_pty(false, "xterm-256color", 80, 24, 0, 0, &[])
+            .request_pty(false, self.config.term_type(), 80, 24, 0, 0, &[])
             .await?;
         channel.request_shell(true).await?;
 
@@ -414,12 +414,108 @@ async fn authenticate(
             // (task #10) can relay server prompts to the user.
             return Err(SshError::AuthFailed);
         }
+        AuthMethod::Agent => return authenticate_with_agent(handle, &config.username).await,
     };
 
     match result {
         AuthResult::Success => Ok(()),
         AuthResult::Failure { .. } => Err(SshError::AuthFailed),
     }
+}
+
+/// Connects to whichever SSH agent is running and tries each identity it
+/// holds until one authenticates.
+///
+/// Both Windows agents are attempted because users routinely run either, and
+/// often don't know which: the OpenSSH agent ships as a Windows service and
+/// speaks over a named pipe, while Pageant is what anyone arriving from
+/// PuTTY already has open. Trying both means "your existing keys work"
+/// without asking the user to classify their own setup.
+///
+/// Keys are offered in the order the agent lists them. Servers commonly cap
+/// authentication attempts (OpenSSH's `MaxAuthTries` defaults to 6), so an
+/// agent loaded with many keys can exhaust that budget before reaching the
+/// right one and fail with what looks like a rejected key — hence the
+/// distinct error rather than a bare `AuthFailed`.
+#[cfg(windows)]
+async fn authenticate_with_agent(
+    handle: &mut russh::client::Handle<ClientHandler>,
+    username: &str,
+) -> Result<(), SshError> {
+    use russh::keys::agent::client::AgentClient;
+
+    let mut agent = match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+        Ok(client) => client.dynamic(),
+        Err(pipe_err) => match AgentClient::connect_pageant().await {
+            Ok(client) => client.dynamic(),
+            Err(pageant_err) => {
+                return Err(SshError::AgentUnavailable(format!(
+                    "no SSH agent found — the Windows OpenSSH agent service ({pipe_err}) \
+                     and Pageant ({pageant_err}) were both unreachable"
+                )))
+            }
+        },
+    };
+    authenticate_with_agent_identities(handle, username, &mut agent).await
+}
+
+#[cfg(not(windows))]
+async fn authenticate_with_agent(
+    handle: &mut russh::client::Handle<ClientHandler>,
+    username: &str,
+) -> Result<(), SshError> {
+    use russh::keys::agent::client::AgentClient;
+
+    // Elsewhere the convention is a single agent addressed by SSH_AUTH_SOCK.
+    let mut agent = AgentClient::connect_env()
+        .await
+        .map_err(|e| SshError::AgentUnavailable(format!("no SSH agent found: {e}")))?
+        .dynamic();
+    authenticate_with_agent_identities(handle, username, &mut agent).await
+}
+
+async fn authenticate_with_agent_identities<S>(
+    handle: &mut russh::client::Handle<ClientHandler>,
+    username: &str,
+    agent: &mut russh::keys::agent::client::AgentClient<S>,
+) -> Result<(), SshError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
+    use russh::client::AuthResult;
+    use russh::keys::agent::AgentIdentity;
+
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|e| SshError::AgentUnavailable(format!("could not list agent keys: {e}")))?;
+    if identities.is_empty() {
+        return Err(SshError::AgentUnavailable(
+            "the SSH agent is running but holds no keys — add one with `ssh-add`, \
+             or load it into Pageant"
+                .to_string(),
+        ));
+    }
+
+    let offered = identities.len();
+    for identity in identities {
+        let AgentIdentity::PublicKey { key, .. } = identity else {
+            // Certificate identities need `authenticate_certificate_with`,
+            // which is a different flow; skip rather than mis-offer them.
+            continue;
+        };
+        // The agent, not this process, holds the private half and produces
+        // the signature — `agent` is passed as the `Signer`.
+        let result = handle
+            .authenticate_publickey_with(username, key, Some(HashAlg::Sha256), agent)
+            .await
+            .map_err(|e| SshError::AgentUnavailable(format!("agent signing failed: {e}")))?;
+        if matches!(result, AuthResult::Success) {
+            return Ok(());
+        }
+    }
+
+    Err(SshError::AgentRejected { offered })
 }
 
 /// PuTTY key files open with `PuTTY-User-Key-File-2:` or `-3:` — distinct

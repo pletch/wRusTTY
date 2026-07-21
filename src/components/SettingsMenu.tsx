@@ -65,6 +65,21 @@ export function SettingsMenu({ settings, onChange }: Props) {
             <input
               type="checkbox"
               className="mt-0.5 accent-sky-400"
+              checked={settings.backspaceSendsCtrlH}
+              onChange={(e) => onChange({ ...settings, backspaceSendsCtrlH: e.target.checked })}
+            />
+            <span className="text-white/80">
+              Backspace sends Ctrl-H
+              <span className="block text-white/40">
+                For network gear and older Unix that expect ^H instead of ^?. Turn this on if
+                backspace does nothing or echoes ^?.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-sky-400"
               checked={settings.closeOnDisconnect}
               onChange={(e) => onChange({ ...settings, closeOnDisconnect: e.target.checked })}
             />

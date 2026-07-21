@@ -652,10 +652,16 @@ function App() {
       host: profile.host,
       port: profile.port,
       username: profile.username,
-      authType: profile.authType === 'password' ? 'Password' : 'PublicKey',
+      authType:
+        profile.authType === 'password'
+          ? 'Password'
+          : profile.authType === 'agent'
+            ? 'Agent'
+            : 'PublicKey',
       keyPath: profile.keyPath ?? undefined,
       hasCredential: profile.hasCredential,
       jumpProfileId: profile.jumpProfileId,
+      termType: profile.termType,
     }
   }
 
@@ -674,11 +680,16 @@ function App() {
   // saved, the connection just fails the same way a stale saved password
   // would, which this app already treats as an acceptable outcome of
   // auto-connecting rather than a reason to withhold it.
+  //
+  // Agent auth needs neither a secret nor an unlocked vault — the agent holds
+  // the key — so it always connects direct, and notably does *not* wait on
+  // the vault the way the other two do.
   async function resolveProfileSource(profile: SessionProfile) {
     const canConnectDirect =
-      vaultStatus === 'unlocked' &&
-      (profile.authType === 'public_key' ||
-        (await vault.hasCredential(profile.id).catch(() => false)))
+      profile.authType === 'agent' ||
+      (vaultStatus === 'unlocked' &&
+        (profile.authType === 'public_key' ||
+          (await vault.hasCredential(profile.id).catch(() => false))))
     const source: ConnectionSource | null = canConnectDirect
       ? { protocol: 'sshProfile', profileId: profile.id }
       : null
@@ -1217,6 +1228,13 @@ function App() {
           paneIndex={activePaneIndex}
           paneCount={activePaneLeaves.length}
           tabCount={tabs.length}
+          serialSessionId={
+            statusBarConn?.protocol === 'SERIAL' &&
+            activePaneId &&
+            statusByPane[activePaneId] === 'connected'
+              ? activeSessionId
+              : null
+          }
         />
       )}
       <ToastHost />

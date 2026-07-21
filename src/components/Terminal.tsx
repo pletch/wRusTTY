@@ -656,10 +656,17 @@ export function Terminal({
 
     const dataListener = term.onData((data) => {
       if (lineEditor) {
+        // Not translated: the line editor is local and matches on xterm's own
+        // ^? for its own editing. What it eventually sends is a finished
+        // line, which never contains a backspace anyway.
         lineEditor.handleData(data)
         return
       }
-      if (sessionId) conn.write(source, sessionId, new TextEncoder().encode(data))
+      // Applied here rather than via a key handler so it covers every route
+      // xterm takes to produce the byte, and only on what actually goes out
+      // on the wire.
+      const out = settingsRef.current.backspaceSendsCtrlH ? data.replaceAll('\x7f', '\b') : data
+      if (sessionId) conn.write(source, sessionId, new TextEncoder().encode(out))
     })
 
     const selectionListener = term.onSelectionChange(() => {

@@ -183,6 +183,7 @@ async fn build_ssh_config(
         username: profile.username.clone(),
         auth,
         jump: None,
+        term_type: profile.term_type.clone(),
     })
 }
 
@@ -190,6 +191,13 @@ async fn resolve_auth(
     profile: &profiles::SessionProfile,
     vault_state: &State<'_, VaultState>,
 ) -> Result<AuthMethod, String> {
+    // Handled before the vault is touched: the agent holds the key itself, so
+    // there is no stored secret to resolve and no reason to make a locked
+    // vault block a connection that doesn't need one.
+    if profile.auth_type == "agent" {
+        return Ok(AuthMethod::Agent);
+    }
+
     let guard = vault_state.vault.lock().await;
     let vault = guard.as_ref().ok_or("vault is locked")?;
 

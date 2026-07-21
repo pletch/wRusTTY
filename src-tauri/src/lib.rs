@@ -64,6 +64,7 @@ pub fn run() {
             serial::serial_write,
             serial::serial_set_dtr,
             serial::serial_set_rts,
+            serial::serial_send_break,
             serial::serial_disconnect,
             profiles::list_sessions,
             profiles::save_session,
