@@ -525,12 +525,23 @@ export function ConnectDialog({
           the card itself down to fit — clipping whatever doesn't fit via
           that same overflow-hidden — instead of the parent's overflow-auto
           ever seeing an overflow to scroll to. */}
-      <div className="animate-in fade-in zoom-in-95 m-auto flex shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
+      {/* Capped against the space actually available rather than a fixed
+          height: the dialog takes whatever room it needs up to the pane, and
+          only scrolls when the pane genuinely can't show it. A fixed cap
+          forces a scrollbar on a window with plenty of room the moment the
+          form grows past it. The 2rem subtracted is the wrapper's p-4, which
+          `max-h-full` alone wouldn't account for. */}
+      <div className="animate-in fade-in zoom-in-95 m-auto flex max-h-[calc(100%-2rem)] shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
         {sessions && sessions.length > 0 && (
           // Fixed width, scrolls independently of the form — so having a
           // handful of saved sessions or a hundred never pushes the connect
           // form (which is what you actually came here to use) out of view.
-          <div className="max-h-[32rem] w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
+          //
+          // Left to the flex row's default stretch, so this is a uniform
+          // full-height column that the folder list expands *into* as folders
+          // are opened, rather than a panel whose own framing grows and
+          // shrinks and leaves an edge partway down the dialog.
+          <div className="w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
             {[...groups.entries()].map(([folderName, items]) => {
               const collapsed = collapsedFolders.has(folderName)
               return (
@@ -596,7 +607,10 @@ export function ConnectDialog({
             })}
           </div>
         )}
-        <form onSubmit={submit} className="w-80 space-y-3 p-5">
+        {/* Scrolls in its own right now that the card is capped — without
+            this a form taller than the cap would be clipped by the card's
+            overflow-hidden with no way to reach the rest of it. */}
+        <form onSubmit={submit} className="w-80 space-y-3 overflow-y-auto p-5">
           <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
             {(['ssh', 'telnet', 'serial'] as const).map((p) => {
               const Icon = protocolIcons[p]
