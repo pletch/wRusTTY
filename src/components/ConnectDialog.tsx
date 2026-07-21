@@ -39,7 +39,10 @@ export interface ConnectDialogInitial {
 
 interface Props {
   onConnect: (source: ConnectionSource, logSession: boolean) => void
-  onSaveProfile?: (profile: SessionProfile) => void
+  /** Awaited before connecting when the connection will go through the saved
+   * profile — otherwise the write races the read and the session connects
+   * with the values it had *before* this edit. */
+  onSaveProfile?: (profile: SessionProfile) => void | Promise<void>
   onSaveCredential?: (profileId: string, secret: VaultSecret) => void
   /** Reads a key file server-side and stores it whole in the vault, as an
    * alternative to referencing a path — the plaintext key never comes
@@ -168,7 +171,12 @@ export function ConnectDialog({
   // the form. Doesn't apply to a from-scratch manual connection, where
   // there's no profile yet to update.
   const [saveProfile, setSaveProfile] = useState(!!initial?.id)
-  const [saveCredential, setSaveCredential] = useState(false)
+  // On for a session that already has a stored credential: the user chose
+  // that once, and an edit of some unrelated field shouldn't quietly read as
+  // withdrawing it. Off for anything else, so storing a secret stays an
+  // explicit act. Note this can't destroy the stored secret on its own —
+  // `willSaveCredential` below also requires a *new* one to have been typed.
+  const [saveCredential, setSaveCredential] = useState(Boolean(initial?.hasCredential))
 
   const [serialConfig, setSerialConfig] = useState(defaultSerialConfig)
 
@@ -249,7 +257,7 @@ export function ConnectDialog({
     if (next === 'ssh' && port === '23') setPort('22')
   }
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault()
 
     if (protocol === 'ssh') {
@@ -262,6 +270,24 @@ export function ConnectDialog({
       // with an empty path, which can only ever fail to find a key that
       // was never on disk to begin with.
       const relyOnExistingVaultedKey = usingVaultKey && isInitiallyVaulted && !keyPath.trim()
+
+      // Connecting manually sends exactly what this form holds — and the
+      // credential fields are deliberately blank whenever a secret is already
+      // vaulted, because the plaintext never travels back to the webview to
+      // prefill them. Sending that blank as the password is an authentication
+      // failure every single time, which is what editing any saved
+      // password session and pressing Connect used to do.
+      //
+      // When the profile already holds what we'd need, connect *through* it
+      // instead and let Rust resolve the secret. Typing a fresh password or
+      // passphrase opts back out, since the form then has something the vault
+      // may not.
+      const relyOnSavedCredential =
+        Boolean(initial?.id) &&
+        (relyOnExistingVaultedKey ||
+          (Boolean(initial?.hasCredential) &&
+            ((authType === 'Password' && !password) ||
+              (authType === 'PublicKey' && !usingVaultKey && !passphrase))))
 
       const auth: AuthMethod =
         authType === 'Agent'
@@ -287,13 +313,20 @@ export function ConnectDialog({
         // the agent — so it must never mark the profile as having a vault
         // credential, or the sidebar would offer to unlock the vault for a
         // session that put nothing in it.
+        //
+        // `hasNewSecret` is what makes an editing pass safe. The credential
+        // fields start blank even when a secret is vaulted, because the
+        // plaintext never comes back to the webview to prefill them — so
+        // "save credential is ticked" plus "field is empty" means *keep what
+        // is stored*, never "store an empty string over it".
+        const hasNewSecret = authType === 'Password' ? Boolean(password) : Boolean(passphrase)
         const willSaveCredential =
           authType !== 'Agent' &&
           !usingVaultKey &&
           saveCredential &&
           Boolean(onSaveCredential) &&
           vaultUnlocked &&
-          (authType === 'Password' || Boolean(passphrase))
+          hasNewSecret
 
         if (usingVaultKey && keyPath && onImportKeyToVault) {
           // The key and its own passphrase travel together as one vault
@@ -307,7 +340,7 @@ export function ConnectDialog({
           onDeleteCredential(profileId)
         }
 
-        onSaveProfile({
+        await onSaveProfile({
           id: profileId,
           label: resolvedLabel,
           folder: folder.trim() || null,
@@ -336,13 +369,22 @@ export function ConnectDialog({
         }
       }
 
-      if (relyOnExistingVaultedKey && initial?.id) {
+      if (relyOnSavedCredential && initial?.id) {
         onConnect({ protocol: 'sshProfile', profileId: initial.id }, logSession)
       } else {
         onConnect(
           {
             protocol: 'ssh',
-            config: { host, port: Number(port) || 22, username, auth },
+            config: {
+              host,
+              port: Number(port) || 22,
+              username,
+              auth,
+              // Was missing entirely, so a terminal type set on this form was
+              // silently dropped on every manual connection — it only ever
+              // took effect via the saved-profile path.
+              term_type: termType.trim() || null,
+            },
             jumpProfileId: jumpProfileId || null,
           },
           logSession,

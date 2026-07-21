@@ -108,6 +108,14 @@ add `AcceptEnv COLORTERM` to the server's `sshd_config`, export it from the
 remote shell's rc, or set this session's terminal type to `xterm-direct`,
 which advertises direct colour through terminfo instead.
 
+`xterm-direct` is offered but is deliberately *not* the default. `TERM` is
+an assertion, not a negotiation — the server looks the value up in its own
+terminfo database, and there is no fallback if it is missing. `xterm-direct`
+needs ncurses 6.1+, so on older distributions, minimal container images, and
+most network gear it resolves to nothing and programs degrade to *dumb*
+rather than to 256 colours. `xterm-256color` is present essentially
+everywhere, which is why it remains the default.
+
 **Backspace.** Defaults to `^?` (DEL), which is what modern Unix expects.
 Gear that wants `^H` — much network equipment and older Unix — is handled by
 a setting; the symptom is backspace doing nothing or echoing `^?`.

@@ -806,8 +806,11 @@ function App() {
       .catch((err) => toast.error(`Couldn't delete session: ${err}`))
   }
 
+  // Returns the promise so ConnectDialog can await the write before
+  // connecting through the profile it just saved — otherwise the connection
+  // reads whatever was on disk beforehand.
   function saveProfile(profile: SessionProfile) {
-    profiles
+    return profiles
       .saveSession(profile)
       .then(() => {
         setProfilesVersion((v) => v + 1)
