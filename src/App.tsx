@@ -472,16 +472,18 @@ function App() {
     connected: tabs.reduce((n, t) => n + connectedPanes(t.root), 0),
     enabled: terminalSettings.confirmCloseWithConnection,
   }
-  // Set just before re-issuing the close we previously vetoed, so the hook
-  // lets that one through. Going through close() again rather than destroy()
-  // keeps the normal close path intact — notably tauri-plugin-window-state,
-  // which saves the window geometry off this same event and would otherwise
-  // silently stop persisting it.
-  const forceCloseRef = useRef(false)
-
+  // Registering this listener at all changes how the window closes: the JS
+  // API destroys the window itself once the handler returns without calling
+  // preventDefault (see onCloseRequested in @tauri-apps/api). So every close
+  // now goes through destroy(), which needs core:window:allow-destroy in
+  // capabilities/default.json — without it the permission check rejects the
+  // call and the close button silently does nothing at all.
+  //
+  // Nothing is lost by destroy() here: tauri-plugin-window-state saves the
+  // geometry from the CloseRequested event, which is this one, so it has
+  // already run by the time the window goes away.
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested((event) => {
-      if (forceCloseRef.current) return
       const { connected, enabled } = closeGuardRef.current
       if (!enabled || connected === 0) return
       event.preventDefault()
@@ -1745,15 +1747,13 @@ function App() {
               confirmLabel="Quit"
               onConfirm={() => {
                 setPendingClose(null)
-                forceCloseRef.current = true
+                // destroy() rather than close(): close() would just re-emit
+                // CloseRequested and land back in the hook above, which then
+                // destroys anyway — same outcome, one extra round trip, and
+                // it needs a flag to avoid asking twice.
                 getCurrentWindow()
-                  .close()
-                  .catch(() => {
-                    // Re-arm rather than leaving the guard permanently
-                    // disabled if this somehow fails — otherwise the next
-                    // close would skip the confirmation silently.
-                    forceCloseRef.current = false
-                  })
+                  .destroy()
+                  .catch((e) => toast.error(`Couldn't close the window: ${e}`))
               }}
               onCancel={() => setPendingClose(null)}
             />
