@@ -743,25 +743,33 @@ export function ConnectDialog({
                     </>
                   )}
 
+                  {/* Every other field in this form is labelled by its own
+                      placeholder, which a select can't have — which is how
+                      "Jump via" ended up repeated on every row, restating the
+                      field on each option and eating the width the session
+                      names needed. Hoisting it to a caption says it once. */}
                   {sessions && sessions.filter((s) => s.id !== initial?.id).length > 0 && (
-                    <select
-                      // Same indicator-overlap fix as the terminal-type
-                      // select — more pressing here, since these labels are
-                      // user-chosen session names of any length.
-                      className={`${inputClass} w-full truncate pr-7`}
-                      value={jumpProfileId}
-                      onChange={(e) => setJumpProfileId(e.target.value)}
-                      title="Connect through another saved session first (SSH ProxyJump), e.g. a Tailscale-reachable machine that can reach this host"
-                    >
-                      <option value="">No jump host</option>
-                      {sessions
-                        .filter((s) => s.id !== initial?.id)
-                        .map((s) => (
-                          <option key={s.id} value={s.id}>
-                            Jump via {s.label} ({s.host})
-                          </option>
-                        ))}
-                    </select>
+                    <label className="block space-y-1">
+                      <span className="text-xs text-white/40">Jump host</span>
+                      <select
+                        // Same indicator-overlap fix as the terminal-type
+                        // select — more pressing here, since these labels are
+                        // user-chosen session names of any length.
+                        className={`${inputClass} w-full truncate pr-7`}
+                        value={jumpProfileId}
+                        onChange={(e) => setJumpProfileId(e.target.value)}
+                        title="Connect through another saved session first (SSH ProxyJump), e.g. a Tailscale-reachable machine that can reach this host"
+                      >
+                        <option value="">None — connect directly</option>
+                        {sessions
+                          .filter((s) => s.id !== initial?.id)
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.label} ({s.host})
+                            </option>
+                          ))}
+                      </select>
+                    </label>
                   )}
 
                   {/* A select with an explicit Custom row, not a datalist.
@@ -770,29 +778,32 @@ export function ConnectDialog({
                       options matching that text, so picking one collapses the
                       list to a single entry and the control appears broken
                       until the field is cleared. */}
-                  <select
-                    // pr-7 rather than inputClass's px-2: a native select
-                    // draws its indicator inside the padding box, so the
-                    // shared input padding leaves the longest label running
-                    // underneath the arrow.
-                    className={`${inputClass} w-full truncate pr-7`}
-                    value={termCustom ? TERM_CUSTOM : termType}
-                    onChange={(e) => {
-                      const next = e.target.value
-                      setTermCustom(next === TERM_CUSTOM)
-                      // Clearing on entry to Custom avoids the free-text box
-                      // opening pre-filled with the value just replaced.
-                      setTermType(next === TERM_CUSTOM ? '' : next)
-                    }}
-                    title="Sets TERM for the remote session. The default suits almost everything — some network and embedded gear needs vt100."
-                  >
-                    {TERM_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>
-                        {t.label}
-                      </option>
-                    ))}
-                    <option value={TERM_CUSTOM}>Custom…</option>
-                  </select>
+                  <label className="block space-y-1">
+                    <span className="text-xs text-white/40">Terminal type</span>
+                    <select
+                      // pr-7 rather than inputClass's px-2: a native select
+                      // draws its indicator inside the padding box, so the
+                      // shared input padding leaves the longest label running
+                      // underneath the arrow.
+                      className={`${inputClass} w-full truncate pr-7`}
+                      value={termCustom ? TERM_CUSTOM : termType}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setTermCustom(next === TERM_CUSTOM)
+                        // Clearing on entry to Custom avoids the free-text box
+                        // opening pre-filled with the value just replaced.
+                        setTermType(next === TERM_CUSTOM ? '' : next)
+                      }}
+                      title="Sets TERM for the remote session. The default suits almost everything — some network and embedded gear needs vt100."
+                    >
+                      {TERM_TYPES.map((t) => (
+                        <option key={t.value} value={t.value}>
+                          {t.label}
+                        </option>
+                      ))}
+                      <option value={TERM_CUSTOM}>Custom…</option>
+                    </select>
+                  </label>
                   {termCustom && (
                     <input
                       className={`${inputClass} w-full`}
