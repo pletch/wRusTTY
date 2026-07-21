@@ -1,4 +1,5 @@
 import type { ConnectionSource } from './connection'
+import type { SessionProfile } from './profiles'
 import type { PaneNode, Tab } from '../types'
 import { allLeaves } from './paneTree'
 
@@ -113,6 +114,44 @@ export function countSessions(tabs: Tab[]): number {
   return tabs.reduce((n, t) => n + allLeaves(t.root).filter((l) => l.source).length, 0)
 }
 
-export function needsVaultUnlock(tabs: Tab[]): boolean {
-  return tabs.some((t) => allLeaves(t.root).some((l) => l.source?.protocol === 'sshProfile'))
+/** Whether connecting this saved profile has to go through the vault.
+ *
+ * Agent auth doesn't: the agent (Pageant, or the Windows OpenSSH agent
+ * service) holds the key and does the signing, so there is no stored secret
+ * to decrypt — `resolve_auth` in ssh.rs returns `AuthMethod::Agent` before it
+ * ever takes the vault lock. A jump host does count even when the target
+ * itself is agent-authenticated, because `ssh_connect_profile` resolves the
+ * jump profile's *own* auth, which may well be a vaulted password. Only one
+ * hop is considered, matching that same function ignoring any jump the jump
+ * host itself names.
+ *
+ * A profile that isn't in the list is treated as vault-bound. That's the safe
+ * direction — an unlock prompt that turns out to be unnecessary, rather than
+ * a pane that mounts and immediately dies with "vault is locked" — and it's
+ * also what happens on the first render at launch, before the profile list
+ * has finished loading. */
+function profileNeedsVault(profileId: string, sessions: SessionProfile[]): boolean {
+  const profile = sessions.find((s) => s.id === profileId)
+  if (!profile) return true
+  if (profile.authType !== 'agent') return true
+  if (profile.jumpProfileId) {
+    const jump = sessions.find((s) => s.id === profile.jumpProfileId)
+    if (!jump || jump.authType !== 'agent') return true
+  }
+  return false
+}
+
+/** Whether reconnecting `source` needs an unlocked vault. Shared by the
+ * "should we prompt?" check and the "which panes do we blank?" pass, so the
+ * two can't disagree about which panes the prompt was actually for. */
+export function isVaultBound(
+  source: ConnectionSource | null,
+  sessions: SessionProfile[],
+): boolean {
+  if (source?.protocol !== 'sshProfile') return false
+  return profileNeedsVault(source.profileId, sessions)
+}
+
+export function needsVaultUnlock(tabs: Tab[], sessions: SessionProfile[]): boolean {
+  return tabs.some((t) => allLeaves(t.root).some((l) => isVaultBound(l.source, sessions)))
 }

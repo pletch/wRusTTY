@@ -50,9 +50,10 @@ import type { SessionSnapshot } from './lib/sessionSnapshot'
 import type { PaneLeaf, PaneNode, Tab } from './types'
 
 /** Blanks the panes whose connection can only be resolved with an unlocked
- * vault, leaving everything else (telnet especially) intact. Those panes then
- * open on their connect form — which offers to unlock — instead of connecting
- * and failing.
+ * vault, leaving everything else intact — telnet especially, but also
+ * agent-authenticated SSH, which never touches the vault (see `isVaultBound`).
+ * Those panes then open on their connect form — which offers to unlock —
+ * instead of connecting and failing.
  *
  * `prefill` rebuilds the form contents from the profile the pane referenced.
  * Without it a pane that was connected straight from the form (rather than
@@ -60,17 +61,20 @@ import type { PaneLeaf, PaneNode, Tab } from './types'
  * an empty form with the host and username to re-enter by hand. */
 function withoutVaultBoundSources(
   node: PaneNode,
+  sessions: SessionProfile[],
   prefill: (profileId: string) => PaneLeaf['initial'],
 ): PaneNode {
   if (node.type === 'leaf') {
-    if (node.source?.protocol !== 'sshProfile') return node
-    return { ...node, source: null, initial: node.initial ?? prefill(node.source.profileId) }
+    if (!sessionSnapshot.isVaultBound(node.source, sessions)) return node
+    // Narrowing only — isVaultBound already established this is an sshProfile.
+    const profileId = (node.source as { protocol: 'sshProfile'; profileId: string }).profileId
+    return { ...node, source: null, initial: node.initial ?? prefill(profileId) }
   }
   return {
     ...node,
     children: [
-      withoutVaultBoundSources(node.children[0], prefill),
-      withoutVaultBoundSources(node.children[1], prefill),
+      withoutVaultBoundSources(node.children[0], sessions, prefill),
+      withoutVaultBoundSources(node.children[1], sessions, prefill),
     ],
   }
 }
@@ -158,8 +162,19 @@ function App() {
   // it now backs both the quick-connect palette and the saved-sessions
   // sidebar inside every blank pane's connect dialog.
   const [sessions, setSessions] = useState<SessionProfile[]>([])
+  // Whether the first load has finished, as distinct from "the list is
+  // empty". The launch-restore prompt has to wait for it: which panes are
+  // vault-bound depends on their profiles' auth types, and an empty list
+  // reads as "every profile is unknown, so assume all of them are" — right
+  // as a default, but it would show the password form for a beat and then
+  // swap it for the plain Restore buttons once the profiles arrived.
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
   useEffect(() => {
-    profiles.listSessions().then(setSessions).catch(() => setSessions([]))
+    profiles
+      .listSessions()
+      .then(setSessions)
+      .catch(() => setSessions([]))
+      .finally(() => setSessionsLoaded(true))
   }, [profilesVersion])
   // Held here rather than fetched by WorkspaceMenu, so the connect dialog's
   // sidebar and the toolbar menu read the same list and a save in one is
@@ -541,7 +556,7 @@ function App() {
       const root = reidentify(
         vaultUsable
           ? t.root
-          : withoutVaultBoundSources(t.root, (profileId) => {
+          : withoutVaultBoundSources(t.root, sessions, (profileId) => {
               const p = sessions.find((s) => s.id === profileId)
               return p ? profileToInitial(p) : undefined
             }),
@@ -572,7 +587,7 @@ function App() {
     // Only 'locked' is worth prompting for. With no vault created at all
     // there is nothing to unlock, so those panes go straight to their connect
     // forms rather than showing an unlock dialog that can't help.
-    if (sessionSnapshot.needsVaultUnlock(workspace.tabs) && vaultStatus === 'locked') {
+    if (sessionSnapshot.needsVaultUnlock(workspace.tabs, sessions) && vaultStatus === 'locked') {
       // The origin has to survive the prompt, or unlocking would materialise
       // the workspace next to the blank tab instead of over it.
       setPendingWorkspace({ workspace, originTabId: originTabId ?? activeTabId })
@@ -1427,11 +1442,12 @@ function App() {
         />
       )}
       <ToastHost />
-      {pendingRestore && (
+      {pendingRestore && sessionsLoaded && (
         <RestoreSessionsPrompt
           count={sessionSnapshot.countSessions(pendingRestore.tabs)}
           needsVaultUnlock={
-            sessionSnapshot.needsVaultUnlock(pendingRestore.tabs) && vaultStatus !== 'unlocked'
+            sessionSnapshot.needsVaultUnlock(pendingRestore.tabs, sessions) &&
+            vaultStatus !== 'unlocked'
           }
           osUnlockAvailable={osUnlockAvailable}
           onRestore={restoreSessions}

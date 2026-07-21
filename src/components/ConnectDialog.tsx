@@ -410,6 +410,12 @@ export function ConnectDialog({
           // secret, separate from the generic password/passphrase
           // credential path above.
           onImportKeyToVault(profileId, keyPath, passphrase || null)
+        } else if (authType === 'Agent' && initial?.hasCredential && onDeleteCredential) {
+          // Switched an existing session over to the agent. Whatever it had
+          // vaulted — password, passphrase, or the key itself — is no longer
+          // reachable through this profile, and nothing else references that
+          // entry, so drop it rather than leave it orphaned.
+          onDeleteCredential(profileId)
         } else if (!usingVaultKey && isInitiallyVaulted && onDeleteCredential) {
           // Switched back to a plain on-disk path — the previously vaulted
           // key is no longer referenced by anything, so don't leave it
@@ -430,12 +436,16 @@ export function ConnectDialog({
           keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
-          // Preserves a prior credential's flag across an unrelated edit —
-          // there's no "forget stored credential" affordance yet, so saving
-          // shouldn't silently lose track of one that already exists.
+          // Otherwise preserves a prior credential's flag across an unrelated
+          // edit — there's no "forget stored credential" affordance yet, so
+          // saving shouldn't silently lose track of one that already exists.
+          // Agent auth is the exception, and has to be: carrying the old flag
+          // forward would leave the sidebar offering to unlock the vault for
+          // a session that no longer goes near it (see the branch above, which
+          // deletes the entry that flag pointed at).
           hasCredential: usingVaultKey
             ? Boolean(keyPath) || isInitiallyVaulted
-            : willSaveCredential || Boolean(initial?.hasCredential),
+            : authType !== 'Agent' && (willSaveCredential || Boolean(initial?.hasCredential)),
           jumpProfileId: jumpProfileId || null,
         })
 
