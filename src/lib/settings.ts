@@ -15,6 +15,22 @@ export interface TerminalSettings {
    * stream verbatim (PuTTY "all session output" style) for exact fidelity /
    * replay. Applies to the next log started, not one already running. */
   logPlainText: boolean
+  /** Toast when a long-running command finishes in a tab you aren't looking
+   * at, using the remote shell's own OSC 133 reports (see
+   * lib/shellIntegration.ts). Never fires for the tab currently on screen in
+   * a focused window — you watched it finish. Does nothing at all against a
+   * shell with no integration set up, which is why it defaults on: it can't
+   * become noise without deliberate setup on the far end. */
+  notifyOnCommandComplete: boolean
+  /** A bell (BEL) from the far end marks its pane until you focus it. Unlike
+   * the above this needs no remote setup whatsoever — `sleep 60; echo -e
+   * '\a'` works on anything.
+   *
+   * The key still says "tab" because it predates the marker moving from the
+   * tab to the individual pane's segment of the tab strip's pane map;
+   * renaming it would silently reset the preference for anyone who had
+   * changed it, which isn't worth the tidier name. */
+  bellMarksTab: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -49,6 +65,8 @@ const defaults: TerminalSettings = {
   rightClickPaste: true,
   closeOnDisconnect: true,
   logPlainText: true,
+  notifyOnCommandComplete: true,
+  bellMarksTab: true,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

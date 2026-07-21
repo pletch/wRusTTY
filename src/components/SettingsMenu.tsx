@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Settings, FolderOpen } from 'lucide-react'
+import { Settings, FolderOpen, ClipboardCopy } from 'lucide-react'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings } from '../lib/settings'
 import { PRESET_THEMES } from '../lib/theme'
 import { revealLogs } from '../lib/logging'
 import { toast } from '../lib/toast'
+import { SHELL_SNIPPETS } from '../lib/shellSnippets'
 
 interface Props {
   settings: TerminalSettings
@@ -95,6 +97,38 @@ export function SettingsMenu({ settings, onChange }: Props) {
             <input
               type="checkbox"
               className="mt-0.5 accent-sky-400"
+              checked={settings.notifyOnCommandComplete}
+              onChange={(e) =>
+                onChange({ ...settings, notifyOnCommandComplete: e.target.checked })
+              }
+            />
+            <span className="text-white/80">
+              Notify on command completion
+              <span className="block text-white/40">
+                For long commands finishing in a background tab. Needs shell
+                integration on the remote host — see docs/SHELL_INTEGRATION.md.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-sky-400"
+              checked={settings.bellMarksTab}
+              onChange={(e) => onChange({ ...settings, bellMarksTab: e.target.checked })}
+            />
+            <span className="text-white/80">
+              Bell marks the pane
+              <span className="block text-white/40">
+                A bell from the far end flags its pane in the tab strip until
+                you focus it.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1.5 transition-colors duration-100 hover:bg-white/5">
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-sky-400"
               checked={settings.restoreSessionsOnLaunch}
               onChange={(e) =>
                 onChange({ ...settings, restoreSessionsOnLaunch: e.target.checked })
@@ -172,6 +206,36 @@ export function SettingsMenu({ settings, onChange }: Props) {
                     ? 'Same one-time tint as Mica, tuned for windows with a tab strip — no live blur either. Windows 11 only.'
                     : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
             </p>
+          </div>
+          <div className="mt-2 border-t border-white/10 px-1 pt-2">
+            <span className="text-white/80">Shell integration</span>
+            <p className="mt-0.5 text-white/40">
+              Append to the rc file on a host once and every session there
+              reports its commands — to any terminal that speaks OSC 133, not
+              just wRusTTY. Emits nothing in non-interactive shells, so scp and
+              rsync are unaffected.
+            </p>
+            <div className="mt-1.5 flex gap-1">
+              {SHELL_SNIPPETS.map((snippet) => (
+                <button
+                  key={snippet.id}
+                  type="button"
+                  onClick={() => {
+                    writeText(snippet.script)
+                      .then(() => toast.success(`${snippet.label} snippet copied — paste into ${snippet.rcFile}`))
+                      .catch((e) => toast.error(`Couldn't copy to clipboard: ${e}`))
+                    // Left open deliberately: copying one shell's snippet is
+                    // often followed by copying another's for a different
+                    // host, and reopening the menu each time to do it would
+                    // be needless friction.
+                  }}
+                  title={`Copy the ${snippet.label} snippet for ${snippet.rcFile}`}
+                  className="flex flex-1 items-center justify-center gap-1 rounded bg-white/[0.06] py-1 text-white/70 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white"
+                >
+                  <ClipboardCopy size={12} /> {snippet.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="mt-2 border-t border-white/10 pt-2">
             <button

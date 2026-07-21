@@ -32,22 +32,45 @@ import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
+import { formatCommandDuration } from './lib/shellIntegration'
+import type { CommandActivity, CommandResult } from './lib/shellIntegration'
 import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
 import { DRAG_PANE_MIME } from './lib/dragTypes'
 import {
   allLeaves,
   blankLeaf,
+  canSplitLeaf,
   closeLeaf,
   findLeaf,
   firstLeaf,
   reidentify,
+  splitBlocker,
   splitLeaf,
   updateLeaf,
+  MAX_PANES_PER_TAB,
+  MAX_PANE_COLUMNS,
+  MAX_PANE_ROWS,
 } from './lib/paneTree'
+import type { SplitLimit } from './lib/paneTree'
 import * as sessionSnapshot from './lib/sessionSnapshot'
 import type { SessionSnapshot } from './lib/sessionSnapshot'
 import type { PaneLeaf, PaneNode, Tab } from './types'
+
+/** Tooltip on a split button that's been disabled by one of the limits in
+ * paneTree.ts. Says which ceiling was hit and what to do instead, since a
+ * dimmed button on its own just looks broken — and with per-axis caps the
+ * other split direction is often still available, which isn't guessable. */
+function splitLimitHint(limit: SplitLimit): string {
+  switch (limit) {
+    case 'panes':
+      return `Split limit reached (${MAX_PANES_PER_TAB} panes per tab) — open a new tab instead`
+    case 'rows':
+      return `Split limit reached (${MAX_PANE_ROWS} panes top to bottom) — try splitting right`
+    case 'columns':
+      return `Split limit reached (${MAX_PANE_COLUMNS} panes side by side) — try splitting down`
+  }
+}
 
 function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
   return {
@@ -184,6 +207,26 @@ function refit() {
   })
 }
 
+/** Commands quicker than this never notify. Without a floor, a shell with
+ * integration enabled reports *every* command, so switching tabs mid-`ls`
+ * would fire a toast — which trains you to ignore them, defeating the point.
+ * Ten seconds is roughly "long enough that you went and did something else". */
+const COMMAND_NOTIFY_THRESHOLD_MS = 10_000
+
+function describeCommandResult(result: CommandResult, tabTitle: string): string {
+  // Falls back to a generic noun under plain OSC 133, which has no field for
+  // the command line — only VS Code's OSC 633 superset reports it.
+  const what = result.command ? `\`${result.command}\`` : 'Command'
+  const took = formatCommandDuration(result.durationMs)
+  // A null exit code means the shell reported completion without a status
+  // (a bare OSC 133;D, or a prompt arriving with no D at all) — no basis to
+  // call it a failure, so it reads the same as success minus the claim.
+  if (result.exitCode === null || result.exitCode === 0) {
+    return `${what} finished in ${took} — ${tabTitle}`
+  }
+  return `${what} exited ${result.exitCode} after ${took} — ${tabTitle}`
+}
+
 function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
@@ -205,6 +248,41 @@ function App() {
   const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
   const [filesOpenByPane, setFilesOpenByPane] = useState<Record<string, boolean>>({})
   const [sessionIdByPane, setSessionIdByPane] = useState<Record<string, string | null>>({})
+  // Per-pane command state, driven by the remote shell's OSC 133 reports —
+  // stays permanently idle for any host without shell integration set up.
+  const [activityByPane, setActivityByPane] = useState<Record<string, CommandActivity>>({})
+  // Panes holding something you haven't seen: a bell rang, or a long command
+  // finished, while the tab was in the background. Keyed by pane so the tab
+  // strip can put the marker on the segment of the pane it actually happened
+  // in, rather than only saying "somewhere in this tab".
+  const [attentionPanes, setAttentionPanes] = useState<Record<string, true>>({})
+
+  // The single pane you are actually looking at: the focused pane of the
+  // active tab. Everything else is out of view as far as the marker is
+  // concerned — including the other half of a split, which is visible but
+  // isn't where your attention is.
+  const focusedPaneId = tabs.find((t) => t.id === activeTabId)?.activePaneId ?? null
+
+  // Focusing a pane acknowledges that pane's marker, and only that one.
+  // Driven off the focused pane id rather than any click handler so every
+  // route in counts — clicking into the pane, Ctrl+Tab to its tab, the
+  // quick-connect palette, closing the tab in front of it. The window focus
+  // listener covers the case with no id change to hang it off: a marker set
+  // while the whole window was in the background, where alt-tabbing back is
+  // itself the acknowledgement.
+  useEffect(() => {
+    if (!focusedPaneId) return
+    const clear = () =>
+      setAttentionPanes((prev) => {
+        if (!(focusedPaneId in prev)) return prev
+        const next = { ...prev }
+        delete next[focusedPaneId]
+        return next
+      })
+    clear()
+    window.addEventListener('focus', clear)
+    return () => window.removeEventListener('focus', clear)
+  }, [focusedPaneId])
   const [profilesVersion, setProfilesVersion] = useState(0)
   const [paletteOpen, setPaletteOpen] = useState(false)
   // Kept fresh here (rather than fetched lazily wherever it's needed) since
@@ -751,7 +829,11 @@ function App() {
   function splitPane(tabId: string, paneId: string, direction: 'horizontal' | 'vertical') {
     setTabs((prev) =>
       prev.map((t) => {
-        if (t.id !== tabId) return t
+        // The limit check lives here as well as on the toolbar buttons: the
+        // buttons are disabled at a limit, so this only catches a caller
+        // that hasn't asked first, but silently growing a layout past what
+        // the pane map can draw is worse than silently doing nothing.
+        if (t.id !== tabId || !canSplitLeaf(t.root, paneId, direction)) return t
         const root = splitLeaf(t.root, paneId, direction)
         const newLeafId = allLeaves(root).find((l) => !allLeaves(t.root).some((old) => old.id === l.id))?.id
         return { ...t, root, activePaneId: newLeafId ?? t.activePaneId }
@@ -1128,6 +1210,13 @@ function App() {
   const activeIsSsh =
     activeLeaf?.source?.protocol === 'ssh' || activeLeaf?.source?.protocol === 'sshProfile'
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
+  // Per-direction, because the limits are per-axis: a tab that's four panes
+  // tall can still be split sideways, and only the button that would breach
+  // a cap goes dim.
+  const splitBlocked = (direction: 'horizontal' | 'vertical'): SplitLimit | null =>
+    activeTab && activePaneId ? splitBlocker(activeTab.root, activePaneId, direction) : null
+  const rightBlocked = splitBlocked('horizontal')
+  const downBlocked = splitBlocked('vertical')
 
   // Status-bar readout for the active pane: a display protocol tag plus a
   // resolved target string. sshProfile carries only an id, so its label is
@@ -1202,6 +1291,8 @@ function App() {
           tabs={tabs}
           activeTabId={activeTabId}
           statusByPane={statusByPane}
+          activityByPane={activityByPane}
+          attentionPanes={attentionPanes}
           onSelect={selectTab}
           onClose={closeTab}
           onNew={newTab}
@@ -1295,16 +1386,29 @@ function App() {
                 <Folder size={15} strokeWidth={2} />
               </button>
             )}
+            {/* Kept visible-but-disabled at the split limit rather than
+                hidden: buttons vanishing from the toolbar reads as a bug,
+                whereas a dimmed one with a tooltip explains itself. */}
             <button
-              className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
-              title="Split right"
+              disabled={!!rightBlocked}
+              className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
+                rightBlocked
+                  ? 'cursor-default text-white/15'
+                  : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+              }`}
+              title={rightBlocked ? splitLimitHint(rightBlocked) : 'Split right'}
               onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'horizontal')}
             >
               <SplitSquareHorizontal size={15} strokeWidth={2} />
             </button>
             <button
-              className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
-              title="Split down"
+              disabled={!!downBlocked}
+              className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
+                downBlocked
+                  ? 'cursor-default text-white/15'
+                  : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+              }`}
+              title={downBlocked ? splitLimitHint(downBlocked) : 'Split down'}
               onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'vertical')}
             >
               <SplitSquareVertical size={15} strokeWidth={2} />
@@ -1440,6 +1544,47 @@ function App() {
                     }
                   }}
                   onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
+                  onActivity={(activity) =>
+                    setActivityByPane((prev) => {
+                      // Idle is the resting state for the overwhelming
+                      // majority of panes (every host with no shell
+                      // integration, forever), so don't allocate a new map
+                      // to store what the absence of an entry already means.
+                      if (activity.state === 'idle' && !(leaf.id in prev)) return prev
+                      return { ...prev, [leaf.id]: activity }
+                    })
+                  }
+                  onCommandComplete={(result) => {
+                    if (!terminalSettings.notifyOnCommandComplete) return
+                    // A full-screen program (vim, top) that you quit a moment
+                    // ago isn't a background job landing.
+                    if (result.interactive) return
+                    if (result.durationMs < COMMAND_NOTIFY_THRESHOLD_MS) return
+                    // The marker and the toast have different bars, because
+                    // they cost different amounts of attention. The marker is
+                    // passive, so it only needs you to not have been watching
+                    // *this pane* — the other half of a split finishing while
+                    // you work in this one is exactly what it's for. The toast
+                    // interrupts, so it waits until the whole tab is out of
+                    // view and you had no way of seeing it at all.
+                    const paneInView = leaf.id === focusedPaneId && document.hasFocus()
+                    const tabInView = tab.id === activeTabId && document.hasFocus()
+                    if (!paneInView) {
+                      setAttentionPanes((prev) => ({ ...prev, [leaf.id]: true }))
+                    }
+                    if (tabInView) return
+                    const message = describeCommandResult(result, tab.title)
+                    if (result.exitCode) toast.error(message)
+                    else toast.success(message)
+                  }}
+                  onBell={() => {
+                    if (!terminalSettings.bellMarksTab) return
+                    // Same "was this pane in view" test as a completion — a
+                    // bell from the other half of a split still deserves a
+                    // marker.
+                    if (leaf.id === focusedPaneId && document.hasFocus()) return
+                    setAttentionPanes((prev) => ({ ...prev, [leaf.id]: true }))
+                  }}
                   onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
                   onReconnect={() => reconnectPane(tab.id, leaf.id)}
                 />

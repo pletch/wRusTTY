@@ -43,16 +43,74 @@ export function allLeaves(node: PaneNode): PaneLeaf[] {
   return [...allLeaves(node.children[0]), ...allLeaves(node.children[1])]
 }
 
-/** Whether `node`'s outermost split is vertical (stacked top/bottom) — a
- * top-level horizontal (side-by-side) arrangement keeps the indicator bar
- * at its normal thin height even if one of its branches is further split
- * vertically further down; that nested stack just renders thinner within
- * its own segment, which is preferred over growing the whole tab's bar
- * height for every tab that has a vertical split anywhere in it. Only a
- * vertical split at the top level actually needs the whole bar taller to
- * show its two rows distinctly. */
-export function isTopSplitVertical(node: PaneNode): boolean {
-  return node.type !== 'leaf' && node.direction === 'vertical'
+/** How many rows the tab strip's pane map has to stack for this tree.
+ *
+ * Vertical splits stack their children, so those add up; horizontal splits
+ * sit side by side, so the deepest branch decides. The bar's height is then
+ * driven by this rather than by a flat "is the top split vertical", which
+ * gave a nested stack the same height as a single row and left its segments
+ * sub-pixel — a stacked split inside a 3px segment renders two 0.5px lines,
+ * which is simply invisible. */
+export function verticalRows(node: PaneNode): number {
+  if (node.type === 'leaf') return 1
+  const [first, second] = node.children.map(verticalRows)
+  return node.direction === 'vertical' ? first + second : Math.max(first, second)
+}
+
+/** The same count the other way round: how many panes the widest band of
+ * this tree puts side by side. Only used for the split limits — the pane map
+ * doesn't need it, since columns divide the width it already has. */
+export function horizontalColumns(node: PaneNode): number {
+  if (node.type === 'leaf') return 1
+  const [first, second] = node.children.map(horizontalColumns)
+  return node.direction === 'horizontal' ? first + second : Math.max(first, second)
+}
+
+/** Split limits for one tab. Deliberate ceilings rather than technical ones:
+ * past these the panes are too small to work in on a normal window, and
+ * anything genuinely needing more wants another tab.
+ *
+ * The two axis caps do most of the work — they're what keeps any single pane
+ * from being reduced to a sliver, and the row cap is also what the tab
+ * strip's pane map is sized for (PANE_MAP_MAX_ROWS in TabBar.tsx). The total
+ * is a separate ceiling on top, since the axis caps alone would permit a
+ * 4×4 grid.
+ *
+ * Trees saved by an earlier build may exceed any of these; they still open
+ * and render, they just can't be split further. */
+export const MAX_PANES_PER_TAB = 8
+export const MAX_PANE_ROWS = 4
+export const MAX_PANE_COLUMNS = 4
+
+export type SplitLimit = 'panes' | 'rows' | 'columns'
+
+/** Which limit splitting `id` in `direction` would breach, or null if it's
+ * allowed. Assumes `id` is a leaf of `root` — see canSplitLeaf.
+ *
+ * Decided by building the resulting tree and measuring it, rather than by
+ * reasoning about the leaf's position: whether a split adds a row, a column
+ * or neither depends on where the leaf sits and which way every split above
+ * it runs. The tree is at most eight leaves, so producing the candidate is
+ * cheaper than getting that reasoning right — and it can't disagree with
+ * what the split would actually do, because it *is* the split. */
+export function splitBlocker(
+  root: PaneNode,
+  id: string,
+  direction: 'horizontal' | 'vertical',
+): SplitLimit | null {
+  const next = splitLeaf(root, id, direction)
+  if (allLeaves(next).length > MAX_PANES_PER_TAB) return 'panes'
+  if (verticalRows(next) > MAX_PANE_ROWS) return 'rows'
+  if (horizontalColumns(next) > MAX_PANE_COLUMNS) return 'columns'
+  return null
+}
+
+export function canSplitLeaf(
+  root: PaneNode,
+  id: string,
+  direction: 'horizontal' | 'vertical',
+): boolean {
+  return !!findLeaf(root, id) && splitBlocker(root, id, direction) === null
 }
 
 /** Returns a new tree with `id`'s leaf replaced via `update`. */

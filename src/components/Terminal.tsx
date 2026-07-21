@@ -24,6 +24,8 @@ import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
+import { CommandTracker, IDLE } from '../lib/shellIntegration'
+import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 
 interface Props {
   source: ConnectionSource
@@ -44,6 +46,16 @@ interface Props {
   searchRequest?: { nonce: number; paneId: string } | null
   onStatus?: (status: string) => void
   onSessionId?: (id: string | null) => void
+  /** Whether a command is currently running, per the remote shell's own OSC
+   * 133 reports — silent (permanently idle) against a shell with no
+   * integration set up. See lib/shellIntegration.ts. */
+  onActivity?: (activity: CommandActivity) => void
+  /** A command finished, with its exit code and how long it took. */
+  onCommandComplete?: (result: CommandResult) => void
+  /** The far end rang the terminal bell (BEL, 0x07) — the oldest and most
+   * portable "I want your attention" signal there is, and the only one that
+   * works with no shell-side setup at all. */
+  onBell?: () => void
   /** A failed connection (bad credential, unreachable host, etc.) otherwise
    * leaves this pane stuck showing a dead terminal with no way back to the
    * connect dialog short of closing the whole pane — this reopens it in
@@ -97,6 +109,9 @@ export function Terminal({
   searchRequest,
   onStatus,
   onSessionId,
+  onActivity,
+  onCommandComplete,
+  onBell,
   onBackToConnect,
   onReconnect,
 }: Props) {
@@ -193,6 +208,18 @@ export function Terminal({
 
   const onSessionIdRef = useRef(onSessionId)
   onSessionIdRef.current = onSessionId
+
+  // Same live-ref treatment as onStatus/onSessionId above — App passes these
+  // as fresh inline closures every render, and the connect effect must not
+  // list anything that changes per-render in its dependencies.
+  const onActivityRef = useRef(onActivity)
+  onActivityRef.current = onActivity
+
+  const onCommandCompleteRef = useRef(onCommandComplete)
+  onCommandCompleteRef.current = onCommandComplete
+
+  const onBellRef = useRef(onBell)
+  onBellRef.current = onBell
 
   const activeRef = useRef(active)
   activeRef.current = active
@@ -571,6 +598,35 @@ export function Terminal({
     const scrollListener = term.onScroll(() => updateThumb())
     const writeParsedListener = term.onWriteParsed(() => updateThumb())
 
+    // Shell integration. Nothing here fires unless the far end is actually
+    // emitting OSC 133/633 — an un-integrated shell (or a switch console,
+    // which will never have one) simply leaves the tracker idle forever, so
+    // there's no setting gating the tracking itself, only the notifications
+    // it can produce. Both identifiers get the same handler: OSC 633 is
+    // VS Code's superset of the same letters, and a shell configured for
+    // one commonly emits the other alongside it.
+    const tracker = new CommandTracker({
+      onChange: (activity) => {
+        if (!disposed) onActivityRef.current?.(activity)
+      },
+      onComplete: (result) => {
+        if (!disposed) onCommandCompleteRef.current?.(result)
+      },
+    })
+    const oscListeners = [133, 633].map((ident) =>
+      term.parser.registerOscHandler(ident, (data) => tracker.handleOsc(data)),
+    )
+    // Entering the alternate screen mid-command means a full-screen program
+    // took over (vim, top, less). Recorded on the run so the completion it
+    // eventually reports can be recognized as "you quit an editor", not "a
+    // batch job you were waiting on has landed".
+    const bufferListener = term.buffer.onBufferChange(() => {
+      if (term.buffer.active.type === 'alternate') tracker.noteAltScreen()
+    })
+    const bellListener = term.onBell(() => {
+      if (!disposed) onBellRef.current?.()
+    })
+
     const onEvent = (event: ConnEvent) => {
       if (disposed) return
       setConnecting(false)
@@ -579,6 +635,10 @@ export function Terminal({
           onStatusRef.current?.(event.status)
           if (event.status.startsWith('failed') || event.status === 'disconnected') {
             term.writeln(`\r\n[${event.status}]`)
+            // Whatever was running went down with the connection. Its real
+            // outcome is unknowable from here, so drop it silently rather
+            // than leaving the tab spinning or claiming a completion.
+            tracker.reset()
           }
           if (event.status.startsWith('failed')) {
             setConnectFailed(event.status.replace(/^failed: /, ''))
@@ -776,6 +836,13 @@ export function Terminal({
       scrollListener.dispose()
       writeParsedListener.dispose()
       searchResultsListener.dispose()
+      bellListener.dispose()
+      bufferListener.dispose()
+      for (const listener of oscListeners) listener.dispose()
+      // Reported directly rather than through the tracker (whose own reset
+      // is a no-op when nothing was running) so a pane torn down mid-command
+      // can't leave a spinner behind on a tab that no longer has a session.
+      onActivityRef.current?.(IDLE)
       upBtn.removeEventListener('mousedown', onUpMouseDown)
       downBtn.removeEventListener('mousedown', onDownMouseDown)
       track.removeEventListener('mousedown', onTrackMouseDown)

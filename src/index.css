@@ -51,6 +51,24 @@ body {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
   }
+
+  /* Exception: the tab strip's running-command marker. The catch-all above
+     is right for decorative motion, but this one carries information — a
+     command is in progress, in this pane. Clamped to a single 0.01ms run it
+     doesn't reduce motion, it deletes the signal: the block parks at the
+     left edge looking like a static decoration.
+
+     So keep it animating, but with no travel at all. It fills its segment
+     and breathes instead — borrowing pane-glow, the same animation the
+     attention state already uses — which is what the preference is actually
+     asking for (no movement across the screen) while still reading as
+     "working". Note this is a stronger selector than `*`, so it wins on
+     specificity despite the !important above; the declarations below need
+     !important only to out-rank the !important ones, not the selector. */
+  .animate-pane-run {
+    width: 100% !important;
+    animation: pane-glow 2.4s ease-in-out infinite !important;
+  }
 }
 
 /* Slim, low-contrast scrollbars for plain `overflow` UI (session sidebar,

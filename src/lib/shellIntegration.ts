@@ -1,0 +1,208 @@
+/**
+ * OSC 133 shell integration — the "semantic prompt" protocol.
+ *
+ * Over SSH/telnet/serial there is no local PTY to inspect. A terminal that
+ * spawns its own shell can call tcgetpgrp() on the PTY master to see which
+ * process is in the foreground; nothing equivalent exists here, because the
+ * process actually running lives on a machine this app reaches only as a
+ * byte stream. So the only reliable source of "a command started" / "it
+ * finished, with this exit code" is the remote shell itself, saying so out
+ * of band.
+ *
+ * OSC 133 is that protocol — FinalTerm's originally, now implemented by
+ * iTerm2, kitty, WezTerm, Windows Terminal and VS Code. A cooperating shell
+ * brackets each prompt and command with:
+ *
+ *   OSC 133 ; A ST          prompt is about to be drawn
+ *   OSC 133 ; B ST          prompt drawn; keystrokes from here are the command
+ *   OSC 133 ; C ST          command is executing, output follows
+ *   OSC 133 ; D ; <code> ST command finished, with its exit status
+ *
+ * VS Code's OSC 633 is a superset using the same letters plus `E`, which
+ * carries the command line as text. Worth handling both: `E` is the only way
+ * to name the command in a notification, and shells already set up for VS
+ * Code emit it for free. See docs/SHELL_INTEGRATION.md for the snippets.
+ *
+ * Deliberately a plain class rather than anything React-aware — it's driven
+ * from an xterm OSC handler sitting on the hot path of the output stream.
+ */
+
+export interface CommandActivity {
+  state: 'idle' | 'running'
+  /** Epoch ms the running command started; null while idle. */
+  startedAt: number | null
+  /** The command line, when the shell reported one (OSC 633's `E`). Null
+   * under plain OSC 133, which has no field for it. */
+  command: string | null
+}
+
+export interface CommandResult {
+  command: string | null
+  /** Null when the shell reported no code — a bare `OSC 133 ; D ST`, which
+   * is legal, and also what a partial integration that never emits `D` at
+   * all leaves us to infer from the next prompt. */
+  exitCode: number | null
+  durationMs: number
+  /** The command spent time on the alternate screen, i.e. it was a
+   * full-screen interactive program (vim, top, less). Tracked because
+   * "vim finished after 20 minutes" is not a notification anyone wants —
+   * the user quit it themselves, deliberately, a moment ago. */
+  interactive: boolean
+}
+
+export const IDLE: CommandActivity = { state: 'idle', startedAt: null, command: null }
+
+/** Human-readable run length for a completion notice. Only ever shown for
+ * commands past the notification threshold, so it never needs sub-second
+ * resolution. */
+export function formatCommandDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+/** VS Code's OSC 633 escapes backslashes as `\\` and `;` (plus other
+ * control characters) as `\xHH`, so command text can't be mistaken for
+ * extra protocol fields. Done as one left-to-right pass rather than two
+ * replaces, or a command containing a literal `\x3b` would get unescaped
+ * into a `;` that was never a separator. Anything that isn't a valid
+ * escape is left exactly as it arrived. */
+function unescapeCommandText(raw: string): string {
+  return raw.replace(/\\(\\|x([0-9a-fA-F]{2}))/g, (_match, _all, hex: string | undefined) =>
+    hex ? String.fromCharCode(parseInt(hex, 16)) : '\\',
+  )
+}
+
+interface Handlers {
+  onChange: (activity: CommandActivity) => void
+  onComplete: (result: CommandResult) => void
+}
+
+export class CommandTracker {
+  private running = false
+  private startedAt = 0
+  /** The command line for the run currently in flight. */
+  private command: string | null = null
+  /** Reported by `E` *before* the `C` that starts the run it describes, so
+   * it's parked here until then. */
+  private pendingCommand: string | null = null
+  private sawAltScreen = false
+  private readonly handlers: Handlers
+
+  constructor(handlers: Handlers) {
+    this.handlers = handlers
+  }
+
+  /**
+   * Feed the payload of an OSC 133 / OSC 633 sequence — everything after the
+   * identifier and its semicolon, which is what xterm's registerOscHandler
+   * hands over (`"D;0"` for `OSC 133 ; D ; 0 ST`).
+   *
+   * Always returns true: this app owns 133 and 633, and consuming them keeps
+   * them from being treated as anything else.
+   */
+  handleOsc(data: string): boolean {
+    const sep = data.indexOf(';')
+    const kind = sep === -1 ? data : data.slice(0, sep)
+    const rest = sep === -1 ? '' : data.slice(sep + 1)
+
+    switch (kind) {
+      case 'A':
+        // A fresh prompt. Under a complete integration this arrives just
+        // after `D` and there's nothing left to finish. It matters for the
+        // partial ones (and there are plenty in the wild) that mark prompts
+        // and command starts but never report an exit code: a new prompt
+        // still means the previous command is over, so close it out with an
+        // unknown status rather than leaving the pane spinning forever.
+        if (this.running) this.finish(null)
+        break
+
+      case 'B':
+        // Prompt finished drawing; whatever is typed next is the command.
+        // Nothing to do beyond dropping a command line left over from a run
+        // that never started, so it can't attach itself to the next one.
+        this.pendingCommand = null
+        break
+
+      case 'C':
+        // Ignored while already running: some shells emit `C` again for each
+        // segment of a pipeline, and restarting the clock there would report
+        // only the last segment's duration.
+        if (!this.running) this.start()
+        break
+
+      case 'D': {
+        // Pressing Enter on an empty prompt produces a `D` with no `C` before
+        // it (the shell reports the *previous* command's status again). No
+        // command ran, so there is nothing to report.
+        if (!this.running) break
+        const code = rest.split(';')[0]
+        const parsed = Number.parseInt(code, 10)
+        this.finish(Number.isNaN(parsed) ? null : parsed)
+        break
+      }
+
+      case 'E':
+        // OSC 633 only. `E;<commandline>;<nonce>` — the nonce is optional,
+        // and any `;` inside the command itself is escaped, so the first
+        // unescaped `;` genuinely ends the command text.
+        this.pendingCommand = unescapeCommandText(rest.split(';')[0]) || null
+        break
+
+      // `P` (OSC 633 property reports such as `P;Cwd=/home/tim`) and any
+      // future letters fall through unhandled but still consumed.
+    }
+    return true
+  }
+
+  /** Called when the terminal switches to the alternate screen buffer, which
+   * is how a full-screen program announces itself. Only meaningful mid-run;
+   * an interactive program started from the prompt is still one "command"
+   * as far as OSC 133 is concerned. */
+  noteAltScreen() {
+    if (this.running) this.sawAltScreen = true
+  }
+
+  /** Drop any in-flight run without reporting it — for a disconnect, where
+   * the command's fate is genuinely unknown and a completion notification
+   * would be a lie. */
+  reset() {
+    if (!this.running) return
+    this.running = false
+    this.command = null
+    this.pendingCommand = null
+    this.sawAltScreen = false
+    this.handlers.onChange(IDLE)
+  }
+
+  private start() {
+    this.running = true
+    this.startedAt = Date.now()
+    this.command = this.pendingCommand
+    this.pendingCommand = null
+    this.sawAltScreen = false
+    this.handlers.onChange({
+      state: 'running',
+      startedAt: this.startedAt,
+      command: this.command,
+    })
+  }
+
+  private finish(exitCode: number | null) {
+    const result: CommandResult = {
+      command: this.command,
+      exitCode,
+      durationMs: Date.now() - this.startedAt,
+      interactive: this.sawAltScreen,
+    }
+    this.running = false
+    this.command = null
+    this.sawAltScreen = false
+    this.handlers.onChange(IDLE)
+    this.handlers.onComplete(result)
+  }
+}

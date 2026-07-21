@@ -8,15 +8,24 @@ import {
   Radio,
   Cable,
   TerminalSquare,
+  CircleDashed,
 } from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
-import { allLeaves, isTopSplitVertical } from '../lib/paneTree'
+import type { CommandActivity } from '../lib/shellIntegration'
+import { allLeaves, verticalRows } from '../lib/paneTree'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
 
 interface Props {
   tabs: Tab[]
   activeTabId: string | null
   statusByPane: Record<string, string>
+  /** Per-pane command state from shell integration — a tab spins while any
+   * of its panes has a command running. */
+  activityByPane: Record<string, CommandActivity>
+  /** Panes holding something the user hasn't seen yet: a bell rang, or a long
+   * command finished, while the tab was in the background. Keyed by pane, not
+   * tab, so the marker can sit on the segment of the pane it happened in. */
+  attentionPanes: Record<string, true>
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
@@ -33,24 +42,117 @@ const protocolIcons = {
   serial: Cable,
 }
 
-/** Mirrors a tab's actual pane tree as nested flex rows/columns (row for a
- * horizontal split, column for a vertical one), sized by each split's real
- * `sizes` — so a stacked split renders as stacked segments here too,
- * instead of every split flattening into left-right slices regardless of
- * its real direction. `activePaneId` of `null` means this tab itself isn't
+/** Separation between segments in the tab strip's pane map, in px. */
+const PANE_MAP_GAP_PX = 2
+
+/** Thickness of one segment. Every leaf gets exactly this whatever the
+ * layout, so the bar reads as one consistent object — a lone pane and each
+ * row of a four-way stack are all the same 2px line. */
+const PANE_MAP_SEGMENT_PX = 2
+
+/** Ceiling on how tall the bar may grow. Four rows is already 14px of a
+ * 40px tab strip; past that the map stops being a glanceable hint and starts
+ * eating the tab.
+ *
+ * MAX_PANE_ROWS is set to match, so it only binds for a workspace saved by a
+ * build that predates the split limits. Such a tree divides
+ * the capped height evenly instead, giving segments thinner than
+ * PANE_MAP_SEGMENT_PX — the right failure for a case that can no longer be
+ * created. */
+const PANE_MAP_MAX_ROWS = 4
+
+/** Shaved off the clearance the tab's contents keep below the pane map.
+ * Centring them strictly under the map is safe but sits them low — the space
+ * beneath reads as bigger than the gap above, because the map is a thin line
+ * rather than a solid block. Lifting them raises the row by half this (the
+ * remaining height is centred, so it splits the difference), which is enough
+ * to look balanced while staying clear of the map. Also returns an unsplit
+ * tab to exactly the centring it had before any of this, since its 2px map
+ * needs no clearance at all. */
+const PANE_MAP_CONTENT_LIFT_PX = 4
+
+/** Height a branch of `rows` stacked rows needs: one segment each plus the
+ * gaps between them. Used for the bar itself and, recursively, for each
+ * stacked child of a split — which is what makes every leaf land on exactly
+ * one segment's thickness however deeply it's nested. */
+function paneMapExtent(rows: number): number {
+  return rows * PANE_MAP_SEGMENT_PX + (rows - 1) * PANE_MAP_GAP_PX
+}
+
+/** Mirrors a tab's pane tree as nested flex rows/columns (row for a
+ * horizontal split, column for a vertical one) — so a stacked split renders
+ * as stacked segments here too, instead of every split flattening into
+ * left-right slices regardless of its real direction.
+ *
+ * Arrangement only: segments are equal, not scaled to each split's real
+ * `sizes`. This is a glanceable "how many panes, grouped how", and at a
+ * couple of pixels there isn't the resolution for ratios to say anything a
+ * viewer could read — they only made lopsided splits render a sibling as an
+ * invisible sliver. `activePaneId` of `null` means this tab itself isn't
  * focused: every leaf renders the same dim tone rather than highlighting
  * one, since there's no meaningful "focused pane" to call out from outside
  * the tab that's actually showing it. */
 function PaneIndicator({
   node,
   activePaneId,
+  runningPaneIds,
+  attentionPaneIds,
+  exact,
 }: {
   node: PaneNode
   activePaneId: string | null
+  runningPaneIds: Set<string>
+  attentionPaneIds: Set<string>
+  /** Whether the bar was given the full height this tree asks for, and so
+   * whether stacked children can be sized in whole segments. False only for
+   * a tree past PANE_MAP_MAX_ROWS, where they fall back to dividing the
+   * capped height evenly — thin, but it stays inside the bar. */
+  exact: boolean
 }) {
   if (node.type === 'leaf') {
     const focused = activePaneId === node.id
-    return <span className={`block h-full w-full ${focused ? 'bg-sky-400' : 'bg-sky-400/30'}`} />
+    const running = runningPaneIds.has(node.id)
+    // Running wins if a pane somehow has both — it's the live state, and a
+    // bell that rang mid-command is stale news by comparison.
+    const attention = !running && attentionPaneIds.has(node.id)
+    return (
+      <span
+        className={`relative block h-full w-full overflow-hidden ${
+          focused ? 'bg-sky-400' : 'bg-sky-400/30'
+        }`}
+      >
+        {running && (
+          // Travels across this leaf's own segment, so in a split the map
+          // shows *which* pane is working rather than just that the tab is.
+          // Red on the sky-toned bar is the highest-contrast pairing
+          // available here, and it stays equally legible over the focused
+          // (full sky) and unfocused (30%) tones — a lighter tint of the
+          // bar's own colour washed out against the focused one.
+          //
+          // Fixed 28px rather than a fraction of the segment: proportional
+          // meant the marker changed size with the split layout and the tab
+          // title's length, which read as a different indicator each time.
+          // max-w-full keeps it inside segments narrower than that (a
+          // four-way split on a minimum-width tab), where it simply stops
+          // travelling rather than overflowing.
+          //
+          // Gradient rather than a solid fill so the edges fall off and it
+          // reads as a light passing behind the bar instead of a brick
+          // sliding along it. A glow would be nicer still, but the segment
+          // clips its own overflow, so any box-shadow dies at the edge.
+          <span className="animate-pane-run absolute inset-y-0 left-0 w-7 max-w-full bg-gradient-to-r from-transparent via-red-500 to-transparent" />
+        )}
+        {attention && (
+          // The same marker at rest: parked mid-segment, amber, breathing.
+          // Deliberately the same shape and size as the running one so the
+          // two read as one indicator changing state rather than two
+          // unrelated marks — it stops travelling, settles in the middle and
+          // changes colour, which is legible at a glance without needing a
+          // separate widget elsewhere on the tab.
+          <span className="animate-pane-glow absolute inset-y-0 left-1/2 w-7 max-w-full -translate-x-1/2 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
+        )}
+      </span>
+    )
   }
   const horizontal = node.direction === 'horizontal'
   return (
@@ -63,22 +165,57 @@ function PaneIndicator({
     // strip's scrollWidth enough, after a second nested split, to trip the
     // overflow-fade check below even with nothing actually clipped.
     <span
-      className={`flex h-full w-full gap-[2px] overflow-hidden ${horizontal ? 'flex-row' : 'flex-col'}`}
+      // The strip's own background behind the gap, so the space between two
+      // segments is a positive dark line rather than "whatever happens to be
+      // behind the tab" — which on an active tab is a lightened fill that
+      // left segments reading as one continuous bar.
+      className={`flex h-full w-full overflow-hidden bg-[#1a1b22] ${
+        horizontal ? 'flex-row' : 'flex-col'
+      }`}
+      style={{ gap: `${PANE_MAP_GAP_PX}px` }}
     >
-      {node.children.map((child, i) => (
+      {node.children.map((child) => (
         <span
           key={child.id}
-          style={{ flexBasis: `${node.sizes[i]}%`, flexGrow: 0, flexShrink: 0 }}
-          // Explicit rather than relying on flexbox's default cross-axis
-          // stretch — the parent's main axis (flexBasis, above) sets this
-          // segment's *proportional* dimension, but its other one still
-          // needs telling to actually fill 100% of the shared cross-axis,
-          // or two segments meant to look identically sized on that axis
-          // (e.g. two stacked rows, both meant to span the same width) can
-          // end up very slightly, but visibly, mismatched at this scale.
-          className={`min-h-0 min-w-0 ${horizontal ? 'h-full' : 'w-full'}`}
+          // Stacked children are sized by the number of rows they actually
+          // contain, not split evenly. Even division is only right when both
+          // branches hold the same number of rows: for `vertical{ A,
+          // vertical{ B, C } }` it hands the lone pane and the nested pair
+          // half the height each, so A draws at full thickness while B and C
+          // share what's left and come out at 1px.
+          //
+          // The arithmetic is exact rather than proportional. A branch of n
+          // rows needs n segments plus the n-1 gaps between them, and
+          // summed over the children that equals the parent's own height by
+          // construction — so every leaf lands on exactly one segment's
+          // thickness at any nesting depth, with nothing left over to clip.
+          //
+          // Side-by-side children need none of this: they divide width,
+          // which carries no row information, so they just share it evenly.
+          style={
+            horizontal || !exact
+              ? undefined
+              : {
+                  flexBasis: `${paneMapExtent(verticalRows(child))}px`,
+                  flexGrow: 0,
+                  flexShrink: 0,
+                }
+          }
+          // The cross-axis size is explicit rather than left to flexbox's
+          // default stretch: without it two segments meant to match on that
+          // axis can come out very slightly, but visibly, mismatched at
+          // this scale.
+          className={`min-h-0 min-w-0 ${
+            horizontal ? 'h-full flex-1' : `w-full ${exact ? '' : 'flex-1'}`
+          }`}
         >
-          <PaneIndicator node={child} activePaneId={activePaneId} />
+          <PaneIndicator
+            node={child}
+            activePaneId={activePaneId}
+            runningPaneIds={runningPaneIds}
+            attentionPaneIds={attentionPaneIds}
+            exact={exact}
+          />
         </span>
       ))}
     </span>
@@ -96,6 +233,8 @@ export function TabBar({
   tabs,
   activeTabId,
   statusByPane,
+  activityByPane,
+  attentionPanes,
   onSelect,
   onClose,
   onNew,
@@ -138,6 +277,23 @@ export function TabBar({
     observer.observe(el)
     return () => observer.disconnect()
   }, [tabs])
+
+  // The pane map is a header inside each tab, so the tab's own contents sit
+  // below it and centre in whatever height is left. Without this a four-row
+  // map (14px of a 40px strip) runs straight into the protocol glyph and the
+  // title, which are otherwise centred in the full height.
+  //
+  // Measured once across the whole strip rather than per tab: map height
+  // varies with each tab's layout, and letting every tab place its own title
+  // accordingly would leave neighbouring titles on visibly different
+  // baselines. One clearance for the tallest map on screen keeps the row of
+  // titles an actual row. The logo and "+" button aren't tabs and have no map
+  // above them, so they stay centred in the full strip.
+  const stripRows = Math.min(
+    tabs.reduce((most, t) => Math.max(most, verticalRows(t.root)), 1),
+    PANE_MAP_MAX_ROWS,
+  )
+  const tabContentTopPx = Math.max(0, paneMapExtent(stripRows) - PANE_MAP_CONTENT_LIFT_PX)
 
   return (
     <div
@@ -198,10 +354,17 @@ export function TabBar({
         {tabs.map((tab) => {
           const active = tab.id === activeTabId
           const leaves = allLeaves(tab.root)
-          const tall = isTopSplitVertical(tab.root)
+          const trueRows = verticalRows(tab.root)
+          const rows = Math.min(trueRows, PANE_MAP_MAX_ROWS)
           const leaf = leaves.find((l) => l.id === tab.activePaneId)
           const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null
+          const runningPaneIds = new Set(
+            leaves.filter((l) => activityByPane[l.id]?.state === 'running').map((l) => l.id),
+          )
+          const attentionPaneIds = new Set(leaves.filter((l) => attentionPanes[l.id]).map((l) => l.id))
+          const running = runningPaneIds.size > 0
+          const attention = attentionPaneIds.size > 0
           return (
             <div
               key={tab.id}
@@ -256,6 +419,7 @@ export function TabBar({
                 setDraggedId(null)
                 setDropTargetId(null)
               }}
+              style={{ paddingTop: `${tabContentTopPx}px` }}
               className={`group relative flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 border-r border-white/5 px-3 text-xs transition-colors duration-150 ${
                 active
                   ? 'bg-white/10 text-white'
@@ -270,24 +434,56 @@ export function TabBar({
                   "this tab has multiple panes" at a glance; the active
                   tab's own split additionally highlights whichever pane has
                   keyboard focus. */}
-              {(active || leaves.length > 1) && (
-                <span className={`absolute inset-x-0 top-0 ${tall ? 'h-[5px]' : 'h-[2px]'}`}>
-                  <PaneIndicator node={tab.root} activePaneId={active ? tab.activePaneId : null} />
+              {/* `running`/`attention` are in the condition so a single-pane
+                  background tab — which otherwise draws no bar at all — still
+                  gets one to carry the marker, since that's now the only
+                  place either signal appears. */}
+              {/* Sized from the number of stacked rows so every segment is
+                  the same 2px line whatever the layout — side-by-side ones
+                  each take the bar's full height, stacked ones divide it, so
+                  the bar has to grow to fit them plus their gaps. A flat
+                  height gave a nested stack two 0.5px lines, i.e. nothing
+                  visible at all. */}
+              {(active || leaves.length > 1 || running || attention) && (
+                <span
+                  className="absolute inset-x-0 top-0"
+                  style={{ height: `${paneMapExtent(rows)}px` }}
+                >
+                  <PaneIndicator
+                    node={tab.root}
+                    activePaneId={active ? tab.activePaneId : null}
+                    runningPaneIds={runningPaneIds}
+                    attentionPaneIds={attentionPaneIds}
+                    exact={trueRows <= PANE_MAP_MAX_ROWS}
+                  />
                 </span>
               )}
               {dropTargetId === tab.id && draggedId !== tab.id && (
                 <span className="absolute inset-y-0 left-0 w-0.5 bg-sky-400" />
               )}
-              {ProtocolIcon && (
-                <span className="relative shrink-0 text-white/40">
-                  <ProtocolIcon size={12} />
-                  {dotColor && (
-                    <span
-                      className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-[#1a1b22] transition-colors duration-300 ${dotColor}`}
-                    />
-                  )}
-                </span>
-              )}
+              {/* No spinner here any more: the running marker on the pane map
+                  above says the same thing and says *where*, so a second
+                  indicator in this slot was redundant and cost the icon that
+                  tells you the protocol. The connection dot rides on the icon
+                  so link state stays readable alongside it.
+
+                  Always rendered, falling back to a placeholder when the
+                  focused pane has no connection yet. Splitting a pane focuses
+                  the new empty one, and a slot that came and went as you
+                  clicked between a connected pane and a fresh one re-flowed
+                  the title and resized the tab itself — tab width is
+                  content-driven between its min and max, so 12px of icon plus
+                  its gap moved the whole thing. */}
+              <span
+                className={`relative shrink-0 ${ProtocolIcon ? 'text-white/40' : 'text-white/20'}`}
+              >
+                {ProtocolIcon ? <ProtocolIcon size={12} /> : <CircleDashed size={12} />}
+                {dotColor && (
+                  <span
+                    className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-[#1a1b22] transition-colors duration-300 ${dotColor}`}
+                  />
+                )}
+              </span>
               <span className="truncate">{tab.title}</span>
               <button
                 onClick={(e) => {
