@@ -75,6 +75,16 @@ function withoutVaultBoundSources(
   }
 }
 
+/** A tab holding one pane that has never connected — the state a new tab
+ * starts in, showing the connect dialog. Opening a workspace from such a tab
+ * should consume it rather than leave it stranded in front of the tabs it
+ * just created. Any half-filled connect form in it goes too, which is fine:
+ * choosing a workspace from that very form is choosing to move on. */
+function isBlankTab(tab: Tab): boolean {
+  const leaves = allLeaves(tab.root)
+  return leaves.length === 1 && !leaves[0].source
+}
+
 function newTabId() {
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -180,8 +190,12 @@ function App() {
   // can't have its own answer overwritten by the still-default blank tab
   // underneath it.
   const [pendingRestore, setPendingRestore] = useState<SessionSnapshot | null>(null)
-  /** A workspace waiting on a vault unlock before its tabs are materialised. */
-  const [pendingWorkspace, setPendingWorkspace] = useState<Workspace | null>(null)
+  /** A workspace waiting on a vault unlock before its tabs are materialised,
+   * with the tab it was launched from so that survives the prompt. */
+  const [pendingWorkspace, setPendingWorkspace] = useState<{
+    workspace: Workspace
+    originTabId: string | null
+  } | null>(null)
   const [restoreDecided, setRestoreDecided] = useState(false)
   // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
   // by pane id, and portaled into whichever "slot" div currently represents
@@ -516,7 +530,11 @@ function App() {
    * fail. Mounting them with the source intact is what made every tab in a
    * workspace come up as "vault is locked" with no way forward.
    */
-  function materializeWorkspace(workspace: Workspace, vaultUsable: boolean) {
+  function materializeWorkspace(
+    workspace: Workspace,
+    vaultUsable: boolean,
+    originTabId?: string | null,
+  ) {
     const restored: Tab[] = workspace.tabs.map((t) => {
       const root = reidentify(
         vaultUsable
@@ -529,46 +547,64 @@ function App() {
       return { ...t, id: newTabId(), root, activePaneId: firstLeaf(root).id }
     })
     if (restored.length === 0) return
-    setTabs((prev) => [...prev, ...restored])
+    setTabs((prev) => {
+      // Consume the tab this was launched from when it has nothing in it —
+      // typically the blank tab whose connect dialog was just used. Splicing
+      // rather than appending also puts the workspace where that tab sat,
+      // instead of after everything else.
+      const target = originTabId ?? activeTabId
+      const index = prev.findIndex((t) => t.id === target)
+      if (index === -1 || !isBlankTab(prev[index])) return [...prev, ...restored]
+      return [...prev.slice(0, index), ...restored, ...prev.slice(index + 1)]
+    })
     setActiveTabId(restored[0].id)
   }
 
   /** Gates on the vault the same way the launch-restore flow does, rather
    * than letting each pane discover the lock separately and fail. */
-  function openWorkspace(workspace: Workspace) {
+  /** `originTabId` is the tab whose connect dialog launched this, so it can
+   * be consumed rather than left empty in front of the new tabs. Absent (the
+   * toolbar menu) falls back to the active tab, which is blank often enough
+   * for the same tidy-up to apply. */
+  function openWorkspace(workspace: Workspace, originTabId?: string) {
     // Only 'locked' is worth prompting for. With no vault created at all
     // there is nothing to unlock, so those panes go straight to their connect
     // forms rather than showing an unlock dialog that can't help.
     if (sessionSnapshot.needsVaultUnlock(workspace.tabs) && vaultStatus === 'locked') {
-      setPendingWorkspace(workspace)
+      // The origin has to survive the prompt, or unlocking would materialise
+      // the workspace next to the blank tab instead of over it.
+      setPendingWorkspace({ workspace, originTabId: originTabId ?? activeTabId })
       return
     }
-    materializeWorkspace(workspace, vaultStatus === 'unlocked')
+    materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
   }
 
   function openPendingWorkspace() {
     if (!pendingWorkspace) return
-    materializeWorkspace(pendingWorkspace, vaultStatus === 'unlocked')
+    const { workspace, originTabId } = pendingWorkspace
+    materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
     setPendingWorkspace(null)
   }
 
   async function unlockAndOpenWorkspace(password: string) {
     if (!pendingWorkspace) return
+    const { workspace, originTabId } = pendingWorkspace
     await vault.unlock(password)
     refreshVaultStatus()
-    materializeWorkspace(pendingWorkspace, true)
+    materializeWorkspace(workspace, true, originTabId)
     setPendingWorkspace(null)
   }
 
   async function unlockWithOsAndOpenWorkspace() {
     if (!pendingWorkspace) return
+    const { workspace, originTabId } = pendingWorkspace
     await vault.unlockWithOs()
     // Same native-prompt focus problem as the launch-restore path.
     getCurrentWindow()
       .setFocus()
       .catch(() => {})
     refreshVaultStatus()
-    materializeWorkspace(pendingWorkspace, true)
+    materializeWorkspace(workspace, true, originTabId)
     setPendingWorkspace(null)
   }
 
@@ -1262,7 +1298,7 @@ function App() {
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
                 workspaces={savedWorkspaces}
-                onOpenWorkspace={openWorkspace}
+                onOpenWorkspace={(w) => openWorkspace(w, tab.id)}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
                 onConnect={(paneId, config, logSession) => connectPane(tab.id, paneId, config, logSession)}
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
@@ -1404,12 +1440,12 @@ function App() {
       )}
       {pendingWorkspace && (
         <RestoreSessionsPrompt
-          count={sessionSnapshot.countSessions(pendingWorkspace.tabs)}
+          count={sessionSnapshot.countSessions(pendingWorkspace.workspace.tabs)}
           // Always true here — openWorkspace only sets this state when the
           // vault is locked and the workspace needs it.
           needsVaultUnlock
           osUnlockAvailable={osUnlockAvailable}
-          title={`Open "${pendingWorkspace.name}"?`}
+          title={`Open "${pendingWorkspace.workspace.name}"?`}
           body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
           cancelLabel="Open anyway — without unlocking"
           onRestore={openPendingWorkspace}
