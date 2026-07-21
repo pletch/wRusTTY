@@ -71,7 +71,13 @@ pub(crate) fn migrate_os_unlock_key() {
 /// caller reacts differently to each: a dismissed prompt is not worth
 /// surfacing at all, whereas "no Hello configured on this machine" means the
 /// unlock method should be hidden rather than retried.
+///
+/// Only ever constructed by the Windows implementation of
+/// `verify_windows_hello`; the non-Windows stub still names it so both
+/// versions share one signature, which is enough to make every variant read
+/// as dead code off Windows.
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 enum ConsentError {
     Cancelled,
     Unavailable(String),
@@ -403,6 +409,12 @@ const PASSWORDLESS_METHODS: [WrapperKind; 2] = [WrapperKind::Hello, WrapperKind:
 /// Linux build carries a Hello wrapper that nothing here can open; treating
 /// it as available would put a button on screen that always fails, when the
 /// honest answer is to fall back to the master password.
+// Clippy sees `Hello => <bool literal>, _ => true` once `cfg!` has expanded
+// and offers `!matches!(kind, WrapperKind::Hello)` — which is the right
+// answer only on the platform it happened to expand for, and hard-codes
+// "Hello never works" into a function whose entire job is to say that it
+// depends. Kept as a match so both arms stay visible.
+#[allow(clippy::match_like_matches_macro)]
 fn usable_on_this_platform(kind: WrapperKind) -> bool {
     match kind {
         WrapperKind::Hello => cfg!(target_os = "windows"),
