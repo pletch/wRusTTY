@@ -39,9 +39,10 @@ export function FilesPanel({ sessionId, onClose }: Props) {
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // remotePath -> editId, purely a local "currently editing" indicator —
-  // the actual watch/re-upload keeps running server-side even after this
-  // panel unmounts, so this map isn't a source of truth, just a hint.
+  // remotePath -> editId. Seeded from the backend on mount (see below) rather
+  // than only from what this panel instance happened to open, because watches
+  // outlive the panel: without that, closing and reopening the panel loses
+  // every marker while the watches keep running and keep uploading on save.
   const [activeEdits, setActiveEdits] = useState<Record<string, string>>({})
   const channelRef = useRef<Channel<SftpEvent> | null>(null)
 
@@ -88,6 +89,17 @@ export function FilesPanel({ sessionId, onClose }: Props) {
       .catch((err) => {
         if (!cancelled) setError(String(err))
       })
+    // Adopt any watches already running for this session — ones this panel
+    // started before it was last closed, which are still live and still
+    // uploading. Best-effort: a failure here costs the markers, not the
+    // directory listing, so it shouldn't surface an error over the panel.
+    sftp
+      .listEdits(sessionId)
+      .then((edits) => {
+        if (cancelled) return
+        setActiveEdits(Object.fromEntries(edits.map((e) => [e.remotePath, e.editId])))
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
@@ -182,12 +194,19 @@ export function FilesPanel({ sessionId, onClose }: Props) {
               </span>
               <span className="flex shrink-0 items-center gap-2 text-white/30">
                 {editId && (
+                  // "watching", not "editing": there's no way to detect an
+                  // external editor closing (the OS hands the file off and
+                  // returns immediately), so this deliberately persists until
+                  // dismissed — otherwise the second save of an editing
+                  // session would silently not upload. Labelled and shaped as
+                  // a dismissable subscription so it reads as "still live,
+                  // click to end" rather than a status stuck on.
                   <button
                     onClick={() => stopEditing(path)}
-                    title="Stop watching"
-                    className="flex items-center gap-1 text-sky-400/80 hover:text-sky-300"
+                    title="Watching for saves and uploading each one. Click to stop — this also deletes the local temp copy, so save in your editor first."
+                    className="flex items-center gap-1 rounded px-1 py-0.5 text-sky-400/80 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-sky-300"
                   >
-                    <File size={10} /> editing
+                    <File size={10} /> watching <X size={9} />
                   </button>
                 )}
                 {!entry.isDir && <span>{formatSize(entry.size)}</span>}

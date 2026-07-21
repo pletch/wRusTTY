@@ -1,7 +1,7 @@
 use std::time::UNIX_EPOCH;
 
 use russh_sftp::client::SftpSession;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::error::SftpError;
 
@@ -58,8 +58,25 @@ impl SftpClient {
         Ok(self.inner.read(path).await?)
     }
 
+    /// Replaces a remote file's contents outright.
+    ///
+    /// Deliberately not `SftpSession::write`, which opens with `OpenFlags::WRITE`
+    /// alone — no `CREATE`, no `TRUNCATE`. That overwrites from byte 0 without
+    /// shortening the file, so saving anything smaller than what was already
+    /// there leaves the tail of the old contents stranded past the end of the
+    /// new data. The result isn't a truncated file, it's a corrupt hybrid, and
+    /// nothing reports an error. `create` is the same crate's
+    /// `CREATE | TRUNCATE | WRITE`, which is what "save this file" actually
+    /// means — and it can create new remote files, which the other path can't.
+    ///
+    /// `sync_all` before dropping the handle so the close is acknowledged
+    /// (and any server-side error surfaces here) rather than being left to a
+    /// silent teardown.
     pub async fn write(&self, path: &str, data: &[u8]) -> Result<(), SftpError> {
-        Ok(self.inner.write(path, data).await?)
+        let mut file = self.inner.create(path).await?;
+        file.write_all(data).await?;
+        file.sync_all().await?;
+        Ok(())
     }
 
     pub async fn canonicalize(&self, path: &str) -> Result<String, SftpError> {

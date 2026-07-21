@@ -40,6 +40,14 @@ pub enum SftpEvent {
     },
 }
 
+/// One live edit watch, as reported to the frontend by `sftp_list_edits`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveEdit {
+    pub edit_id: String,
+    pub remote_path: String,
+}
+
 struct EditEntry {
     session_id: String,
     remote_path: String,
@@ -248,6 +256,30 @@ pub async fn sftp_edit_file(
     );
 
     Ok(edit_id)
+}
+
+/// Every edit currently being watched for a session.
+///
+/// Watches outlive the Files panel that started them — deliberately, since
+/// there's no way to know when an external editor is done, and stopping early
+/// would silently drop the user's next save. That makes the panel's own
+/// memory of what it opened an unreliable indicator: reopen the panel and it
+/// has forgotten watches that are still very much running and still uploading
+/// on save. This is the authoritative list to render from instead.
+#[tauri::command]
+pub async fn sftp_list_edits(
+    session_id: String,
+    sftp_state: State<'_, SftpState>,
+) -> Result<Vec<ActiveEdit>, String> {
+    let edits = sftp_state.edits.lock().await;
+    Ok(edits
+        .iter()
+        .filter(|(_, e)| e.session_id == session_id)
+        .map(|(id, e)| ActiveEdit {
+            edit_id: id.clone(),
+            remote_path: e.remote_path.clone(),
+        })
+        .collect())
 }
 
 /// Stops watching an edit and deletes its local temp copy. This deletes the

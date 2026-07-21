@@ -57,6 +57,7 @@ pub fn run() {
             sftp::sftp_list_dir,
             sftp::sftp_canonicalize,
             sftp::sftp_edit_file,
+            sftp::sftp_list_edits,
             sftp::sftp_stop_watching,
             telnet::telnet_connect,
             telnet::telnet_write,
