@@ -49,34 +49,83 @@ import * as sessionSnapshot from './lib/sessionSnapshot'
 import type { SessionSnapshot } from './lib/sessionSnapshot'
 import type { PaneLeaf, PaneNode, Tab } from './types'
 
-/** Blanks the panes whose connection can only be resolved with an unlocked
- * vault, leaving everything else intact — telnet especially, but also
- * agent-authenticated SSH, which never touches the vault (see `isVaultBound`).
- * Those panes then open on their connect form — which offers to unlock —
- * instead of connecting and failing.
+function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
+  return {
+    id: profile.id,
+    protocol: profile.protocol,
+    label: profile.label,
+    folder: profile.folder,
+    host: profile.host,
+    port: profile.port,
+    username: profile.username,
+    authType:
+      profile.authType === 'password'
+        ? 'Password'
+        : profile.authType === 'agent'
+          ? 'Agent'
+          : 'PublicKey',
+    keyPath: profile.keyPath ?? undefined,
+    hasCredential: profile.hasCredential,
+    jumpProfileId: profile.jumpProfileId,
+    termType: profile.termType,
+    backspaceSendsCtrlH: profile.backspaceSendsCtrlH,
+  }
+}
+
+/** Re-resolves saved-profile panes against the live profile list as a stored
+ * arrangement (a workspace, or the launch snapshot) is brought back.
  *
- * `prefill` rebuilds the form contents from the profile the pane referenced.
- * Without it a pane that was connected straight from the form (rather than
- * from the sidebar) carries no `initial`, and blanking its source would leave
- * an empty form with the host and username to re-enter by hand. */
-function withoutVaultBoundSources(
+ * Both stores keep a copy of the profile's details in `initial`, captured when
+ * the arrangement was saved — possibly months ago, and it only ever feeds the
+ * connect form and the tab title (the connection itself carries just a profile
+ * id, which Rust resolves fresh). So the live profile wins outright and the
+ * stored copy is demoted to a fallback for one case: a profile that no longer
+ * exists. That's what keeps a renamed or re-hosted profile from coming back
+ * under its old name, and it holds for edits made outside the app or by a
+ * vault import too — none of which could have written back into these files.
+ *
+ * Three outcomes per pane:
+ *  - profile gone: blanked to a connect form, prefilled from the stored copy,
+ *    since mounting it would only fail with "profile not found";
+ *  - profile needs the vault and we don't have it: blanked to a connect form,
+ *    prefilled from the *live* profile, which offers to unlock;
+ *  - otherwise: kept connected, with its details refreshed. */
+function refreshProfilePanes(
   node: PaneNode,
   sessions: SessionProfile[],
-  prefill: (profileId: string) => PaneLeaf['initial'],
+  vaultUsable: boolean,
 ): PaneNode {
-  if (node.type === 'leaf') {
-    if (!sessionSnapshot.isVaultBound(node.source, sessions)) return node
-    // Narrowing only — isVaultBound already established this is an sshProfile.
-    const profileId = (node.source as { protocol: 'sshProfile'; profileId: string }).profileId
-    return { ...node, source: null, initial: node.initial ?? prefill(profileId) }
+  if (node.type === 'split') {
+    return {
+      ...node,
+      children: [
+        refreshProfilePanes(node.children[0], sessions, vaultUsable),
+        refreshProfilePanes(node.children[1], sessions, vaultUsable),
+      ],
+    }
   }
-  return {
-    ...node,
-    children: [
-      withoutVaultBoundSources(node.children[0], sessions, prefill),
-      withoutVaultBoundSources(node.children[1], sessions, prefill),
-    ],
+
+  const source = node.source
+  if (source?.protocol !== 'sshProfile') return node
+  const profile = sessions.find((s) => s.id === source.profileId)
+  if (!profile) return { ...node, source: null }
+  const initial = profileToInitial(profile)
+  if (!vaultUsable && sessionSnapshot.isVaultBound(source, sessions)) {
+    return { ...node, source: null, initial }
   }
+  return { ...node, initial }
+}
+
+/** Applies `refreshProfilePanes` to whole tabs, re-deriving each title from
+ * the pane that will be showing when it opens — otherwise a renamed profile
+ * still surfaces under its old name in the tab bar, which is the one place
+ * the staleness was actually visible. */
+function refreshTabs(tabs: Tab[], sessions: SessionProfile[], vaultUsable: boolean): Tab[] {
+  return tabs.map((t) => {
+    const root = refreshProfilePanes(t.root, sessions, vaultUsable)
+    const active = findLeaf(root, t.activePaneId) ?? firstLeaf(root)
+    return { ...t, root, title: leafTitle(active, t.title) }
+  })
 }
 
 /** A tab holding one pane that has never connected — the state a new tab
@@ -409,8 +458,19 @@ function App() {
     sessionSnapshot.saveSnapshot(tabs, activeTabId)
   }, [tabs, activeTabId, restoreDecided])
 
-  function applyRestore(snapshot: SessionSnapshot) {
-    setTabs(snapshot.tabs)
+  /** The snapshot carries the same captured-copy staleness a workspace does —
+   * it was written before the app last closed, and profiles can have been
+   * edited since (by another window, or by a vault import) — so it gets the
+   * same live re-resolution. Unlike a workspace its pane ids are kept, since
+   * nothing else in the window is using them yet.
+   *
+   * `vaultUsable` is passed rather than read off `vaultStatus` for the same
+   * reason materializeWorkspace takes it: the unlock paths below call this
+   * immediately after refreshVaultStatus(), whose setState hasn't landed yet,
+   * so the state still reads 'locked' and every pane just unlocked for would
+   * be blanked. */
+  function applyRestore(snapshot: SessionSnapshot, vaultUsable: boolean) {
+    setTabs(refreshTabs(snapshot.tabs, sessions, vaultUsable))
     setActiveTabId(snapshot.activeTabId)
     setPendingRestore(null)
     setRestoreDecided(true)
@@ -423,14 +483,14 @@ function App() {
   }
 
   function restoreSessions() {
-    if (pendingRestore) applyRestore(pendingRestore)
+    if (pendingRestore) applyRestore(pendingRestore, vaultStatus === 'unlocked')
   }
 
   async function unlockAndRestoreSessions(password: string) {
     if (!pendingRestore) return
     await vault.unlock(password)
     refreshVaultStatus()
-    applyRestore(pendingRestore)
+    applyRestore(pendingRestore, true)
   }
 
   async function unlockWithOsAndRestoreSessions() {
@@ -445,7 +505,7 @@ function App() {
       .setFocus()
       .catch(() => {})
     refreshVaultStatus()
-    applyRestore(pendingRestore)
+    applyRestore(pendingRestore, true)
   }
 
   function newTab() {
@@ -546,22 +606,23 @@ function App() {
    * their (prefilled) connect form instead of carrying a source that can only
    * fail. Mounting them with the source intact is what made every tab in a
    * workspace come up as "vault is locked" with no way forward.
+   *
+   * `refreshTabs` also re-reads each pane's profile, so a workspace saved
+   * before a profile was renamed or moved opens against what that profile is
+   * now rather than what it was.
    */
   function materializeWorkspace(
     workspace: Workspace,
     vaultUsable: boolean,
     originTabId?: string | null,
   ) {
-    const restored: Tab[] = workspace.tabs.map((t) => {
-      const root = reidentify(
-        vaultUsable
-          ? t.root
-          : withoutVaultBoundSources(t.root, sessions, (profileId) => {
-              const p = sessions.find((s) => s.id === profileId)
-              return p ? profileToInitial(p) : undefined
-            }),
-      )
-      return { ...t, id: newTabId(), root, activePaneId: firstLeaf(root).id }
+    const restored: Tab[] = refreshTabs(workspace.tabs, sessions, vaultUsable).map((t) => {
+      // reidentify() invalidates the stored activePaneId along with every
+      // other id, so the first pane takes over — and the title has to be
+      // recomputed from that same pane, not the one refreshTabs picked.
+      const root = reidentify(t.root)
+      const active = firstLeaf(root)
+      return { ...t, id: newTabId(), root, activePaneId: active.id, title: leafTitle(active, t.title) }
     })
     if (restored.length === 0) return
     setTabs((prev) => {
@@ -811,29 +872,6 @@ function App() {
     }
     refit()
     toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
-  }
-
-  function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
-    return {
-      id: profile.id,
-      protocol: profile.protocol,
-      label: profile.label,
-      folder: profile.folder,
-      host: profile.host,
-      port: profile.port,
-      username: profile.username,
-      authType:
-        profile.authType === 'password'
-          ? 'Password'
-          : profile.authType === 'agent'
-            ? 'Agent'
-            : 'PublicKey',
-      keyPath: profile.keyPath ?? undefined,
-      hasCredential: profile.hasCredential,
-      jumpProfileId: profile.jumpProfileId,
-      termType: profile.termType,
-      backspaceSendsCtrlH: profile.backspaceSendsCtrlH,
-    }
   }
 
   // Shared by both "open in a new tab" (openSavedSession) and "load into
