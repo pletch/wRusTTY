@@ -62,23 +62,21 @@ const TERM_TYPES: { value: string; label: string }[] = [
  * leading underscores aren't valid in a terminfo entry name. */
 const TERM_CUSTOM = '__custom__'
 
-/** Three-state, because "follow the global setting" has to stay expressible:
- * every session that predates this option has no stored preference, and must
- * keep tracking the Settings menu rather than silently freezing at whatever
- * the global happened to be the day it was edited. */
+/** Two states, not three: there is no global preference to inherit from, so
+ * the modern value is simply the default and a session either overrides it or
+ * doesn't. A profile stored without the field reads as `^?` for the same
+ * reason. */
 const BACKSPACE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'inherit', label: 'Use global setting' },
   { value: 'del', label: '^? (DEL) — modern Unix' },
   { value: 'ctrlh', label: '^H (Ctrl-H) — network / legacy gear' },
 ]
 
-function backspaceToValue(v: boolean | null | undefined): string {
-  return v == null ? 'inherit' : v ? 'ctrlh' : 'del'
-}
-
-function backspaceFromValue(v: string): boolean | null {
-  return v === 'inherit' ? null : v === 'ctrlh'
-}
+/** Telnet in 2026 is overwhelmingly network gear, console servers, and
+ * legacy systems, so the form pre-selects the value that suits them. Set as
+ * a *visible* form default rather than in the protocol's own defaults on the
+ * Rust side: the user can see what will be sent and change it in one click,
+ * instead of a silent downgrade they'd have to go looking for. */
+const TELNET_DEFAULT_TERM = 'vt100'
 
 interface Props {
   /** `paneOptions` carries terminal-side behaviour that isn't part of any
@@ -191,12 +189,23 @@ export function ConnectDialog({
     initial?.authType ?? 'Password',
   )
   const [termType, setTermType] = useState(initial?.termType ?? '')
-  const [backspace, setBackspace] = useState(backspaceToValue(initial?.backspaceSendsCtrlH))
+  const [backspace, setBackspace] = useState(initial?.backspaceSendsCtrlH ? 'ctrlh' : 'del')
   // A saved session carrying a value that isn't on the list opens straight
   // into the free-text field, rather than silently snapping to the default.
   const [termCustom, setTermCustom] = useState(
     Boolean(initial?.termType) && !TERM_TYPES.some((t) => t.value === initial?.termType),
   )
+
+  // Switching protocol re-applies that protocol's default terminal type,
+  // unless we were prefilled from a saved session (which carries its own).
+  // Deliberately overwrites a hand-picked value: changing protocol is a large
+  // enough context switch that carrying the old one across would be the
+  // surprising behaviour, not this.
+  useEffect(() => {
+    if (initial?.termType) return
+    setTermCustom(false)
+    setTermType(protocol === 'telnet' ? TELNET_DEFAULT_TERM : '')
+  }, [protocol, initial?.termType])
   const [password, setPassword] = useState('')
   // A public-key profile with no keyPath and an existing vault credential
   // means the key itself already lives in the vault — the default path
@@ -314,7 +323,7 @@ export function ConnectDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    const paneOptions = { backspaceSendsCtrlH: backspaceFromValue(backspace) }
+    const paneOptions = { backspaceSendsCtrlH: backspace === 'ctrlh' }
 
     if (protocol === 'ssh') {
       const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
@@ -407,7 +416,7 @@ export function ConnectDialog({
             authType === 'Agent' ? 'agent' : authType === 'Password' ? 'password' : 'public_key',
           keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
           termType: termType.trim() || null,
-          backspaceSendsCtrlH: backspaceFromValue(backspace),
+          backspaceSendsCtrlH: backspace === 'ctrlh',
           // Preserves a prior credential's flag across an unrelated edit —
           // there's no "forget stored credential" affordance yet, so saving
           // shouldn't silently lose track of one that already exists.

@@ -29,9 +29,9 @@ interface Props {
   source: ConnectionSource
   label: string
   settings: TerminalSettings
-  /** Overrides `settings.backspaceSendsCtrlH` for this pane. `null`/absent
-   * follows the global setting — which is what every session did before the
-   * option became per-session, so existing profiles keep their behaviour. */
+  /** Which byte Backspace sends for this pane: true = ^H, false/null = ^?.
+   * Per-connection rather than a global preference, because one machine
+   * routinely has both kinds of host open at once. */
   backspaceSendsCtrlH?: boolean | null
   logging?: boolean
   /** Whether this is the focused pane within its (possibly split) tab. */
@@ -674,10 +674,9 @@ export function Terminal({
       }
       // Applied here rather than via a key handler so it covers every route
       // xterm takes to produce the byte, and only on what actually goes out
-      // on the wire. The per-session value wins when set; null means this
-      // session never expressed a preference, so follow the global one.
-      const ctrlH = backspaceRef.current ?? settingsRef.current.backspaceSendsCtrlH
-      const out = ctrlH ? data.replaceAll('\x7f', '\b') : data
+      // on the wire. Null means the session never expressed a preference,
+      // which is ^? — what modern Unix expects.
+      const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
       if (sessionId) conn.write(source, sessionId, new TextEncoder().encode(out))
     })
 

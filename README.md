@@ -96,9 +96,18 @@ smartcard. Note that servers cap authentication attempts (OpenSSH's
 `MaxAuthTries` defaults to 6), so an agent loaded with many keys can be cut
 off before the right one is reached.
 
-**Terminal type.** Sessions send `TERM=xterm-256color` unless overridden per
-session (the field suggests common values but accepts any). Some network and
-embedded gear renders badly, or refuses a PTY, under anything but `vt100`.
+**Terminal type.** Set per session, and reaching the far end by different
+means per protocol: SSH sends it with the PTY request, telnet answers the
+RFC 1091 TERMINAL-TYPE subnegotiation with it. SSH defaults to
+`xterm-256color`; telnet defaults to `vt100`, since its remaining users are
+largely the network gear and legacy systems that want it. Serial has no
+equivalent — it is a raw byte stream with nothing to negotiate.
+
+**Backspace.** Per session: `^?` (DEL) by default, which is what modern Unix
+expects, or `^H` for network gear and older Unix. The symptom of the wrong
+one is backspace doing nothing or echoing `^?`. It is a per-connection choice
+rather than a global preference because one machine routinely has both kinds
+of host open in adjacent tabs.
 
 **24-bit colour.** The terminal renders it natively, and sessions request
 `COLORTERM=truecolor` so remote programs know to emit it. That request is
@@ -115,10 +124,6 @@ needs ncurses 6.1+, so on older distributions, minimal container images, and
 most network gear it resolves to nothing and programs degrade to *dumb*
 rather than to 256 colours. `xterm-256color` is present essentially
 everywhere, which is why it remains the default.
-
-**Backspace.** Defaults to `^?` (DEL), which is what modern Unix expects.
-Gear that wants `^H` — much network equipment and older Unix — is handled by
-a setting; the symptom is backspace doing nothing or echoing `^?`.
 
 **Serial break.** The `BRK` button in the status bar holds a break condition
 on the line, for Cisco password recovery, ROMMON entry, and bootloader
