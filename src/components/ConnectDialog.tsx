@@ -42,10 +42,14 @@ export interface ConnectDialogInitial {
  * concept. Not exhaustive — hence the Custom entry, since the set genuinely
  * isn't closed (vendor strings, `putty-256color`, and so on). */
 const TERM_TYPES: { value: string; label: string }[] = [
+  // Labels stay short enough to fit the dialog's 20rem column alongside the
+  // dropdown indicator. The qualifier in brackets is the whole reason a
+  // caller would pick that row, so it earns its space; anything longer
+  // belongs in the field's tooltip, not here.
   { value: '', label: 'xterm-256color (default)' },
-  { value: 'xterm-direct', label: 'xterm-direct — 24-bit colour via terminfo' },
-  { value: 'xterm', label: "xterm — PuTTY's default" },
-  { value: 'vt100', label: 'vt100 — older network / embedded gear' },
+  { value: 'xterm-direct', label: 'xterm-direct (24-bit)' },
+  { value: 'xterm', label: 'xterm (PuTTY default)' },
+  { value: 'vt100', label: 'vt100 (legacy gear)' },
   { value: 'vt220', label: 'vt220' },
   { value: 'ansi', label: 'ansi' },
   { value: 'linux', label: 'linux' },
@@ -741,7 +745,10 @@ export function ConnectDialog({
 
                   {sessions && sessions.filter((s) => s.id !== initial?.id).length > 0 && (
                     <select
-                      className={`${inputClass} w-full`}
+                      // Same indicator-overlap fix as the terminal-type
+                      // select — more pressing here, since these labels are
+                      // user-chosen session names of any length.
+                      className={`${inputClass} w-full truncate pr-7`}
                       value={jumpProfileId}
                       onChange={(e) => setJumpProfileId(e.target.value)}
                       title="Connect through another saved session first (SSH ProxyJump), e.g. a Tailscale-reachable machine that can reach this host"
@@ -764,7 +771,11 @@ export function ConnectDialog({
                       list to a single entry and the control appears broken
                       until the field is cleared. */}
                   <select
-                    className={`${inputClass} w-full`}
+                    // pr-7 rather than inputClass's px-2: a native select
+                    // draws its indicator inside the padding box, so the
+                    // shared input padding leaves the longest label running
+                    // underneath the arrow.
+                    className={`${inputClass} w-full truncate pr-7`}
                     value={termCustom ? TERM_CUSTOM : termType}
                     onChange={(e) => {
                       const next = e.target.value
