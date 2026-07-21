@@ -11,12 +11,13 @@ holds a socket or a serial port, and the process it would be asking about is
 on another machine. The shell saying so out of band is the only reliable
 source, which is why there is a setup step at all.
 
-Nothing breaks without it — panes simply never show a spinner, and command
-notifications never fire. The bell marker (below) needs no setup.
+Nothing breaks without it — a pane's segment of the tab strip simply never
+shows the running marker, and command notifications never fire. The bell
+marker (below) needs no setup.
 
 ## Installing it
 
-Settings (the gear icon) has **Shell integration** with a copy button per
+Settings (the gear icon) → **Shell integration** has a copy button per
 shell — that puts the right snippet on your clipboard, ready to paste into
 the host's rc file. The snippets below are the same text, reproduced for
 reading here; the canonical copies live in `src/lib/shellSnippets.ts`, so
@@ -209,10 +210,10 @@ any connected pane — it fakes a 15-second command by hand:
 printf '\e]133;C\a'; sleep 15; printf '\e]133;D;0\a'
 ```
 
-The tab should show a spinner in place of its protocol icon for 15 seconds.
-Switch to another tab before it finishes and you should get a toast plus an
-amber marker on the tab you left. Change the `0` to a `1` and the toast turns
-into an error.
+A red marker should sweep back and forth along this pane's segment of the tab
+strip for 15 seconds. Switch to another tab before it finishes and you should
+get a toast, plus the marker settling into a pulsing amber one on the pane you
+left. Change the `0` to a `1` and the toast turns into an error.
 
 To check the exit-code path with real integration installed, `sleep 15; false`
 should notify as `exited 1`.
@@ -221,7 +222,8 @@ should notify as `exited 1`.
 
 A completion only raises a toast when all of these hold:
 
-- **Notify on command completion** is enabled in settings (it is by default).
+- **Notify on command completion** is enabled (Settings → Notifications; it is
+  by default).
 - The command took at least 10 seconds. Below that you were probably still
   watching, and per-command toasts for `ls` would train you to ignore them.
 - Its tab isn't the one on screen in a focused window. If you watched it
@@ -231,9 +233,10 @@ A completion only raises a toast when all of these hold:
 
 ## Bell
 
-Separately, and with no setup at all, a `BEL` from the far end marks its tab
-with the same amber dot until you visit it (**Bell marks the tab** in
-settings). This works on anything that can write a byte, including network
+Separately, and with no setup at all, a `BEL` from the far end marks its pane
+with the same amber marker until you focus it (**Bell marks the pane**,
+Settings → Notifications). **Bell plays a sound** there adds a short tone, off
+by default. This works on anything that can write a byte, including network
 gear that will never have OSC 133:
 
 ```sh
@@ -253,8 +256,8 @@ long-running-thing; printf '\a'
   from readline rather than from a line you typed, so it looks like a command
   starting on every keypress it's bound to. systemd 257+ ships exactly this —
   `__systemd_osc_context_precmdline`, bound to Enter from `/etc/profile.d` —
-  and the snippet skips it by name. If a spinner runs continuously on an idle
-  prompt, that's the shape of the problem; find the culprit by adding
+  and the snippet skips it by name. If the running marker sweeps continuously
+  on an idle prompt, that's the shape of the problem; find the culprit by adding
   `printf '[dbg <%s>]\n' "$BASH_COMMAND"` at the top of `__osc133_preexec`,
   pressing Enter on an empty prompt, and adding whatever it names to the
   `case` list.

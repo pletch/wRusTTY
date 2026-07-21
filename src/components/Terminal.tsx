@@ -248,6 +248,11 @@ export function Terminal({
   // whether this pane is the focused one (see the connect effect below).
   const updateScrollbarFocusRef = useRef<((active: boolean) => void) | null>(null)
 
+  // And again, so the font effect below can re-fit this one pane. Dispatching
+  // a window resize event would also work, but every mounted pane runs that
+  // effect, so N panes would each trigger a re-fit of all N.
+  const refitRef = useRef<(() => void) | null>(null)
+
   // Theme updates apply live to the existing terminal instance instead of
   // tearing down and reconnecting the session.
   useEffect(() => {
@@ -256,6 +261,20 @@ export function Terminal({
     }
     updateScrollbarColorsRef.current?.()
   }, [settings.themeName, settings.backgroundOpacity])
+
+  // Font and scrollback likewise apply to the live terminal rather than
+  // recreating it, which would drop the connection and the scrollback along
+  // with it. Changing the font changes the cell size and so the row/column
+  // count, so this has to re-fit and tell the remote PTY the new size —
+  // otherwise the shell keeps line-wrapping to the old width.
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.fontFamily = settings.fontFamily
+    term.options.fontSize = settings.fontSize
+    term.options.scrollback = settings.scrollback
+    refitRef.current?.()
+  }, [settings.fontFamily, settings.fontSize, settings.scrollback])
 
   // Only the focused pane's scrollbar is shown — a background pane's
   // scrollbar would otherwise be a distracting, non-interactive-feeling
@@ -335,12 +354,12 @@ export function Terminal({
       // block — a zero-cost, natively-rendered reinforcement of which pane is
       // active that pairs with the sky focus ring drawn in Pane.tsx.
       cursorInactiveStyle: 'outline',
-      fontFamily: 'ui-monospace, Consolas, monospace',
-      fontSize: 14,
-      // xterm.js defaults to 1000 — counted in wrapped rows, not logical
-      // lines, so verbose output with long lines (dmesg, etc.) fills that
-      // up in well under 1000 actual lines.
-      scrollback: 10000,
+      fontFamily: settingsRef.current.fontFamily,
+      fontSize: settingsRef.current.fontSize,
+      // Defaults to 10000 rather than xterm's 1000 — counted in wrapped
+      // rows, not logical lines, so verbose output with long lines (dmesg,
+      // etc.) fills that up in well under 1000 actual lines.
+      scrollback: settingsRef.current.scrollback,
       // Harmless at the default opacity of 1 (an alpha-1 color renders
       // identically either way) — always on so a live opacity change via
       // the settings effect above doesn't need to also recreate the
@@ -815,6 +834,7 @@ export function Terminal({
       if (activeRef.current) term.focus()
     }
     window.addEventListener('resize', onResize)
+    refitRef.current = onResize
 
     // The container can shrink or grow without the OS window itself
     // resizing — e.g. the status footer appearing/disappearing as a
@@ -828,6 +848,7 @@ export function Terminal({
     return () => {
       disposed = true
       window.removeEventListener('resize', onResize)
+      refitRef.current = null
       resizeObserver.disconnect()
       container.removeEventListener('contextmenu', onContextMenu)
       container.removeEventListener('keydown', onKeyDown, true)

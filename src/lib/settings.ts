@@ -31,6 +31,29 @@ export interface TerminalSettings {
    * renaming it would silently reset the preference for anyone who had
    * changed it, which isn't worth the tidier name. */
   bellMarksTab: boolean
+  /** A bell also plays a short tone. Off by default and separate from the
+   * marker above rather than folded into one three-way setting: they're
+   * genuinely independent (a marker is passive, a sound interrupts), and
+   * merging them would have meant retiring `bellMarksTab`'s storage key and
+   * silently resetting anyone who had turned it off. */
+  bellSound: boolean
+  /** Font stack passed to xterm. Anything CSS accepts; the default is the
+   * platform's UI monospace with Consolas behind it. Only fixed-width fonts
+   * make sense — xterm measures one glyph and assumes the rest match, so a
+   * proportional font renders with visibly wrong column alignment. */
+  fontFamily: string
+  /** Terminal font size in px. */
+  fontSize: number
+  /** Rows of scrollback xterm retains per pane. Counted in *wrapped* rows,
+   * not logical lines, so verbose output with long lines fills it faster
+   * than the number suggests. Memory scales with this times the number of
+   * open panes, which is why it isn't simply set very high. */
+  scrollback: number
+  /** Ask before closing a tab, pane or the window while something is still
+   * connected. On by default: closing is instant and irreversible, and the
+   * session it drops may have taken a vault unlock and a jump host to
+   * establish. */
+  confirmCloseWithConnection: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -67,6 +90,11 @@ const defaults: TerminalSettings = {
   logPlainText: true,
   notifyOnCommandComplete: true,
   bellMarksTab: true,
+  bellSound: false,
+  fontFamily: 'ui-monospace, Consolas, monospace',
+  fontSize: 14,
+  scrollback: 10000,
+  confirmCloseWithConnection: true,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

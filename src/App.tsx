@@ -4,7 +4,7 @@ import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
 import { TabBar } from './components/TabBar'
 import { QuickConnectPalette } from './components/QuickConnectPalette'
-import { SettingsMenu } from './components/SettingsMenu'
+import { SettingsDialog } from './components/SettingsDialog'
 import { VaultMenu } from './components/VaultMenu'
 import { WorkspaceMenu } from './components/WorkspaceMenu'
 import type { Workspace } from './lib/workspaces'
@@ -12,6 +12,8 @@ import * as workspaceApi from './lib/workspaces'
 import { ToastHost } from './components/ToastHost'
 import { WindowControls } from './components/WindowControls'
 import { RestoreSessionsPrompt } from './components/RestoreSessionsPrompt'
+import { ConfirmDialog } from './components/ConfirmDialog'
+import { playBell } from './lib/bellSound'
 import { StatusBar } from './components/StatusBar'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
@@ -332,6 +334,14 @@ function App() {
   // can't have its own answer overwritten by the still-default blank tab
   // underneath it.
   const [pendingRestore, setPendingRestore] = useState<SessionSnapshot | null>(null)
+  /** A close held back pending confirmation, because it would drop live
+   * connections — see ConfirmDialog at the bottom of the render. */
+  const [pendingClose, setPendingClose] = useState<
+    | { kind: 'tab'; tabId: string; count: number }
+    | { kind: 'pane'; tabId: string; paneId: string }
+    | { kind: 'window'; count: number }
+    | null
+  >(null)
   /** A workspace waiting on a vault unlock before its tabs are materialised,
    * with the tab it was launched from so that survives the prompt. */
   const [pendingWorkspace, setPendingWorkspace] = useState<{
@@ -451,6 +461,35 @@ function App() {
     getCurrentWindow()
       .show()
       .catch(() => {})
+  }, [])
+
+  // Read by the window-close hook below, which is mounted once and so can't
+  // close over the current tabs/settings. Recomputed each render rather than
+  // kept in state: it's a handful of leaves, and a stale answer here means
+  // either nagging about nothing or dropping live sessions silently.
+  const closeGuardRef = useRef({ connected: 0, enabled: true })
+  closeGuardRef.current = {
+    connected: tabs.reduce((n, t) => n + connectedPanes(t.root), 0),
+    enabled: terminalSettings.confirmCloseWithConnection,
+  }
+  // Set just before re-issuing the close we previously vetoed, so the hook
+  // lets that one through. Going through close() again rather than destroy()
+  // keeps the normal close path intact — notably tauri-plugin-window-state,
+  // which saves the window geometry off this same event and would otherwise
+  // silently stop persisting it.
+  const forceCloseRef = useRef(false)
+
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onCloseRequested((event) => {
+      if (forceCloseRef.current) return
+      const { connected, enabled } = closeGuardRef.current
+      if (!enabled || connected === 0) return
+      event.preventDefault()
+      setPendingClose({ kind: 'window', count: connected })
+    })
+    return () => {
+      unlisten.then((f) => f()).catch(() => {})
+    }
   }, [])
 
   // Rounded corners only make sense for a floating window — a maximized
@@ -592,7 +631,24 @@ function App() {
     setActiveTabId(tab.id)
   }
 
+  /** Panes in this subtree holding a live connection — what closing would
+   * drop. A pane still sitting on its connect form costs nothing to close,
+   * so only established sessions are worth interrupting anyone over. */
+  function connectedPanes(root: PaneNode): number {
+    return allLeaves(root).filter((l) => statusByPane[l.id] === 'connected').length
+  }
+
   function closeTab(id: string) {
+    const tab = tabs.find((t) => t.id === id)
+    const count = tab ? connectedPanes(tab.root) : 0
+    if (count > 0 && terminalSettings.confirmCloseWithConnection) {
+      setPendingClose({ kind: 'tab', tabId: id, count })
+      return
+    }
+    closeTabNow(id)
+  }
+
+  function closeTabNow(id: string) {
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id)
       if (activeTabId === id) {
@@ -867,11 +923,21 @@ function App() {
   }
 
   function closePane(tabId: string, paneId: string) {
+    if (statusByPane[paneId] === 'connected' && terminalSettings.confirmCloseWithConnection) {
+      setPendingClose({ kind: 'pane', tabId, paneId })
+      return
+    }
+    closePaneNow(tabId, paneId)
+  }
+
+  function closePaneNow(tabId: string, paneId: string) {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
     const newRoot = closeLeaf(tab.root, paneId)
     if (!newRoot) {
-      closeTab(tabId)
+      // Already confirmed as a pane close if it needed to be — going through
+      // closeTab here would ask a second time for the same one connection.
+      closeTabNow(tabId)
       return
     }
     const activePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
@@ -1423,7 +1489,7 @@ function App() {
             onChanged={() => setWorkspacesVersion((v) => v + 1)}
           />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
-          <SettingsMenu settings={terminalSettings} onChange={updateSettings} />
+          <SettingsDialog settings={terminalSettings} onChange={updateSettings} />
         </div>
         <WindowControls maximized={maximized} />
       </div>
@@ -1578,6 +1644,12 @@ function App() {
                     else toast.success(message)
                   }}
                   onBell={() => {
+                    // Sound fires for every bell, including one from the pane
+                    // you're looking at: that's the case where a bell is most
+                    // often deliberate (a script signalling it's done while
+                    // you read something else on screen), and it's the half
+                    // of the bell a terminal has always had.
+                    if (terminalSettings.bellSound) playBell()
                     if (!terminalSettings.bellMarksTab) return
                     // Same "was this pane in view" test as a completion — a
                     // bell from the other half of a split still deserves a
@@ -1625,6 +1697,68 @@ function App() {
         />
       )}
       <ToastHost />
+      {pendingClose &&
+        (() => {
+          const plural = (n: number) => `${n} connection${n === 1 ? '' : 's'}`
+          const ends = (n: number) =>
+            `Closing ends ${n === 1 ? 'it' : 'them'} immediately.`
+          if (pendingClose.kind === 'pane') {
+            return (
+              <ConfirmDialog
+                title="Close this pane?"
+                body={`Its connection is still open. ${ends(1)}`}
+                confirmLabel="Close pane"
+                onConfirm={() => {
+                  closePaneNow(pendingClose.tabId, pendingClose.paneId)
+                  setPendingClose(null)
+                }}
+                onCancel={() => setPendingClose(null)}
+              />
+            )
+          }
+          if (pendingClose.kind === 'tab') {
+            return (
+              <ConfirmDialog
+                title="Close this tab?"
+                body={`${plural(pendingClose.count)} still open in it. ${ends(pendingClose.count)}`}
+                confirmLabel="Close tab"
+                onConfirm={() => {
+                  closeTabNow(pendingClose.tabId)
+                  setPendingClose(null)
+                }}
+                onCancel={() => setPendingClose(null)}
+              />
+            )
+          }
+          return (
+            <ConfirmDialog
+              title="Quit wRusTTY?"
+              body={
+                `${plural(pendingClose.count)} still open. ${ends(pendingClose.count)}` +
+                // Only mentioned when it's true, since it materially changes
+                // how much closing costs — and claiming it when the setting
+                // is off would be worse than saying nothing.
+                (terminalSettings.restoreSessionsOnLaunch
+                  ? ' They can be reopened next launch.'
+                  : '')
+              }
+              confirmLabel="Quit"
+              onConfirm={() => {
+                setPendingClose(null)
+                forceCloseRef.current = true
+                getCurrentWindow()
+                  .close()
+                  .catch(() => {
+                    // Re-arm rather than leaving the guard permanently
+                    // disabled if this somehow fails — otherwise the next
+                    // close would skip the confirmation silently.
+                    forceCloseRef.current = false
+                  })
+              }}
+              onCancel={() => setPendingClose(null)}
+            />
+          )
+        })()}
       {pendingRestore && sessionsLoaded && (
         <RestoreSessionsPrompt
           count={sessionSnapshot.countSessions(pendingRestore.tabs)}
