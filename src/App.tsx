@@ -1607,8 +1607,18 @@ function App() {
                     // — but only a clean disconnect, not a failure, since
                     // the error should stay visible until the user
                     // dismisses it themselves.
+                    // closePaneNow, not closePane: there is nothing to
+                    // confirm here. The session has already ended — usually
+                    // because the user typed `exit` — so asking whether they
+                    // meant to drop it is both wrong and unanswerable.
+                    //
+                    // Going through the guarded closePane also asked at the
+                    // wrong time regardless: this callback's closure holds
+                    // the statusByPane from the render that ran *before* the
+                    // update above committed, so the check 800ms later still
+                    // read the pane as connected.
                     if (s === 'disconnected' && terminalSettings.closeOnDisconnect) {
-                      setTimeout(() => closePane(tab.id, leaf.id), 800)
+                      setTimeout(() => closePaneNow(tab.id, leaf.id), 800)
                     }
                   }}
                   onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
