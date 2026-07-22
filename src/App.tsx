@@ -660,6 +660,16 @@ function App() {
       }
       return next
     })
+    // Closing the active tab reveals its neighbour, which was hidden (and so
+    // sized 0x0) until now — the same "a pane just became visible" situation
+    // selectTab handles, reached by a different route. Without this the newly
+    // shown pane is left to Terminal.tsx's ResizeObserver alone, and an
+    // observer delivers between layout and paint, which is exactly the moment
+    // refit()'s double-rAF exists to wait past: a fit computed against a
+    // transitional size leaves xterm's column count disagreeing with the
+    // remote PTY's, which shows up as the cursor blinking a few columns away
+    // from the end of the prompt until the next full redraw.
+    refit()
   }
 
   function selectTab(id: string) {
