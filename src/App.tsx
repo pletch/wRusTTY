@@ -230,6 +230,9 @@ function describeCommandResult(result: CommandResult, tabTitle: string): string 
 }
 
 function App() {
+  // Temporary switch for Phase 2 go/no-go milestone test
+
+
   const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
   const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
@@ -1588,6 +1591,7 @@ function App() {
                   source={leaf.source}
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
                   settings={terminalSettings}
+                  engine={leaf.engine}
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}

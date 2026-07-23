@@ -1,7 +1,6 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Minus, Square, Copy, X } from 'lucide-react'
 
-const win = getCurrentWindow()
 
 const buttonClass =
   'flex w-11 items-center justify-center text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white'
@@ -16,6 +15,14 @@ interface Props {
  * `maximized` is owned by App.tsx since it also needs it to decide
  * whether to round the window's corners. */
 export function WindowControls({ maximized }: Props) {
+  let win: any
+  try {
+    win = getCurrentWindow()
+  } catch {
+    // Fallback for browser testing
+    win = { minimize: () => {}, toggleMaximize: () => {}, close: () => {} }
+  }
+
   return (
     <div className="flex shrink-0 items-stretch">
       <button className={buttonClass} onClick={() => win.minimize()} title="Minimize">

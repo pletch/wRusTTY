@@ -5,7 +5,13 @@ export function newPaneId() {
 }
 
 export function blankLeaf(): PaneLeaf {
-  return { type: 'leaf', id: newPaneId(), source: null, generation: 0 }
+  return {
+    type: 'leaf',
+    id: newPaneId(),
+    source: null,
+    generation: 0,
+    engine: 'ghostty',
+  }
 }
 
 /** Rebuilds a tree with fresh ids, preserving structure, sources and split

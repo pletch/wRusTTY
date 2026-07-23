@@ -1,4 +1,4 @@
-import type { Terminal as XTerm } from '@xterm/xterm'
+
 
 /** A minimal local line editor for serial's "Readline"/"Readline (hex)"
  * input modes — xterm.js has no line-editing of its own, so keystrokes are
@@ -19,10 +19,10 @@ export class LineEditor {
   private history: string[] = []
   private historyIndex = -1
   private stash = ''
-  private term: XTerm
+  private term: { write(data: string): void }
   private onSubmit: (line: string) => void
 
-  constructor(term: XTerm, onSubmit: (line: string) => void) {
+  constructor(term: { write(data: string): void }, onSubmit: (line: string) => void) {
     this.term = term
     this.onSubmit = onSubmit
   }

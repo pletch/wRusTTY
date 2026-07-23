@@ -38,6 +38,8 @@ pub struct SshSession {
     // a `OnceCell` keeps this on a shared `&self`, matching `add_forward`'s
     // shape, rather than requiring `&mut self` everywhere SFTP is touched.
     sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
+    initial_cols: u16,
+    initial_rows: u16,
 }
 
 impl SshSession {
@@ -45,6 +47,8 @@ impl SshSession {
         config: SshConfig,
         known_hosts_path: impl Into<PathBuf>,
         verifier: Arc<dyn HostKeyVerifier>,
+        initial_cols: u16,
+        initial_rows: u16,
     ) -> std::io::Result<Self> {
         let known_hosts = KnownHostsStore::load(known_hosts_path)?;
         Ok(Self {
@@ -56,6 +60,8 @@ impl SshSession {
             resize_tx: None,
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
             sftp: tokio::sync::OnceCell::new(),
+            initial_cols,
+            initial_rows,
         })
     }
 
@@ -217,7 +223,7 @@ impl SshSession {
         // starts cannot reach it.
         let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
         channel
-            .request_pty(false, self.config.term_type(), 80, 24, 0, 0, &[])
+            .request_pty(false, self.config.term_type(), self.initial_cols as u32, self.initial_rows as u32, 0, 0, &[])
             .await?;
         channel.request_shell(true).await?;
 

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Terminal as XTerm } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
-import { SearchAddon } from '@xterm/addon-search'
+import type { TerminalEngine } from '../lib/terminalEngine'
+import { XtermEngine } from '../lib/xtermEngine'
+import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import {
   Search,
   ChevronUp,
@@ -63,7 +62,10 @@ interface Props {
   onBackToConnect?: () => void
   /** Retry the same connection in place — surfaced on the failed/disconnected
    * overlays as a "Reconnect" action. */
+  /** Reopen failed connections in place. */
   onReconnect?: () => void
+  /** Which engine to use for rendering. Defaults to 'xterm'. */
+  engine?: 'xterm' | 'ghostty'
 }
 
 interface PendingHostKey {
@@ -77,25 +79,6 @@ interface PendingHostKey {
 
 function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
-}
-
-function themeWithOpacity(themeName: string, opacity: number) {
-  const theme = findTheme(themeName)
-  return { ...theme, background: backgroundWithOpacity(theme, opacity) }
-}
-
-// Passing `decorations` to the search addon is what turns on highlight-*all*
-// (every match painted, not just the one the viewport jumped to). Amber reads
-// as "search hit" on any preset theme without colliding with the sky accent
-// the app uses for focus/selection; the active match is the brighter fill.
-// The overview-ruler fields are required by the addon whenever decorations
-// are supplied — they mark hits in xterm's own right gutter, which this app's
-// custom scrollbar overlay largely masks, but they're harmless to include.
-const SEARCH_DECORATIONS = {
-  matchBackground: '#5c4a1c',
-  matchOverviewRuler: '#d9a441',
-  activeMatchBackground: '#d9a441',
-  activeMatchColorOverviewRuler: '#ffd479',
 }
 
 export function Terminal({
@@ -114,11 +97,11 @@ export function Terminal({
   onBell,
   onBackToConnect,
   onReconnect,
+  engine = 'xterm',
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
-  const termRef = useRef<XTerm | null>(null)
-  const searchAddonRef = useRef<SearchAddon | null>(null)
+  const termRef = useRef<TerminalEngine | null>(null)
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -257,7 +240,7 @@ export function Terminal({
   // tearing down and reconnecting the session.
   useEffect(() => {
     if (termRef.current) {
-      termRef.current.options.theme = themeWithOpacity(settings.themeName, settings.backgroundOpacity)
+      termRef.current.setTheme(settings.themeName, settings.backgroundOpacity)
     }
     updateScrollbarColorsRef.current?.()
   }, [settings.themeName, settings.backgroundOpacity])
@@ -270,9 +253,9 @@ export function Terminal({
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    term.options.fontFamily = settings.fontFamily
-    term.options.fontSize = settings.fontSize
-    term.options.scrollback = settings.scrollback
+    term.setFont(settings.fontFamily, settings.fontSize)
+    // term.options.fontFamily = settings.fontFamily
+        term.setScrollback( settings.scrollback)
     refitRef.current?.()
   }, [settings.fontFamily, settings.fontSize, settings.scrollback])
 
@@ -292,25 +275,21 @@ export function Terminal({
     query: string,
     opts: { back?: boolean; incremental?: boolean; caseSensitive?: boolean; regex?: boolean } = {},
   ) {
-    const addon = searchAddonRef.current
-    if (!addon) return
+    const term = termRef.current
+    if (!term) return
     if (!query) {
-      addon.clearDecorations()
+      term.clearSearchDecorations()
       setSearchResults({ index: -1, count: 0 })
       return
     }
-    const options = {
-      caseSensitive: opts.caseSensitive ?? searchCaseSensitive,
-      regex: opts.regex ?? searchRegex,
-      incremental: opts.incremental,
-      decorations: SEARCH_DECORATIONS,
-    }
     try {
-      if (opts.back) addon.findPrevious(query, options)
-      else addon.findNext(query, options)
+      term.search(query, {
+        caseSensitive: opts.caseSensitive ?? searchCaseSensitive,
+        regex: opts.regex ?? searchRegex,
+        incremental: opts.incremental,
+        back: opts.back,
+      })
     } catch {
-      // A half-typed regex (e.g. an unclosed group) throws — treat it as
-      // simply "no matches yet" until it becomes valid.
       setSearchResults({ index: -1, count: 0 })
     }
   }
@@ -325,7 +304,7 @@ export function Terminal({
     } else {
       // Leaving search shouldn't leave the whole scrollback stippled with
       // highlights behind you.
-      searchAddonRef.current?.clearDecorations()
+      termRef.current?.clearSearchDecorations()
       setSearchResults({ index: -1, count: 0 })
     }
     // Only meant to fire when the box opens/closes — searchQuery is read as a
@@ -347,80 +326,26 @@ export function Terminal({
     let disposed = false
     let sessionId: string | null = null
 
-    const term = new XTerm({
-      cursorBlink: true,
-      // When this terminal isn't the focused one (e.g. the other half of a
-      // split), xterm dims its cursor to a hollow outline instead of a solid
-      // block — a zero-cost, natively-rendered reinforcement of which pane is
-      // active that pairs with the sky focus ring drawn in Pane.tsx.
-      cursorInactiveStyle: 'outline',
-      fontFamily: settingsRef.current.fontFamily,
-      fontSize: settingsRef.current.fontSize,
-      // Defaults to 10000 rather than xterm's 1000 — counted in wrapped
-      // rows, not logical lines, so verbose output with long lines (dmesg,
-      // etc.) fills that up in well under 1000 actual lines.
-      scrollback: settingsRef.current.scrollback,
-      // Harmless at the default opacity of 1 (an alpha-1 color renders
-      // identically either way) — always on so a live opacity change via
-      // the settings effect above doesn't need to also recreate the
-      // terminal just to flip this.
-      allowTransparency: true,
-      // Required by the search addon's highlight-all decorations: they call
-      // the core registerDecoration API, which is gated behind this flag and
-      // throws ("You must set the allowProposedApi option to true") without
-      // it — which the search box's try/catch would otherwise swallow as a
-      // silent "no results".
-      allowProposedApi: true,
-      theme: themeWithOpacity(settingsRef.current.themeName, settingsRef.current.backgroundOpacity),
-    })
-    termRef.current = term
-
-    const fitAddon = new FitAddon()
-    term.loadAddon(fitAddon)
-    const searchAddon = new SearchAddon()
-    term.loadAddon(searchAddon)
-    searchAddonRef.current = searchAddon
-    // Drives the "N/M" match count in the search box. resultIndex is -1 with
-    // no matches; the UI turns that into "None".
-    const searchResultsListener = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
-      if (disposed) return
-      setSearchResults({ index: resultIndex, count: resultCount })
-    })
-    term.open(container)
-
-    // A lost GPU context (driver reset, resource exhaustion — plausible with
-    // several terminals' worth of WebGL contexts open at once, since every
-    // tab's panes stay mounted regardless of visibility) otherwise leaves a
-    // terminal rendering a blank/corrupted canvas forever, since nothing
-    // else notices or recovers. Disposing on loss just drops back to
-    // xterm's own canvas renderer for the rest of this session, matching
-    // what happens when WebGL wasn't available to begin with. Pulled out
-    // as its own function since onResize below needs to redo this same
-    // setup when it tears down and rebuilds the addon after a move.
-    //
-    // Always attempted regardless of vibrancy/opacity settings: WebView2 on
-    // Windows composites a hardware-accelerated canvas as opaque against a
-    // transparent window no matter which xterm renderer draws it (confirmed
-    // on real hardware — the opacity slider had zero visible effect on
-    // these panes under Canvas 2D either), so there's no transparency
-    // benefit left to trade WebGL's performance away for.
-    function loadWebgl(): WebglAddon | null {
-      try {
-        const addon = new WebglAddon()
-        addon.onContextLoss(() => {
-          addon.dispose()
-          if (webglAddon === addon) webglAddon = null
-        })
-        term.loadAddon(addon)
-        return addon
-      } catch {
-        // WebGL unavailable — xterm falls back to its canvas renderer.
-        return null
-      }
+    if (engine === 'ghostty') {
+      termRef.current = new GhosttyEngine()
+    } else {
+      termRef.current = new XtermEngine({
+        fontFamily: settingsRef.current.fontFamily,
+        fontSize: settingsRef.current.fontSize,
+        scrollback: settingsRef.current.scrollback,
+        themeName: settingsRef.current.themeName,
+        backgroundOpacity: settingsRef.current.backgroundOpacity,
+      })
     }
-    let webglAddon = loadWebgl()
-
-    fitAddon.fit()
+    const term = termRef.current
+    
+    const searchResultsListener = term.onSearchResult((result) => {
+      if (disposed) return
+      setSearchResults({ index: result.index, count: result.count })
+    })
+    
+    term.mount(container)
+    term.fit()
 
     // Custom scrollbar overlay — xterm.js's own scrollbar widget explicitly
     // doesn't support arrow buttons (its bundled source throws if
@@ -524,7 +449,7 @@ export function Terminal({
     }
 
     function updateThumb() {
-      const total = term.buffer.active.length
+      const total = term.scrollbackLength
       const rows = term.rows
       hasOverflow = total > rows
       applyScrollbarVisibility()
@@ -533,7 +458,7 @@ export function Terminal({
       const thumbHeight = Math.max(20, (rows / total) * trackHeight)
       const maxScroll = total - rows
       const maxThumbTop = trackHeight - thumbHeight
-      const thumbTop = maxScroll > 0 ? (term.buffer.active.viewportY / maxScroll) * maxThumbTop : 0
+      const thumbTop = maxScroll > 0 ? (term.viewportY / maxScroll) * maxThumbTop : 0
       thumb.style.height = `${thumbHeight}px`
       thumb.style.top = `${thumbTop}px`
     }
@@ -597,7 +522,7 @@ export function Terminal({
       const trackHeight = track.clientHeight
       const thumbHeight = thumb.clientHeight
       const maxThumbTop = trackHeight - thumbHeight
-      const maxScroll = term.buffer.active.length - term.rows
+      const maxScroll = term.scrollbackLength - term.rows
       dragMoveHandler = (moveEv: MouseEvent) => {
         const newTop = Math.min(Math.max(0, startTop + (moveEv.clientY - startY)), maxThumbTop)
         const ratio = maxThumbTop > 0 ? newTop / maxThumbTop : 0
@@ -633,14 +558,14 @@ export function Terminal({
       },
     })
     const oscListeners = [133, 633].map((ident) =>
-      term.parser.registerOscHandler(ident, (data) => tracker.handleOsc(data)),
+      term.registerOscHandler(ident, (data) => tracker.handleOsc(data)),
     )
     // Entering the alternate screen mid-command means a full-screen program
     // took over (vim, top, less). Recorded on the run so the completion it
     // eventually reports can be recognized as "you quit an editor", not "a
     // batch job you were waiting on has landed".
-    const bufferListener = term.buffer.onBufferChange(() => {
-      if (term.buffer.active.type === 'alternate') tracker.noteAltScreen()
+    const bufferListener = term.onBufferChange((isAlternate) => {
+      if (isAlternate) tracker.noteAltScreen()
     })
     const bellListener = term.onBell(() => {
       if (!disposed) onBellRef.current?.()
@@ -715,14 +640,31 @@ export function Terminal({
           })
         : null
 
+    // Ensure GhosttyEngine is sized correctly *before* connecting
+    termRef.current?.fit(true)
+    const cols = (termRef.current as any)?.cols || 80
+    const rows = (termRef.current as any)?.rows || 24
+
     conn
-      .connect(source, onEvent, onData)
+      .connect(source, onEvent, onData, cols, rows)
       .then((id) => {
         if (disposed) {
           conn.disconnect(source, id).catch(() => {})
           return
         }
         setConnecting(false)
+      
+        // Now that the session is established, force a fit to ensure the backend
+        // PTY gets the actual layout dimensions instead of the initial 80x24.
+        termRef.current?.fit(true)
+        setTimeout(() => {
+          if (termRef.current) {
+            termRef.current.fit(true)
+            const { cols, rows } = termRef.current
+            conn.resize(source, id, cols, rows).catch(() => {})
+          }
+        }, 100)
+      
         sessionId = id
         sessionIdRef.current = id
         onSessionIdRef.current?.(id)
@@ -802,7 +744,7 @@ export function Terminal({
       // it is, until the next full redraw (e.g. pressing Enter) resynced
       // them. A hidden container has nothing useful to fit to anyway.
       if (container.clientWidth === 0 || container.clientHeight === 0) return
-      fitAddon.fit()
+      term.fit()
       if (sessionId) conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
       // Guarding against the 0x0 fit stopped the PTY-side desync, but the
       // canvas can still end up visually stale after this — most sharply
@@ -817,10 +759,8 @@ export function Terminal({
       // that same "nothing changed here" assumption. Tearing down and
       // rebuilding the addon from scratch forces a genuinely fresh full
       // repaint with no assumptions left over from before the move.
-      if (webglAddon) {
-        webglAddon.dispose()
-        webglAddon = loadWebgl()
-      }
+      // Delegate webgl rebuilding to engine
+      term.rebuildWebglRenderer?.()
       term.refresh(0, term.rows - 1)
       updateScrollbarGeometry()
       updateThumb()
@@ -879,7 +819,7 @@ export function Terminal({
       sessionIdRef.current = null
       onSessionIdRef.current?.(null)
       termRef.current = null
-      searchAddonRef.current = null
+      
       updateScrollbarColorsRef.current = null
       updateScrollbarFocusRef.current = null
       term.dispose()
@@ -929,7 +869,7 @@ export function Terminal({
       // App.tsx) did the moment a non-default theme was actually tested.
       style={{ background: backgroundWithOpacity(findTheme(settings.themeName), settings.backgroundOpacity) }}
     >
-      <div ref={containerRef} className="h-full w-full" />
+      <div ref={containerRef} className="relative h-full w-full" />
       {connecting && (
         <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">
           <Loader2 size={20} className="animate-spin text-sky-400" />

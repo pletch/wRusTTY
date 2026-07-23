@@ -26,6 +26,8 @@ export function connect(
   source: ConnectionSource,
   onEvent: (event: ConnEvent) => void,
   onData: (bytes: Uint8Array) => void,
+  cols: number,
+  rows: number,
 ) {
   const channel = new Channel<ConnEvent>()
   channel.onmessage = onEvent
@@ -45,12 +47,16 @@ export function connect(
         jumpProfileId: source.jumpProfileId ?? null,
         channel,
         dataChannel,
+        cols,
+        rows,
       })
     case 'sshProfile':
       return invoke<string>('ssh_connect_profile', {
         profileId: source.profileId,
         channel,
         dataChannel,
+        cols,
+        rows,
       })
     case 'telnet':
       return invoke<string>('telnet_connect', { config: source.config, channel, dataChannel })
