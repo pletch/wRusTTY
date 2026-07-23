@@ -10,7 +10,12 @@ export function blankLeaf(): PaneLeaf {
     id: newPaneId(),
     source: null,
     generation: 0,
-    engine: 'ghostty',
+    // xterm.js stays the default until the Ghostty engine is feature-complete
+    // and measured faster here: it currently has no scrollback (scrollLines and
+    // scrollToLine are no-ops and scrollbackLength is a constant), no selection,
+    // no search and no bell, so a pane that opens on it silently loses working
+    // features. Selectable per-pane in the meantime.
+    engine: 'xterm',
   }
 }
 

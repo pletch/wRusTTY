@@ -26,6 +26,9 @@ import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 
+/** Matches .term-scrollbar-inner's width in index.css. */
+const SCROLLBAR_WIDTH = 8
+
 interface Props {
   source: ConnectionSource
   label: string
@@ -338,7 +341,17 @@ export function Terminal({
       })
     }
     const term = termRef.current
-    
+
+    // The theme/font effects above are declared before this one, so on a first
+    // mount they run while termRef is still null and their settings never reach
+    // the engine — it was left on its own built-in defaults (grey on black)
+    // rather than the configured theme. Applying them here is also what gets
+    // the palette into the Ghostty core, which resolves every cell's color
+    // against it at construction.
+    term.setTheme(settingsRef.current.themeName, settingsRef.current.backgroundOpacity)
+    term.setFont(settingsRef.current.fontFamily, settingsRef.current.fontSize)
+    term.setScrollback(settingsRef.current.scrollback)
+
     const searchResultsListener = term.onSearchResult((result) => {
       if (disposed) return
       setSearchResults({ index: result.index, count: result.count })
@@ -391,15 +404,39 @@ export function Terminal({
     // right edge and sizing this overlay to close that exact gap covers it
     // precisely regardless of font size or how wide that leftover sliver
     // happens to be, rather than assuming a fixed width matches.
+    //
+    // This has to be recomputed every time the grid resizes, not just when the
+    // OS window does. The box is opaque and sits above the canvas, so a width
+    // measured while the canvas is still at its 80x24 fallback masks the right
+    // half of the pane — and because it paints the theme background, the result
+    // reads as text truncated on a clean column boundary rather than as an
+    // overlay. That is the whole of the "terminal doesn't fill the container
+    // until you resize the window" bug: resizing was simply the only thing that
+    // called this again.
+    const canvasObserver = new ResizeObserver(() => updateScrollbarGeometry())
     const updateScrollbarGeometry = () => {
       let canvasRight = 0
       for (const canvas of container.querySelectorAll('canvas')) {
         const rect = canvas.getBoundingClientRect()
         if (rect.width > 0) canvasRight = Math.max(canvasRight, rect.right)
       }
+      // Watching the canvases themselves is what makes this self-correcting:
+      // the container doesn't change size when the grid refits from the 80x24
+      // fallback to its real width, so the observer on the container never
+      // fires and the mask keeps its stale width. Re-observing here (observe()
+      // is idempotent per element) also picks up a canvas that was swapped out
+      // from under us by a renderer rebuild.
+      for (const canvas of container.querySelectorAll('canvas')) {
+        canvasObserver.observe(canvas)
+      }
       if (canvasRight === 0) return
-      const width = container.getBoundingClientRect().right - canvasRight
-      if (width > 0) scrollbarEl.style.width = `${width}px`
+      const gap = container.getBoundingClientRect().right - canvasRight
+      // Clamped because the failure modes are wildly asymmetric: too narrow
+      // leaves a sliver of gutter in the wrong shade, too wide hides the
+      // terminal. The area legitimately needing masking is one partial column
+      // plus the gutter, so anything beyond that is a stale measurement.
+      const width = Math.min(Math.max(gap, SCROLLBAR_WIDTH), SCROLLBAR_WIDTH * 8)
+      scrollbarEl.style.width = `${width}px`
     }
 
     // Foreground for the thumb/arrows (matching xterm's own default
@@ -640,11 +677,63 @@ export function Terminal({
           })
         : null
 
-    // Ensure GhosttyEngine is sized correctly *before* connecting
-    termRef.current?.fit(true)
-    const cols = (termRef.current as any)?.cols || 80
-    const rows = (termRef.current as any)?.rows || 24
+    // The container measures 0x0 on the first few frames after mount — React
+    // has committed the node but the flex/resizable-panel layout above it
+    // hasn't resolved a width yet. Connecting at that point creates the PTY at
+    // the fallback 80x24, so the shell generates its MOTD (and every prompt
+    // until the first SIGWINCH lands) wrapped to a width the pane never had,
+    // which is what left the output stranded in a narrow column that only a
+    // manual window resize cleaned up. Waiting for a real measurement costs a
+    // frame or two and gets the size right the first time.
+    //
+    // The timeout matters as much as the wait: a pane created in a background
+    // tab is `display: none` and therefore legitimately 0x0 for as long as
+    // that tab stays hidden, so this can't block on a size that may never
+    // arrive. Falling back to connecting anyway just restores the old
+    // behaviour for that case, and the existing ResizeObserver still corrects
+    // the size once the tab is shown.
+    const beginConnect = () => {
+      if (disposed) return
+      termRef.current?.fit(true)
+      const cols = termRef.current?.cols || 80
+      const rows = termRef.current?.rows || 24
+      connectWith(cols, rows)
+    }
 
+    const mountedAt = performance.now()
+    let lastW = -1
+    let lastH = -1
+    let stableFrames = 0
+    const awaitSize = () => {
+      if (disposed) return
+      const el = containerRef.current
+      const w = el?.clientWidth ?? 0
+      const h = el?.clientHeight ?? 0
+      // "Settled" has to mean held steady for a while, not merely non-zero and
+      // not merely equal twice. The pane climbs to its final width in stages
+      // as react-resizable-panels resolves the layout, and it rests on an
+      // intermediate width long enough to satisfy a two-frame check — which
+      // is how the PTY ended up created at ~38 columns and the server sent a
+      // MOTD truncated to match. Nothing can repair that text afterwards: the
+      // later resize fixes the PTY, but the characters the server already
+      // dropped are gone, which is exactly the cropped output that only went
+      // away once something forced the shell to redraw.
+      if (w > 0 && h > 0 && w === lastW && h === lastH) stableFrames++
+      else stableFrames = 0
+      lastW = w
+      lastH = h
+      // ~100ms of no movement, or a hard cap so a pane in a hidden tab (which
+      // is legitimately 0x0 for as long as that tab stays hidden) still
+      // connects rather than waiting forever.
+      if (stableFrames >= 6 || performance.now() - mountedAt > 1000) {
+        beginConnect()
+        return
+      }
+      requestAnimationFrame(awaitSize)
+    }
+    awaitSize()
+
+    function connectWith(cols: number, rows: number) {
     conn
       .connect(source, onEvent, onData, cols, rows)
       .then((id) => {
@@ -684,6 +773,7 @@ export function Terminal({
           setConnectFailed(String(err))
         }
       })
+    }
 
     const dataListener = term.onData((data) => {
       if (lineEditor) {
@@ -790,6 +880,7 @@ export function Terminal({
       window.removeEventListener('resize', onResize)
       refitRef.current = null
       resizeObserver.disconnect()
+      canvasObserver.disconnect()
       container.removeEventListener('contextmenu', onContextMenu)
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()

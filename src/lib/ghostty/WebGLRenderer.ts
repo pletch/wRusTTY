@@ -1,5 +1,5 @@
 import { GlyphAtlas } from './GlyphAtlas'
-import { parseCell, type GhosttyWasm } from './wasmBindings'
+import { parseCell, CELL_BYTES, CELL_INVERSE, type GhosttyWasm } from './wasmBindings'
 
 const VERTEX_SHADER_SRC = `#version 300 es
 layout(location = 0) in vec2 a_position; // (0,0) to (1,1)
@@ -44,6 +44,22 @@ void main() {
     outColor = mix(v_bgColor, v_fgColor, alpha);
 }
 `
+
+/**
+ * The one place cell metrics are derived. Both the renderer (which sizes the
+ * canvas as `cols * cellWidth`) and the engine's fit (which derives cols from
+ * the container) have to agree to the pixel: when they measured separately,
+ * cols came from one width and the canvas from another, and nothing — not
+ * re-fitting, not resizing the window — could reconcile them.
+ */
+export function measureCell(fontFamily: string, fontSize: number): { width: number; height: number } {
+  const ctx = document.createElement('canvas').getContext('2d')!
+  ctx.font = `${fontSize}px ${fontFamily}`
+  return {
+    width: Math.ceil(ctx.measureText('W').width),
+    height: Math.ceil(fontSize * 1.2),
+  }
+}
 
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string) {
   const shader = gl.createShader(type)!
@@ -91,16 +107,20 @@ export class WebGLRenderer {
     this.cols = cols
     this.rows = rows
     
-    this.gl = canvas.getContext('webgl2', { antialias: false, alpha: false })!
+    // This renderer only repaints on damage, so an idle pane goes many frames
+    // without a draw. WebGL formally leaves a composited buffer's contents
+    // undefined unless it is preserved, so an idle pane is relying on behaviour
+    // it isn't promised; preserving costs a copy per frame and makes the buffer
+    // mean what it says. The alternative is redrawing every frame, which gives
+    // up the zero-cost idle pane this loop is built around.
+    this.gl = canvas.getContext('webgl2', {
+      antialias: false,
+      alpha: false,
+      preserveDrawingBuffer: true,
+    })!
     const gl = this.gl
     
-    // Measure cell size
-    const measureCtx = document.createElement('canvas').getContext('2d')!
-    measureCtx.font = `${fontSize}px ${fontFamily}`
-    const metrics = measureCtx.measureText('W')
-    const cellWidth = Math.ceil(metrics.width)
-    const cellHeight = Math.ceil(fontSize * 1.2) // simple approximation
-    
+    const { width: cellWidth, height: cellHeight } = measureCell(fontFamily, fontSize)
     this.cellWidth = cellWidth
     this.cellHeight = cellHeight
     
@@ -216,64 +236,81 @@ export class WebGLRenderer {
     const gl = this.gl
     const cols = this.cols
     const rows = this.rows
-    const wasmCols = wasm.exports.get_cols(termPtr)
-    const wasmRows = wasm.exports.get_rows(termPtr)
-    
-    // Allocate a temporary buffer for this frame using WASM dimensions
-    // because Ghostty might have clamped or delayed the resize!
-    const expectedBufSize = wasmCols * wasmRows * 16
-    const viewportBufPtr = wasm.exports.alloc_buffer(expectedBufSize)
-    
+    const wasmCols = wasm.exports.ghostty_render_state_get_cols(termPtr)
+    const wasmRows = wasm.exports.ghostty_render_state_get_rows(termPtr)
+
+    // Sized from the WASM dimensions rather than ours, since a resize can land
+    // on one side before the other.
+    const cellCount = wasmCols * wasmRows
+    const expectedBufSize = cellCount * CELL_BYTES
+    const viewportBufPtr = wasm.exports.ghostty_wasm_alloc_u8_array(expectedBufSize)
+    if (viewportBufPtr === 0) return
+
     new Uint8Array(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize).fill(0)
-    
-    wasm.exports.get_viewport(termPtr, viewportBufPtr)
-    
+
+    // Takes a cell count, not a byte count.
+    wasm.exports.ghostty_render_state_get_viewport(termPtr, viewportBufPtr, cellCount)
+
     const view = new DataView(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
-    
+
+    // The core has no runtime colour setter, so a pane that outlives a theme
+    // change would otherwise keep painting default text in the palette it was
+    // created with. Its current defaults are queryable and come back on cells
+    // byte-for-byte, so cells still sitting on them can be mapped onto the live
+    // theme. Explicitly-coloured text is left alone — remapping that would mean
+    // guessing which palette slot it came from, which the resolved-RGB ABI
+    // deliberately no longer tells us.
+    const coreFg = wasm.exports.ghostty_render_state_get_fg_color(termPtr)
+    const coreFgR = (coreFg >> 16) & 0xff, coreFgG = (coreFg >> 8) & 0xff, coreFgB = coreFg & 0xff
+    const coreBg = wasm.exports.ghostty_render_state_get_bg_color(termPtr)
+    const coreBgR = (coreBg >> 16) & 0xff, coreBgG = (coreBg >> 8) & 0xff, coreBgB = coreBg & 0xff
+
     let outIdx = 0
-    
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
-        let hasFg = false, hasBg = false
-        let fgR = 0, fgG = 0, fgB = 0
-        let bgR = 0, bgG = 0, bgB = 0
-        
         let flags = 0
-        
+        // Cells outside the core's grid (a resize we've seen but it hasn't)
+        // fall back to the theme's own colors.
+        let finalFgR = this.defaultFgR
+        let finalFgG = this.defaultFgG
+        let finalFgB = this.defaultFgB
+        let finalBgR = this.defaultBgR
+        let finalBgG = this.defaultBgG
+        let finalBgB = this.defaultBgB
+
         if (r < wasmRows && c < wasmCols) {
-          const offset = (r * wasmCols + c) * 16
-          const cell = parseCell(view, offset)
+          const cell = parseCell(view, (r * wasmCols + c) * CELL_BYTES)
           codepoint = cell.codepoint
-          hasFg = (cell.colorFlags & 1) !== 0
-          hasBg = (cell.colorFlags & 2) !== 0
-          fgR = cell.fgR; fgG = cell.fgG; fgB = cell.fgB;
-          bgR = cell.bgR; bgG = cell.bgG; bgB = cell.bgB;
           flags = cell.flags
+          // Already resolved to RGB by the core against the palette and
+          // defaults it was configured with, so the only substitution left is
+          // pulling default-coloured cells onto the current theme.
+          if (cell.fgR === coreFgR && cell.fgG === coreFgG && cell.fgB === coreFgB) {
+            finalFgR = this.defaultFgR; finalFgG = this.defaultFgG; finalFgB = this.defaultFgB
+          } else {
+            finalFgR = cell.fgR; finalFgG = cell.fgG; finalFgB = cell.fgB
+          }
+          if (cell.bgR === coreBgR && cell.bgG === coreBgG && cell.bgB === coreBgB) {
+            finalBgR = this.defaultBgR; finalBgG = this.defaultBgG; finalBgB = this.defaultBgB
+          } else {
+            finalBgR = cell.bgR; finalBgG = cell.bgG; finalBgB = cell.bgB
+          }
         }
-        
+
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
         if (codepoint > 0) {
           const rect = this.atlas.getGlyph(codepoint)
           u0 = rect.u0; v0 = rect.v0; u1 = rect.u1; v1 = rect.v1
         }
-        
-        const isInverse = (flags & 32) !== 0
-        
-        let finalFgR = hasFg ? fgR : this.defaultFgR
-        let finalFgG = hasFg ? fgG : this.defaultFgG
-        let finalFgB = hasFg ? fgB : this.defaultFgB
-        
-        let finalBgR = hasBg ? bgR : this.defaultBgR
-        let finalBgG = hasBg ? bgG : this.defaultBgG
-        let finalBgB = hasBg ? bgB : this.defaultBgB
-        
-        if (isInverse) {
+
+        if ((flags & CELL_INVERSE) !== 0) {
           const tempR = finalFgR, tempG = finalFgG, tempB = finalFgB
           finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
           finalBgR = tempR; finalBgG = tempG; finalBgB = tempB
         }
-        
+
         this.instanceData[outIdx++] = c
         this.instanceData[outIdx++] = r
         
@@ -294,8 +331,8 @@ export class WebGLRenderer {
       }
     }
     
-    wasm.exports.free_buffer(viewportBufPtr, expectedBufSize)
-    
+    wasm.exports.ghostty_wasm_free_u8_array(viewportBufPtr, expectedBufSize)
+
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData)
     
