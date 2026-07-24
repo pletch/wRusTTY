@@ -8,6 +8,7 @@ import {
   writeBytes,
   writeString,
   readResponse,
+  parseCell,
   MODE_APP_CURSOR_KEYS,
   MODE_BRACKETED_PASTE,
   MODE_MOUSE_BUTTON_EVENT,
@@ -100,6 +101,8 @@ export class GhosttyEngine implements TerminalEngine {
   private responseDecoder = new TextDecoder()
   private oscHandlers = new Map<number, ((data: string) => void)[]>()
   private onBellHandlers = new Set<() => void>()
+  private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
+  private lastIsAlternate = false
 
   private cursorBlinkOn = true
   private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
@@ -298,6 +301,135 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
+  /**
+   * Per-column text for a range of absolute buffer rows — scrollback rows
+   * first, then the active screen, the same numbering the renderer draws from.
+   * A blank column comes back as a space and the trailing half of a wide
+   * character as an empty string, so `row.length` is always the column count
+   * and `row[c]` is what column `c` actually shows.
+   *
+   * Copy, word selection and search all need exactly this, and each had (or
+   * would have had) its own partial version of the cell walk — including the
+   * spacer and grapheme handling that made copied text wrong.
+   */
+  private readRows(fromAbs: number, toAbs: number): string[][] {
+    const out: string[][] = []
+    if (!this.wasm || !this.termPtr) return out
+    const wasm = this.wasm
+    const wasmCols = wasm.exports.ghostty_render_state_get_cols(this.termPtr)
+    const wasmRows = wasm.exports.ghostty_render_state_get_rows(this.termPtr)
+    const scrollbackCount = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    if (wasmCols <= 0) return out
+
+    const cellCount = wasmCols * wasmRows
+    const viewSize = cellCount * CELL_BYTES
+    const lineSize = wasmCols * CELL_BYTES
+    // Grapheme clusters run to a handful of codepoints in practice; anything
+    // longer is truncated rather than grown for, since the cost is one buffer
+    // held for the whole walk.
+    const gCap = 16
+
+    const viewPtr = wasm.exports.ghostty_wasm_alloc_u8_array(viewSize)
+    if (viewPtr === 0) return out
+    wasm.exports.ghostty_render_state_get_viewport(this.termPtr, viewPtr, cellCount)
+    const linePtr = wasm.exports.ghostty_wasm_alloc_u8_array(lineSize)
+    const gPtr = wasm.exports.ghostty_wasm_alloc_u8_array(gCap * 4)
+
+    // Every view is built after the last allocation: growing WASM memory
+    // detaches the buffer any earlier one was made against.
+    const viewV = new DataView(wasm.exports.memory.buffer, viewPtr, viewSize)
+    const lineV = linePtr !== 0 ? new DataView(wasm.exports.memory.buffer, linePtr, lineSize) : null
+    const gV = gPtr !== 0 ? new DataView(wasm.exports.memory.buffer, gPtr, gCap * 4) : null
+
+    for (let abs = fromAbs; abs <= toAbs; abs++) {
+      const row: string[] = new Array(this._cols).fill(' ')
+      out.push(row)
+      if (abs < 0) continue
+
+      let isScrollback = false
+      let activeRow = 0
+      if (abs < scrollbackCount) {
+        if (!lineV) continue
+        wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, abs, linePtr, wasmCols)
+        isScrollback = true
+      } else {
+        activeRow = abs - scrollbackCount
+        if (activeRow >= wasmRows) continue
+      }
+
+      const view = isScrollback ? lineV! : viewV
+      for (let c = 0; c < this._cols && c < wasmCols; c++) {
+        const offset = isScrollback ? c * CELL_BYTES : (activeRow * wasmCols + c) * CELL_BYTES
+        const cell = parseCell(view, offset)
+        if (cell.width === 0) {
+          // Trailing half of a wide character: it has no text of its own.
+          row[c] = ''
+        } else if (cell.graphemeLen > 0 && gV) {
+          const n = isScrollback
+            ? wasm.exports.ghostty_terminal_get_scrollback_grapheme(this.termPtr, abs, c, gPtr, gCap)
+            : wasm.exports.ghostty_render_state_get_grapheme(this.termPtr, activeRow, c, gPtr, gCap)
+          if (n > 0) {
+            let s = ''
+            for (let i = 0; i < n && i < gCap; i++) s += String.fromCodePoint(gV.getUint32(i * 4, true))
+            row[c] = s
+          } else {
+            row[c] = cell.codepoint > 0 ? String.fromCodePoint(cell.codepoint) : ' '
+          }
+        } else {
+          row[c] = cell.codepoint > 0 ? String.fromCodePoint(cell.codepoint) : ' '
+        }
+      }
+    }
+
+    if (gPtr !== 0) wasm.exports.ghostty_wasm_free_u8_array(gPtr, gCap * 4)
+    if (linePtr !== 0) wasm.exports.ghostty_wasm_free_u8_array(linePtr, lineSize)
+    wasm.exports.ghostty_wasm_free_u8_array(viewPtr, viewSize)
+    return out
+  }
+
+  /**
+   * What counts as one word for double-click. Deliberately wider than
+   * alphanumerics: the things worth grabbing out of a terminal in one gesture
+   * are paths, flags, hostnames and URLs, and stopping at every `/` or `.`
+   * turns picking up a path into several drags.
+   */
+  private static isWordChar(s: string): boolean {
+    if (s.length === 0) return false
+    const c = s.codePointAt(0)!
+    if (c > 127) return true // CJK, accented letters, and the like
+    return /[A-Za-z0-9_\-./:@~+=%?&#]/.test(s[0])
+  }
+
+  private selectWordAt(pos: { x: number; y: number }) {
+    if (!this.renderer) return
+    const row = this.readRows(pos.y, pos.y)[0]
+    if (!row) return
+    // A wide character's spacer holds no text, so the head it belongs to is one
+    // column back.
+    let at = pos.x
+    if (row[at] === '' && at > 0) at--
+    if (!GhosttyEngine.isWordChar(row[at])) return
+    let from = at
+    while (from > 0 && GhosttyEngine.isWordChar(row[from - 1] || ' ')) from--
+    let to = at
+    while (to < row.length - 1 && GhosttyEngine.isWordChar(row[to + 1] || ' ')) to++
+    this.applySelection({ x: from, y: pos.y }, { x: to, y: pos.y })
+  }
+
+  private selectLineAt(pos: { x: number; y: number }) {
+    this.applySelection({ x: 0, y: pos.y }, { x: this._cols - 1, y: pos.y })
+  }
+
+  private applySelection(start: { x: number; y: number }, end: { x: number; y: number }) {
+    if (!this.renderer) return
+    this.renderer.selection = { start, end }
+    // Left dangling, a later drag would extend from wherever the last one began.
+    this.selectionStart = null
+    this.isSelecting = false
+    this.needsRedraw = true
+    for (const h of this.onSelectionChangeHandlers) h()
+  }
+
   /** Is the program on the far end asking to be told about the mouse at all? */
   private mouseTracking(): boolean {
     return !!this.wasm && this.wasm.exports.ghostty_terminal_has_mouse_tracking(this.termPtr) !== 0
@@ -462,6 +594,16 @@ export class GhosttyEngine implements TerminalEngine {
         return
       }
       if (e.button !== 0) return // Only handle left-click for selection
+      // `detail` counts clicks in a run, which is how the platform already
+      // decides what a double-click is — no timing to reimplement here.
+      if (e.detail === 2) {
+        this.selectWordAt(this.getCoords(e))
+        return
+      }
+      if (e.detail >= 3) {
+        this.selectLineAt(this.getCoords(e))
+        return
+      }
       this.isSelecting = true
       this.selectionStart = this.getCoords(e)
       if (this.renderer) {
@@ -638,6 +780,16 @@ export class GhosttyEngine implements TerminalEngine {
     // state that provoked it, and a cursor-position report that waits for the
     // next repaint can describe a cursor that has already moved on.
     this.drainResponses()
+    // Checked on the write that could have caused it rather than per frame:
+    // switching screens is a parse-time event, and an idle pane shouldn't be
+    // asking the core about it sixty times a second.
+    if (this.wasm) {
+      const isAlt = this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
+      if (isAlt !== this.lastIsAlternate) {
+        this.lastIsAlternate = isAlt
+        for (const h of this.onBufferChangeHandlers) h(isAlt)
+      }
+    }
     for (const h of this.onWriteParsedHandlers) h()
   }
 
@@ -673,7 +825,10 @@ export class GhosttyEngine implements TerminalEngine {
     this.onScrollHandlers.add(cb)
     return { dispose: () => this.onScrollHandlers.delete(cb) }
   }
-  onBufferChange(_cb: (isAlternate: boolean) => void): IDisposable { return { dispose: () => {} } }
+  onBufferChange(cb: (isAlternate: boolean) => void): IDisposable {
+    this.onBufferChangeHandlers.add(cb)
+    return { dispose: () => this.onBufferChangeHandlers.delete(cb) }
+  }
   onBell(cb: () => void): IDisposable {
     this.onBellHandlers.add(cb)
     return { dispose: () => this.onBellHandlers.delete(cb) }
@@ -874,89 +1029,27 @@ export class GhosttyEngine implements TerminalEngine {
   }
   getSelection(): string {
     if (!this.renderer || !this.renderer.selection || !this.wasm) return ''
-    
+
     let selStart = this.renderer.selection.start
     let selEnd = this.renderer.selection.end
     if (selStart.x === selEnd.x && selStart.y === selEnd.y) return ''
     if (selStart.y > selEnd.y || (selStart.y === selEnd.y && selStart.x > selEnd.x)) {
       const temp = selStart; selStart = selEnd; selEnd = temp
     }
-    
-    const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
-    const wasmCols = this.wasm.exports.ghostty_render_state_get_cols(this.termPtr)
-    const wasmRows = this.wasm.exports.ghostty_render_state_get_rows(this.termPtr)
-    
-    const cellCount = wasmCols * wasmRows
-    const expectedBufSize = cellCount * CELL_BYTES
-    const viewportBufPtr = this.wasm.exports.ghostty_wasm_alloc_u8_array(expectedBufSize)
-    this.wasm.exports.ghostty_render_state_get_viewport(this.termPtr, viewportBufPtr, cellCount)
 
-    const lineBufPtr = this.wasm.exports.ghostty_wasm_alloc_u8_array(wasmCols * CELL_BYTES)
-    
-    const viewportView = new DataView(this.wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
-    const lineView = new DataView(this.wasm.exports.memory.buffer, lineBufPtr, wasmCols * CELL_BYTES)
-    
-    let result = ''
-    
-    // Read codepoint at offset + 0 (Uint32)
-    const getCodepoint = (view: DataView, offset: number) => view.getUint32(offset, true)
-    // Cell width at offset + 11. A wide character is stored once, in the first
-    // of the two columns it covers, and the second is a spacer holding no
-    // codepoint — copying it as a blank would put a space after every CJK
-    // character and emoji in the selection.
-    const getWidth = (view: DataView, offset: number) => view.getUint8(offset + 11)
-    
-    for (let r = selStart.y; r <= selEnd.y; r++) {
-      let isScrollback = false
-      let activeRow = 0
-      let rowValid = false
-
-      if (r < scrollbackCount) {
-        if (r >= 0) {
-          this.wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, r, lineBufPtr, wasmCols)
-          isScrollback = true
-          rowValid = true
-        }
-      } else {
-        activeRow = r - scrollbackCount
-        if (activeRow < wasmRows) {
-          rowValid = true
-        }
-      }
-      
-      if (!rowValid) continue
-      
-      const startX = r === selStart.y ? selStart.x : 0
-      const endX = r === selEnd.y ? selEnd.x : this._cols - 1
-      
-      let rowText = ''
-      for (let c = startX; c <= endX; c++) {
-         if (c >= wasmCols) continue
-         const offset = isScrollback
-            ? c * CELL_BYTES
-            : (activeRow * wasmCols + c) * CELL_BYTES
-         
-         const view = isScrollback ? lineView : viewportView
-         if (getWidth(view, offset) === 0) continue
-         const codepoint = getCodepoint(view, offset)
-         if (codepoint > 0) {
-           rowText += String.fromCodePoint(codepoint)
-         } else {
-           rowText += ' '
-         }
-      }
-      
-      if (r < selEnd.y) {
-         result += rowText.trimEnd() + '\n'
-      } else {
-         result += rowText
-      }
+    const rows = this.readRows(selStart.y, selEnd.y)
+    const parts: string[] = []
+    for (let i = 0; i < rows.length; i++) {
+      const abs = selStart.y + i
+      const from = abs === selStart.y ? selStart.x : 0
+      const to = abs === selEnd.y ? selEnd.x : this._cols - 1
+      const text = rows[i].slice(from, to + 1).join('')
+      // Trailing blanks are padding the grid, not content — but the last row
+      // keeps them, since a selection that ends mid-run of spaces selected them
+      // on purpose.
+      parts.push(abs === selEnd.y ? text : text.replace(/\s+$/, ''))
     }
-    
-    this.wasm.exports.ghostty_wasm_free_u8_array(lineBufPtr, wasmCols * CELL_BYTES)
-    this.wasm.exports.ghostty_wasm_free_u8_array(viewportBufPtr, expectedBufSize)
-    
-    return result
+    return parts.join('\n')
   }
 
   selectAll(): void {

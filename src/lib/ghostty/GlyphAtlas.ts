@@ -34,6 +34,8 @@ export class GlyphAtlas {
   public texture: WebGLTexture
   /** Keyed by `codepoint * GLYPH_STYLE_COUNT + style`. */
   private cache = new Map<number, GlyphRect>()
+  /** Grapheme clusters, keyed by `style:text`. */
+  private clusterCache = new Map<string, GlyphRect>()
 
   private atlasWidth = 1024
   private atlasHeight = 1024
@@ -122,6 +124,26 @@ export class GlyphAtlas {
     const key = codepoint * GLYPH_STYLE_COUNT + style
     const hit = this.cache.get(key)
     if (hit) return hit
+    return this.rasterize(String.fromCodePoint(codepoint), style, (r) => this.cache.set(key, r))
+  }
+
+  /**
+   * A grapheme cluster — a base character plus its combining marks, or an emoji
+   * built out of joiners. It has to be rasterized as one string for the shaper
+   * to compose it; drawing only the first codepoint is what left accented
+   * letters bare and turned joined emoji into their first component.
+   *
+   * Kept in its own map so the single-codepoint path above stays a numeric key
+   * and doesn't build a string per cell per frame.
+   */
+  getClusterGlyph(text: string, style = 0): GlyphRect {
+    const key = `${style}:${text}`
+    const hit = this.clusterCache.get(key)
+    if (hit) return hit
+    return this.rasterize(text, style, (r) => this.clusterCache.set(key, r))
+  }
+
+  private rasterize(text: string, style: number, remember: (r: GlyphRect) => void): GlyphRect {
 
     // A wide glyph is rasterized across a two-cell slot and later drawn as two
     // half-UV quads, so the whole character exists in the atlas exactly once.
@@ -147,7 +169,7 @@ export class GlyphAtlas {
 
     this.ctx.font = this.fontFor(style)
     this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
-    this.ctx.fillText(String.fromCodePoint(codepoint), x, y + this.baseline)
+    this.ctx.fillText(text, x, y + this.baseline)
 
     if (style & GLYPH_UNDERLINE) {
       const uy = Math.min(this.cellHeight - this.lineThickness, this.baseline + this.lineThickness)
@@ -191,7 +213,7 @@ export class GlyphAtlas {
       v1: (y + this.cellHeight) / this.atlasHeight
     }
 
-    this.cache.set(key, rect)
+    remember(rect)
 
     this.currentX += slotWidth
 

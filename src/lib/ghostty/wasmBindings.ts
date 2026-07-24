@@ -67,6 +67,13 @@ export interface GhosttyExports {
   ghostty_render_state_mark_clean(term: number): void
   /** `cells` is a cell count, not a byte count. Returns cells written, or -1. */
   ghostty_render_state_get_viewport(term: number, out: number, cells: number): number
+  /**
+   * Every codepoint of the grapheme cluster at (row, col), written as u32s.
+   * `cap` is a codepoint count; returns how many were written. Only worth
+   * calling when the cell's `graphemeLen` is non-zero — a cell's own codepoint
+   * is the first of the cluster, and this is the rest of it.
+   */
+  ghostty_render_state_get_grapheme(term: number, row: number, col: number, out: number, cap: number): number
 
   // Terminal state
   ghostty_terminal_is_alternate_screen(term: number): number
@@ -77,6 +84,8 @@ export interface GhosttyExports {
   // Scrollback
   ghostty_terminal_get_scrollback_length(term: number): number
   ghostty_terminal_get_scrollback_line(term: number, offset: number, out: number, cells: number): number
+  /** As `ghostty_render_state_get_grapheme`, for a row in scrollback. */
+  ghostty_terminal_get_scrollback_grapheme(term: number, offset: number, col: number, out: number, cap: number): number
 
   // Responses (DSR and friends) the terminal wants sent back to the host
   ghostty_terminal_has_response(term: number): number

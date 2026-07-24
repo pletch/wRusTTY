@@ -97,6 +97,14 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string) {
   return shader
 }
 
+/**
+ * Codepoints read back for one grapheme cluster. Real clusters — a letter and
+ * its marks, or an emoji and its joiners — are a handful; a longer one is
+ * truncated rather than sized for, since this buffer is held for the pane's
+ * lifetime.
+ */
+const GRAPHEME_CAP = 16
+
 export interface SelectionRange {
   /** Absolute buffer coordinates — row counts from the top of scrollback. */
   start: { x: number; y: number }
@@ -189,6 +197,7 @@ export class WebGLRenderer {
   private lineWasm: GhosttyWasm | null = null
   private linePtr = 0
   private lineCells = 0
+  private graphemePtr = 0
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -439,6 +448,15 @@ export class WebGLRenderer {
     gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW)
   }
 
+  /** Scratch buffer for one grapheme cluster's codepoints. */
+  private graphemeBuffer(wasm: GhosttyWasm): number {
+    if (this.graphemePtr === 0) {
+      this.graphemePtr = wasm.exports.ghostty_wasm_alloc_u8_array(GRAPHEME_CAP * 4)
+      this.lineWasm = wasm
+    }
+    return this.graphemePtr
+  }
+
   /** Scratch buffer for one scrollback row, grown on demand. */
   private lineBuffer(wasm: GhosttyWasm, cells: number): number {
     if (this.linePtr !== 0 && this.lineCells >= cells) return this.linePtr
@@ -479,6 +497,7 @@ export class WebGLRenderer {
     viewportOffset = Math.max(0, Math.min(viewportOffset, scrollbackCount))
     // Only pay for the scratch row when the viewport is actually scrolled up.
     const linePtr = viewportOffset > 0 ? this.lineBuffer(wasm, wasmCols) : 0
+    const graphemePtr = this.graphemeBuffer(wasm)
 
     // Both views are made after every allocation this frame will do: growing
     // WASM memory detaches the old ArrayBuffer, and a DataView built before the
@@ -486,6 +505,9 @@ export class WebGLRenderer {
     const viewportView = new DataView(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
     const lineView = linePtr !== 0
       ? new DataView(wasm.exports.memory.buffer, linePtr, wasmCols * CELL_BYTES)
+      : null
+    const graphemeView = graphemePtr !== 0
+      ? new DataView(wasm.exports.memory.buffer, graphemePtr, GRAPHEME_CAP * 4)
       : null
 
     // The core has no runtime colour setter, so a pane that outlives a theme
@@ -547,6 +569,8 @@ export class WebGLRenderer {
         // 1 for an ordinary cell (and for anything outside the core's grid),
         // 2 for the head of a wide character, 0 for its trailing spacer.
         let cellWidth = 1
+        /** Codepoints beyond the first; non-zero means a cluster to compose. */
+        let graphemeLen = 0
         // Cells outside the core's grid (a resize we've seen but it hasn't)
         // fall back to the theme's own colors.
         let finalFgR = this.defaultFgR
@@ -568,6 +592,7 @@ export class WebGLRenderer {
           codepoint = cell.codepoint
           flags = cell.flags
           cellWidth = cell.width
+          graphemeLen = cell.graphemeLen
           // Already resolved to RGB by the core against the palette and
           // defaults it was configured with, so the only substitution left is
           // pulling default-coloured cells onto the current theme.
@@ -611,7 +636,24 @@ export class WebGLRenderer {
           if (flags & CELL_ITALIC) style |= GLYPH_ITALIC
           if (flags & CELL_UNDERLINE) style |= GLYPH_UNDERLINE
           if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
-          const rect = this.atlas.getGlyph(codepoint, style)
+
+          // A cell whose character carries combining marks or emoji joiners has
+          // to be rasterized from the whole cluster; the cell's own codepoint is
+          // only the first of them.
+          let rect
+          if (graphemeLen > 0 && graphemeView) {
+            const n = isScrollback
+              ? wasm.exports.ghostty_terminal_get_scrollback_grapheme(termPtr, absRow, c, graphemePtr, GRAPHEME_CAP)
+              : wasm.exports.ghostty_render_state_get_grapheme(termPtr, activeRow, c, graphemePtr, GRAPHEME_CAP)
+            if (n > 1) {
+              let text = ''
+              for (let i = 0; i < n && i < GRAPHEME_CAP; i++) {
+                text += String.fromCodePoint(graphemeView.getUint32(i * 4, true))
+              }
+              rect = this.atlas.getClusterGlyph(text, style)
+            }
+          }
+          if (!rect) rect = this.atlas.getGlyph(codepoint, style)
           v0 = rect.v0; v1 = rect.v1
           u0 = rect.u0
           u1 = wide ? (rect.u0 + rect.u1) / 2 : rect.u1
@@ -714,9 +756,15 @@ export class WebGLRenderer {
   dispose() {
     this.canvas.removeEventListener('webglcontextlost', this.onContextLost)
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored)
-    if (this.linePtr !== 0 && this.lineWasm) {
-      this.lineWasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
-      this.linePtr = 0
+    if (this.lineWasm) {
+      if (this.linePtr !== 0) {
+        this.lineWasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
+        this.linePtr = 0
+      }
+      if (this.graphemePtr !== 0) {
+        this.lineWasm.exports.ghostty_wasm_free_u8_array(this.graphemePtr, GRAPHEME_CAP * 4)
+        this.graphemePtr = 0
+      }
     }
     if (this.contextLost) return
     this.releaseGL()
