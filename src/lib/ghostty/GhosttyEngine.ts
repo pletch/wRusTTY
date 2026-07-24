@@ -621,14 +621,17 @@ export class GhosttyEngine implements TerminalEngine {
       // Read after update() and before the viewport, same as the cells: these
       // come off the same snapshot, and sampling them either side of it puts
       // the cursor a frame away from the text it's sitting in.
-      this.renderer.cursor = this.wasm.exports.ghostty_render_state_get_cursor_visible(this.termPtr) !== 0
-        ? {
-            col: this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr),
-            row: this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr),
-            on: this.cursorBlinkOn,
-            focused: this.focused,
-          }
+      const cursorVisible = this.wasm.exports.ghostty_render_state_get_cursor_visible(this.termPtr) !== 0
+      const cursorCol = this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr)
+      const cursorRow = this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr)
+      this.renderer.cursor = cursorVisible
+        ? { col: cursorCol, row: cursorRow, on: this.cursorBlinkOn, focused: this.focused }
         : null
+      // Keeps the IME's candidate window with the text being composed.
+      if (this.inputHandler) {
+        const cell = this.renderer.getCellSize()
+        this.inputHandler.setCursorPosition(cursorCol * cell.width, cursorRow * cell.height)
+      }
       this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
       this.needsRedraw = false
@@ -646,8 +649,7 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.style.left = '0'
     this.canvas.style.outline = 'none'
     this.canvas.style.display = 'block'
-    this.canvas.tabIndex = 0
-    
+
     this.container.appendChild(this.canvas)
 
     this.canvas.addEventListener('wheel', (e) => {
@@ -676,8 +678,6 @@ export class GhosttyEngine implements TerminalEngine {
 
     window.addEventListener('mouseup', this.onMouseUp)
 
-    this.canvas.addEventListener('focus', this.onFocus)
-    this.canvas.addEventListener('blur', this.onBlur)
     // Only a focused pane blinks. A wall of panes all blinking out of phase is
     // noise, and it also means an idle background pane never wakes the loop.
     this.cursorBlinkTimer = setInterval(this.toggleCursorBlink, CURSOR_BLINK_MS)
@@ -687,13 +687,16 @@ export class GhosttyEngine implements TerminalEngine {
       // selection while a full-screen program is grabbing the mouse.
       if (this.mouseTracking() && !e.shiftKey) {
         e.preventDefault()
-        this.canvas?.focus()
+        this.inputHandler?.focus()
         const p = this.viewportCoords(e)
         this.mouseButtonDown = e.button
         this.sendMouse(e.button, p.col, p.row, e, false)
         return
       }
       if (e.button !== 0) return // Only handle left-click for selection
+      // The canvas is no longer focusable — input lives on the handler's
+      // element — so clicking the terminal has to hand focus over explicitly.
+      this.inputHandler?.focus()
       // `detail` counts clicks in a run, which is how the platform already
       // decides what a double-click is — no timing to reimplement here.
       if (e.detail === 2) {
@@ -740,7 +743,7 @@ export class GhosttyEngine implements TerminalEngine {
       }
     })
 
-    this.inputHandler = new GhosttyInputHandler(this.canvas, (data) => {
+    this.inputHandler = new GhosttyInputHandler(this.container, (data) => {
       // Typing while scrolled up otherwise sends keystrokes to a prompt that
       // isn't on screen.
       this.scrollToBottom()
@@ -754,7 +757,11 @@ export class GhosttyEngine implements TerminalEngine {
         ? this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_APP_CURSOR_KEYS, 0) !== 0
         : false
     })
-    
+    // Focus now lives on the input handler's element, so that is what the pane
+    // has to watch to know whether it is the one being typed into.
+    this.inputHandler.element.addEventListener('focus', this.onFocus)
+    this.inputHandler.element.addEventListener('blur', this.onBlur)
+
     if (this.wasm) {
       this.setupRenderer()
     }
@@ -1258,7 +1265,7 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   focus(): void {
-    this.canvas?.focus()
+    this.inputHandler?.focus()
   }
 
   clearSelection(): void {
