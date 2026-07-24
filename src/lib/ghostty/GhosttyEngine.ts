@@ -53,6 +53,7 @@ export class GhosttyEngine implements TerminalEngine {
   private _rows = 24
   private _scrollback = 1000
   private _themeName: string | null = null
+  private _opacity = 1
   private _viewportOffset = 0
   private onScrollHandlers = new Set<(newPos: number) => void>()
   private onWriteParsedHandlers = new Set<() => void>()
@@ -61,6 +62,7 @@ export class GhosttyEngine implements TerminalEngine {
   private selectionStart: {x: number, y: number} | null = null
   private onSelectionChangeHandlers = new Set<() => void>()
   private oscScannerBuffer = ''
+  private scanDecoder = new TextDecoder()
   private oscHandlers = new Map<number, ((data: string) => void)[]>()
   private onBellHandlers = new Set<() => void>()
 
@@ -121,11 +123,12 @@ export class GhosttyEngine implements TerminalEngine {
       this.fontFamily,
       this.fontSize
     )
-    
+    this.renderer.onRestore = this.onRendererRestored
+
     if (this._themeName) {
       this.applyThemeToRenderer(this._themeName)
     }
-    
+
     // Force a fit now that the renderer is available!
     // This fixes the issue where the terminal doesn't fill the screen on first load
     // because the ResizeObserver fired before WASM finished compiling.
@@ -174,6 +177,14 @@ export class GhosttyEngine implements TerminalEngine {
     const scrollbackCount = this.wasm ? this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) : 0
     const absY = scrollbackCount - this._viewportOffset + clampedY
     return { x: clampedX, y: absY }
+  }
+
+  // A restored context comes back with an empty instance buffer and an empty
+  // glyph atlas, so nothing is on screen until something asks for a repaint.
+  // The pane may well be idle at that moment, which is exactly when it would
+  // otherwise stay blank indefinitely.
+  private onRendererRestored = () => {
+    this.needsRedraw = true
   }
 
   private onMouseUp = () => {
@@ -229,19 +240,22 @@ export class GhosttyEngine implements TerminalEngine {
     
     this.container.appendChild(this.canvas)
 
+    // There is no scrollback to move through on the alternate screen, so the
+    // event is left alone there rather than swallowed — preventDefault with no
+    // scroll of our own is how the wheel ends up doing nothing at all inside
+    // vim or htop.
     this.canvas.addEventListener('wheel', (e) => {
-      e.preventDefault()
       const isAlt = this.wasm && this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
-      if (!isAlt) {
-        let lines = e.deltaY
-        if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
-          lines = e.deltaY / 20
-        } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
-          lines = e.deltaY * this._rows
-        }
-        this.scrollLines(Math.sign(lines) * Math.max(1, Math.abs(Math.round(lines))))
+      if (isAlt) return
+      e.preventDefault()
+      let lines = e.deltaY
+      if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+        lines = e.deltaY / 20
+      } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        lines = e.deltaY * this._rows
       }
-    })
+      this.scrollLines(Math.sign(lines) * Math.max(1, Math.abs(Math.round(lines))))
+    }, { passive: false })
     
     window.addEventListener('mouseup', this.onMouseUp)
 
@@ -296,6 +310,12 @@ export class GhosttyEngine implements TerminalEngine {
     this.unmount()
     this.onDataHandlers.clear()
     this.onResizeHandlers.clear()
+    this.onScrollHandlers.clear()
+    this.onWriteParsedHandlers.clear()
+    this.onSelectionChangeHandlers.clear()
+    this.onBellHandlers.clear()
+    this.oscHandlers.clear()
+    this.oscScannerBuffer = ''
   }
 
   resize(cols: number, rows: number, force = false): void {
@@ -316,42 +336,66 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
+  // A second pass over every byte, in JavaScript, to recover the two events the
+  // core doesn't surface yet (OSC dispatch and the bell). That cost is the
+  // opposite of what this engine exists for, so it is skipped outright unless
+  // something is actually listening — an un-integrated shell registers no OSC
+  // handlers and pays nothing. Delete this whole path once libghostty-vt
+  // exposes OSC 133 and bell callbacks.
+  //
+  // One expression matches either a complete OSC or a bare BEL, so they are
+  // seen in stream order and an OSC's own BEL terminator can't be mistaken for
+  // a bell. The payload deliberately can't span BEL or ESC: that's what bounds
+  // the match, and it's what an unterminated sequence would otherwise run past.
+  // oxlint-disable-next-line no-control-regex -- matching control characters is the point
+  private static readonly OSC_OR_BEL = /\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)|\x07/g
+
+  private scanForOsc(chunk: string) {
+    const buf = this.oscScannerBuffer + chunk
+    const re = GhosttyEngine.OSC_OR_BEL
+    re.lastIndex = 0
+
+    let match: RegExpExecArray | null
+    let consumed = 0
+    while ((match = re.exec(buf)) !== null) {
+      if (match[1] !== undefined) {
+        const handlers = this.oscHandlers.get(parseInt(match[1], 10))
+        if (handlers) {
+          for (const h of handlers) h(match[2])
+        }
+      } else {
+        for (const h of this.onBellHandlers) h()
+      }
+      consumed = match.index + match[0].length
+    }
+
+    // Only an unterminated OSC needs to survive into the next chunk. Slicing to
+    // a fixed tail instead used to cut a sequence in half and corrupt whatever
+    // matched next; anything before the last introducer is already resolved.
+    const tail = consumed > 0 ? buf.slice(consumed) : buf
+    const pending = tail.lastIndexOf('\x1b]')
+    this.oscScannerBuffer = pending === -1 ? '' : tail.slice(pending)
+    // A sequence this long is not going to terminate. Drop it rather than grow
+    // without bound.
+    if (this.oscScannerBuffer.length > 4096) this.oscScannerBuffer = ''
+  }
+
   // Every write has to reach the parser synchronously and in call order. PTY
   // output arrives here as bytes and local messages (writeln, the line editor)
   // as strings; routing the string case through a dynamic `import()` put it a
   // microtask behind every byte write issued after it, so a status line could
   // land in the middle of a later chunk and leave that chunk's SGR state
   // applied to output it was never meant to color.
-  private scanForOsc(chunk: string) {
-    this.oscScannerBuffer += chunk
-    const oscRegex = /\x1b\](\d+);(.*?)(?:\x07|\x1b\\)/g
-    let match
-    let lastIndex = 0
-    while ((match = oscRegex.exec(this.oscScannerBuffer)) !== null) {
-      const ident = parseInt(match[1], 10)
-      const data = match[2]
-      const handlers = this.oscHandlers.get(ident)
-      if (handlers) {
-        for (const h of handlers) h(data)
-      }
-      lastIndex = match.index + match[0].length
-    }
-    if (lastIndex > 0) {
-      this.oscScannerBuffer = this.oscScannerBuffer.slice(lastIndex)
-    }
-    if (this.oscScannerBuffer.length > 1024) {
-      this.oscScannerBuffer = this.oscScannerBuffer.slice(-1024)
-    }
-    const textWithoutOsc = chunk.replace(/\x1b\]\d+;.*?(?:\x07|\x1b\\)/g, '')
-    if (textWithoutOsc.includes('\x07')) {
-      for (const h of this.onBellHandlers) h()
-    }
-  }
-
   write(data: Uint8Array | string): void {
     this.needsRedraw = true
-    const chunk = typeof data === 'string' ? data : new TextDecoder().decode(data)
-    this.scanForOsc(chunk)
+
+    if (this.oscHandlers.size > 0 || this.onBellHandlers.size > 0) {
+      // Streaming, so a multi-byte character split across two chunks decodes
+      // once rather than as two replacement characters.
+      this.scanForOsc(
+        typeof data === 'string' ? data : this.scanDecoder.decode(data, { stream: true }),
+      )
+    }
 
     if (!this.wasm) {
       this.writeBuffer.push(data)
@@ -512,34 +556,26 @@ export class GhosttyEngine implements TerminalEngine {
   // until it scrolls away; new panes pick the theme up in full.
   setTheme(themeName: string, opacity: number): void {
     this._themeName = themeName
+    this._opacity = opacity
 
     if (this.renderer) {
-      const colors = this.themeConfigColors()
-      
-      const toRgb = (hex: number) => ({
-        r: (hex >> 16) & 0xff,
-        g: (hex >> 8) & 0xff,
-        b: hex & 0xff
-      })
-      
-      const fg = toRgb(colors.fgColor)
-      const bg = toRgb(colors.bgColor)
-      
-      this.renderer.setTheme(
-        fg.r, fg.g, fg.b,
-        bg.r, bg.g, bg.b,
-        opacity
-      )
+      this.applyThemeToRenderer(themeName)
+      // The grid is only rebuilt on damage, so without this an idle pane keeps
+      // its old palette until the next byte arrives.
       this.needsRedraw = true
     }
   }
-  
+
+  // Opacity rides along with the colors rather than having its own setter: the
+  // two are re-applied together every time a renderer is built, and splitting
+  // them meant a font change (which builds a fresh renderer) silently reset the
+  // pane to fully opaque.
   private applyThemeToRenderer(themeName: string) {
     if (!this.renderer) return
     const theme = findTheme(themeName)
     const [fr, fg, fb] = hexToRgb(theme.foreground)
     const [br, bg, bb] = hexToRgb(theme.background)
-    this.renderer.setTheme(fr, fg, fb, br, bg, bb)
+    this.renderer.setTheme(fr, fg, fb, br, bg, bb, this._opacity)
   }
   setFont(fontFamily: string, fontSize: number): void {
     this.fontFamily = fontFamily
@@ -547,6 +583,7 @@ export class GhosttyEngine implements TerminalEngine {
     if (this.renderer && this.canvas) {
       this.renderer.dispose()
       this.renderer = new WebGLRenderer(this.canvas, this._cols, this._rows, fontFamily, fontSize)
+      this.renderer.onRestore = this.onRendererRestored
       // A fresh renderer starts on its own grey-on-black defaults, and those
       // are what every cell *without* an explicit SGR color renders as. Losing
       // the theme here therefore recolors exactly the default-colored text
@@ -585,7 +622,13 @@ export class GhosttyEngine implements TerminalEngine {
     return false
   }
 
-  clearSelection(): void {}
+  clearSelection(): void {
+    if (!this.renderer || !this.renderer.selection) return
+    this.renderer.selection = null
+    this.selectionStart = null
+    this.needsRedraw = true
+    for (const h of this.onSelectionChangeHandlers) h()
+  }
   getSelection(): string {
     if (!this.renderer || !this.renderer.selection || !this.wasm) return ''
     
@@ -663,11 +706,19 @@ export class GhosttyEngine implements TerminalEngine {
     this.wasm.exports.ghostty_wasm_free_u8_array(lineBufPtr, wasmCols * CELL_BYTES)
     this.wasm.exports.ghostty_wasm_free_u8_array(viewportBufPtr, expectedBufSize)
     
-    console.log("getSelection() returning:", JSON.stringify(result))
     return result
   }
 
-  selectAll(): void {}
+  selectAll(): void {
+    if (!this.renderer || !this.wasm) return
+    const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    this.renderer.selection = {
+      start: { x: 0, y: 0 },
+      end: { x: this._cols - 1, y: scrollbackCount + this._rows - 1 },
+    }
+    this.needsRedraw = true
+    for (const h of this.onSelectionChangeHandlers) h()
+  }
   findNext(_term: string): boolean { return false }
   findPrevious(_term: string): boolean { return false }
 }

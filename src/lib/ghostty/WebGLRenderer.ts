@@ -17,17 +17,21 @@ out vec2 v_uv;
 void main() {
     v_fgColor = a_fgColor / 255.0;
     v_bgColor = a_bgColor / 255.0;
-    
+
     v_uv = mix(a_uv.xy, a_uv.zw, a_position);
-    
+
     vec2 pos = a_cellPos + a_position;
     vec2 clip = (pos / u_resolution) * 2.0 - 1.0;
     clip.y = -clip.y; // top-left origin
-    
+
     gl_Position = vec4(clip, 0.0, 1.0);
 }
 `
 
+// Glyph coverage and cell background resolve in one pass. The alpha channel is
+// mixed along with the colour, so a glyph stays opaque even where it sits on a
+// translucent default background — that is what lets the pane's opacity reach
+// the clear colour without also fading the text.
 const FRAGMENT_SHADER_SRC = `#version 300 es
 precision mediump float;
 
@@ -61,75 +65,6 @@ export function measureCell(fontFamily: string, fontSize: number): { width: numb
   }
 }
 
-let sharedCanvas: HTMLCanvasElement | null = null
-let sharedGl: WebGL2RenderingContext | null = null
-let sharedProgram: WebGLProgram | null = null
-let quadBuffer: WebGLBuffer | null = null
-
-function getSharedGL(): { canvas: HTMLCanvasElement, gl: WebGL2RenderingContext, program: WebGLProgram, quadBuffer: WebGLBuffer } {
-  if (!sharedCanvas) {
-    sharedCanvas = document.createElement('canvas')
-    sharedCanvas.width = 1
-    sharedCanvas.height = 1
-    
-    sharedGl = sharedCanvas.getContext('webgl2', {
-      antialias: false,
-      alpha: true,
-      preserveDrawingBuffer: true,
-    }) as WebGL2RenderingContext
-
-    if (!sharedGl) {
-      console.error("Failed to get WebGL2 context from DOM canvas")
-    }
-
-    sharedCanvas.addEventListener('webglcontextlost', (e) => {
-        e.preventDefault()
-        console.warn('Ghostty shared WebGL context lost')
-      })
-      sharedCanvas.addEventListener('webglcontextrestored', () => {
-        console.warn('Ghostty shared WebGL context restored')
-        // Rebuild shared resources
-        const gl = sharedGl!
-        const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC)!
-        const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)!
-        sharedProgram = gl.createProgram()!
-        gl.attachShader(sharedProgram, vs)
-        gl.attachShader(sharedProgram, fs)
-        gl.linkProgram(sharedProgram)
-        
-        quadBuffer = gl.createBuffer()!
-        gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer)
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-          0, 0, 1, 0, 0, 1,
-          0, 1, 1, 0, 1, 1
-        ]), gl.STATIC_DRAW)
-        
-        // Notify all renderers to rebuild their VAO, buffers, and atlas
-        for (const renderer of activeRenderers) {
-          renderer.rebuild()
-        }
-      })
-    
-    const gl = sharedGl!
-    const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC)!
-    const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)!
-    sharedProgram = gl.createProgram()!
-    gl.attachShader(sharedProgram, vs)
-    gl.attachShader(sharedProgram, fs)
-    gl.linkProgram(sharedProgram)
-
-    quadBuffer = gl.createBuffer()!
-    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer)
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      0, 0, 1, 0, 0, 1,
-      0, 1, 1, 0, 1, 1
-    ]), gl.STATIC_DRAW)
-  }
-  return { canvas: sharedCanvas, gl: sharedGl!, program: sharedProgram!, quadBuffer: quadBuffer! }
-}
-
-const activeRenderers = new Set<WebGLRenderer>()
-
 function compileShader(gl: WebGL2RenderingContext, type: number, src: string) {
   const shader = gl.createShader(type)!
   gl.shaderSource(shader, src)
@@ -142,31 +77,67 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string) {
   return shader
 }
 
+export interface SelectionRange {
+  /** Absolute buffer coordinates — row counts from the top of scrollback. */
+  start: { x: number; y: number }
+  end: { x: number; y: number }
+}
+
 export class WebGLRenderer {
   private canvas: HTMLCanvasElement
-  private gl!: WebGL2RenderingContext
+  private gl: WebGL2RenderingContext
   private atlas!: GlyphAtlas
   private program!: WebGLProgram
 
   private instanceBuffer!: WebGLBuffer
+  private quadBuffer!: WebGLBuffer
   private vao!: WebGLVertexArrayObject
+  private uResolution: WebGLUniformLocation | null = null
+  private uAtlas: WebGLUniformLocation | null = null
 
   private cols: number
   private rows: number
   private fontFamily: string
   private fontSize: number
-  
+
   private defaultFgR = 200
   private defaultFgG = 200
   private defaultFgB = 200
-  
-  private cellWidth!: number
-  private cellHeight!: number
-  
+  private defaultBgR = 0
+  private defaultBgG = 0
+  private defaultBgB = 0
+  /** 0..1. Reaches the clear colour and default-background cells only. */
+  private defaultBgA = 1
+
+  private cellWidth: number
+  private cellHeight: number
+
+  private contextLost = false
+  // False until the program links and the GL objects exist. A failed link would
+  // otherwise turn one console error into an exception on every frame.
+  private ready = false
+
+  /** Absolute-coordinate selection to highlight, or null. */
+  selection: SelectionRange | null = null
+
+  /**
+   * Called after a lost context has been rebuilt. Every GPU-side object comes
+   * back empty, so the owner has to re-issue a draw or the pane sits blank
+   * until its next byte arrives.
+   */
+  onRestore: (() => void) | null = null
+
   // Instance data buffer (floats):
   // cellPos.x, cellPos.y, fgR, fgG, fgB, fgA, bgR, bgG, bgB, bgA, u0, v0, u1, v1 (14 floats = 56 bytes per cell)
   private instanceData!: Float32Array
-  
+
+  // Scrollback is read one row at a time into a scratch buffer. It only has to
+  // exist while the viewport is scrolled up, and it outlives the frame so
+  // scrolling doesn't churn the WASM allocator once per row per frame.
+  private lineWasm: GhosttyWasm | null = null
+  private linePtr = 0
+  private lineCells = 0
+
   constructor(
     canvas: HTMLCanvasElement,
     cols: number,
@@ -179,141 +150,250 @@ export class WebGLRenderer {
     this.rows = rows
     this.fontFamily = fontFamily
     this.fontSize = fontSize
-    
-    this.rebuild()
-    activeRenderers.add(this)
-  }
-  
-  rebuild() {
-    const shared = getSharedGL()
-    this.gl = shared.gl
-    this.program = shared.program
-    const gl = this.gl
-    
-    const { width: cellWidth, height: cellHeight } = measureCell(this.fontFamily, this.fontSize)
+
+    // This renderer only repaints on damage, so an idle pane goes many frames
+    // without a draw. WebGL formally leaves a composited buffer's contents
+    // undefined unless it is preserved, so an idle pane is relying on behaviour
+    // it isn't promised; preserving costs a copy per frame and makes the buffer
+    // mean what it says. The alternative is redrawing every frame, which gives
+    // up the zero-cost idle pane this loop is built around.
+    //
+    // The buffer keeps an alpha channel so the pane's background opacity can
+    // reach the clear colour and let the window's own backdrop through.
+    // `premultipliedAlpha: false` because the colours written here are straight
+    // RGBA — declaring them premultiplied would wash out every translucent
+    // background by dividing it through by its own alpha at composite time.
+    this.gl = canvas.getContext('webgl2', {
+      antialias: false,
+      alpha: true,
+      premultipliedAlpha: false,
+      preserveDrawingBuffer: true,
+    })!
+
+    const { width: cellWidth, height: cellHeight } = measureCell(fontFamily, fontSize)
     this.cellWidth = cellWidth
     this.cellHeight = cellHeight
-    
-    const dpr = window.devicePixelRatio || 1
-    this.canvas.width = this.cols * cellWidth * dpr
-    this.canvas.height = this.rows * cellHeight * dpr
-    this.canvas.style.width = `${this.cols * cellWidth}px`
-    this.canvas.style.height = `${this.rows * cellHeight}px`
-    
-    if (this.atlas) this.atlas.dispose()
-    this.atlas = new GlyphAtlas(gl, this.fontFamily, this.fontSize, cellWidth, cellHeight)
-    
+
+    // A GPU reset — driver timeout, sleep/resume, WebView2 recycling its GPU
+    // host — invalidates every object below without the pane knowing. Without
+    // preventDefault the context is never eligible for restoration and the
+    // pane stays dead for the rest of the session.
+    canvas.addEventListener('webglcontextlost', this.onContextLost)
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored)
+
+    this.resizeCanvas()
+    this.initGL()
+  }
+
+  private onContextLost = (e: Event) => {
+    e.preventDefault()
+    this.contextLost = true
+  }
+
+  private onContextRestored = () => {
+    this.contextLost = false
+    // Every glyph the atlas had cached lived in a texture that no longer
+    // exists, so the cache goes with it.
+    this.initGL()
+    this.onRestore?.()
+  }
+
+  /** (Re)builds everything that lives on the GL context. */
+  private initGL() {
+    const gl = this.gl
+    this.ready = false
+
+    this.atlas = new GlyphAtlas(gl, this.fontFamily, this.fontSize, this.cellWidth, this.cellHeight)
+
+    const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC)
+    const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)
+    if (!vs || !fs) return
+
+    this.program = gl.createProgram()!
+    gl.attachShader(this.program, vs)
+    gl.attachShader(this.program, fs)
+    gl.linkProgram(this.program)
+    // A link failure is otherwise completely silent: the clear still paints, so
+    // the pane comes up showing its theme background with no text on it at all.
+    if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
+      console.error('Ghostty renderer program link failed:', gl.getProgramInfoLog(this.program))
+      return
+    }
+    gl.deleteShader(vs)
+    gl.deleteShader(fs)
+
+    gl.useProgram(this.program)
+    this.uResolution = gl.getUniformLocation(this.program, 'u_resolution')
+    this.uAtlas = gl.getUniformLocation(this.program, 'u_atlas')
+    gl.uniform2f(this.uResolution, this.cols, this.rows)
+    gl.uniform1i(this.uAtlas, 0)
+
     this.vao = gl.createVertexArray()!
     gl.bindVertexArray(this.vao)
-    
+
     // Quad vertices
-    gl.bindBuffer(gl.ARRAY_BUFFER, shared.quadBuffer)
+    this.quadBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      0, 0,
+      1, 0,
+      0, 1,
+      0, 1,
+      1, 0,
+      1, 1
+    ]), gl.STATIC_DRAW)
+
     gl.enableVertexAttribArray(0)
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
-    
+
     // Instance buffer
     this.instanceBuffer = gl.createBuffer()!
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
-    
+
     this.instanceData = new Float32Array(this.cols * this.rows * 14)
     gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW)
-    
+
     const stride = 14 * 4
-    
+
     // a_cellPos
     gl.enableVertexAttribArray(1)
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 0)
     gl.vertexAttribDivisor(1, 1)
-    
+
     // a_fgColor
     gl.enableVertexAttribArray(2)
     gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 2 * 4)
     gl.vertexAttribDivisor(2, 1)
-    
+
     // a_bgColor
     gl.enableVertexAttribArray(3)
     gl.vertexAttribPointer(3, 4, gl.FLOAT, false, stride, 6 * 4)
     gl.vertexAttribDivisor(3, 1)
-    
+
     // a_uv
     gl.enableVertexAttribArray(4)
     gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 10 * 4)
     gl.vertexAttribDivisor(4, 1)
+
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height)
+    this.ready = true
   }
-  
-  private defaultBgR = 0
-  private defaultBgG = 0
-  private defaultBgB = 0
-  private defaultBgA = 1
-  
-  setTheme(fr: number, fg: number, fb: number, br: number, bg: number, bb: number, alpha: number = 1.0) {
+
+  private resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1
+    this.canvas.width = this.cols * this.cellWidth * dpr
+    this.canvas.height = this.rows * this.cellHeight * dpr
+    this.canvas.style.width = `${this.cols * this.cellWidth}px`
+    this.canvas.style.height = `${this.rows * this.cellHeight}px`
+  }
+
+  setTheme(fr: number, fg: number, fb: number, br: number, bg: number, bb: number, opacity = 1) {
     this.defaultFgR = fr
     this.defaultFgG = fg
     this.defaultFgB = fb
     this.defaultBgR = br
     this.defaultBgG = bg
     this.defaultBgB = bb
-    this.defaultBgA = alpha
+    this.defaultBgA = opacity
   }
-  
+
   getCellSize(): { width: number, height: number } {
     return { width: this.cellWidth, height: this.cellHeight }
   }
-  
+
   resize(cols: number, rows: number, force = false) {
     if (this.cols === cols && this.rows === rows && !force) return
     this.cols = cols
     this.rows = rows
-    
-    const dpr = window.devicePixelRatio || 1
-    this.canvas.width = cols * this.cellWidth * dpr
-    this.canvas.height = rows * this.cellHeight * dpr
-    this.canvas.style.width = `${cols * this.cellWidth}px`
-    this.canvas.style.height = `${rows * this.cellHeight}px`
-    
-    this.instanceData = new Float32Array(cols * rows * 14)
-    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.instanceBuffer)
-    this.gl.bufferData(this.gl.ARRAY_BUFFER, this.instanceData, this.gl.DYNAMIC_DRAW)
-  }
-  
-  selection: { start: { x: number, y: number }, end: { x: number, y: number } } | null = null
 
+    this.resizeCanvas()
+    if (this.contextLost || !this.ready) return
+
+    const gl = this.gl
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height)
+
+    gl.useProgram(this.program)
+    gl.uniform2f(this.uResolution, cols, rows)
+
+    this.instanceData = new Float32Array(cols * rows * 14)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW)
+  }
+
+  /** Scratch buffer for one scrollback row, grown on demand. */
+  private lineBuffer(wasm: GhosttyWasm, cells: number): number {
+    if (this.linePtr !== 0 && this.lineCells >= cells) return this.linePtr
+    if (this.linePtr !== 0) {
+      wasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
+    }
+    this.linePtr = wasm.exports.ghostty_wasm_alloc_u8_array(cells * CELL_BYTES)
+    this.lineCells = this.linePtr === 0 ? 0 : cells
+    this.lineWasm = wasm
+    return this.linePtr
+  }
+
+  /**
+   * @param viewportOffset rows scrolled up from the bottom; 0 is live output.
+   * @param scrollbackCount rows currently held above the active screen.
+   */
   updateStaticGrid(wasm: GhosttyWasm, termPtr: number, viewportOffset = 0, scrollbackCount = 0) {
+    if (this.contextLost || !this.ready) return
+
     const gl = this.gl
     const cols = this.cols
     const rows = this.rows
     const wasmCols = wasm.exports.ghostty_render_state_get_cols(termPtr)
     const wasmRows = wasm.exports.ghostty_render_state_get_rows(termPtr)
 
+    // Sized from the WASM dimensions rather than ours, since a resize can land
+    // on one side before the other.
     const cellCount = wasmCols * wasmRows
     const expectedBufSize = cellCount * CELL_BYTES
     const viewportBufPtr = wasm.exports.ghostty_wasm_alloc_u8_array(expectedBufSize)
     if (viewportBufPtr === 0) return
 
-    wasm.exports.ghostty_render_state_get_viewport(termPtr, viewportBufPtr, cellCount)
-    const lineBufPtr = wasm.exports.ghostty_wasm_alloc_u8_array(wasmCols * CELL_BYTES)
-    
-    // Create DataViews after all allocs to prevent detached buffer errors
-    const viewportView = new DataView(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
-    const lineView = new DataView(wasm.exports.memory.buffer, lineBufPtr, wasmCols * CELL_BYTES)
+    new Uint8Array(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize).fill(0)
 
+    // Takes a cell count, not a byte count.
+    wasm.exports.ghostty_render_state_get_viewport(termPtr, viewportBufPtr, cellCount)
+
+    viewportOffset = Math.max(0, Math.min(viewportOffset, scrollbackCount))
+    // Only pay for the scratch row when the viewport is actually scrolled up.
+    const linePtr = viewportOffset > 0 ? this.lineBuffer(wasm, wasmCols) : 0
+
+    // Both views are made after every allocation this frame will do: growing
+    // WASM memory detaches the old ArrayBuffer, and a DataView built before the
+    // growth throws on its next read.
+    const viewportView = new DataView(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
+    const lineView = linePtr !== 0
+      ? new DataView(wasm.exports.memory.buffer, linePtr, wasmCols * CELL_BYTES)
+      : null
+
+    // The core has no runtime colour setter, so a pane that outlives a theme
+    // change would otherwise keep painting default text in the palette it was
+    // created with. Its current defaults are queryable and come back on cells
+    // byte-for-byte, so cells still sitting on them can be mapped onto the live
+    // theme. Explicitly-coloured text is left alone — remapping that would mean
+    // guessing which palette slot it came from, which the resolved-RGB ABI
+    // deliberately no longer tells us.
     const coreFg = wasm.exports.ghostty_render_state_get_fg_color(termPtr)
     const coreFgR = (coreFg >> 16) & 0xff, coreFgG = (coreFg >> 8) & 0xff, coreFgB = coreFg & 0xff
     const coreBg = wasm.exports.ghostty_render_state_get_bg_color(termPtr)
     const coreBgR = (coreBg >> 16) & 0xff, coreBgG = (coreBg >> 8) & 0xff, coreBgB = coreBg & 0xff
 
-    let outIdx = 0
-    viewportOffset = Math.max(0, Math.min(viewportOffset, scrollbackCount))
-    
+    // Normalised here so the caller can drag a selection in either direction.
     let selStart = this.selection?.start
     let selEnd = this.selection?.end
     if (selStart && selEnd) {
       if (selStart.y > selEnd.y || (selStart.y === selEnd.y && selStart.x > selEnd.x)) {
-        const temp = selStart; selStart = selEnd; selEnd = temp
+        const swap = selStart; selStart = selEnd; selEnd = swap
       }
     }
 
+    let outIdx = 0
+
     for (let r = 0; r < rows; r++) {
+      // Absolute row: scrollback rows come first, then the active screen.
       const absRow = scrollbackCount - viewportOffset + r
 
       let isScrollback = false
@@ -321,36 +401,42 @@ export class WebGLRenderer {
       let rowValid = false
 
       if (absRow < scrollbackCount) {
-        if (absRow >= 0) {
-          wasm.exports.ghostty_terminal_get_scrollback_line(termPtr, absRow, lineBufPtr, wasmCols)
+        if (absRow >= 0 && lineView) {
+          wasm.exports.ghostty_terminal_get_scrollback_line(termPtr, absRow, linePtr, wasmCols)
           isScrollback = true
           rowValid = true
         }
       } else {
         activeRow = absRow - scrollbackCount
-        if (activeRow < wasmRows) {
-          rowValid = true
-        }
+        rowValid = activeRow < wasmRows
       }
 
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
         let flags = 0
+        // Cells outside the core's grid (a resize we've seen but it hasn't)
+        // fall back to the theme's own colors.
         let finalFgR = this.defaultFgR
         let finalFgG = this.defaultFgG
         let finalFgB = this.defaultFgB
         let finalBgR = this.defaultBgR
         let finalBgG = this.defaultBgG
         let finalBgB = this.defaultBgB
+        // Only the default background is allowed to be see-through. A cell that
+        // asked for a specific background gets it at full strength, the same way
+        // xterm treats an explicit SGR background.
+        let bgIsDefault = true
 
         if (rowValid && c < wasmCols) {
           const cell = isScrollback
-            ? parseCell(lineView, c * CELL_BYTES)
+            ? parseCell(lineView!, c * CELL_BYTES)
             : parseCell(viewportView, (activeRow * wasmCols + c) * CELL_BYTES)
-            
+
           codepoint = cell.codepoint
           flags = cell.flags
-
+          // Already resolved to RGB by the core against the palette and
+          // defaults it was configured with, so the only substitution left is
+          // pulling default-coloured cells onto the current theme.
           if (cell.fgR === coreFgR && cell.fgG === coreFgG && cell.fgB === coreFgB) {
             finalFgR = this.defaultFgR; finalFgG = this.defaultFgG; finalFgB = this.defaultFgB
           } else {
@@ -360,28 +446,8 @@ export class WebGLRenderer {
             finalBgR = this.defaultBgR; finalBgG = this.defaultBgG; finalBgB = this.defaultBgB
           } else {
             finalBgR = cell.bgR; finalBgG = cell.bgG; finalBgB = cell.bgB
+            bgIsDefault = false
           }
-        }
-        
-        let isSelected = false
-        if (selStart && selEnd) {
-          if (absRow > selStart.y && absRow < selEnd.y) {
-            isSelected = true
-          } else if (selStart.y === selEnd.y && absRow === selStart.y) {
-            isSelected = c >= selStart.x && c <= selEnd.x
-          } else if (absRow === selStart.y) {
-            isSelected = c >= selStart.x
-          } else if (absRow === selEnd.y) {
-            isSelected = c <= selEnd.x
-          }
-        }
-
-        if (isSelected) {
-          // Invert or highlight? Most terminals use a translucent white/gray over the background.
-          const hlR = 255, hlG = 255, hlB = 255
-          finalBgR = (finalBgR * 0.7 + hlR * 0.3) & 0xff
-          finalBgG = (finalBgG * 0.7 + hlG * 0.3) & 0xff
-          finalBgB = (finalBgB * 0.7 + hlB * 0.3) & 0xff
         }
 
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
@@ -394,6 +460,24 @@ export class WebGLRenderer {
           const tempR = finalFgR, tempG = finalFgG, tempB = finalFgB
           finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
           finalBgR = tempR; finalBgG = tempG; finalBgB = tempB
+          bgIsDefault = false
+        }
+
+        let isSelected = false
+        if (selStart && selEnd && absRow >= selStart.y && absRow <= selEnd.y) {
+          const from = absRow === selStart.y ? selStart.x : 0
+          const to = absRow === selEnd.y ? selEnd.x : cols - 1
+          isSelected = c >= from && c <= to
+        }
+
+        if (isSelected) {
+          // Lightened rather than inverted so syntax colouring stays readable
+          // through the highlight, and always opaque — a selection that fades
+          // with the pane's transparency is hard to pick out against a desktop.
+          finalBgR = (finalBgR * 0.7 + 255 * 0.3) | 0
+          finalBgG = (finalBgG * 0.7 + 255 * 0.3) | 0
+          finalBgB = (finalBgB * 0.7 + 255 * 0.3) | 0
+          bgIsDefault = false
         }
 
         this.instanceData[outIdx++] = c
@@ -407,7 +491,7 @@ export class WebGLRenderer {
         this.instanceData[outIdx++] = finalBgR
         this.instanceData[outIdx++] = finalBgG
         this.instanceData[outIdx++] = finalBgB
-        this.instanceData[outIdx++] = this.defaultBgA * 255
+        this.instanceData[outIdx++] = bgIsDefault ? this.defaultBgA * 255 : 255
 
         this.instanceData[outIdx++] = u0
         this.instanceData[outIdx++] = v0
@@ -416,18 +500,7 @@ export class WebGLRenderer {
       }
     }
 
-    wasm.exports.ghostty_wasm_free_u8_array(lineBufPtr, wasmCols * CELL_BYTES)
     wasm.exports.ghostty_wasm_free_u8_array(viewportBufPtr, expectedBufSize)
-
-    // Resize shared canvas if needed
-    const shared = getSharedGL()
-    const targetWidth = this.canvas.width
-    const targetHeight = this.canvas.height
-    if (shared.canvas.width !== targetWidth || shared.canvas.height !== targetHeight) {
-      shared.canvas.width = targetWidth
-      shared.canvas.height = targetHeight
-    }
-    gl.viewport(0, 0, targetWidth, targetHeight)
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData)
@@ -436,48 +509,26 @@ export class WebGLRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT)
 
     gl.useProgram(this.program)
-    const uRes = gl.getUniformLocation(this.program, 'u_resolution')
-    gl.uniform2f(uRes, cols, rows)
-    const uAtlas = gl.getUniformLocation(this.program, 'u_atlas')
-    gl.uniform1i(uAtlas, 0)
-    
     gl.bindVertexArray(this.vao)
 
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, this.atlas.texture)
 
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cols * rows)
-
-    const err = gl.getError()
-    if (err !== gl.NO_ERROR) {
-      console.error("WebGL Error in updateStaticGrid:", err)
-    }
-
-    // Copy to the visible 2D canvas
-    const ctx2d = this.canvas.getContext('2d')
-    if (ctx2d) {
-      ctx2d.clearRect(0, 0, targetWidth, targetHeight)
-      ctx2d.drawImage(shared.canvas, 0, 0, targetWidth, targetHeight)
-    }
-    
-    // Debug log
-    if ((window as any).debugWrustty !== true) {
-      (window as any).debugWrustty = true
-      console.log('WebGLRenderer debug:', {
-        targetWidth, targetHeight,
-        cols, rows, cellCount,
-        outIdx,
-        instanceDataSample: Array.from(this.instanceData.slice(0, 28)),
-        atlasTexture: this.atlas.texture,
-        defaultBgA: this.defaultBgA
-      })
-    }
   }
 
   dispose() {
-    activeRenderers.delete(this)
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost)
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored)
+    if (this.linePtr !== 0 && this.lineWasm) {
+      this.lineWasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
+      this.linePtr = 0
+    }
+    if (this.contextLost || !this.ready) return
     this.atlas.dispose()
+    this.gl.deleteProgram(this.program)
     this.gl.deleteBuffer(this.instanceBuffer)
+    this.gl.deleteBuffer(this.quadBuffer)
     this.gl.deleteVertexArray(this.vao)
   }
 }
