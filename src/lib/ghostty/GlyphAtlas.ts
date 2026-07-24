@@ -23,6 +23,8 @@ export class GlyphAtlas {
   
   public readonly cellWidth: number
   public readonly cellHeight: number
+  /** Baseline offset from the top of a cell, in the same pixels as cellHeight. */
+  private baseline = 0
 
   constructor(
     gl: WebGL2RenderingContext,
@@ -44,8 +46,25 @@ export class GlyphAtlas {
     this.ctx.fillRect(0, 0, this.atlasWidth, this.atlasHeight)
     
     this.ctx.font = `${fontSize}px ${fontFamily}`
-    this.ctx.textBaseline = 'top'
     this.ctx.fillStyle = 'white'
+
+    // 'top' anchors to the font's ascent, which carries whatever internal
+    // leading the face declares — so the ink lands wherever that happens to
+    // put it, biased up or down by an amount that varies per font. The cursor
+    // is drawn as the whole cell, so any such bias reads as the block sitting
+    // off-centre against the character it covers.
+    //
+    // Placing the baseline from measured metrics instead centres the ascent +
+    // descent box in the cell, which is where a block cursor expects to find
+    // the glyph. Older engines omit fontBoundingBox*, hence the fallback.
+    this.ctx.textBaseline = 'alphabetic'
+    const m = this.ctx.measureText('Mg')
+    const ascent = m.fontBoundingBoxAscent ?? fontSize * 0.8
+    const descent = m.fontBoundingBoxDescent ?? fontSize * 0.2
+    this.baseline = Math.max(
+      0,
+      Math.min(cellHeight, Math.round((cellHeight - (ascent + descent)) / 2 + ascent)),
+    )
 
     this.texture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
@@ -80,7 +99,7 @@ export class GlyphAtlas {
     const y = this.currentY
     
     this.ctx.clearRect(x, y, this.cellWidth, this.cellHeight)
-    this.ctx.fillText(char, x, y)
+    this.ctx.fillText(char, x, y + this.baseline)
 
     const imageData = this.ctx.getImageData(x, y, this.cellWidth, this.cellHeight)
     

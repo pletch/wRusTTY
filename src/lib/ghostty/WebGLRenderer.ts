@@ -118,8 +118,24 @@ export class WebGLRenderer {
   /** 0..1. Reaches the clear colour and default-background cells only. */
   private defaultBgA = 1
 
+  // As measured, before display-scale quantisation. Kept so a scale change
+  // re-quantises from the measurement rather than from an already-rounded value.
+  private baseCellWidth: number
+  private baseCellHeight: number
   private cellWidth: number
   private cellHeight: number
+  // Cell size in whole device pixels. Windows commonly runs at 125% or 150%,
+  // where a logical cell is a fractional number of device pixels: the canvas
+  // height truncates, the shader still divides it into equal rows, and every
+  // row boundary lands a little further off a real pixel than the last. The
+  // glyph — rasterized on its own integer grid — then sits a pixel or two off
+  // the cell the cursor paints, increasingly so down the screen. Rounding to
+  // whole device pixels makes every cell an exact integer rect, which is also
+  // what lets the atlas rasterize at native resolution instead of being
+  // NEAREST-upscaled from logical size.
+  private deviceCellWidth: number
+  private deviceCellHeight: number
+  private dpr: number
 
   private contextLost = false
   // False until the program links and the GL objects exist. A failed link would
@@ -187,8 +203,14 @@ export class WebGLRenderer {
     })!
 
     const { width: cellWidth, height: cellHeight } = measureCell(fontFamily, fontSize)
+    this.baseCellWidth = cellWidth
+    this.baseCellHeight = cellHeight
+    this.dpr = 0 // forces the first sync to compute
     this.cellWidth = cellWidth
     this.cellHeight = cellHeight
+    this.deviceCellWidth = cellWidth
+    this.deviceCellHeight = cellHeight
+    this.syncDeviceMetrics()
 
     // A GPU reset — driver timeout, sleep/resume, WebView2 recycling its GPU
     // host — invalidates every object below without the pane knowing. Without
@@ -208,18 +230,63 @@ export class WebGLRenderer {
 
   private onContextRestored = () => {
     this.contextLost = false
-    // Every glyph the atlas had cached lived in a texture that no longer
-    // exists, so the cache goes with it.
+    // Nothing from the old context survives, so mark the build dead before
+    // rebuilding rather than trying to delete objects that no longer exist.
+    this.ready = false
+    // Every glyph the atlas had cached lived in a texture that is gone too, so
+    // the cache goes with it.
     this.initGL()
     this.onRestore?.()
   }
 
+  /** Drops the current GL build, if there is a live one. */
+  private releaseGL() {
+    if (!this.ready) return
+    this.atlas.dispose()
+    this.gl.deleteProgram(this.program)
+    this.gl.deleteBuffer(this.instanceBuffer)
+    this.gl.deleteBuffer(this.quadBuffer)
+    this.gl.deleteVertexArray(this.vao)
+    this.ready = false
+  }
+
+  /**
+   * Recomputes whole-pixel cell metrics, returning whether the display scale
+   * moved — dragging a window between monitors of different DPI changes the
+   * size a glyph has to be rasterized at.
+   */
+  private syncDeviceMetrics(): boolean {
+    const dpr = window.devicePixelRatio || 1
+    if (dpr === this.dpr) return false
+    this.dpr = dpr
+    this.deviceCellWidth = Math.max(1, Math.round(this.baseCellWidth * dpr))
+    this.deviceCellHeight = Math.max(1, Math.round(this.baseCellHeight * dpr))
+    // The logical size is derived back from the rounded device size rather than
+    // kept at the measured value. Sizing the CSS box from the raw measurement
+    // would leave the browser rescaling the backing store by the rounding error
+    // — undoing the point of the exercise — and fit() reads these same numbers,
+    // so deriving them keeps the grid it computes identical to the one drawn.
+    this.cellWidth = this.deviceCellWidth / dpr
+    this.cellHeight = this.deviceCellHeight / dpr
+    return true
+  }
+
   /** (Re)builds everything that lives on the GL context. */
   private initGL() {
+    this.releaseGL()
     const gl = this.gl
     this.ready = false
 
-    this.atlas = new GlyphAtlas(gl, this.fontFamily, this.fontSize, this.cellWidth, this.cellHeight)
+    // Rasterized at device scale into device-sized slots, so a glyph is drawn
+    // at the resolution it is displayed at rather than magnified from logical
+    // size by a NEAREST sampler.
+    this.atlas = new GlyphAtlas(
+      gl,
+      this.fontFamily,
+      this.fontSize * this.dpr,
+      this.deviceCellWidth,
+      this.deviceCellHeight,
+    )
 
     const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC)
     const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)
@@ -296,9 +363,10 @@ export class WebGLRenderer {
   }
 
   private resizeCanvas() {
-    const dpr = window.devicePixelRatio || 1
-    this.canvas.width = this.cols * this.cellWidth * dpr
-    this.canvas.height = this.rows * this.cellHeight * dpr
+    // Backing store in whole device pixels; CSS box in the logical units the
+    // rest of the layout is measured in.
+    this.canvas.width = this.cols * this.deviceCellWidth
+    this.canvas.height = this.rows * this.deviceCellHeight
     this.canvas.style.width = `${this.cols * this.cellWidth}px`
     this.canvas.style.height = `${this.rows * this.cellHeight}px`
   }
@@ -324,12 +392,21 @@ export class WebGLRenderer {
   }
 
   resize(cols: number, rows: number, force = false) {
-    if (this.cols === cols && this.rows === rows && !force) return
+    const scaleChanged = this.syncDeviceMetrics()
+    if (this.cols === cols && this.rows === rows && !force && !scaleChanged) return
     this.cols = cols
     this.rows = rows
 
     this.resizeCanvas()
-    if (this.contextLost || !this.ready) return
+    if (this.contextLost) return
+
+    if (scaleChanged) {
+      // The atlas holds glyphs rasterized for the old scale, and initGL sizes
+      // the instance buffer for the current grid, so this covers the resize too.
+      this.initGL()
+      return
+    }
+    if (!this.ready) return
 
     const gl = this.gl
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
@@ -572,11 +649,7 @@ export class WebGLRenderer {
       this.lineWasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
       this.linePtr = 0
     }
-    if (this.contextLost || !this.ready) return
-    this.atlas.dispose()
-    this.gl.deleteProgram(this.program)
-    this.gl.deleteBuffer(this.instanceBuffer)
-    this.gl.deleteBuffer(this.quadBuffer)
-    this.gl.deleteVertexArray(this.vao)
+    if (this.contextLost) return
+    this.releaseGL()
   }
 }
