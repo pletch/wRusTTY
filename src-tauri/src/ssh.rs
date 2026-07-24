@@ -131,6 +131,8 @@ pub async fn ssh_connect(
     jump_profile_id: Option<String>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    cols: u16,
+    rows: u16,
     state: State<'_, SshState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
@@ -142,7 +144,7 @@ pub async fn ssh_connect(
         let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
         config.jump = Some(Box::new(jump_config));
     }
-    start_connection(app, config, channel, data_channel, &state).await
+    start_connection(app, config, channel, data_channel, cols, rows, &state).await
 }
 
 /// Connects using a saved session profile's vault-stored credential,
@@ -154,17 +156,21 @@ pub async fn ssh_connect_profile(
     profile_id: String,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    cols: u16,
+    rows: u16,
     state: State<'_, SshState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
     let profile = profiles::get_profile(&app, &profile_id)?;
     let mut config = build_ssh_config(&profile, &vault_state).await?;
+
     if let Some(jump_id) = &profile.jump_profile_id {
         let jump_profile = profiles::get_profile(&app, jump_id)?;
         let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
         config.jump = Some(Box::new(jump_config));
     }
-    start_connection(app, config, channel, data_channel, &state).await
+
+    start_connection(app, config, channel, data_channel, cols, rows, &state).await
 }
 
 /// Resolves `profile`'s own auth from the vault and builds a plain
@@ -246,6 +252,8 @@ async fn start_connection(
     config: SshConfig,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    cols: u16,
+    rows: u16,
     state: &State<'_, SshState>,
 ) -> Result<String, String> {
     let session_id = state.next_session_id();
@@ -255,7 +263,7 @@ async fn start_connection(
         channel: channel.clone(),
     });
 
-    let session = SshSession::new(config, known_hosts, verifier).map_err(|e| e.to_string())?;
+    let session = SshSession::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
     let session = Arc::new(TokioMutex::new(session));
 
     state

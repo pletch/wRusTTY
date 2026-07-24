@@ -3,7 +3,7 @@ resolver = "2"
 members = ["src-tauri", "crates/wr-core", "crates/wr-ssh", "crates/wr-telnet", "crates/wr-serial", "crates/wr-vault", "crates/wr-sftp"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["pletch"]
 license = "MIT"

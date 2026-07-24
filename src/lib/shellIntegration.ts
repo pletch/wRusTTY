@@ -52,6 +52,13 @@ export interface CommandResult {
 
 export const IDLE: CommandActivity = { state: 'idle', startedAt: null, command: null }
 
+/** A command that starts and finishes inside this window never shows the
+ * indicator at all. Nearly everything typed at a prompt returns in well under a
+ * second, and flashing a spinner for each one is noise rather than information —
+ * the indicator exists to say "something is still going", which is only a
+ * meaningful claim once it has gone on longer than a keystroke. */
+const RUNNING_VISIBLE_AFTER_MS = 400
+
 /** Human-readable run length for a completion notice. Only ever shown for
  * commands past the notification threshold, so it never needs sub-second
  * resolution. */
@@ -91,10 +98,49 @@ export class CommandTracker {
    * it's parked here until then. */
   private pendingCommand: string | null = null
   private sawAltScreen = false
+  /** Whether the alternate screen is up right now (as opposed to `sawAltScreen`,
+   * which records that the run in flight touched it at some point). */
+  private onAltScreen = false
+  /** Whether a `running` activity is currently showing, so idle is only sent to
+   * undo one that was actually sent. */
+  private reportedRunning = false
+  private showTimer: ReturnType<typeof setTimeout> | null = null
   private readonly handlers: Handlers
 
   constructor(handlers: Handlers) {
     this.handlers = handlers
+  }
+
+  private clearShowTimer() {
+    if (this.showTimer === null) return
+    clearTimeout(this.showTimer)
+    this.showTimer = null
+  }
+
+  /** Show the indicator once the run has lasted long enough to be worth one, and
+   * only while the run actually owns the screen (see setAltScreen). */
+  private armShowTimer() {
+    this.clearShowTimer()
+    this.showTimer = setTimeout(() => {
+      this.showTimer = null
+      if (this.running && !this.onAltScreen) this.emitRunning()
+    }, RUNNING_VISIBLE_AFTER_MS)
+  }
+
+  private emitRunning() {
+    if (this.reportedRunning) return
+    this.reportedRunning = true
+    this.handlers.onChange({
+      state: 'running',
+      startedAt: this.startedAt,
+      command: this.command,
+    })
+  }
+
+  private emitIdle() {
+    if (!this.reportedRunning) return
+    this.reportedRunning = false
+    this.handlers.onChange(IDLE)
   }
 
   /**
@@ -106,6 +152,15 @@ export class CommandTracker {
    * them from being treated as anything else.
    */
   handleOsc(data: string): boolean {
+    // Markers are never gated on the alternate screen being up, even though the
+    // ones emitted from inside a full-screen program describe its commands and
+    // not the outer shell's. The engine dispatches OSC by scanning the raw byte
+    // stream *before* the chunk reaches the parser, so the screen-buffer state
+    // still reads as "alternate" on the very chunk that leaves it — and that is
+    // exactly the chunk carrying the `D`/`A` that ends the run. Dropping those
+    // strands the run open and leaves the indicator stuck on after quitting tmux
+    // or nano. Suppressing the *display* while the alternate screen is up (see
+    // setAltScreen) deals with the noise without losing the transitions.
     const sep = data.indexOf(';')
     const kind = sep === -1 ? data : data.slice(0, sep)
     const rest = sep === -1 ? '' : data.slice(sep + 1)
@@ -159,24 +214,46 @@ export class CommandTracker {
     return true
   }
 
-  /** Called when the terminal switches to the alternate screen buffer, which
-   * is how a full-screen program announces itself. Only meaningful mid-run;
-   * an interactive program started from the prompt is still one "command"
-   * as far as OSC 133 is concerned. */
-  noteAltScreen() {
-    if (this.running) this.sawAltScreen = true
+  /** Called whenever the terminal switches screen buffers. Entering the
+   * alternate buffer is how a full-screen program announces itself: mid-run it
+   * marks the run interactive (an interactive program started from the prompt is
+   * still one "command" as far as OSC 133 is concerned), and either way it gates
+   * the semantic-prompt markers emitted from inside it — see handleOsc. */
+  setAltScreen(isAlternate: boolean) {
+    this.onAltScreen = isAlternate
+    if (isAlternate) {
+      if (this.running) this.sawAltScreen = true
+      // A full-screen program is not a job you are waiting on — it is the thing
+      // you are using. Spinning for the whole life of a tmux attach or a vim
+      // session says nothing and never stops, so the indicator stands down for
+      // as long as the alternate screen is up. The run is still tracked; only
+      // its display is suppressed.
+      this.clearShowTimer()
+      this.emitIdle()
+    } else if (this.running) {
+      // Back on the primary screen with the run still open: the program has
+      // exited and the shell's `D` is usually a few milliseconds behind, so go
+      // through the delay again rather than flashing the indicator on the way
+      // out of every editor.
+      this.armShowTimer()
+    }
   }
 
   /** Drop any in-flight run without reporting it — for a disconnect, where
    * the command's fate is genuinely unknown and a completion notification
    * would be a lie. */
   reset() {
+    // Cleared unconditionally: a disconnect while a full-screen program was up
+    // would otherwise leave the gate in handleOsc stuck on, silently ignoring
+    // every marker for the rest of the pane's life.
+    this.onAltScreen = false
+    this.clearShowTimer()
     if (!this.running) return
     this.running = false
     this.command = null
     this.pendingCommand = null
     this.sawAltScreen = false
-    this.handlers.onChange(IDLE)
+    this.emitIdle()
   }
 
   private start() {
@@ -185,11 +262,7 @@ export class CommandTracker {
     this.command = this.pendingCommand
     this.pendingCommand = null
     this.sawAltScreen = false
-    this.handlers.onChange({
-      state: 'running',
-      startedAt: this.startedAt,
-      command: this.command,
-    })
+    this.armShowTimer()
   }
 
   private finish(exitCode: number | null) {
@@ -202,7 +275,8 @@ export class CommandTracker {
     this.running = false
     this.command = null
     this.sawAltScreen = false
-    this.handlers.onChange(IDLE)
+    this.clearShowTimer()
+    this.emitIdle()
     this.handlers.onComplete(result)
   }
 }

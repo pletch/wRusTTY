@@ -19,6 +19,11 @@ export interface PaneLeaf {
    * simply emits a different byte. It applies to SSH, telnet, and serial
    * alike, which is why it isn't a field on any one protocol's config. */
   backspaceSendsCtrlH?: boolean | null
+  
+  /** The rendering engine to use for this pane. Defaults to 'ghostty' (Phase 7);
+   *  absent on sessions saved before the flip, which the Terminal reads as the
+   *  same default. */
+  engine?: 'xterm' | 'ghostty'
 }
 
 /** Always exactly 2 children — nesting splits produces arbitrary layouts,
