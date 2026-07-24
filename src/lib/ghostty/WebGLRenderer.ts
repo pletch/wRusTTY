@@ -111,6 +111,18 @@ export interface SelectionRange {
   end: { x: number; y: number }
 }
 
+export interface SearchHighlight {
+  from: number
+  to: number
+  /** The one the viewport is parked on, painted brighter than the rest. */
+  active: boolean
+}
+
+// Matching the xterm engine's SEARCH_DECORATIONS, so switching engines doesn't
+// change what a hit looks like.
+const SEARCH_MATCH_BG = [0x5c, 0x4a, 0x1c]
+const SEARCH_ACTIVE_BG = [0xd9, 0xa4, 0x41]
+
 export interface CursorState {
   /** Viewport coordinates — the row as currently displayed, not absolute. */
   col: number
@@ -175,6 +187,14 @@ export class WebGLRenderer {
 
   /** Where to paint the cursor block, or null for none. */
   cursor: CursorState | null = null
+
+  /**
+   * Search hits to highlight, grouped by absolute row. Grouped rather than a
+   * flat list because the alternative is scanning every match for every cell;
+   * this way a row costs one lookup and a cell costs a walk of just its own
+   * row's hits, which is almost always none.
+   */
+  searchHighlights: Map<number, SearchHighlight[]> | null = null
 
   private cursorR = 255
   private cursorG = 255
@@ -563,6 +583,8 @@ export class WebGLRenderer {
       let pendingWide: GlyphRect | null = null
       let cursorOnWide: boolean = false
 
+      const rowHighlights = this.searchHighlights?.get(absRow)
+
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
         let flags = 0
@@ -667,6 +689,23 @@ export class WebGLRenderer {
           finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
           finalBgR = tempR; finalBgG = tempG; finalBgB = tempB
           bgIsDefault = false
+        }
+
+        // Under the selection: a search hit you have then dragged over should
+        // look selected, not still look like a hit.
+        if (rowHighlights) {
+          for (let i = 0; i < rowHighlights.length; i++) {
+            const h = rowHighlights[i]
+            if (c < h.from || c > h.to) continue
+            const tint = h.active ? SEARCH_ACTIVE_BG : SEARCH_MATCH_BG
+            finalBgR = tint[0]; finalBgG = tint[1]; finalBgB = tint[2]
+            bgIsDefault = false
+            // The active hit is a light background, so dark text reads on it.
+            if (h.active) {
+              finalFgR = 0x1a; finalFgG = 0x1a; finalFgB = 0x1a
+            }
+            break
+          }
         }
 
         let isSelected = false

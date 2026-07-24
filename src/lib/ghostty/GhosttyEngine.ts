@@ -1,4 +1,5 @@
-import type { TerminalEngine } from '../terminalEngine'
+import type { TerminalEngine, SearchOptions, SearchResult } from '../terminalEngine'
+import type { SearchHighlight } from './WebGLRenderer'
 import type { IDisposable } from '@xterm/xterm'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
@@ -103,6 +104,14 @@ export class GhosttyEngine implements TerminalEngine {
   private onBellHandlers = new Set<() => void>()
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
   private lastIsAlternate = false
+
+  private onSearchResultHandlers = new Set<(result: SearchResult) => void>()
+  private searchMatches: { row: number; from: number; to: number }[] = []
+  private searchIndex = -1
+  private searchSignature = ''
+  private searchGen = -1
+  /** Bumped whenever the buffer changes, so a cached search knows it is stale. */
+  private bufferGen = 0
 
   private cursorBlinkOn = true
   private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
@@ -760,6 +769,7 @@ export class GhosttyEngine implements TerminalEngine {
   // applied to output it was never meant to color.
   write(data: Uint8Array | string): void {
     this.needsRedraw = true
+    this.bufferGen++
 
     if (this.oscHandlers.size > 0 || this.onBellHandlers.size > 0) {
       // Streaming, so a multi-byte character split across two chunks decodes
@@ -853,7 +863,10 @@ export class GhosttyEngine implements TerminalEngine {
       }
     }
   }
-  onSearchResult(_cb: (result: { index: number; count: number }) => void): IDisposable { return { dispose: () => {} } }
+  onSearchResult(cb: (result: SearchResult) => void): IDisposable {
+    this.onSearchResultHandlers.add(cb)
+    return { dispose: () => this.onSearchResultHandlers.delete(cb) }
+  }
 
   fit(force = false): void {
     if (!this.container || this.disposed) return
@@ -1003,8 +1016,144 @@ export class GhosttyEngine implements TerminalEngine {
     this._scrollback = scrollback
   }
   rebuildWebglRenderer(): void {}
-  search(_query: string, _options?: any): void {}
-  clearSearchDecorations(): void {}
+
+  /**
+   * xterm's SearchAddon came free; this is the replacement. It scans the whole
+   * buffer — scrollback and active screen — one row at a time.
+   *
+   * Matches are found per visual row rather than per logical line, so a hit
+   * straddling a wrap point is missed. Reassembling wrapped rows needs
+   * `is_row_wrapped`, which is only answerable for the active screen and not
+   * for scrollback, so the honest choice was to search what is on screen the
+   * way it is on screen.
+   */
+  search(query: string, options?: SearchOptions): void {
+    if (!query) {
+      this.clearSearchDecorations()
+      return
+    }
+
+    const flags = `g${options?.caseSensitive ? '' : 'i'}`
+    const pattern = options?.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const signature = `${pattern} ${flags}`
+
+    // A throwing regex is the user halfway through typing one, not an error
+    // worth clearing the view for.
+    let re: RegExp
+    try {
+      re = new RegExp(pattern, flags)
+    } catch {
+      this.searchMatches = []
+      this.searchIndex = -1
+      this.applySearchHighlights()
+      for (const h of this.onSearchResultHandlers) h({ index: -1, count: 0 })
+      return
+    }
+
+    // Rebuilt only when the query or the buffer moved. Incremental search fires
+    // on every keystroke, and re-reading ten thousand rows per keystroke is the
+    // difference between usable and not.
+    if (signature !== this.searchSignature || this.searchGen !== this.bufferGen) {
+      this.searchSignature = signature
+      this.searchGen = this.bufferGen
+      this.searchMatches = this.findMatches(re)
+      this.searchIndex = -1
+    }
+
+    const count = this.searchMatches.length
+    if (count === 0) {
+      this.searchIndex = -1
+      this.applySearchHighlights()
+      for (const h of this.onSearchResultHandlers) h({ index: -1, count: 0 })
+      return
+    }
+
+    if (this.searchIndex < 0) {
+      // Opening on a fresh query starts from what is on screen rather than from
+      // the top of a scrollback the user may be nowhere near.
+      const firstVisible = this.viewportY
+      const at = this.searchMatches.findIndex((m) => m.row >= firstVisible)
+      this.searchIndex = at === -1 ? count - 1 : at
+    } else if (!options?.incremental) {
+      this.searchIndex = options?.back
+        ? (this.searchIndex - 1 + count) % count
+        : (this.searchIndex + 1) % count
+    } else if (this.searchIndex >= count) {
+      this.searchIndex = 0
+    }
+
+    this.revealRow(this.searchMatches[this.searchIndex].row)
+    this.applySearchHighlights()
+    for (const h of this.onSearchResultHandlers) h({ index: this.searchIndex, count })
+  }
+
+  private findMatches(re: RegExp): { row: number; from: number; to: number }[] {
+    const total = this.scrollbackLength
+    const rows = this.readRows(0, total - 1)
+    const out: { row: number; from: number; to: number }[] = []
+
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i]
+      // A column can hold more than one character (a grapheme cluster), so the
+      // offset a match reports is not a column. This maps back.
+      let text = ''
+      const columnAt: number[] = []
+      for (let c = 0; c < cells.length; c++) {
+        for (let k = 0; k < cells[c].length; k++) columnAt.push(c)
+        text += cells[c]
+      }
+
+      re.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = re.exec(text)) !== null) {
+        if (m[0].length === 0) {
+          // A pattern that can match nothing would otherwise spin here.
+          re.lastIndex++
+          continue
+        }
+        const from = columnAt[m.index]
+        const to = columnAt[Math.min(m.index + m[0].length - 1, columnAt.length - 1)]
+        if (from !== undefined && to !== undefined) out.push({ row: i, from, to })
+      }
+    }
+    return out
+  }
+
+  /** Scrolls the viewport the least amount that brings `row` into view. */
+  private revealRow(row: number) {
+    const top = this.viewportY
+    if (row >= top && row < top + this._rows) return
+    const maxScroll = Math.max(0, this.scrollbackLength - this._rows)
+    // Parked a third of the way down, so there is context above the hit as well
+    // as below it.
+    const target = Math.max(0, Math.min(row - Math.floor(this._rows / 3), maxScroll))
+    this.scrollToLine(target)
+  }
+
+  private applySearchHighlights() {
+    if (!this.renderer) return
+    if (this.searchMatches.length === 0) {
+      this.renderer.searchHighlights = null
+    } else {
+      const byRow = new Map<number, SearchHighlight[]>()
+      for (let i = 0; i < this.searchMatches.length; i++) {
+        const m = this.searchMatches[i]
+        let list = byRow.get(m.row)
+        if (!list) byRow.set(m.row, (list = []))
+        list.push({ from: m.from, to: m.to, active: i === this.searchIndex })
+      }
+      this.renderer.searchHighlights = byRow
+    }
+    this.needsRedraw = true
+  }
+
+  clearSearchDecorations(): void {
+    this.searchMatches = []
+    this.searchIndex = -1
+    this.searchSignature = ''
+    if (this.renderer) this.renderer.searchHighlights = null
+    this.needsRedraw = true
+  }
 
 
   onResize(handler: (size: { cols: number; rows: number }) => void): IDisposable {
@@ -1014,10 +1163,6 @@ export class GhosttyEngine implements TerminalEngine {
 
   focus(): void {
     this.canvas?.focus()
-  }
-
-  hasSelection(): boolean {
-    return false
   }
 
   clearSelection(): void {
@@ -1062,6 +1207,4 @@ export class GhosttyEngine implements TerminalEngine {
     this.needsRedraw = true
     for (const h of this.onSelectionChangeHandlers) h()
   }
-  findNext(_term: string): boolean { return false }
-  findPrevious(_term: string): boolean { return false }
 }
