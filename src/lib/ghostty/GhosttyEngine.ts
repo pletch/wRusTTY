@@ -27,6 +27,14 @@ import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url'
 const CURSOR_BLINK_MS = 530
 
 /**
+ * Visibility is sampled every sixth frame, so this is roughly half a second of
+ * being off screen before a pane gives its GL context back. Long enough that
+ * flicking through tabs doesn't thrash contexts, short enough that a wall of
+ * background tabs isn't holding them while you work.
+ */
+const HIDDEN_POLLS_BEFORE_RELEASE = 5
+
+/**
  * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
  * — the name reads like xterm's `scrollback` and it is not. Passing the app's
  * row setting straight through is why 10000 behaved like a few hundred lines:
@@ -222,6 +230,8 @@ export class GhosttyEngine implements TerminalEngine {
   private lastSeenW = -1
   private lastSeenH = -1
   private pollCounter = 0
+  private hiddenPolls = 0
+  private restoreRequested = false
 
   private getCoords(e: MouseEvent): {x: number, y: number} {
     if (!this.canvas || !this.renderer) return {x: 0, y: 0}
@@ -242,6 +252,39 @@ export class GhosttyEngine implements TerminalEngine {
   // otherwise stay blank indefinitely.
   private onRendererRestored = () => {
     this.needsRedraw = true
+    this.restoreRequested = false
+  }
+
+  /**
+   * Matches the pane's GL context to whether it can actually be seen.
+   *
+   * Browsers cap live WebGL contexts — around sixteen in Chromium — and past
+   * that they start taking them from whoever they like. Every tab here stays
+   * mounted and is merely hidden, so a dozen single-pane tabs reaches the cap
+   * on its own and panes you are looking at start going dark. Handing back the
+   * context of a pane nobody can see keeps the ceiling away from the ones that
+   * matter, and costs nothing but a rebuild on the way back: the terminal
+   * itself lives in WASM, not in the context.
+   *
+   * The delay before releasing is because a pane measures 0x0 for the first
+   * frames after mount and while a split is being dragged; releasing on the
+   * first zero would mean tearing a context down and building it straight back.
+   */
+  private reconcileContext(visible: boolean) {
+    if (!this.renderer) return
+    if (visible) {
+      this.hiddenPolls = 0
+      // Also covers a context the browser took by itself: whatever the reason
+      // a visible pane is without one, asking for it back is the answer.
+      if (this.renderer.isContextLost && !this.restoreRequested) {
+        this.restoreRequested = true
+        this.renderer.restoreContext()
+      }
+      return
+    }
+    this.restoreRequested = false
+    if (this.renderer.isContextLost) return
+    if (++this.hiddenPolls >= HIDDEN_POLLS_BEFORE_RELEASE) this.renderer.releaseContext()
   }
 
   private toggleCursorBlink = () => {
@@ -519,9 +562,13 @@ export class GhosttyEngine implements TerminalEngine {
         this.lastSeenH = h
         this.fit()
       }
+      this.reconcileContext(w > 0 && h > 0)
     }
 
-    if (this.needsRedraw) {
+    // A pane with no context has nowhere to draw, and the snapshot work below
+    // is the bulk of a frame. Leaving needsRedraw set means the pane repaints
+    // in full the moment it gets a context back.
+    if (this.needsRedraw && !this.renderer.isContextLost) {
       // update() rebuilds the render snapshot and has to run before the
       // viewport is read; mark_clean() afterwards resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)

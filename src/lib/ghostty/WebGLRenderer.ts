@@ -178,6 +178,7 @@ export class WebGLRenderer {
   private dpr: number
 
   private contextLost = false
+  private loseExt: WEBGL_lose_context | null = null
   // False until the program links and the GL objects exist. A failed link would
   // otherwise turn one console error into an exception on every frame.
   private ready = false
@@ -267,6 +268,9 @@ export class WebGLRenderer {
     // pane stays dead for the rest of the session.
     canvas.addEventListener('webglcontextlost', this.onContextLost)
     canvas.addEventListener('webglcontextrestored', this.onContextRestored)
+    // The same extension is how a pane hands its context back voluntarily when
+    // it is no longer on screen — see releaseContext.
+    this.loseExt = this.gl.getExtension('WEBGL_lose_context')
 
     this.resizeCanvas()
     this.initGL()
@@ -286,6 +290,36 @@ export class WebGLRenderer {
     // the cache goes with it.
     this.initGL()
     this.onRestore?.()
+  }
+
+  get isContextLost(): boolean {
+    return this.contextLost
+  }
+
+  /**
+   * Hands the GL context back to the browser.
+   *
+   * There is a hard ceiling on how many WebGL contexts can be live at once —
+   * around sixteen in Chromium — and past it the browser starts taking them
+   * from whoever it likes. Every tab in this app stays mounted, just hidden, so
+   * a dozen tabs of one pane each is enough to reach that on its own. A pane
+   * that isn't on screen has no use for a context, and giving it up on purpose
+   * is what keeps the ceiling away from the panes that are.
+   *
+   * Nothing is lost by doing this: the terminal lives in WASM, and everything
+   * dropped here — the atlas, the buffers, the program — is rebuilt from it.
+   */
+  releaseContext() {
+    if (this.contextLost || !this.loseExt) return
+    this.releaseGL()
+    // Fires webglcontextlost, which is what actually sets contextLost.
+    this.loseExt.loseContext()
+  }
+
+  /** Asks for the context back. The restore lands asynchronously. */
+  restoreContext() {
+    if (!this.contextLost || !this.loseExt) return
+    this.loseExt.restoreContext()
   }
 
   /** Drops the current GL build, if there is a live one. */
