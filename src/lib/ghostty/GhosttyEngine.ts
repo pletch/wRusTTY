@@ -900,6 +900,11 @@ export class GhosttyEngine implements TerminalEngine {
     
     // Read codepoint at offset + 0 (Uint32)
     const getCodepoint = (view: DataView, offset: number) => view.getUint32(offset, true)
+    // Cell width at offset + 11. A wide character is stored once, in the first
+    // of the two columns it covers, and the second is a spacer holding no
+    // codepoint — copying it as a blank would put a space after every CJK
+    // character and emoji in the selection.
+    const getWidth = (view: DataView, offset: number) => view.getUint8(offset + 11)
     
     for (let r = selStart.y; r <= selEnd.y; r++) {
       let isScrollback = false
@@ -931,7 +936,9 @@ export class GhosttyEngine implements TerminalEngine {
             ? c * CELL_BYTES
             : (activeRow * wasmCols + c) * CELL_BYTES
          
-         const codepoint = getCodepoint(isScrollback ? lineView : viewportView, offset)
+         const view = isScrollback ? lineView : viewportView
+         if (getWidth(view, offset) === 0) continue
+         const codepoint = getCodepoint(view, offset)
          if (codepoint > 0) {
            rowText += String.fromCodePoint(codepoint)
          } else {

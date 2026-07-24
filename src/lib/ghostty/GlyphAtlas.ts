@@ -19,7 +19,13 @@ export const GLYPH_BOLD = 1 << 0
 export const GLYPH_ITALIC = 1 << 1
 export const GLYPH_UNDERLINE = 1 << 2
 export const GLYPH_STRIKETHROUGH = 1 << 3
-export const GLYPH_STYLE_COUNT = 16
+/**
+ * Rasterize into a slot two cells wide. East-Asian characters and most emoji
+ * are drawn across two columns; squeezing one into a single-cell slot is what
+ * made them come out narrow and overlapped.
+ */
+export const GLYPH_WIDE = 1 << 4
+export const GLYPH_STYLE_COUNT = 32
 
 export class GlyphAtlas {
   private canvas: HTMLCanvasElement
@@ -117,7 +123,11 @@ export class GlyphAtlas {
     const hit = this.cache.get(key)
     if (hit) return hit
 
-    if (this.currentX + this.cellWidth > this.atlasWidth) {
+    // A wide glyph is rasterized across a two-cell slot and later drawn as two
+    // half-UV quads, so the whole character exists in the atlas exactly once.
+    const slotWidth = style & GLYPH_WIDE ? this.cellWidth * 2 : this.cellWidth
+
+    if (this.currentX + slotWidth > this.atlasWidth) {
       this.currentX = 0
       this.currentY += this.cellHeight
     }
@@ -136,22 +146,22 @@ export class GlyphAtlas {
     const y = this.currentY
 
     this.ctx.font = this.fontFor(style)
-    this.ctx.clearRect(x, y, this.cellWidth, this.cellHeight)
+    this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
     this.ctx.fillText(String.fromCodePoint(codepoint), x, y + this.baseline)
 
     if (style & GLYPH_UNDERLINE) {
       const uy = Math.min(this.cellHeight - this.lineThickness, this.baseline + this.lineThickness)
-      this.ctx.fillRect(x, y + uy, this.cellWidth, this.lineThickness)
+      this.ctx.fillRect(x, y + uy, slotWidth, this.lineThickness)
     }
     if (style & GLYPH_STRIKETHROUGH) {
       const sy = Math.max(0, Math.round(this.baseline - this.ascent * 0.3))
-      this.ctx.fillRect(x, y + sy, this.cellWidth, this.lineThickness)
+      this.ctx.fillRect(x, y + sy, slotWidth, this.lineThickness)
     }
 
     // Coverage lives in the alpha channel of the 2D canvas; the atlas stores
     // only that, so it is unpacked here rather than uploaded four-fold.
-    const rgba = this.ctx.getImageData(x, y, this.cellWidth, this.cellHeight).data
-    const coverage = new Uint8Array(this.cellWidth * this.cellHeight)
+    const rgba = this.ctx.getImageData(x, y, slotWidth, this.cellHeight).data
+    const coverage = new Uint8Array(slotWidth * this.cellHeight)
     for (let i = 0; i < coverage.length; i++) coverage[i] = rgba[i * 4 + 3]
 
     const gl = this.gl
@@ -164,7 +174,7 @@ export class GlyphAtlas {
       0,
       x,
       y,
-      this.cellWidth,
+      slotWidth,
       this.cellHeight,
       gl.RED,
       gl.UNSIGNED_BYTE,
@@ -173,17 +183,17 @@ export class GlyphAtlas {
 
     const rect: GlyphRect = {
       x, y,
-      width: this.cellWidth,
+      width: slotWidth,
       height: this.cellHeight,
       u0: x / this.atlasWidth,
       v0: y / this.atlasHeight,
-      u1: (x + this.cellWidth) / this.atlasWidth,
+      u1: (x + slotWidth) / this.atlasWidth,
       v1: (y + this.cellHeight) / this.atlasHeight
     }
 
     this.cache.set(key, rect)
 
-    this.currentX += this.cellWidth
+    this.currentX += slotWidth
 
     return rect
   }

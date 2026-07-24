@@ -4,6 +4,8 @@ import {
   GLYPH_ITALIC,
   GLYPH_UNDERLINE,
   GLYPH_STRIKETHROUGH,
+  GLYPH_WIDE,
+  type GlyphRect,
 } from './GlyphAtlas'
 import {
   parseCell,
@@ -532,9 +534,19 @@ export class WebGLRenderer {
         rowValid = activeRow < wasmRows
       }
 
+      // A wide character occupies two columns: the core puts the codepoint in
+      // the first with width 2 and leaves the second as a spacer with width 0.
+      // The right half of that glyph is drawn from the same atlas entry when
+      // the spacer comes round, so these carry it across one column.
+      let pendingWide: GlyphRect | null = null
+      let cursorOnWide: boolean = false
+
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
         let flags = 0
+        // 1 for an ordinary cell (and for anything outside the core's grid),
+        // 2 for the head of a wide character, 0 for its trailing spacer.
+        let cellWidth = 1
         // Cells outside the core's grid (a resize we've seen but it hasn't)
         // fall back to the theme's own colors.
         let finalFgR = this.defaultFgR
@@ -555,6 +567,7 @@ export class WebGLRenderer {
 
           codepoint = cell.codepoint
           flags = cell.flags
+          cellWidth = cell.width
           // Already resolved to RGB by the core against the palette and
           // defaults it was configured with, so the only substitution left is
           // pulling default-coloured cells onto the current theme.
@@ -581,16 +594,30 @@ export class WebGLRenderer {
         }
 
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
-        // Invisible keeps the cell's colours — it hides the character, it does
-        // not blank the background — so it is handled by skipping the glyph.
-        if (codepoint > 0 && (flags & CELL_INVISIBLE) === 0) {
-          let style = 0
+        if (cellWidth === 0 && pendingWide) {
+          // The spacer draws the right half of the glyph the previous column
+          // started, so the character spans both cells at its true width.
+          u0 = (pendingWide.u0 + pendingWide.u1) / 2
+          v0 = pendingWide.v0
+          u1 = pendingWide.u1
+          v1 = pendingWide.v1
+          pendingWide = null
+        } else if (codepoint > 0 && (flags & CELL_INVISIBLE) === 0) {
+          // Invisible keeps the cell's colours — it hides the character, it
+          // does not blank the background — so it skips the glyph only.
+          const wide = cellWidth === 2
+          let style = wide ? GLYPH_WIDE : 0
           if (flags & CELL_BOLD) style |= GLYPH_BOLD
           if (flags & CELL_ITALIC) style |= GLYPH_ITALIC
           if (flags & CELL_UNDERLINE) style |= GLYPH_UNDERLINE
           if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
           const rect = this.atlas.getGlyph(codepoint, style)
-          u0 = rect.u0; v0 = rect.v0; u1 = rect.u1; v1 = rect.v1
+          v0 = rect.v0; v1 = rect.v1
+          u0 = rect.u0
+          u1 = wide ? (rect.u0 + rect.u1) / 2 : rect.u1
+          pendingWide = wide ? rect : null
+        } else {
+          pendingWide = null
         }
 
         if ((flags & CELL_INVERSE) !== 0) {
@@ -623,7 +650,15 @@ export class WebGLRenderer {
         // The glyph underneath is repainted in the background colour so it
         // stays legible through the block, which is what makes it read as a
         // cursor sitting on the character rather than erasing it.
-        if (cursor && cursor.row === r && cursor.col === c) {
+        // Sitting on a wide character means covering both of its columns —
+        // half a block over half a glyph reads as a rendering fault.
+        let atCursor = false
+        if (cursor !== null && cursor.row === r) {
+          atCursor = cursor.col === c || (cursorOnWide && cellWidth === 0)
+        }
+        cursorOnWide = atCursor && cellWidth === 2
+
+        if (cursor && atCursor) {
           if (cursor.on && cursor.focused) {
             finalFgR = this.defaultBgR; finalFgG = this.defaultBgG; finalFgB = this.defaultBgB
             finalBgR = this.cursorR; finalBgG = this.cursorG; finalBgB = this.cursorB
