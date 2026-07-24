@@ -10,7 +10,17 @@ export default defineConfig({
     environment: 'node',
     coverage: {
       provider: 'v8',
-      include: ['src/lib/**', 'src/state/**'],
+      include: ['src/lib/**/*.{ts,tsx}', 'src/state/**/*.{ts,tsx}'],
+      exclude: ['src/lib/**/*.test.ts', 'src/lib/ghostty/vendor/**'],
+      // Phase 1 baseline (paneTree, sessionSnapshot, shellIntegration,
+      // lineEditor, settings, theme, oscScanner). Ratchet upward as more of
+      // src/lib and src/state get covered — never lower these.
+      thresholds: {
+        lines: 18,
+        statements: 17,
+        functions: 21,
+        branches: 18,
+      },
     },
   },
 })
