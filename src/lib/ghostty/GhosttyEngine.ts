@@ -790,10 +790,12 @@ export class GhosttyEngine implements TerminalEngine {
         this.sendMouse(e.button, p.col, p.row, e, false)
         return
       }
-      if (e.button !== 0) return // Only handle left-click for selection
-      // The canvas is no longer focusable — input lives on the handler's
-      // element — so clicking the terminal has to hand focus over explicitly.
+      // Before the button check, so a right-click keeps the keyboard too. The
+      // canvas used to be focusable and took focus on any click; input lives on
+      // the handler's element now, and nothing focuses it implicitly — which is
+      // how a right-click-to-paste left the pane unable to accept typing.
       this.inputHandler?.focus()
+      if (e.button !== 0) return // Only handle left-click for selection
       // `detail` counts clicks in a run, which is how the platform already
       // decides what a double-click is — no timing to reimplement here.
       if (e.detail === 2) {
@@ -852,6 +854,15 @@ export class GhosttyEngine implements TerminalEngine {
         return
       }
       if (this.isSelecting && this.renderer && this.selectionStart) {
+        // A button released outside the window never delivers mouseup here, and
+        // a selection left believing it is still being dragged keeps the
+        // autoscroll timer running — the pane scrolls on its own and cannot be
+        // stopped. `buttons` is the live state rather than an event history, so
+        // it catches exactly that.
+        if (e.buttons === 0) {
+          this.onMouseUp(e)
+          return
+        }
         this.renderer.selection = {
           start: this.selectionStart,
           end: this.getCoords(e),
@@ -1032,6 +1043,11 @@ export class GhosttyEngine implements TerminalEngine {
 
   paste(text: string): void {
     if (!this.wasm) return
+    // Paste can arrive from a menu or a shortcut handled above this engine, and
+    // whatever served it may have taken the keyboard on the way. Text landing
+    // in a pane that then ignores every keystroke reads as the terminal having
+    // hung.
+    this.inputHandler?.focus()
     this.scrollToBottom()
     const bracketed =
       this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_BRACKETED_PASTE, 0) !== 0
@@ -1417,11 +1433,15 @@ export class GhosttyEngine implements TerminalEngine {
       const from = rectangular ? rectFrom : abs === selStart.y ? selStart.x : 0
       const to = rectangular ? rectTo : abs === selEnd.y ? selEnd.x : this._cols - 1
       const text = rows[i].slice(from, to + 1).join('')
-      // Trailing blanks are padding the grid, not content — but the last row of
-      // a line-wise selection keeps them, since one that ends mid-run of spaces
-      // selected them on purpose. A column selection has no such row: every one
-      // of them ends at the same arbitrary column.
-      const keepTrailing = !rectangular && abs === selEnd.y
+      // Trailing blanks are the grid padding a row out, not content. The one
+      // case worth keeping them is a line-wise selection whose last row ends
+      // part-way along: there the run of spaces was dragged over deliberately.
+      // A selection reaching the final column did not choose that padding —
+      // triple-click is exactly that, and keeping it pasted a command followed
+      // by a screenful of spaces. A column selection never keeps them either;
+      // every one of its rows ends at the same arbitrary column.
+      const endsMidRow = abs === selEnd.y && selEnd.x < this._cols - 1
+      const keepTrailing = !rectangular && endsMidRow
       parts.push(keepTrailing ? text : text.replace(/\s+$/, ''))
     }
     return parts.join('\n')

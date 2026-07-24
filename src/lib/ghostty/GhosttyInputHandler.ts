@@ -60,6 +60,11 @@ export class GhosttyInputHandler {
     s.color = 'transparent'
     s.caretColor = 'transparent'
     s.whiteSpace = 'nowrap'
+    // It sits over the canvas at the cursor cell, so without this a click that
+    // happened to land on it would hit an invisible textarea instead of the
+    // terminal — including a right-click, which would raise the webview's own
+    // context menu over the pane's.
+    s.pointerEvents = 'none'
     this.element = ta
     container.appendChild(ta)
 
