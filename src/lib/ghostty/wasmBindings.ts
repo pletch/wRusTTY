@@ -34,6 +34,15 @@ export const CELL_FAINT = 1 << 7
 export const MODE_APP_CURSOR_KEYS = 1 // DECCKM
 export const MODE_BRACKETED_PASTE = 2004
 
+/**
+ * Mouse reporting. `ghostty_terminal_has_mouse_tracking` answers "is anything
+ * being reported at all", which is the cheap gate; these say what to report and
+ * how to encode it, and have to be queried separately.
+ */
+export const MODE_MOUSE_BUTTON_EVENT = 1002 // also report drags
+export const MODE_MOUSE_ANY_EVENT = 1003 // report motion with no button down
+export const MODE_MOUSE_SGR = 1006 // CSI < b ; x ; y M/m instead of the 1-byte form
+
 export interface GhosttyExports {
   memory: WebAssembly.Memory
 

@@ -7,8 +7,12 @@ import {
   createTerminal,
   writeBytes,
   writeString,
+  readResponse,
   MODE_APP_CURSOR_KEYS,
   MODE_BRACKETED_PASTE,
+  MODE_MOUSE_BUTTON_EVENT,
+  MODE_MOUSE_ANY_EVENT,
+  MODE_MOUSE_SGR,
   type GhosttyWasm,
   CELL_BYTES,
 } from './wasmBindings'
@@ -93,12 +97,19 @@ export class GhosttyEngine implements TerminalEngine {
   private onSelectionChangeHandlers = new Set<() => void>()
   private oscScannerBuffer = ''
   private scanDecoder = new TextDecoder()
+  private responseDecoder = new TextDecoder()
   private oscHandlers = new Map<number, ((data: string) => void)[]>()
   private onBellHandlers = new Set<() => void>()
 
   private cursorBlinkOn = true
   private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
   private focused = false
+
+  private mouseButtonDown: number | null = null
+  private lastMouseCol = -1
+  private lastMouseRow = -1
+  /** Scrollback depth as of the last frame, for keeping a scrolled view still. */
+  private lastScrollbackCount = 0
 
   constructor() {
     this.initWasm()
@@ -237,9 +248,112 @@ export class GhosttyEngine implements TerminalEngine {
   private onBlur = () => {
     this.focused = false
     this.needsRedraw = true
+    // A button released outside the window never reaches us, and a stuck
+    // "still held" would keep reporting drags on the next hover.
+    this.mouseButtonDown = null
   }
 
-  private onMouseUp = () => {
+  /**
+   * Keeps a scrolled-back view looking at the same text as output arrives.
+   *
+   * The offset is measured up from the bottom, so every row that lands pushes
+   * what you were reading off the top of the pane — the view creeps forward on
+   * its own while you are trying to read it. Growing the offset by however much
+   * the scrollback grew holds the content still. Once the buffer is full it
+   * stops growing and the oldest rows start falling off instead, at which point
+   * nothing can hold a position that is itself being discarded.
+   */
+  private pinViewport(scrollbackCount: number) {
+    const grew = scrollbackCount - this.lastScrollbackCount
+    this.lastScrollbackCount = scrollbackCount
+    if (grew <= 0 || this._viewportOffset === 0) return
+    const pinned = Math.min(this._viewportOffset + grew, scrollbackCount)
+    if (pinned === this._viewportOffset) return
+    this._viewportOffset = pinned
+    for (const h of this.onScrollHandlers) h(this.viewportY)
+  }
+
+  private scrollToBottom() {
+    if (this._viewportOffset === 0) return
+    this._viewportOffset = 0
+    this.needsRedraw = true
+    for (const h of this.onScrollHandlers) h(this.viewportY)
+  }
+
+  /**
+   * Hands back whatever the terminal owes the host — cursor position reports,
+   * device attributes, and the rest of the queries a shell or TUI makes on
+   * startup. Nothing drained these before, so every such query went unanswered
+   * and the program waited out its timeout instead.
+   */
+  private drainResponses() {
+    if (!this.wasm || !this.termPtr) return
+    // Bounded because a reply is itself sent as input: a far end that answers
+    // one query with another could otherwise keep this loop fed forever.
+    for (let i = 0; i < 64; i++) {
+      const out = readResponse(this.wasm, this.termPtr)
+      if (!out || out.length === 0) return
+      const str = this.responseDecoder.decode(out)
+      for (const h of this.onDataHandlers) h(str)
+    }
+  }
+
+  /** Is the program on the far end asking to be told about the mouse at all? */
+  private mouseTracking(): boolean {
+    return !!this.wasm && this.wasm.exports.ghostty_terminal_has_mouse_tracking(this.termPtr) !== 0
+  }
+
+  private mouseMode(mode: number): boolean {
+    return !!this.wasm && this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, mode, 0) !== 0
+  }
+
+  /** Cell under the pointer, 1-based, as mouse reports are numbered. */
+  private viewportCoords(e: MouseEvent): { col: number; row: number } {
+    if (!this.canvas || !this.renderer) return { col: 1, row: 1 }
+    const rect = this.canvas.getBoundingClientRect()
+    const size = this.renderer.getCellSize()
+    const col = Math.floor((e.clientX - rect.left) / size.width)
+    const row = Math.floor((e.clientY - rect.top) / size.height)
+    return {
+      col: Math.max(0, Math.min(col, this._cols - 1)) + 1,
+      row: Math.max(0, Math.min(row, this._rows - 1)) + 1,
+    }
+  }
+
+  /**
+   * Encodes one mouse report and sends it as input. SGR (1006) is preferred
+   * whenever the program enabled it, because the original encoding packs each
+   * coordinate into a single byte biased by 32 and so cannot describe a column
+   * past 223 — which any full-width pane on a modern display now exceeds.
+   */
+  private sendMouse(button: number, col: number, row: number, e: MouseEvent, release: boolean) {
+    let b = button
+    if (e.shiftKey) b += 4
+    if (e.altKey) b += 8
+    if (e.ctrlKey) b += 16
+
+    let seq: string
+    if (this.mouseMode(MODE_MOUSE_SGR)) {
+      seq = `\x1b[<${b};${col};${row}${release ? 'm' : 'M'}`
+    } else {
+      if (col > 223 || row > 223) return
+      // The legacy form has no way to say *which* button came up, so a release
+      // is always reported as button 3.
+      const legacy = release ? 3 + (b & ~3) : b
+      seq = `\x1b[M${String.fromCharCode(32 + legacy)}${String.fromCharCode(32 + col)}${String.fromCharCode(32 + row)}`
+    }
+    for (const h of this.onDataHandlers) h(seq)
+  }
+
+  private onMouseUp = (e: MouseEvent) => {
+    if (this.mouseButtonDown !== null) {
+      const button = this.mouseButtonDown
+      this.mouseButtonDown = null
+      if (this.mouseTracking()) {
+        const p = this.viewportCoords(e)
+        this.sendMouse(button, p.col, p.row, e, true)
+      }
+    }
     if (this.isSelecting) {
       this.isSelecting = false
       for (const h of this.onSelectionChangeHandlers) h()
@@ -271,6 +385,7 @@ export class GhosttyEngine implements TerminalEngine {
       // viewport is read; mark_clean() afterwards resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
       const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+      this.pinViewport(scrollbackCount)
       // Read after update() and before the viewport, same as the cells: these
       // come off the same snapshot, and sampling them either side of it puts
       // the cursor a frame away from the text it's sitting in.
@@ -303,11 +418,18 @@ export class GhosttyEngine implements TerminalEngine {
     
     this.container.appendChild(this.canvas)
 
-    // There is no scrollback to move through on the alternate screen, so the
-    // event is left alone there rather than swallowed — preventDefault with no
-    // scroll of our own is how the wheel ends up doing nothing at all inside
-    // vim or htop.
     this.canvas.addEventListener('wheel', (e) => {
+      // A program that asked for mouse reporting gets the wheel as buttons 4/5,
+      // which is how less and htop page without a scrollback of their own.
+      if (this.mouseTracking() && !e.shiftKey) {
+        e.preventDefault()
+        const p = this.viewportCoords(e)
+        this.sendMouse(e.deltaY < 0 ? 64 : 65, p.col, p.row, e, false)
+        return
+      }
+      // There is no scrollback to move through on the alternate screen, so the
+      // event is left alone there rather than swallowed — preventDefault with
+      // no scroll of our own is how the wheel ends up doing nothing at all.
       const isAlt = this.wasm && this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
       if (isAlt) return
       e.preventDefault()
@@ -319,7 +441,7 @@ export class GhosttyEngine implements TerminalEngine {
       }
       this.scrollLines(Math.sign(lines) * Math.max(1, Math.abs(Math.round(lines))))
     }, { passive: false })
-    
+
     window.addEventListener('mouseup', this.onMouseUp)
 
     this.canvas.addEventListener('focus', this.onFocus)
@@ -329,6 +451,16 @@ export class GhosttyEngine implements TerminalEngine {
     this.cursorBlinkTimer = setInterval(this.toggleCursorBlink, CURSOR_BLINK_MS)
 
     this.canvas.addEventListener('mousedown', (e) => {
+      // Holding shift is the long-standing way to reach the terminal's own
+      // selection while a full-screen program is grabbing the mouse.
+      if (this.mouseTracking() && !e.shiftKey) {
+        e.preventDefault()
+        this.canvas?.focus()
+        const p = this.viewportCoords(e)
+        this.mouseButtonDown = e.button
+        this.sendMouse(e.button, p.col, p.row, e, false)
+        return
+      }
       if (e.button !== 0) return // Only handle left-click for selection
       this.isSelecting = true
       this.selectionStart = this.getCoords(e)
@@ -340,6 +472,26 @@ export class GhosttyEngine implements TerminalEngine {
     })
 
     this.canvas.addEventListener('mousemove', (e) => {
+      // A shift-drag is the user talking to the terminal, not to the program,
+      // so a selection in progress suppresses reporting entirely.
+      if (this.mouseTracking() && !this.isSelecting) {
+        // 1002 reports motion only while a button is held; 1003 reports all of
+        // it. Reporting unconditionally would flood the PTY from idle mousing.
+        const dragging = this.mouseButtonDown !== null
+        const wanted = dragging
+          ? this.mouseMode(MODE_MOUSE_BUTTON_EVENT) || this.mouseMode(MODE_MOUSE_ANY_EVENT)
+          : this.mouseMode(MODE_MOUSE_ANY_EVENT)
+        if (!wanted) return
+        const p = this.viewportCoords(e)
+        // Only cell-to-cell moves are worth a report; pixel-level motion inside
+        // one cell would send a burst of identical sequences.
+        if (p.col === this.lastMouseCol && p.row === this.lastMouseRow) return
+        this.lastMouseCol = p.col
+        this.lastMouseRow = p.row
+        // +32 marks the report as motion rather than a fresh press.
+        this.sendMouse((this.mouseButtonDown ?? 3) + 32, p.col, p.row, e, false)
+        return
+      }
       if (this.isSelecting && this.renderer && this.selectionStart) {
         this.renderer.selection = { start: this.selectionStart, end: this.getCoords(e) }
         this.needsRedraw = true
@@ -347,6 +499,9 @@ export class GhosttyEngine implements TerminalEngine {
     })
 
     this.inputHandler = new GhosttyInputHandler(this.canvas, (data) => {
+      // Typing while scrolled up otherwise sends keystrokes to a prompt that
+      // isn't on screen.
+      this.scrollToBottom()
       // Input handler gives Uint8Array, convert to string since onData expects string in TerminalEngine
       const str = new TextDecoder().decode(data)
       for (const handler of this.onDataHandlers) {
@@ -399,6 +554,8 @@ export class GhosttyEngine implements TerminalEngine {
     
     if (this.wasm && this.termPtr) {
       this.wasm.exports.ghostty_terminal_resize(this.termPtr, cols, rows)
+      // A resize can itself provoke a reply from modes the program set up.
+      this.drainResponses()
     }
     if (this.renderer) {
       this.renderer.resize(cols, rows, force)
@@ -477,6 +634,10 @@ export class GhosttyEngine implements TerminalEngine {
     } else {
       writeBytes(this.wasm, this.termPtr, data)
     }
+    // Drained here rather than on the frame: a reply is only correct for the
+    // state that provoked it, and a cursor-position report that waits for the
+    // next repaint can describe a cursor that has already moved on.
+    this.drainResponses()
     for (const h of this.onWriteParsedHandlers) h()
   }
 
@@ -486,6 +647,7 @@ export class GhosttyEngine implements TerminalEngine {
 
   paste(text: string): void {
     if (!this.wasm) return
+    this.scrollToBottom()
     const bracketed =
       this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_BRACKETED_PASTE, 0) !== 0
     let payload = text

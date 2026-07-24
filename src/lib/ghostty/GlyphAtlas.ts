@@ -9,22 +9,41 @@ export interface GlyphRect {
   v1: number
 }
 
+/**
+ * Style bits a glyph is rasterized with. Weight and slant change the face, and
+ * the two lines are baked into the raster rather than drawn as extra geometry —
+ * an underline is a rectangle inside the cell either way, and baking it keeps
+ * the renderer at one quad per cell.
+ */
+export const GLYPH_BOLD = 1 << 0
+export const GLYPH_ITALIC = 1 << 1
+export const GLYPH_UNDERLINE = 1 << 2
+export const GLYPH_STRIKETHROUGH = 1 << 3
+export const GLYPH_STYLE_COUNT = 16
+
 export class GlyphAtlas {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
   private gl: WebGL2RenderingContext
   public texture: WebGLTexture
+  /** Keyed by `codepoint * GLYPH_STYLE_COUNT + style`. */
   private cache = new Map<number, GlyphRect>()
-  
+
   private atlasWidth = 1024
   private atlasHeight = 1024
   private currentX = 0
   private currentY = 0
-  
+
   public readonly cellWidth: number
   public readonly cellHeight: number
+  private readonly fontFamily: string
+  private readonly fontSize: number
   /** Baseline offset from the top of a cell, in the same pixels as cellHeight. */
   private baseline = 0
+  private ascent = 0
+  private lineThickness = 1
+  /** An empty slot, handed back when the atlas has no room left. */
+  private blank: GlyphRect | null = null
 
   constructor(
     gl: WebGL2RenderingContext,
@@ -36,16 +55,18 @@ export class GlyphAtlas {
     this.gl = gl
     this.cellWidth = cellWidth
     this.cellHeight = cellHeight
-    
+    this.fontFamily = fontFamily
+    this.fontSize = fontSize
+
     this.canvas = document.createElement('canvas')
     this.canvas.width = this.atlasWidth
     this.canvas.height = this.atlasHeight
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true })!
-    
+
     this.ctx.fillStyle = 'rgba(0,0,0,0)'
     this.ctx.fillRect(0, 0, this.atlasWidth, this.atlasHeight)
-    
-    this.ctx.font = `${fontSize}px ${fontFamily}`
+
+    this.ctx.font = this.fontFor(0)
     this.ctx.fillStyle = 'white'
 
     // 'top' anchors to the font's ascent, which carries whatever internal
@@ -61,64 +82,98 @@ export class GlyphAtlas {
     const m = this.ctx.measureText('Mg')
     const ascent = m.fontBoundingBoxAscent ?? fontSize * 0.8
     const descent = m.fontBoundingBoxDescent ?? fontSize * 0.2
+    this.ascent = ascent
     this.baseline = Math.max(
       0,
       Math.min(cellHeight, Math.round((cellHeight - (ascent + descent)) / 2 + ascent)),
     )
+    this.lineThickness = Math.max(1, Math.round(fontSize / 14))
 
+    // Single-channel: the shader only ever reads coverage, and caching each
+    // glyph in up to sixteen style combinations makes an RGBA atlas four times
+    // the texture it needs to be, per pane.
     this.texture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.atlasWidth, this.atlasHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
-    
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.atlasWidth, this.atlasHeight, 0, gl.RED, gl.UNSIGNED_BYTE, null)
+
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
-    // Pre-cache space
-    this.getGlyph(32)
+    // Space, unstyled — blank by construction, so it doubles as the fallback
+    // for a codepoint that arrives once the atlas is full.
+    this.blank = this.getGlyph(32, 0)
   }
 
-  getGlyph(codepoint: number): GlyphRect {
-    if (this.cache.has(codepoint)) {
-      return this.cache.get(codepoint)!
-    }
+  private fontFor(style: number): string {
+    const italic = style & GLYPH_ITALIC ? 'italic ' : ''
+    const bold = style & GLYPH_BOLD ? 'bold ' : ''
+    return `${italic}${bold}${this.fontSize}px ${this.fontFamily}`
+  }
+
+  getGlyph(codepoint: number, style = 0): GlyphRect {
+    const key = codepoint * GLYPH_STYLE_COUNT + style
+    const hit = this.cache.get(key)
+    if (hit) return hit
 
     if (this.currentX + this.cellWidth > this.atlasWidth) {
       this.currentX = 0
       this.currentY += this.cellHeight
     }
-    
+
     if (this.currentY + this.cellHeight > this.atlasHeight) {
-      console.warn("GlyphAtlas full! Falling back to space.")
-      return this.cache.get(32)!
+      // Draws nothing rather than the wrong character, and only warns once —
+      // this fires per glyph, so logging each one buries the console.
+      if (!this.warnedFull) {
+        this.warnedFull = true
+        console.warn('GlyphAtlas full; further glyphs will not render.')
+      }
+      return this.blank ?? { x: 0, y: 0, width: 0, height: 0, u0: 0, v0: 0, u1: 0, v1: 0 }
     }
 
-    const char = String.fromCodePoint(codepoint)
     const x = this.currentX
     const y = this.currentY
-    
-    this.ctx.clearRect(x, y, this.cellWidth, this.cellHeight)
-    this.ctx.fillText(char, x, y + this.baseline)
 
-    const imageData = this.ctx.getImageData(x, y, this.cellWidth, this.cellHeight)
-    
-    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture)
-    this.gl.texSubImage2D(
-      this.gl.TEXTURE_2D,
+    this.ctx.font = this.fontFor(style)
+    this.ctx.clearRect(x, y, this.cellWidth, this.cellHeight)
+    this.ctx.fillText(String.fromCodePoint(codepoint), x, y + this.baseline)
+
+    if (style & GLYPH_UNDERLINE) {
+      const uy = Math.min(this.cellHeight - this.lineThickness, this.baseline + this.lineThickness)
+      this.ctx.fillRect(x, y + uy, this.cellWidth, this.lineThickness)
+    }
+    if (style & GLYPH_STRIKETHROUGH) {
+      const sy = Math.max(0, Math.round(this.baseline - this.ascent * 0.3))
+      this.ctx.fillRect(x, y + sy, this.cellWidth, this.lineThickness)
+    }
+
+    // Coverage lives in the alpha channel of the 2D canvas; the atlas stores
+    // only that, so it is unpacked here rather than uploaded four-fold.
+    const rgba = this.ctx.getImageData(x, y, this.cellWidth, this.cellHeight).data
+    const coverage = new Uint8Array(this.cellWidth * this.cellHeight)
+    for (let i = 0; i < coverage.length; i++) coverage[i] = rgba[i * 4 + 3]
+
+    const gl = this.gl
+    gl.bindTexture(gl.TEXTURE_2D, this.texture)
+    // Rows are one byte per texel and so rarely 4-aligned, which is the
+    // default and would shear every upload whose width isn't a multiple of 4.
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
       0,
       x,
       y,
       this.cellWidth,
       this.cellHeight,
-      this.gl.RGBA,
-      this.gl.UNSIGNED_BYTE,
-      imageData
+      gl.RED,
+      gl.UNSIGNED_BYTE,
+      coverage,
     )
 
     const rect: GlyphRect = {
-      x, y, 
-      width: this.cellWidth, 
+      x, y,
+      width: this.cellWidth,
       height: this.cellHeight,
       u0: x / this.atlasWidth,
       v0: y / this.atlasHeight,
@@ -126,12 +181,14 @@ export class GlyphAtlas {
       v1: (y + this.cellHeight) / this.atlasHeight
     }
 
-    this.cache.set(codepoint, rect)
-    
+    this.cache.set(key, rect)
+
     this.currentX += this.cellWidth
-    
+
     return rect
   }
+
+  private warnedFull = false
 
   dispose() {
     this.gl.deleteTexture(this.texture)

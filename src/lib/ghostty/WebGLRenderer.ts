@@ -1,5 +1,22 @@
-import { GlyphAtlas } from './GlyphAtlas'
-import { parseCell, CELL_BYTES, CELL_INVERSE, type GhosttyWasm } from './wasmBindings'
+import {
+  GlyphAtlas,
+  GLYPH_BOLD,
+  GLYPH_ITALIC,
+  GLYPH_UNDERLINE,
+  GLYPH_STRIKETHROUGH,
+} from './GlyphAtlas'
+import {
+  parseCell,
+  CELL_BYTES,
+  CELL_INVERSE,
+  CELL_BOLD,
+  CELL_ITALIC,
+  CELL_UNDERLINE,
+  CELL_STRIKETHROUGH,
+  CELL_FAINT,
+  CELL_INVISIBLE,
+  type GhosttyWasm,
+} from './wasmBindings'
 
 const VERTEX_SHADER_SRC = `#version 300 es
 layout(location = 0) in vec2 a_position; // (0,0) to (1,1)
@@ -44,7 +61,8 @@ uniform sampler2D u_atlas;
 out vec4 outColor;
 
 void main() {
-    float alpha = texture(u_atlas, v_uv).a;
+    // Single-channel atlas: coverage is in red, and .a would read as 1.0.
+    float alpha = texture(u_atlas, v_uv).r;
     outColor = mix(v_bgColor, v_fgColor, alpha);
 }
 `
@@ -553,9 +571,25 @@ export class WebGLRenderer {
           }
         }
 
+        // Faint is a foreground effect, not a glyph one, so it stays out of the
+        // atlas key — otherwise every dimmed character would cost a second
+        // raster identical to the one already cached.
+        if ((flags & CELL_FAINT) !== 0) {
+          finalFgR = (finalFgR * 0.55) | 0
+          finalFgG = (finalFgG * 0.55) | 0
+          finalFgB = (finalFgB * 0.55) | 0
+        }
+
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
-        if (codepoint > 0) {
-          const rect = this.atlas.getGlyph(codepoint)
+        // Invisible keeps the cell's colours — it hides the character, it does
+        // not blank the background — so it is handled by skipping the glyph.
+        if (codepoint > 0 && (flags & CELL_INVISIBLE) === 0) {
+          let style = 0
+          if (flags & CELL_BOLD) style |= GLYPH_BOLD
+          if (flags & CELL_ITALIC) style |= GLYPH_ITALIC
+          if (flags & CELL_UNDERLINE) style |= GLYPH_UNDERLINE
+          if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
+          const rect = this.atlas.getGlyph(codepoint, style)
           u0 = rect.u0; v0 = rect.v0; u1 = rect.u1; v1 = rect.v1
         }
 
