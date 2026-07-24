@@ -46,9 +46,12 @@ export class GlyphAtlas {
     this.ctx.font = `${fontSize}px ${fontFamily}`
     this.ctx.textBaseline = 'top'
     this.ctx.fillStyle = 'white'
-
+    
+    // We will upload the entire canvas when a glyph is added.
     this.texture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
+    
+    // Explicitly size the texture to 1024x1024 to ensure it is created correctly
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.atlasWidth, this.atlasHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
@@ -81,8 +84,10 @@ export class GlyphAtlas {
     
     this.ctx.clearRect(x, y, this.cellWidth, this.cellHeight)
     this.ctx.fillText(char, x, y)
-
+    
     const imageData = this.ctx.getImageData(x, y, this.cellWidth, this.cellHeight)
+    // Extract raw bytes to bypass WebKit2GTK's broken ImageData/Canvas upload
+    const pixels = new Uint8Array(imageData.data.buffer, imageData.data.byteOffset, imageData.data.byteLength)
     
     this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture)
     this.gl.texSubImage2D(
@@ -94,7 +99,7 @@ export class GlyphAtlas {
       this.cellHeight,
       this.gl.RGBA,
       this.gl.UNSIGNED_BYTE,
-      imageData
+      pixels
     )
 
     const rect: GlyphRect = {

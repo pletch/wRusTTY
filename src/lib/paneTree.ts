@@ -15,7 +15,8 @@ export function blankLeaf(): PaneLeaf {
     // scrollToLine are no-ops and scrollbackLength is a constant), no selection,
     // no search and no bell, so a pane that opens on it silently loses working
     // features. Selectable per-pane in the meantime.
-    engine: 'xterm',
+    // Setting to ghostty temporarily to test the new features.
+    engine: 'ghostty',
   }
 }
 

@@ -10,6 +10,7 @@ import {
   MODE_APP_CURSOR_KEYS,
   MODE_BRACKETED_PASTE,
   type GhosttyWasm,
+  CELL_BYTES,
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
 // Resolved from the pinned `ghostty-web` dependency rather than a binary
@@ -40,13 +41,28 @@ export class GhosttyEngine implements TerminalEngine {
   
   get cols(): number { return this._cols }
   get rows(): number { return this._rows }
-  get scrollbackLength(): number { return 1000 }
-  get viewportY(): number { return 0 }
+  get scrollbackLength(): number {
+    return this.wasm ? this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) + this._rows : this._rows
+  }
+  
+  get viewportY(): number {
+    return Math.max(0, this.scrollbackLength - this._rows - this._viewportOffset)
+  }
 
   private _cols = 80
   private _rows = 24
   private _scrollback = 1000
   private _themeName: string | null = null
+  private _viewportOffset = 0
+  private onScrollHandlers = new Set<(newPos: number) => void>()
+  private onWriteParsedHandlers = new Set<() => void>()
+  
+  private isSelecting = false
+  private selectionStart: {x: number, y: number} | null = null
+  private onSelectionChangeHandlers = new Set<() => void>()
+  private oscScannerBuffer = ''
+  private oscHandlers = new Map<number, ((data: string) => void)[]>()
+  private onBellHandlers = new Set<() => void>()
 
   constructor() {
     this.initWasm()
@@ -147,6 +163,26 @@ export class GhosttyEngine implements TerminalEngine {
   private lastSeenH = -1
   private pollCounter = 0
 
+  private getCoords(e: MouseEvent): {x: number, y: number} {
+    if (!this.canvas || !this.renderer) return {x: 0, y: 0}
+    const rect = this.canvas.getBoundingClientRect()
+    const size = this.renderer.getCellSize()
+    const x = Math.floor((e.clientX - rect.left) / size.width)
+    let y = Math.floor((e.clientY - rect.top) / size.height)
+    const clampedX = Math.max(0, Math.min(x, this._cols - 1))
+    const clampedY = Math.max(0, Math.min(y, this._rows - 1))
+    const scrollbackCount = this.wasm ? this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) : 0
+    const absY = scrollbackCount - this._viewportOffset + clampedY
+    return { x: clampedX, y: absY }
+  }
+
+  private onMouseUp = () => {
+    if (this.isSelecting) {
+      this.isSelecting = false
+      for (const h of this.onSelectionChangeHandlers) h()
+    }
+  }
+
   private startRenderLoop = () => {
     if (!this.wasm || !this.renderer) return
 
@@ -171,7 +207,8 @@ export class GhosttyEngine implements TerminalEngine {
       // update() rebuilds the render snapshot and has to run before the
       // viewport is read; mark_clean() afterwards resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
-      this.renderer.updateStaticGrid(this.wasm, this.termPtr)
+      const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+      this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
       this.needsRedraw = false
     }
@@ -191,7 +228,41 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.tabIndex = 0
     
     this.container.appendChild(this.canvas)
+
+    this.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault()
+      const isAlt = this.wasm && this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
+      if (!isAlt) {
+        let lines = e.deltaY
+        if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) {
+          lines = e.deltaY / 20
+        } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+          lines = e.deltaY * this._rows
+        }
+        this.scrollLines(Math.sign(lines) * Math.max(1, Math.abs(Math.round(lines))))
+      }
+    })
     
+    window.addEventListener('mouseup', this.onMouseUp)
+
+    this.canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return // Only handle left-click for selection
+      this.isSelecting = true
+      this.selectionStart = this.getCoords(e)
+      if (this.renderer) {
+        this.renderer.selection = null
+        this.needsRedraw = true
+        for (const h of this.onSelectionChangeHandlers) h()
+      }
+    })
+
+    this.canvas.addEventListener('mousemove', (e) => {
+      if (this.isSelecting && this.renderer && this.selectionStart) {
+        this.renderer.selection = { start: this.selectionStart, end: this.getCoords(e) }
+        this.needsRedraw = true
+      }
+    })
+
     this.inputHandler = new GhosttyInputHandler(this.canvas, (data) => {
       // Input handler gives Uint8Array, convert to string since onData expects string in TerminalEngine
       const str = new TextDecoder().decode(data)
@@ -211,6 +282,7 @@ export class GhosttyEngine implements TerminalEngine {
 
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
+    window.removeEventListener('mouseup', this.onMouseUp)
     this.inputHandler?.dispose()
     if (this.canvas && this.container) {
       this.container.removeChild(this.canvas)
@@ -250,8 +322,37 @@ export class GhosttyEngine implements TerminalEngine {
   // microtask behind every byte write issued after it, so a status line could
   // land in the middle of a later chunk and leave that chunk's SGR state
   // applied to output it was never meant to color.
+  private scanForOsc(chunk: string) {
+    this.oscScannerBuffer += chunk
+    const oscRegex = /\x1b\](\d+);(.*?)(?:\x07|\x1b\\)/g
+    let match
+    let lastIndex = 0
+    while ((match = oscRegex.exec(this.oscScannerBuffer)) !== null) {
+      const ident = parseInt(match[1], 10)
+      const data = match[2]
+      const handlers = this.oscHandlers.get(ident)
+      if (handlers) {
+        for (const h of handlers) h(data)
+      }
+      lastIndex = match.index + match[0].length
+    }
+    if (lastIndex > 0) {
+      this.oscScannerBuffer = this.oscScannerBuffer.slice(lastIndex)
+    }
+    if (this.oscScannerBuffer.length > 1024) {
+      this.oscScannerBuffer = this.oscScannerBuffer.slice(-1024)
+    }
+    const textWithoutOsc = chunk.replace(/\x1b\]\d+;.*?(?:\x07|\x1b\\)/g, '')
+    if (textWithoutOsc.includes('\x07')) {
+      for (const h of this.onBellHandlers) h()
+    }
+  }
+
   write(data: Uint8Array | string): void {
     this.needsRedraw = true
+    const chunk = typeof data === 'string' ? data : new TextDecoder().decode(data)
+    this.scanForOsc(chunk)
+
     if (!this.wasm) {
       this.writeBuffer.push(data)
     } else if (typeof data === 'string') {
@@ -259,6 +360,7 @@ export class GhosttyEngine implements TerminalEngine {
     } else {
       writeBytes(this.wasm, this.termPtr, data)
     }
+    for (const h of this.onWriteParsedHandlers) h()
   }
 
   writeln(data: string): void {
@@ -284,12 +386,39 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onDataHandlers.delete(handler) }
   }
 
-  onWriteParsed(_cb: () => void): IDisposable { return { dispose: () => {} } }
-  onScroll(_cb: (newPos: number) => void): IDisposable { return { dispose: () => {} } }
+  onWriteParsed(cb: () => void): IDisposable {
+    this.onWriteParsedHandlers.add(cb)
+    return { dispose: () => this.onWriteParsedHandlers.delete(cb) }
+  }
+  onScroll(cb: (newPos: number) => void): IDisposable {
+    this.onScrollHandlers.add(cb)
+    return { dispose: () => this.onScrollHandlers.delete(cb) }
+  }
   onBufferChange(_cb: (isAlternate: boolean) => void): IDisposable { return { dispose: () => {} } }
-  onBell(_cb: () => void): IDisposable { return { dispose: () => {} } }
-  onSelectionChange(_cb: () => void): IDisposable { return { dispose: () => {} } }
-  registerOscHandler(_ident: number, _cb: (data: string) => boolean | Promise<boolean>): IDisposable { return { dispose: () => {} } }
+  onBell(cb: () => void): IDisposable {
+    this.onBellHandlers.add(cb)
+    return { dispose: () => this.onBellHandlers.delete(cb) }
+  }
+
+  onSelectionChange(cb: () => void): IDisposable {
+    this.onSelectionChangeHandlers.add(cb)
+    return { dispose: () => this.onSelectionChangeHandlers.delete(cb) }
+  }
+  
+  registerOscHandler(ident: number, cb: (data: string) => boolean | Promise<boolean>): IDisposable {
+    let handlers = this.oscHandlers.get(ident)
+    if (!handlers) {
+      handlers = []
+      this.oscHandlers.set(ident, handlers)
+    }
+    handlers.push(cb as any)
+    return {
+      dispose: () => {
+        const idx = handlers!.indexOf(cb as any)
+        if (idx !== -1) handlers!.splice(idx, 1)
+      }
+    }
+  }
   onSearchResult(_cb: (result: { index: number; count: number }) => void): IDisposable { return { dispose: () => {} } }
 
   fit(force = false): void {
@@ -323,8 +452,27 @@ export class GhosttyEngine implements TerminalEngine {
   }
   
   refresh(_start: number, _end: number): void {}
-  scrollLines(_amount: number): void {}
-  scrollToLine(_line: number): void {}
+  scrollLines(amount: number): void {
+    const maxOffset = Math.max(0, this.scrollbackLength - this._rows)
+    let offset = this._viewportOffset - amount
+    offset = Math.max(0, Math.min(offset, maxOffset))
+    if (this._viewportOffset !== offset) {
+      this._viewportOffset = offset
+      this.needsRedraw = true
+      for (const h of this.onScrollHandlers) h(this.viewportY)
+    }
+  }
+
+  scrollToLine(line: number): void {
+    const maxScroll = Math.max(0, this.scrollbackLength - this._rows)
+    line = Math.max(0, Math.min(line, maxScroll))
+    const offset = maxScroll - line
+    if (this._viewportOffset !== offset) {
+      this._viewportOffset = offset
+      this.needsRedraw = true
+      for (const h of this.onScrollHandlers) h(this.viewportY)
+    }
+  }
 
   /** The 16 ANSI slots, in the order both OSC 4 and the config struct expect. */
   private themePalette(theme: TerminalTheme): string[] {
@@ -362,13 +510,26 @@ export class GhosttyEngine implements TerminalEngine {
   // default onto the current theme (see updateStaticGrid). Text explicitly
   // painted from the ANSI palette keeps the palette this pane was opened with
   // until it scrolls away; new panes pick the theme up in full.
-  setTheme(themeName: string, _opacity: number): void {
+  setTheme(themeName: string, opacity: number): void {
     this._themeName = themeName
 
     if (this.renderer) {
-      this.applyThemeToRenderer(themeName)
-      // The grid is only rebuilt on damage, so without this an idle pane keeps
-      // its old palette until the next byte arrives.
+      const colors = this.themeConfigColors()
+      
+      const toRgb = (hex: number) => ({
+        r: (hex >> 16) & 0xff,
+        g: (hex >> 8) & 0xff,
+        b: hex & 0xff
+      })
+      
+      const fg = toRgb(colors.fgColor)
+      const bg = toRgb(colors.bgColor)
+      
+      this.renderer.setTheme(
+        fg.r, fg.g, fg.b,
+        bg.r, bg.g, bg.b,
+        opacity
+      )
       this.needsRedraw = true
     }
   }
@@ -425,7 +586,87 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   clearSelection(): void {}
-  getSelection(): string { return "" }
+  getSelection(): string {
+    if (!this.renderer || !this.renderer.selection || !this.wasm) return ''
+    
+    let selStart = this.renderer.selection.start
+    let selEnd = this.renderer.selection.end
+    if (selStart.x === selEnd.x && selStart.y === selEnd.y) return ''
+    if (selStart.y > selEnd.y || (selStart.y === selEnd.y && selStart.x > selEnd.x)) {
+      const temp = selStart; selStart = selEnd; selEnd = temp
+    }
+    
+    const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    const wasmCols = this.wasm.exports.ghostty_render_state_get_cols(this.termPtr)
+    const wasmRows = this.wasm.exports.ghostty_render_state_get_rows(this.termPtr)
+    
+    const cellCount = wasmCols * wasmRows
+    const expectedBufSize = cellCount * CELL_BYTES
+    const viewportBufPtr = this.wasm.exports.ghostty_wasm_alloc_u8_array(expectedBufSize)
+    this.wasm.exports.ghostty_render_state_get_viewport(this.termPtr, viewportBufPtr, cellCount)
+
+    const lineBufPtr = this.wasm.exports.ghostty_wasm_alloc_u8_array(wasmCols * CELL_BYTES)
+    
+    const viewportView = new DataView(this.wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
+    const lineView = new DataView(this.wasm.exports.memory.buffer, lineBufPtr, wasmCols * CELL_BYTES)
+    
+    let result = ''
+    
+    // Read codepoint at offset + 0 (Uint32)
+    const getCodepoint = (view: DataView, offset: number) => view.getUint32(offset, true)
+    
+    for (let r = selStart.y; r <= selEnd.y; r++) {
+      let isScrollback = false
+      let activeRow = 0
+      let rowValid = false
+
+      if (r < scrollbackCount) {
+        if (r >= 0) {
+          this.wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, r, lineBufPtr, wasmCols)
+          isScrollback = true
+          rowValid = true
+        }
+      } else {
+        activeRow = r - scrollbackCount
+        if (activeRow < wasmRows) {
+          rowValid = true
+        }
+      }
+      
+      if (!rowValid) continue
+      
+      const startX = r === selStart.y ? selStart.x : 0
+      const endX = r === selEnd.y ? selEnd.x : this._cols - 1
+      
+      let rowText = ''
+      for (let c = startX; c <= endX; c++) {
+         if (c >= wasmCols) continue
+         const offset = isScrollback
+            ? c * CELL_BYTES
+            : (activeRow * wasmCols + c) * CELL_BYTES
+         
+         const codepoint = getCodepoint(isScrollback ? lineView : viewportView, offset)
+         if (codepoint > 0) {
+           rowText += String.fromCodePoint(codepoint)
+         } else {
+           rowText += ' '
+         }
+      }
+      
+      if (r < selEnd.y) {
+         result += rowText.trimEnd() + '\n'
+      } else {
+         result += rowText
+      }
+    }
+    
+    this.wasm.exports.ghostty_wasm_free_u8_array(lineBufPtr, wasmCols * CELL_BYTES)
+    this.wasm.exports.ghostty_wasm_free_u8_array(viewportBufPtr, expectedBufSize)
+    
+    console.log("getSelection() returning:", JSON.stringify(result))
+    return result
+  }
+
   selectAll(): void {}
   findNext(_term: string): boolean { return false }
   findPrevious(_term: string): boolean { return false }
