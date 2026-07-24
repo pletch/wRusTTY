@@ -83,6 +83,15 @@ export interface SelectionRange {
   end: { x: number; y: number }
 }
 
+export interface CursorState {
+  /** Viewport coordinates — the row as currently displayed, not absolute. */
+  col: number
+  row: number
+  /** A blinked-off or unfocused cursor still occupies its cell. */
+  on: boolean
+  focused: boolean
+}
+
 export class WebGLRenderer {
   private canvas: HTMLCanvasElement
   private gl: WebGL2RenderingContext
@@ -119,6 +128,13 @@ export class WebGLRenderer {
 
   /** Absolute-coordinate selection to highlight, or null. */
   selection: SelectionRange | null = null
+
+  /** Where to paint the cursor block, or null for none. */
+  cursor: CursorState | null = null
+
+  private cursorR = 255
+  private cursorG = 255
+  private cursorB = 255
 
   /**
    * Called after a lost context has been rebuilt. Every GPU-side object comes
@@ -297,6 +313,12 @@ export class WebGLRenderer {
     this.defaultBgA = opacity
   }
 
+  setCursorColor(r: number, g: number, b: number) {
+    this.cursorR = r
+    this.cursorG = g
+    this.cursorB = b
+  }
+
   getCellSize(): { width: number, height: number } {
     return { width: this.cellWidth, height: this.cellHeight }
   }
@@ -390,6 +412,10 @@ export class WebGLRenderer {
       }
     }
 
+    // Hidden outright while scrolled back: the cursor belongs to the live
+    // screen, and leaving it on history reads as an editable line up there.
+    const cursor = this.cursor && viewportOffset === 0 ? this.cursor : null
+
     let outIdx = 0
 
     for (let r = 0; r < rows; r++) {
@@ -478,6 +504,28 @@ export class WebGLRenderer {
           finalBgG = (finalBgG * 0.7 + 255 * 0.3) | 0
           finalBgB = (finalBgB * 0.7 + 255 * 0.3) | 0
           bgIsDefault = false
+        }
+
+        // The cursor is the cell's own background rather than a second draw
+        // call: a block cursor is exactly "this cell, recoloured", so folding
+        // it in here keeps the pane at one draw and needs no extra GL state.
+        // The glyph underneath is repainted in the background colour so it
+        // stays legible through the block, which is what makes it read as a
+        // cursor sitting on the character rather than erasing it.
+        if (cursor && cursor.row === r && cursor.col === c) {
+          if (cursor.on && cursor.focused) {
+            finalFgR = this.defaultBgR; finalFgG = this.defaultBgG; finalFgB = this.defaultBgB
+            finalBgR = this.cursorR; finalBgG = this.cursorG; finalBgB = this.cursorB
+            bgIsDefault = false
+          } else if (!cursor.focused) {
+            // An unfocused pane keeps a steady, dimmed block: it still says
+            // where typing would land, without competing with the pane that
+            // actually has focus.
+            finalBgR = (finalBgR * 0.5 + this.cursorR * 0.5) | 0
+            finalBgG = (finalBgG * 0.5 + this.cursorG * 0.5) | 0
+            finalBgB = (finalBgB * 0.5 + this.cursorB * 0.5) | 0
+            bgIsDefault = false
+          }
         }
 
         this.instanceData[outIdx++] = c

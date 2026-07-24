@@ -17,6 +17,36 @@ import { GhosttyInputHandler } from './GhosttyInputHandler'
 // copied into public/ — the version that runs is the one in the lockfile.
 import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url'
 
+/** xterm's blink period, so the two engines don't visibly differ. */
+const CURSOR_BLINK_MS = 530
+
+/**
+ * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
+ * — the name reads like xterm's `scrollback` and it is not. Passing the app's
+ * row setting straight through is why 10000 behaved like a few hundred lines:
+ * the core took it as 10 KB, which is under its minimum page and so retained a
+ * single page's worth of rows no matter what the setting said.
+ *
+ * Measured against this WASM build (rows retained at a fixed budget, swept
+ * across widths) the cost is ~14.5 bytes per cell; 16 is that with headroom.
+ * Rows are therefore only as promised at the width the pane was opened at —
+ * widening it later trades rows for columns out of the same budget, which is
+ * how Ghostty itself behaves.
+ *
+ * The floor is the core's own minimum, below which the setting does nothing.
+ * The ceiling is this side's: the budget is committed for the life of the pane
+ * and every pane is its own WASM instance, so an unguarded setting is a
+ * per-pane memory multiplier across a window full of sessions.
+ */
+const SCROLLBACK_BYTES_PER_CELL = 16
+const SCROLLBACK_MIN_BYTES = 1024 * 1024
+const SCROLLBACK_MAX_BYTES = 64 * 1024 * 1024
+
+function scrollbackBytesFor(rows: number, cols: number): number {
+  const bytes = Math.max(1, rows) * Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL
+  return Math.min(Math.max(bytes, SCROLLBACK_MIN_BYTES), SCROLLBACK_MAX_BYTES)
+}
+
 export class GhosttyEngine implements TerminalEngine {
   private container: HTMLElement | null = null
   private canvas: HTMLCanvasElement | null = null
@@ -66,6 +96,10 @@ export class GhosttyEngine implements TerminalEngine {
   private oscHandlers = new Map<number, ((data: string) => void)[]>()
   private onBellHandlers = new Set<() => void>()
 
+  private cursorBlinkOn = true
+  private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
+  private focused = false
+
   constructor() {
     this.initWasm()
   }
@@ -80,7 +114,7 @@ export class GhosttyEngine implements TerminalEngine {
       // this theme's palette and defaults, and hands back finished RGB. The
       // renderer therefore never has to know what "color 4" means.
       this.termPtr = createTerminal(this.wasm, this._cols, this._rows, {
-        scrollbackLimit: this._scrollback,
+        scrollbackLimit: scrollbackBytesFor(this._scrollback, this._cols),
         ...this.themeConfigColors(),
       })
       if (this.termPtr === 0) {
@@ -187,6 +221,24 @@ export class GhosttyEngine implements TerminalEngine {
     this.needsRedraw = true
   }
 
+  private toggleCursorBlink = () => {
+    if (!this.focused) return
+    this.cursorBlinkOn = !this.cursorBlinkOn
+    this.needsRedraw = true
+  }
+
+  private onFocus = () => {
+    this.focused = true
+    // Coming back mid-blink would otherwise show a gap where the cursor is.
+    this.cursorBlinkOn = true
+    this.needsRedraw = true
+  }
+
+  private onBlur = () => {
+    this.focused = false
+    this.needsRedraw = true
+  }
+
   private onMouseUp = () => {
     if (this.isSelecting) {
       this.isSelecting = false
@@ -219,6 +271,17 @@ export class GhosttyEngine implements TerminalEngine {
       // viewport is read; mark_clean() afterwards resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
       const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+      // Read after update() and before the viewport, same as the cells: these
+      // come off the same snapshot, and sampling them either side of it puts
+      // the cursor a frame away from the text it's sitting in.
+      this.renderer.cursor = this.wasm.exports.ghostty_render_state_get_cursor_visible(this.termPtr) !== 0
+        ? {
+            col: this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr),
+            row: this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr),
+            on: this.cursorBlinkOn,
+            focused: this.focused,
+          }
+        : null
       this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
       this.needsRedraw = false
@@ -259,6 +322,12 @@ export class GhosttyEngine implements TerminalEngine {
     
     window.addEventListener('mouseup', this.onMouseUp)
 
+    this.canvas.addEventListener('focus', this.onFocus)
+    this.canvas.addEventListener('blur', this.onBlur)
+    // Only a focused pane blinks. A wall of panes all blinking out of phase is
+    // noise, and it also means an idle background pane never wakes the loop.
+    this.cursorBlinkTimer = setInterval(this.toggleCursorBlink, CURSOR_BLINK_MS)
+
     this.canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return // Only handle left-click for selection
       this.isSelecting = true
@@ -297,6 +366,10 @@ export class GhosttyEngine implements TerminalEngine {
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
     window.removeEventListener('mouseup', this.onMouseUp)
+    if (this.cursorBlinkTimer !== null) {
+      clearInterval(this.cursorBlinkTimer)
+      this.cursorBlinkTimer = null
+    }
     this.inputHandler?.dispose()
     if (this.canvas && this.container) {
       this.container.removeChild(this.canvas)
@@ -576,6 +649,8 @@ export class GhosttyEngine implements TerminalEngine {
     const [fr, fg, fb] = hexToRgb(theme.foreground)
     const [br, bg, bb] = hexToRgb(theme.background)
     this.renderer.setTheme(fr, fg, fb, br, bg, bb, this._opacity)
+    const [cr, cg, cb] = hexToRgb(theme.cursor)
+    this.renderer.setCursorColor(cr, cg, cb)
   }
   setFont(fontFamily: string, fontSize: number): void {
     this.fontFamily = fontFamily
@@ -601,6 +676,12 @@ export class GhosttyEngine implements TerminalEngine {
   // The core takes its scrollback limit at construction and exposes no setter,
   // so a change here only takes effect for panes opened afterwards. Recreating
   // the terminal to apply it live would throw away the scrollback it governs.
+  //
+  // Landing before the terminal exists is the normal case rather than a race:
+  // Terminal.tsx calls this synchronously on the new engine, and the terminal
+  // isn't built until the WASM fetch resolves. Mounting and the first fit are
+  // synchronous too, so the column count this is budgeted against is the pane's
+  // real width and not the 80-column default.
   setScrollback(scrollback: number): void {
     this._scrollback = scrollback
   }
