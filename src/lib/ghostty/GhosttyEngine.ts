@@ -2,12 +2,12 @@ import type { TerminalEngine, SearchOptions, SearchResult } from '../terminalEng
 import type { SearchHighlight } from './WebGLRenderer'
 import type { IDisposable } from '@xterm/xterm'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
+import { scanOsc } from './oscScanner'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
 import {
   instantiateGhosttyWasm,
   createTerminal,
   writeBytes,
-  writeString,
   readResponse,
   parseCell,
   MODE_APP_CURSOR_KEYS,
@@ -87,7 +87,9 @@ export class GhosttyEngine implements TerminalEngine {
   private onResizeHandlers = new Set<(size: { cols: number; rows: number }) => void>()
   private inputHandler: GhosttyInputHandler | null = null
   
-  private writeBuffer: (string | Uint8Array)[] = []
+  /** Writes that arrived before the core finished loading. Bytes only: every
+   *  write is converted to bytes up front (see write). */
+  private writeBuffer: Uint8Array[] = []
   private renderLoopId = 0
   private needsRedraw = true
   // The deferred re-fits below outlive a pane that's torn down while its WASM
@@ -112,6 +114,13 @@ export class GhosttyEngine implements TerminalEngine {
   private _viewportOffset = 0
   private onScrollHandlers = new Set<(newPos: number) => void>()
   private onWriteParsedHandlers = new Set<() => void>()
+  /**
+   * Fired after a frame is actually drawn (not on damage-free frames). Only the
+   * benchmark harness (src/bench) subscribes; it needs a "a frame was painted"
+   * signal to stop its clock at presentation. Kept off the `TerminalEngine`
+   * contract for that reason.
+   */
+  private onRenderHandlers = new Set<() => void>()
   
   private isSelecting = false
   private selectionStart: {x: number, y: number} | null = null
@@ -122,10 +131,13 @@ export class GhosttyEngine implements TerminalEngine {
   private dragScrollLines = 0
   private dragScrollAt: { clientX: number; clientY: number } | null = null
   private onSelectionChangeHandlers = new Set<() => void>()
-  private oscScannerBuffer = ''
-  private scanDecoder = new TextDecoder()
+  /** Bytes of an OSC that began in an earlier chunk and has not terminated.
+   *  Already parsed; retained only to match the pattern across the boundary. */
+  private oscPending: Uint8Array | null = null
+  private oscDecoder = new TextDecoder()
+  private oscEncoder = new TextEncoder()
   private responseDecoder = new TextDecoder()
-  private oscHandlers = new Map<number, ((data: string) => void)[]>()
+  private oscHandlers = new Map<number, ((data: string) => boolean | Promise<boolean>)[]>()
   private onBellHandlers = new Set<() => void>()
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
   private lastIsAlternate = false
@@ -176,11 +188,7 @@ export class GhosttyEngine implements TerminalEngine {
       // parser is a single state machine fed in byte order, so deferring one
       // kind of write by even a microtask replays this buffer out of order.
       for (const data of this.writeBuffer) {
-        if (typeof data === 'string') {
-          writeString(this.wasm, this.termPtr, data)
-        } else {
-          writeBytes(this.wasm, this.termPtr, data)
-        }
+        writeBytes(this.wasm, this.termPtr, data)
       }
       this.writeBuffer = []
       
@@ -387,9 +395,13 @@ export class GhosttyEngine implements TerminalEngine {
   private onBlur = () => {
     this.focused = false
     this.needsRedraw = true
-    // A button released outside the window never reaches us, and a stuck
-    // "still held" would keep reporting drags on the next hover.
+    // A button or drag released outside the window never reaches us (the window
+    // mouseup that would end it fires while another window has focus). Left set,
+    // a stuck "still held" keeps reporting drags on the next hover, and a stuck
+    // "still selecting" leaves the pane in a selection that swallows clicks and
+    // typing until something else clears it — the wedge after a native prompt.
     this.mouseButtonDown = null
+    this.isSelecting = false
     this.reportFocus(false)
   }
 
@@ -732,8 +744,13 @@ export class GhosttyEngine implements TerminalEngine {
       this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
       this.needsRedraw = false
+      // After the draw this frame, so the harness's present clock sees exactly
+      // the frames that changed the canvas. Skipped on idle frames above.
+      if (this.onRenderHandlers.size > 0) {
+        for (const h of this.onRenderHandlers) h()
+      }
     }
-    
+
     this.renderLoopId = requestAnimationFrame(this.startRenderLoop)
   }
 
@@ -746,6 +763,15 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.style.left = '0'
     this.canvas.style.outline = 'none'
     this.canvas.style.display = 'block'
+    // A <canvas>, like an <img>, is draggable as an image by default: a click
+    // that moves a pixel starts a native image-drag of the pane, which shows the
+    // no-drop cursor and a grey drag-image and steals focus/input until it ends
+    // (and WebView2 won't cancel it on Esc). We run our own selection off mouse
+    // events, so the native drag is pure harm — turn it off at the source.
+    this.canvas.draggable = false
+    this.canvas.style.userSelect = 'none'
+    this.canvas.style.setProperty('-webkit-user-select', 'none')
+    this.canvas.style.setProperty('-webkit-user-drag', 'none')
 
     this.container.appendChild(this.canvas)
 
@@ -790,10 +816,14 @@ export class GhosttyEngine implements TerminalEngine {
         this.sendMouse(e.button, p.col, p.row, e, false)
         return
       }
-      // Before the button check, so a right-click keeps the keyboard too. The
-      // canvas used to be focusable and took focus on any click; input lives on
-      // the handler's element now, and nothing focuses it implicitly — which is
-      // how a right-click-to-paste left the pane unable to accept typing.
+      // Keep the keyboard on the input element. A plain mousedown on the
+      // (non-focusable) canvas otherwise lets the browser move focus off the
+      // invisible textarea — which is why clicking a pane that already had focus
+      // wedged it (no keystrokes, no blink) until a tab switch refocused it, and
+      // how a right-click-to-paste used to lose typing. preventDefault stops that
+      // focus shift (and any native selection/drag we handle ourselves); the
+      // explicit focus() is what actually holds the keyboard. Both are needed.
+      e.preventDefault()
       this.inputHandler?.focus()
       if (e.button !== 0) return // Only handle left-click for selection
       // `detail` counts clicks in a run, which is how the platform already
@@ -863,12 +893,25 @@ export class GhosttyEngine implements TerminalEngine {
           this.onMouseUp(e)
           return
         }
-        this.renderer.selection = {
-          start: this.selectionStart,
-          end: this.getCoords(e),
-          rectangular: this.selectionRectangular,
+        // A pointer that has not left the starting cell is a click, not a drag.
+        // Rendering start==end as a selection is what left a one-cell grey block
+        // behind after clicking — most visibly on the click that reactivates the
+        // window, where the pointer is still moving into the app as it lands.
+        const end = this.getCoords(e)
+        const moved = end.x !== this.selectionStart.x || end.y !== this.selectionStart.y
+        if (!moved) {
+          if (this.renderer.selection) {
+            this.renderer.selection = null
+            this.needsRedraw = true
+          }
+        } else {
+          this.renderer.selection = {
+            start: this.selectionStart,
+            end,
+            rectangular: this.selectionRectangular,
+          }
+          this.needsRedraw = true
         }
-        this.needsRedraw = true
         this.updateDragScroll(e)
       }
     })
@@ -925,10 +968,11 @@ export class GhosttyEngine implements TerminalEngine {
     this.onResizeHandlers.clear()
     this.onScrollHandlers.clear()
     this.onWriteParsedHandlers.clear()
+    this.onRenderHandlers.clear()
     this.onSelectionChangeHandlers.clear()
     this.onBellHandlers.clear()
     this.oscHandlers.clear()
-    this.oscScannerBuffer = ''
+    this.oscPending = null
   }
 
   resize(cols: number, rows: number, force = false): void {
@@ -957,42 +1001,76 @@ export class GhosttyEngine implements TerminalEngine {
   // something is actually listening — an un-integrated shell registers no OSC
   // handlers and pays nothing. Delete this whole path once libghostty-vt
   // exposes OSC 133 and bell callbacks.
-  //
-  // One expression matches either a complete OSC or a bare BEL, so they are
-  // seen in stream order and an OSC's own BEL terminator can't be mistaken for
-  // a bell. The payload deliberately can't span BEL or ESC: that's what bounds
-  // the match, and it's what an unterminated sequence would otherwise run past.
-  // oxlint-disable-next-line no-control-regex -- matching control characters is the point
-  private static readonly OSC_OR_BEL = /\x1b\](\d+);([^\x07\x1b]*)(?:\x07|\x1b\\)|\x07/g
+  /** Hands one run of bytes to the parser, or queues it if the core is still
+   *  loading. Buffered slices are copied: they outlive the caller's chunk. */
+  private parseSegment(seg: Uint8Array): void {
+    if (seg.length === 0) return
+    if (!this.wasm) {
+      this.writeBuffer.push(seg.slice())
+      return
+    }
+    writeBytes(this.wasm, this.termPtr, seg)
+  }
 
-  private scanForOsc(chunk: string) {
-    const buf = this.oscScannerBuffer + chunk
-    const re = GhosttyEngine.OSC_OR_BEL
-    re.lastIndex = 0
+  /** Fires onBufferChange if the screen buffer flipped since it was last read.
+   *  Called between parse segments so a handler never sees a stale buffer. */
+  private notifyBufferChange(): void {
+    if (!this.wasm) return
+    const isAlt = this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
+    if (isAlt === this.lastIsAlternate) return
+    this.lastIsAlternate = isAlt
+    for (const h of this.onBufferChangeHandlers) h(isAlt)
+  }
 
-    let match: RegExpExecArray | null
-    let consumed = 0
-    while ((match = re.exec(buf)) !== null) {
-      if (match[1] !== undefined) {
-        const handlers = this.oscHandlers.get(parseInt(match[1], 10))
-        if (handlers) {
-          for (const h of handlers) h(match[2])
-        }
-      } else {
-        for (const h of this.onBellHandlers) h()
+  /**
+   * Parses `bytes`, dispatching OSC and bell events at the point each one
+   * actually occurs in the stream.
+   *
+   * The parser is fed in segments split at each recognised sequence, so a
+   * handler runs only once everything preceding it — including that sequence —
+   * has been parsed, which is what a real parser callback would give. The
+   * previous shape scanned the whole chunk up front and dispatched before
+   * parsing any of it, handing every handler a terminal state from *before* the
+   * chunk: anything correlating a sequence with screen state was silently wrong
+   * (see the note on registerOscHandler).
+   *
+   * The scan itself is a pure function (see oscScanner) so its grammar and
+   * cross-chunk bookkeeping can be tested without a core or a DOM. Scanning
+   * bytes rather than a decoded string is what makes the split safe — the
+   * offsets it returns are byte offsets into this exact buffer, so segments can
+   * be sliced without a bytes→string→bytes round trip (which would mangle
+   * invalid UTF-8) and without mapping char indices back onto bytes. It also
+   * drops the full-chunk decode the old scanner did on every write; only
+   * payloads, which are short, are decoded now.
+   */
+  private parseAndDispatch(bytes: Uint8Array): void {
+    const { events, pending } = scanOsc(bytes, this.oscPending, this.oscDecoder)
+    this.oscPending = pending
+
+    let cursor = 0 // how much of `bytes` has reached the parser
+    for (const ev of events) {
+      if (ev.segEnd > cursor) {
+        this.parseSegment(bytes.subarray(cursor, ev.segEnd))
+        cursor = ev.segEnd
       }
-      consumed = match.index + match[0].length
+      // Screen state has to be current before a handler runs — the whole point
+      // of splitting the parse here.
+      this.notifyBufferChange()
+      if (ev.kind === 'bell') {
+        for (const h of this.onBellHandlers) h()
+        continue
+      }
+      const handlers = this.oscHandlers.get(ev.ident)
+      if (!handlers) continue
+      for (const h of handlers) {
+        // A handler claiming the sequence stops the others for this ident. It
+        // cannot stop the core, which parses the bytes regardless — see
+        // registerOscHandler.
+        if (h(ev.payload) === true) break
+      }
     }
 
-    // Only an unterminated OSC needs to survive into the next chunk. Slicing to
-    // a fixed tail instead used to cut a sequence in half and corrupt whatever
-    // matched next; anything before the last introducer is already resolved.
-    const tail = consumed > 0 ? buf.slice(consumed) : buf
-    const pending = tail.lastIndexOf('\x1b]')
-    this.oscScannerBuffer = pending === -1 ? '' : tail.slice(pending)
-    // A sequence this long is not going to terminate. Drop it rather than grow
-    // without bound.
-    if (this.oscScannerBuffer.length > 4096) this.oscScannerBuffer = ''
+    if (cursor < bytes.length) this.parseSegment(bytes.subarray(cursor))
   }
 
   // Every write has to reach the parser synchronously and in call order. PTY
@@ -1005,40 +1083,51 @@ export class GhosttyEngine implements TerminalEngine {
     this.needsRedraw = true
     this.bufferGen++
 
+    // Strings (writeln, the line editor) and PTY bytes take one path:
+    // writeString is itself writeBytes(encode(str)), so unifying costs nothing
+    // and lets a single byte-level scanner serve both without a second pending
+    // buffer for the string case.
+    const bytes = typeof data === 'string' ? this.oscEncoder.encode(data) : data
+
     if (this.oscHandlers.size > 0 || this.onBellHandlers.size > 0) {
-      // Streaming, so a multi-byte character split across two chunks decodes
-      // once rather than as two replacement characters.
-      this.scanForOsc(
-        typeof data === 'string' ? data : this.scanDecoder.decode(data, { stream: true }),
-      )
+      this.parseAndDispatch(bytes)
+    } else {
+      this.parseSegment(bytes)
     }
 
-    if (!this.wasm) {
-      this.writeBuffer.push(data)
-    } else if (typeof data === 'string') {
-      writeString(this.wasm, this.termPtr, data)
-    } else {
-      writeBytes(this.wasm, this.termPtr, data)
-    }
     // Drained here rather than on the frame: a reply is only correct for the
     // state that provoked it, and a cursor-position report that waits for the
     // next repaint can describe a cursor that has already moved on.
     this.drainResponses()
     // Checked on the write that could have caused it rather than per frame:
     // switching screens is a parse-time event, and an idle pane shouldn't be
-    // asking the core about it sixty times a second.
-    if (this.wasm) {
-      const isAlt = this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
-      if (isAlt !== this.lastIsAlternate) {
-        this.lastIsAlternate = isAlt
-        for (const h of this.onBufferChangeHandlers) h(isAlt)
-      }
-    }
+    // asking the core about it sixty times a second. parseAndDispatch already
+    // checks between segments; this catches a change in the trailing one.
+    this.notifyBufferChange()
     for (const h of this.onWriteParsedHandlers) h()
   }
 
   writeln(data: string): void {
     this.write(data + '\r\n')
+  }
+
+  /**
+   * Benchmark-only counterpart to xterm's async `parse`. Ghostty parses
+   * synchronously inside `write`, so the work is already done by the time this
+   * returns; it is chunked purely to avoid a single multi-megabyte WASM
+   * allocation (which fragments the heap and slows successive rounds), and it
+   * deliberately does not yield — the point is to time an uninterrupted parse.
+   */
+  parse(data: Uint8Array | string): Promise<void> {
+    const CHUNK = 131072
+    if (typeof data !== 'string' && data.length > CHUNK) {
+      for (let i = 0; i < data.length; i += CHUNK) {
+        this.write(data.subarray(i, Math.min(i + CHUNK, data.length)))
+      }
+    } else {
+      this.write(data)
+    }
+    return Promise.resolve()
   }
 
   paste(text: string): void {
@@ -1070,6 +1159,11 @@ export class GhosttyEngine implements TerminalEngine {
     this.onWriteParsedHandlers.add(cb)
     return { dispose: () => this.onWriteParsedHandlers.delete(cb) }
   }
+  /** See `onRenderHandlers` — benchmark-only paint signal. */
+  onRender(cb: () => void): IDisposable {
+    this.onRenderHandlers.add(cb)
+    return { dispose: () => this.onRenderHandlers.delete(cb) }
+  }
   onScroll(cb: (newPos: number) => void): IDisposable {
     this.onScrollHandlers.add(cb)
     return { dispose: () => this.onScrollHandlers.delete(cb) }
@@ -1088,18 +1182,37 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onSelectionChangeHandlers.delete(cb) }
   }
   
+  /**
+   * Subscribe to an OSC ident.
+   *
+   * Two differences from the xterm engine's version, both because this engine
+   * recovers OSC by scanning the byte stream rather than from parser callbacks
+   * the core does not expose yet:
+   *
+   * - Returning `true` stops the remaining handlers for this ident, but does
+   *   *not* consume the sequence: the bytes still reach the core, which may act
+   *   on them as well. There is no way to suppress that from here. (A promise is
+   *   never treated as a claim — async consumption isn't supported.)
+   * - The handler runs at the point the sequence occurs in the stream, with
+   *   everything before it already parsed, so reading engine state is sound.
+   *   That was *not* true before: handlers used to be dispatched for a whole
+   *   chunk before any of it was parsed, so state read here lagged by a chunk.
+   *   Prefer correlating with a dedicated event (onBufferChange) over reading
+   *   state in a handler anyway — it survives the eventual move to core
+   *   callbacks, whose dispatch point may differ again.
+   */
   registerOscHandler(ident: number, cb: (data: string) => boolean | Promise<boolean>): IDisposable {
     let handlers = this.oscHandlers.get(ident)
     if (!handlers) {
       handlers = []
       this.oscHandlers.set(ident, handlers)
     }
-    handlers.push(cb as any)
+    handlers.push(cb)
     return {
       dispose: () => {
-        const idx = handlers!.indexOf(cb as any)
+        const idx = handlers!.indexOf(cb)
         if (idx !== -1) handlers!.splice(idx, 1)
-      }
+      },
     }
   }
   onSearchResult(cb: (result: SearchResult) => void): IDisposable {
@@ -1401,7 +1514,18 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   focus(): void {
+    // A programmatic refocus (tab switch, window/app return) is where a stranded
+    // IME composition gets cleared — an app switch can leave `composing` stuck
+    // true with no blur/compositionend, dropping all printable input afterwards.
+    // Plain clicks focus via the input handler directly and skip this, so an
+    // in-window click mid-composition is left untouched.
+    this.inputHandler?.cancelComposition()
     this.inputHandler?.focus()
+  }
+
+  /** See TerminalEngine.resetInputContext. */
+  resetInputContext(): void {
+    this.inputHandler?.resetForRefocus()
   }
 
   clearSelection(): void {

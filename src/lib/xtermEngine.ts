@@ -77,6 +77,15 @@ export class XtermEngine implements TerminalEngine {
     this.term.write(data)
   }
 
+  /**
+   * Writes and resolves when the parser has consumed it — xterm parses
+   * asynchronously off its write queue, so this is the only fair way to time
+   * its throughput against Ghostty's synchronous parse. Benchmark-only.
+   */
+  parse(data: Uint8Array | string): Promise<void> {
+    return new Promise((resolve) => this.term.write(data, () => resolve()))
+  }
+
   writeln(data: string) {
     this.term.writeln(data)
   }
@@ -99,6 +108,26 @@ export class XtermEngine implements TerminalEngine {
 
   onWriteParsed(cb: () => void) {
     return this.term.onWriteParsed(cb)
+  }
+
+  /**
+   * Fires after the renderer has painted a frame. Not part of the
+   * `TerminalEngine` contract — the benchmark harness (src/bench) is the only
+   * caller, and it needs a per-engine "a frame was drawn" signal to stop the
+   * clock at presentation. xterm surfaces exactly this natively.
+   */
+  onRender(cb: () => void) {
+    return this.term.onRender(() => cb())
+  }
+
+  /**
+   * Whether the GPU (WebGL) renderer is actually in use, rather than the DOM
+   * fallback WebglAddon drops to when a context can't be created. The harness
+   * reports this so a "GPU" number measured on a software path is never
+   * mistaken for the real thing.
+   */
+  get usingWebgl(): boolean {
+    return this.webglAddon !== null
   }
 
   onScroll(cb: (newPos: number) => void) {

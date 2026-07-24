@@ -72,6 +72,7 @@ export class GhosttyInputHandler {
     ta.addEventListener('compositionstart', this.handleCompositionStart)
     ta.addEventListener('compositionend', this.handleCompositionEnd)
     ta.addEventListener('input', this.handleInput)
+    ta.addEventListener('blur', this.handleBlur)
   }
 
   setBackspaceBehavior(behavior: 'delete' | 'backspace') {
@@ -80,6 +81,44 @@ export class GhosttyInputHandler {
 
   focus() {
     this.element.focus({ preventScroll: true })
+  }
+
+  /**
+   * Clears any in-flight IME composition. A `compositionstart` can be stranded
+   * with no matching `compositionend` — switching to another Windows app does
+   * not fire `blur` and WebView2 keeps this textarea as the active element, so
+   * the composition never closes. Left stuck, `composing` stays true and
+   * `handleInput` drops every printable key as pre-edit; only keydown-handled
+   * keys (Enter, arrows) still reach the wire — the tell for this wedge. The
+   * engine calls this on a programmatic refocus (tab switch, window/app return).
+   */
+  cancelComposition() {
+    this.composing = false
+    this.element.value = ''
+  }
+
+  /**
+   * Rebuilds the textarea's link to the OS input method. When the app window is
+   * deactivated and reactivated, WebView2 can leave this element focused yet with
+   * a dead input/IME context: keydown still fires (Enter, arrows work) but the
+   * `input`/composition events that carry printable text no longer do. Blurring
+   * and refocusing forces the input context to be re-established. Called on
+   * window/app return; a plain focus() is not enough.
+   */
+  resetForRefocus() {
+    this.cancelComposition()
+    this.element.blur()
+    // Defer the refocus a frame: a blur immediately followed by focus on the
+    // same element within one task can be coalesced away, which would leave the
+    // input context un-rebuilt. Letting the blur settle first is what makes the
+    // rebuild actually happen.
+    requestAnimationFrame(() => this.element.focus({ preventScroll: true }))
+  }
+
+  private handleBlur = () => {
+    // When blur does fire (focus moving within the window), end any composition
+    // too — the same strand can otherwise outlive the focus change.
+    this.cancelComposition()
   }
 
   /**
@@ -97,6 +136,7 @@ export class GhosttyInputHandler {
     this.element.removeEventListener('compositionstart', this.handleCompositionStart)
     this.element.removeEventListener('compositionend', this.handleCompositionEnd)
     this.element.removeEventListener('input', this.handleInput)
+    this.element.removeEventListener('blur', this.handleBlur)
     if (this.element.parentNode === this.container) {
       this.container.removeChild(this.element)
     }

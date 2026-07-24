@@ -15,6 +15,7 @@ import {
   Unplug,
 } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
@@ -67,7 +68,7 @@ interface Props {
    * overlays as a "Reconnect" action. */
   /** Reopen failed connections in place. */
   onReconnect?: () => void
-  /** Which engine to use for rendering. Defaults to 'xterm'. */
+  /** Which engine to use for rendering. Defaults to 'ghostty' (Phase 7). */
   engine?: 'xterm' | 'ghostty'
 }
 
@@ -100,7 +101,7 @@ export function Terminal({
   onBell,
   onBackToConnect,
   onReconnect,
-  engine = 'xterm',
+  engine = 'ghostty',
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -602,7 +603,7 @@ export function Terminal({
     // eventually reports can be recognized as "you quit an editor", not "a
     // batch job you were waiting on has landed".
     const bufferListener = term.onBufferChange((isAlternate) => {
-      if (isAlternate) tracker.noteAltScreen()
+      tracker.setAltScreen(isAlternate)
     })
     const bellListener = term.onBell(() => {
       if (!disposed) onBellRef.current?.()
@@ -866,6 +867,48 @@ export function Terminal({
     window.addEventListener('resize', onResize)
     refitRef.current = onResize
 
+    // Returning to the app from another window (Alt-Tab, a native dialog, the
+    // Windows Hello prompt) leaves the active pane wedged — no keystrokes, no
+    // cursor blink — until a tab switch refocuses it. On blur the input element
+    // blurs (the engine reports focus loss and stops the blink); on return the
+    // browser doesn't restore focus to it, and the Ghostty engine's input lives
+    // on an invisible, pointer-events:none textarea Chromium won't re-focus on
+    // its own. Crucially this is a *native* window activation — WebView2 does
+    // not emit a DOM 'focus' event for it — so we listen to Tauri's window focus
+    // event and re-assert focus on the active, visible pane (0×0 = a hidden tab,
+    // which must not steal focus, matching the onResize guard).
+    let unlistenFocus: (() => void) | null = null
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) return
+        if (!activeRef.current) return
+        if (container.clientWidth === 0 || container.clientHeight === 0) return
+        // Defer past WebView2's own focus handling: the native event can arrive
+        // before the webview finishes restoring focus (often to <body>), and a
+        // synchronous .focus() would then be overridden. Re-check on the next
+        // frame that this pane is still the active, on-screen one before taking
+        // focus, so a fast tab switch in between doesn't get overridden.
+        requestAnimationFrame(() => {
+          if (disposed || !activeRef.current) return
+          if (container.clientWidth === 0 || container.clientHeight === 0) return
+          // A selection the native transition left dangling (the browser can
+          // also drop a stray gray selection where you clicked to refocus)
+          // swallows input; clear it before handing focus back.
+          window.getSelection()?.removeAllRanges()
+          const term = termRef.current
+          // Window deactivation can sever the input element's IME/input context
+          // in WebView2 so a plain focus() leaves printable input dead (only
+          // Enter/arrows work). resetInputContext rebuilds it; fall back to
+          // focus() for engines that don't need it.
+          if (term?.resetInputContext) term.resetInputContext()
+          else term?.focus()
+        })
+      })
+      .then((un) => {
+        if (disposed) un()
+        else unlistenFocus = un
+      })
+
     // The container can shrink or grow without the OS window itself
     // resizing — e.g. the status footer appearing/disappearing as a
     // connection's status changes reflows the flex layout above it. A
@@ -878,6 +921,7 @@ export function Terminal({
     return () => {
       disposed = true
       window.removeEventListener('resize', onResize)
+      unlistenFocus?.()
       refitRef.current = null
       resizeObserver.disconnect()
       canvasObserver.disconnect()

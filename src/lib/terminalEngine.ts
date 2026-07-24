@@ -50,6 +50,15 @@ export interface TerminalEngine {
   
   rebuildWebglRenderer(): void
 
+  /**
+   * Re-establish the input element's connection to the OS input method after the
+   * app window regains focus. WebView2 can leave a hidden textarea's IME/input
+   * context severed on window deactivation so that a plain focus() no longer
+   * delivers printable input (only keydown-routed keys like Enter still reach the
+   * wire). Optional — engines whose input survives a window switch omit it.
+   */
+  resetInputContext?(): void
+
   // Search Addon related
   search(query: string, options?: SearchOptions): void
   clearSearchDecorations(): void

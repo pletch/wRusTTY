@@ -25,6 +25,7 @@ import {
   ArrowLeftRight,
   Folder,
   Search,
+  Cpu,
 } from 'lucide-react'
 import { toast } from './lib/toast'
 import * as profiles from './lib/profiles'
@@ -744,6 +745,28 @@ function App() {
     if (tab) reconnectPane(id, tab.activePaneId)
   }
 
+  /** Switches one pane's rendering engine. The grid and scrollback live inside
+   *  the engine, so swapping it means tearing one down and building the other —
+   *  there is nothing to hand over — which the generation bump does by remounting
+   *  the Terminal (and thereby reconnecting the session). Deliberate and rare:
+   *  the escape hatch for the handful of upstream ghostty-web ABI gaps. */
+  function setPaneEngine(tabId: string, paneId: string, engine: 'xterm' | 'ghostty') {
+    setTabs((prev) =>
+      prev.map((t) =>
+        t.id === tabId
+          ? {
+              ...t,
+              root: updateLeaf(t.root, paneId, (l) => ({
+                ...l,
+                engine,
+                generation: l.generation + 1,
+              })),
+            }
+          : t,
+      ),
+    )
+  }
+
   /** Adds a saved workspace's tabs to the window and focuses its first.
    *
    * Additive rather than replacing: opening a workspace must never close live
@@ -1441,6 +1464,25 @@ function App() {
                 <ScrollText size={15} strokeWidth={2} />
               </button>
             )}
+            {activeLeaf?.source &&
+              (() => {
+                const current = activeLeaf.engine ?? 'ghostty'
+                const other = current === 'ghostty' ? 'xterm' : 'ghostty'
+                const label = (e: 'xterm' | 'ghostty') => (e === 'ghostty' ? 'Ghostty' : 'xterm')
+                return (
+                  <button
+                    className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                      // Highlighted only when overridden to xterm, so a pane on
+                      // the non-default fallback engine reads at a glance.
+                      current === 'xterm' ? 'text-amber-400 hover:text-amber-300' : 'text-white/50 hover:text-white/90'
+                    }`}
+                    title={`Rendering engine: ${label(current)}${current === 'ghostty' ? ' (default)' : ''} — click to switch to ${label(other)} (reconnects this pane)`}
+                    onClick={() => activeTab && activePaneId && setPaneEngine(activeTab.id, activePaneId, other)}
+                  >
+                    <Cpu size={15} strokeWidth={2} />
+                  </button>
+                )
+              })()}
             {activeIsSsh && activeSessionId && (
               <button
                 className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${

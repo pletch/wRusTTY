@@ -10,12 +10,18 @@ export function blankLeaf(): PaneLeaf {
     id: newPaneId(),
     source: null,
     generation: 0,
-    // xterm.js stays the default until the Ghostty engine is feature-complete
-    // and measured faster here: it currently has no scrollback (scrollLines and
-    // scrollToLine are no-ops and scrollbackLength is a constant), no selection,
-    // no search and no bell, so a pane that opens on it silently loses working
-    // features. Selectable per-pane in the meantime.
-    // Setting to ghostty temporarily to test the new features.
+    // Ghostty is the default as of the Phase 7 A/B (see src/bench): it presents
+    // one display frame sooner than the xterm.js WebGL path across typing,
+    // streaming and TUI redraws, reaches true background transparency the xterm
+    // path could not, and is at feature parity — scrollback, selection, search,
+    // bell and mouse/focus reporting all match. The four remaining gaps are
+    // upstream ABI limits of the pinned ghostty-web@0.4.0 (overline/curly
+    // underline, DECSCUSR cursor shapes, wrapped-line search in scrollback,
+    // Primary Device Attributes), not renderer bugs. The engine is per-pane and
+    // switchable from the toolbar (App.tsx setPaneEngine) as the escape hatch for
+    // those gaps; this constant is only the default a fresh pane opens on.
+    // Parser throughput is at parity and not a factor: the WASM build is scalar,
+    // so Ghostty's native SIMD advantage does not apply here.
     engine: 'ghostty',
   }
 }
