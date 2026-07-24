@@ -43,6 +43,9 @@ export const MODE_MOUSE_BUTTON_EVENT = 1002 // also report drags
 export const MODE_MOUSE_ANY_EVENT = 1003 // report motion with no button down
 export const MODE_MOUSE_SGR = 1006 // CSI < b ; x ; y M/m instead of the 1-byte form
 
+/** DEC 1004: report CSI I / CSI O when the terminal gains or loses focus. */
+export const MODE_FOCUS_REPORTING = 1004
+
 export interface GhosttyExports {
   memory: WebAssembly.Memory
 

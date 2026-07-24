@@ -15,6 +15,7 @@ import {
   MODE_MOUSE_BUTTON_EVENT,
   MODE_MOUSE_ANY_EVENT,
   MODE_MOUSE_SGR,
+  MODE_FOCUS_REPORTING,
   type GhosttyWasm,
   CELL_BYTES,
 } from './wasmBindings'
@@ -138,6 +139,7 @@ export class GhosttyEngine implements TerminalEngine {
   private bufferGen = 0
 
   private cursorBlinkOn = true
+  private blinkTicks = 0
   private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
   private focused = false
 
@@ -341,10 +343,37 @@ export class GhosttyEngine implements TerminalEngine {
     this.renderer.releaseContext()
   }
 
-  private toggleCursorBlink = () => {
-    if (!this.focused) return
-    this.cursorBlinkOn = !this.cursorBlinkOn
-    this.needsRedraw = true
+  /**
+   * One timer for both blinks. The cursor only blinks in a focused pane, and
+   * blinking text runs at half that rate — roughly the cadence a terminal has
+   * always used for the attribute, and slow enough not to be a strobe.
+   *
+   * A tick only forces a repaint when there is something whose appearance
+   * depends on it. Otherwise every pane in the window would redraw twice a
+   * second forever, which is the opposite of the damage-driven loop's point.
+   */
+  private onBlinkTick = () => {
+    let changed = false
+    if (this.focused) {
+      this.cursorBlinkOn = !this.cursorBlinkOn
+      if (this.renderer?.cursor) changed = true
+    }
+    if (++this.blinkTicks % 2 === 0 && this.renderer) {
+      this.renderer.blinkOn = !this.renderer.blinkOn
+      if (this.renderer.sawBlinkingCell) changed = true
+    }
+    if (changed) this.needsRedraw = true
+  }
+
+  /**
+   * DEC mode 1004. A program that turned it on wants to know when it has the
+   * keyboard — editors use it to re-read a file that changed underneath them,
+   * and shells to redraw a prompt.
+   */
+  private reportFocus(focused: boolean) {
+    if (!this.mouseMode(MODE_FOCUS_REPORTING)) return
+    const seq = focused ? '\x1b[I' : '\x1b[O'
+    for (const h of this.onDataHandlers) h(seq)
   }
 
   private onFocus = () => {
@@ -352,6 +381,7 @@ export class GhosttyEngine implements TerminalEngine {
     // Coming back mid-blink would otherwise show a gap where the cursor is.
     this.cursorBlinkOn = true
     this.needsRedraw = true
+    this.reportFocus(true)
   }
 
   private onBlur = () => {
@@ -360,6 +390,7 @@ export class GhosttyEngine implements TerminalEngine {
     // A button released outside the window never reaches us, and a stuck
     // "still held" would keep reporting drags on the next hover.
     this.mouseButtonDown = null
+    this.reportFocus(false)
   }
 
   /**
@@ -746,7 +777,7 @@ export class GhosttyEngine implements TerminalEngine {
 
     // Only a focused pane blinks. A wall of panes all blinking out of phase is
     // noise, and it also means an idle background pane never wakes the loop.
-    this.cursorBlinkTimer = setInterval(this.toggleCursorBlink, CURSOR_BLINK_MS)
+    this.cursorBlinkTimer = setInterval(this.onBlinkTick, CURSOR_BLINK_MS)
 
     this.canvas.addEventListener('mousedown', (e) => {
       // Holding shift is the long-standing way to reach the terminal's own

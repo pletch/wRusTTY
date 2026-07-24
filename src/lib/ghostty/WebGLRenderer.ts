@@ -5,6 +5,7 @@ import {
   GLYPH_UNDERLINE,
   GLYPH_STRIKETHROUGH,
   GLYPH_WIDE,
+  GLYPH_CURSOR_OUTLINE,
   type GlyphRect,
 } from './GlyphAtlas'
 import {
@@ -17,6 +18,7 @@ import {
   CELL_STRIKETHROUGH,
   CELL_FAINT,
   CELL_INVISIBLE,
+  CELL_BLINK,
   type GhosttyWasm,
 } from './wasmBindings'
 
@@ -194,6 +196,14 @@ export class WebGLRenderer {
 
   /** Where to paint the cursor block, or null for none. */
   cursor: CursorState | null = null
+
+  /** The blink phase for cells carrying the blink attribute. */
+  blinkOn = true
+  /**
+   * Whether the last frame actually contained any. Lets the owner skip the
+   * repaint a blink tick would otherwise force on every pane forever.
+   */
+  sawBlinkingCell = false
 
   /**
    * Search hits to highlight, grouped by absolute row. Grouped rather than a
@@ -594,6 +604,7 @@ export class WebGLRenderer {
     // Hidden outright while scrolled back: the cursor belongs to the live
     // screen, and leaving it on history reads as an editable line up there.
     const cursor = this.cursor && viewportOffset === 0 ? this.cursor : null
+    this.sawBlinkingCell = false
 
     let outIdx = 0
 
@@ -795,13 +806,33 @@ export class WebGLRenderer {
             finalBgR = this.cursorR; finalBgG = this.cursorG; finalBgB = this.cursorB
             bgIsDefault = false
           } else if (!cursor.focused) {
-            // An unfocused pane keeps a steady, dimmed block: it still says
-            // where typing would land, without competing with the pane that
-            // actually has focus.
-            finalBgR = (finalBgR * 0.5 + this.cursorR * 0.5) | 0
-            finalBgG = (finalBgG * 0.5 + this.cursorG * 0.5) | 0
-            finalBgB = (finalBgB * 0.5 + this.cursorB * 0.5) | 0
-            bgIsDefault = false
+            // An unfocused pane outlines the cell instead of filling it: it
+            // still says where typing would land, without competing with the
+            // pane that actually has focus. Replacing the glyph rather than
+            // tinting the cell is what makes it read as an outline — and it
+            // costs no extra geometry, since the outline is a cached glyph.
+            // A cursor on a wide character outlines both its columns, so the
+            // outline is rasterized double-width and split like any wide glyph.
+            const spansTwo = cellWidth === 2 || cellWidth === 0
+            const rect = this.atlas.getGlyph(GLYPH_CURSOR_OUTLINE, spansTwo ? GLYPH_WIDE : 0)
+            const mid = (rect.u0 + rect.u1) / 2
+            v0 = rect.v0; v1 = rect.v1
+            u0 = cellWidth === 0 ? mid : rect.u0
+            u1 = cellWidth === 2 ? mid : rect.u1
+            finalFgR = this.cursorR; finalFgG = this.cursorG; finalFgB = this.cursorB
+          }
+        }
+
+        // Applied last, once every other rule has settled what this cell's
+        // colours are. Blink is the pane's own phase, not something the core
+        // tracks — it says which cells asked to blink and this decides when
+        // they are in their off half — and hiding the text by matching the
+        // final background is what keeps it right on a cell that is also
+        // inverse, selected, a search hit, or under the cursor.
+        if ((flags & CELL_BLINK) !== 0) {
+          this.sawBlinkingCell = true
+          if (!this.blinkOn) {
+            finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
           }
         }
 

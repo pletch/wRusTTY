@@ -27,6 +27,18 @@ export const GLYPH_STRIKETHROUGH = 1 << 3
 export const GLYPH_WIDE = 1 << 4
 export const GLYPH_STYLE_COUNT = 32
 
+/**
+ * The hollow rectangle an unfocused pane draws instead of a filled block. It is
+ * a glyph rather than geometry for the same reason the underline is: the
+ * renderer draws exactly one quad per cell, and a shape that fits inside a cell
+ * can just be part of what that cell samples.
+ *
+ * Given a codepoint no text will ever use, so it cannot collide with a real
+ * glyph in the cache. (A Unicode noncharacter — permanently unassigned.)
+ */
+export const GLYPH_CURSOR_OUTLINE = 0xfdd0
+const CURSOR_OUTLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_OUTLINE)
+
 export class GlyphAtlas {
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
@@ -169,7 +181,19 @@ export class GlyphAtlas {
 
     this.ctx.font = this.fontFor(style)
     this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
-    this.ctx.fillText(text, x, y + this.baseline)
+
+    if (text === CURSOR_OUTLINE_TEXT) {
+      // Drawn as four edges rather than a stroked rect so the line lands on
+      // whole pixels; a stroke straddles its path and comes out half-covered on
+      // both sides of it.
+      const t = this.lineThickness
+      this.ctx.fillRect(x, y, slotWidth, t)
+      this.ctx.fillRect(x, y + this.cellHeight - t, slotWidth, t)
+      this.ctx.fillRect(x, y, t, this.cellHeight)
+      this.ctx.fillRect(x + slotWidth - t, y, t, this.cellHeight)
+    } else {
+      this.ctx.fillText(text, x, y + this.baseline)
+    }
 
     if (style & GLYPH_UNDERLINE) {
       const uy = Math.min(this.cellHeight - this.lineThickness, this.baseline + this.lineThickness)
