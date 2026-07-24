@@ -27,12 +27,18 @@ import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url'
 const CURSOR_BLINK_MS = 530
 
 /**
- * Visibility is sampled every sixth frame, so this is roughly half a second of
- * being off screen before a pane gives its GL context back. Long enough that
- * flicking through tabs doesn't thrash contexts, short enough that a wall of
- * background tabs isn't holding them while you work.
+ * How many panes may hold a GL context at once.
+ *
+ * Browsers cap live WebGL contexts at around sixteen, so the ceiling is real,
+ * but it is only worth doing anything about once it is close. Below this, every
+ * pane keeps its context and switching tabs never rebuilds anything — which is
+ * the common case and should cost nothing. Above it, the least recently seen
+ * panes give theirs up.
  */
-const HIDDEN_POLLS_BEFORE_RELEASE = 5
+const CONTEXT_BUDGET = 8
+
+/** Rate-limits the shared pass below; it runs once per interval, not per pane. */
+const RECONCILE_INTERVAL_MS = 100
 
 /**
  * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
@@ -132,6 +138,7 @@ export class GhosttyEngine implements TerminalEngine {
   private lastScrollbackCount = 0
 
   constructor() {
+    GhosttyEngine.liveEngines.add(this)
     this.initWasm()
   }
 
@@ -230,8 +237,14 @@ export class GhosttyEngine implements TerminalEngine {
   private lastSeenW = -1
   private lastSeenH = -1
   private pollCounter = 0
-  private hiddenPolls = 0
   private restoreRequested = false
+
+  /** Every mounted pane, so the context budget can be shared across them. */
+  private static readonly liveEngines = new Set<GhosttyEngine>()
+  private static lastReconcileAt = 0
+  private visible = false
+  /** Ranks panes for the budget; a pane on screen now keeps bumping this. */
+  private lastVisibleAt = 0
 
   private getCoords(e: MouseEvent): {x: number, y: number} {
     if (!this.canvas || !this.renderer) return {x: 0, y: 0}
@@ -255,36 +268,67 @@ export class GhosttyEngine implements TerminalEngine {
     this.restoreRequested = false
   }
 
+  /** Records what this pane can see, then lets the shared pass decide. */
+  private noteVisibility(visible: boolean) {
+    this.visible = visible
+    if (visible) this.lastVisibleAt = performance.now()
+    GhosttyEngine.reconcileContexts()
+  }
+
   /**
-   * Matches the pane's GL context to whether it can actually be seen.
+   * Decides which panes hold a GL context.
    *
    * Browsers cap live WebGL contexts — around sixteen in Chromium — and past
-   * that they start taking them from whoever they like. Every tab here stays
-   * mounted and is merely hidden, so a dozen single-pane tabs reaches the cap
-   * on its own and panes you are looking at start going dark. Handing back the
-   * context of a pane nobody can see keeps the ceiling away from the ones that
-   * matter, and costs nothing but a rebuild on the way back: the terminal
-   * itself lives in WASM, not in the context.
+   * that they take them from whoever they like, quite possibly the pane being
+   * looked at. Every tab here stays mounted and merely hidden, so panes
+   * accumulate whether or not they are on screen.
    *
-   * The delay before releasing is because a pane measures 0x0 for the first
-   * frames after mount and while a split is being dragged; releasing on the
-   * first zero would mean tearing a context down and building it straight back.
+   * Below the budget nothing is given up at all: a handful of tabs is the
+   * normal case, and making it rebuild a context on every tab switch buys
+   * nothing but a flash. Only once there are more panes than the budget do the
+   * least recently seen ones hand theirs back, and a pane that is on screen
+   * never does — a visible pane going dark is the thing this exists to prevent.
+   *
+   * Ordering by when a pane was last visible rather than by whether it is
+   * visible right now is also what makes this stable: a pane measures zero for
+   * the first frames after mount and while a split is dragged, and a recency
+   * ranking rides straight over that where a strict hidden/visible rule would
+   * tear the context down and build it back.
    */
-  private reconcileContext(visible: boolean) {
-    if (!this.renderer) return
-    if (visible) {
-      this.hiddenPolls = 0
-      // Also covers a context the browser took by itself: whatever the reason
-      // a visible pane is without one, asking for it back is the answer.
-      if (this.renderer.isContextLost && !this.restoreRequested) {
-        this.restoreRequested = true
-        this.renderer.restoreContext()
-      }
-      return
+  private static reconcileContexts() {
+    const now = performance.now()
+    if (now - GhosttyEngine.lastReconcileAt < RECONCILE_INTERVAL_MS) return
+    GhosttyEngine.lastReconcileAt = now
+
+    const engines = [...GhosttyEngine.liveEngines]
+    if (engines.length > CONTEXT_BUDGET) {
+      engines.sort((a, b) => b.lastVisibleAt - a.lastVisibleAt)
     }
+    for (let i = 0; i < engines.length; i++) {
+      const e = engines[i]
+      if (engines.length <= CONTEXT_BUDGET || i < CONTEXT_BUDGET || e.visible) {
+        e.ensureContext()
+      } else {
+        e.dropContext()
+      }
+    }
+  }
+
+  /**
+   * Reclaims a context. Also covers one the browser took by itself: whatever
+   * the reason a pane that should have a context doesn't, asking for it back is
+   * the answer.
+   */
+  private ensureContext() {
+    if (!this.renderer || !this.renderer.isContextLost || this.restoreRequested) return
+    this.restoreRequested = true
+    this.renderer.restoreContext()
+  }
+
+  private dropContext() {
+    if (!this.renderer || this.renderer.isContextLost) return
     this.restoreRequested = false
-    if (this.renderer.isContextLost) return
-    if (++this.hiddenPolls >= HIDDEN_POLLS_BEFORE_RELEASE) this.renderer.releaseContext()
+    this.renderer.releaseContext()
   }
 
   private toggleCursorBlink = () => {
@@ -562,7 +606,7 @@ export class GhosttyEngine implements TerminalEngine {
         this.lastSeenH = h
         this.fit()
       }
-      this.reconcileContext(w > 0 && h > 0)
+      this.noteVisibility(w > 0 && h > 0)
     }
 
     // A pane with no context has nowhere to draw, and the snapshot work below
@@ -733,6 +777,11 @@ export class GhosttyEngine implements TerminalEngine {
 
   dispose(): void {
     this.disposed = true
+    GhosttyEngine.liveEngines.delete(this)
+    // Closing a pane frees a context, which may put someone else back under
+    // the budget — without this they would wait for their own next poll.
+    GhosttyEngine.lastReconcileAt = 0
+    GhosttyEngine.reconcileContexts()
     this.unmount()
     this.onDataHandlers.clear()
     this.onResizeHandlers.clear()
