@@ -1,8 +1,10 @@
 /**
- * Typed bindings to libghostty-vt's WASM build, as shipped by the
- * `ghostty-web` package (pinned exactly in package.json — the binary is
- * resolved from node_modules rather than vendored, so the version in the
- * lockfile is the version that runs).
+ * Typed bindings to libghostty-vt's WASM build. The binary itself is a
+ * locally-built one vendored at `./vendor/ghostty-vt.wasm` rather than
+ * resolved from node_modules — see that directory's README for why and how
+ * to rebuild it. The export surface (this file) still matches the
+ * `ghostty-web` package pinned in package.json byte-for-byte; only the
+ * implementation behind a handful of exports differs.
  *
  * This replaced a hand-built binary with a bespoke 23-export wrapper. That
  * build predated upstream's "clear scrolled row cells" fix, so a row scrolled

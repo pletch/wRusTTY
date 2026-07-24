@@ -20,9 +20,11 @@ import {
   CELL_BYTES,
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
-// Resolved from the pinned `ghostty-web` dependency rather than a binary
-// copied into public/ — the version that runs is the one in the lockfile.
-import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url'
+// A locally-built binary, not the one `ghostty-web` publishes: it layers three
+// unmerged upstream PRs (coder/ghostty-web#142, #176, #177) onto the commit
+// package.json pins, none of which had shipped in any release at build time.
+// See vendor/README.md for what each fixes and how to rebuild or revert.
+import ghosttyWasmUrl from './vendor/ghostty-vt.wasm?url'
 
 /** xterm's blink period, so the two engines don't visibly differ. */
 const CURSOR_BLINK_MS = 530
@@ -996,6 +998,13 @@ export class GhosttyEngine implements TerminalEngine {
     GhosttyEngine.lastReconcileAt = 0
     GhosttyEngine.reconcileContexts()
     this.unmount()
+    // Every pane is its own WASM instance; leaving this unfreed leaked the
+    // core's page memory for the terminal's whole scrollback budget on every
+    // closed pane.
+    if (this.wasm && this.termPtr) {
+      this.wasm.exports.ghostty_terminal_free(this.termPtr)
+      this.termPtr = 0
+    }
     this.onDataHandlers.clear()
     this.onResizeHandlers.clear()
     this.onScrollHandlers.clear()
