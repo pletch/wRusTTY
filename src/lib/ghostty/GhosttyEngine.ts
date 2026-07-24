@@ -40,6 +40,10 @@ const CONTEXT_BUDGET = 8
 /** Rate-limits the shared pass below; it runs once per interval, not per pane. */
 const RECONCILE_INTERVAL_MS = 100
 
+/** Autoscroll cadence while a selection is dragged past the edge of a pane. */
+const DRAG_SCROLL_INTERVAL_MS = 50
+const DRAG_SCROLL_MAX_LINES = 8
+
 /**
  * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
  * — the name reads like xterm's `scrollback` and it is not. Passing the app's
@@ -110,6 +114,12 @@ export class GhosttyEngine implements TerminalEngine {
   
   private isSelecting = false
   private selectionStart: {x: number, y: number} | null = null
+  /** Where the current selection was begun, so shift-click can extend from it. */
+  private selectionAnchor: {x: number, y: number} | null = null
+  private selectionRectangular = false
+  private dragScrollTimer: ReturnType<typeof setInterval> | null = null
+  private dragScrollLines = 0
+  private dragScrollAt: { clientX: number; clientY: number } | null = null
   private onSelectionChangeHandlers = new Set<() => void>()
   private oscScannerBuffer = ''
   private scanDecoder = new TextDecoder()
@@ -516,11 +526,66 @@ export class GhosttyEngine implements TerminalEngine {
     this.applySelection({ x: 0, y: pos.y }, { x: this._cols - 1, y: pos.y })
   }
 
+  /**
+   * Drives scrolling while a selection is dragged past the top or bottom of the
+   * pane. Without it a selection can only ever cover what was already on
+   * screen, since there is no way to reach the rest — the drag has nowhere left
+   * to go once the pointer leaves the canvas.
+   *
+   * The pointer stops moving once it is outside, so the scrolling cannot be
+   * driven by mousemove; it runs on a timer for as long as the pointer stays
+   * out, and the selection end is recomputed from the last known position each
+   * tick so the highlight follows the rows coming into view.
+   */
+  private updateDragScroll(e: MouseEvent) {
+    if (!this.canvas) return
+    const rect = this.canvas.getBoundingClientRect()
+    const above = rect.top - e.clientY
+    const below = e.clientY - rect.bottom
+    const out = above > 0 ? -above : below > 0 ? below : 0
+    if (out === 0) {
+      this.stopDragScroll()
+      return
+    }
+    // Further out scrolls faster, which is what makes reaching for something a
+    // long way back feel like one gesture rather than a wait.
+    this.dragScrollLines = Math.sign(out) * Math.min(DRAG_SCROLL_MAX_LINES, 1 + Math.floor(Math.abs(out) / 24))
+    this.dragScrollAt = { clientX: e.clientX, clientY: e.clientY }
+    if (this.dragScrollTimer === null) {
+      this.dragScrollTimer = setInterval(this.stepDragScroll, DRAG_SCROLL_INTERVAL_MS)
+    }
+  }
+
+  private stepDragScroll = () => {
+    if (!this.isSelecting || !this.selectionStart || !this.renderer || !this.dragScrollAt) {
+      this.stopDragScroll()
+      return
+    }
+    // Negative is upward: scrollLines takes the direction the *content* moves.
+    this.scrollLines(-this.dragScrollLines)
+    this.renderer.selection = {
+      start: this.selectionStart,
+      end: this.getCoords(this.dragScrollAt as MouseEvent),
+      rectangular: this.selectionRectangular,
+    }
+    this.needsRedraw = true
+  }
+
+  private stopDragScroll() {
+    if (this.dragScrollTimer === null) return
+    clearInterval(this.dragScrollTimer)
+    this.dragScrollTimer = null
+    this.dragScrollAt = null
+  }
+
   private applySelection(start: { x: number; y: number }, end: { x: number; y: number }) {
     if (!this.renderer) return
     this.renderer.selection = { start, end }
     // Left dangling, a later drag would extend from wherever the last one began.
     this.selectionStart = null
+    // A shift-click after picking a word extends from that word's start.
+    this.selectionAnchor = start
+    this.selectionRectangular = false
     this.isSelecting = false
     this.needsRedraw = true
     for (const h of this.onSelectionChangeHandlers) h()
@@ -584,6 +649,7 @@ export class GhosttyEngine implements TerminalEngine {
     }
     if (this.isSelecting) {
       this.isSelecting = false
+      this.stopDragScroll()
       for (const h of this.onSelectionChangeHandlers) h()
     }
   }
@@ -707,8 +773,25 @@ export class GhosttyEngine implements TerminalEngine {
         this.selectLineAt(this.getCoords(e))
         return
       }
+      // Shift extends the existing selection from its anchor rather than
+      // starting a new one — the same gesture every text surface uses.
+      if (e.shiftKey && this.renderer?.selection && this.selectionAnchor) {
+        this.isSelecting = true
+        this.renderer.selection = {
+          start: this.selectionAnchor,
+          end: this.getCoords(e),
+          rectangular: e.altKey,
+        }
+        this.needsRedraw = true
+        for (const h of this.onSelectionChangeHandlers) h()
+        return
+      }
       this.isSelecting = true
       this.selectionStart = this.getCoords(e)
+      this.selectionAnchor = this.selectionStart
+      // Alt is the usual modifier for a column selection — pulling one field
+      // out of tabular output without the rest of each line.
+      this.selectionRectangular = e.altKey
       if (this.renderer) {
         this.renderer.selection = null
         this.needsRedraw = true
@@ -738,8 +821,13 @@ export class GhosttyEngine implements TerminalEngine {
         return
       }
       if (this.isSelecting && this.renderer && this.selectionStart) {
-        this.renderer.selection = { start: this.selectionStart, end: this.getCoords(e) }
+        this.renderer.selection = {
+          start: this.selectionStart,
+          end: this.getCoords(e),
+          rectangular: this.selectionRectangular,
+        }
         this.needsRedraw = true
+        this.updateDragScroll(e)
       }
     })
 
@@ -770,6 +858,7 @@ export class GhosttyEngine implements TerminalEngine {
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
     window.removeEventListener('mouseup', this.onMouseUp)
+    this.stopDragScroll()
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)
       this.cursorBlinkTimer = null
@@ -1272,6 +1361,7 @@ export class GhosttyEngine implements TerminalEngine {
     if (!this.renderer || !this.renderer.selection) return
     this.renderer.selection = null
     this.selectionStart = null
+    this.selectionAnchor = null
     this.needsRedraw = true
     for (const h of this.onSelectionChangeHandlers) h()
   }
@@ -1285,17 +1375,23 @@ export class GhosttyEngine implements TerminalEngine {
       const temp = selStart; selStart = selEnd; selEnd = temp
     }
 
+    const rectangular = this.renderer.selection.rectangular === true
+    const rectFrom = Math.min(selStart.x, selEnd.x)
+    const rectTo = Math.max(selStart.x, selEnd.x)
+
     const rows = this.readRows(selStart.y, selEnd.y)
     const parts: string[] = []
     for (let i = 0; i < rows.length; i++) {
       const abs = selStart.y + i
-      const from = abs === selStart.y ? selStart.x : 0
-      const to = abs === selEnd.y ? selEnd.x : this._cols - 1
+      const from = rectangular ? rectFrom : abs === selStart.y ? selStart.x : 0
+      const to = rectangular ? rectTo : abs === selEnd.y ? selEnd.x : this._cols - 1
       const text = rows[i].slice(from, to + 1).join('')
-      // Trailing blanks are padding the grid, not content — but the last row
-      // keeps them, since a selection that ends mid-run of spaces selected them
-      // on purpose.
-      parts.push(abs === selEnd.y ? text : text.replace(/\s+$/, ''))
+      // Trailing blanks are padding the grid, not content — but the last row of
+      // a line-wise selection keeps them, since one that ends mid-run of spaces
+      // selected them on purpose. A column selection has no such row: every one
+      // of them ends at the same arbitrary column.
+      const keepTrailing = !rectangular && abs === selEnd.y
+      parts.push(keepTrailing ? text : text.replace(/\s+$/, ''))
     }
     return parts.join('\n')
   }

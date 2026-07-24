@@ -109,6 +109,12 @@ export interface SelectionRange {
   /** Absolute buffer coordinates — row counts from the top of scrollback. */
   start: { x: number; y: number }
   end: { x: number; y: number }
+  /**
+   * Column-wise rather than line-wise: every row takes the same column span
+   * instead of running to the end of the line and wrapping. Pulls one field out
+   * of tabular output without the rest of each row.
+   */
+  rectangular?: boolean
 }
 
 export interface SearchHighlight {
@@ -744,8 +750,18 @@ export class WebGLRenderer {
 
         let isSelected = false
         if (selStart && selEnd && absRow >= selStart.y && absRow <= selEnd.y) {
-          const from = absRow === selStart.y ? selStart.x : 0
-          const to = absRow === selEnd.y ? selEnd.x : cols - 1
+          let from: number
+          let to: number
+          if (this.selection?.rectangular) {
+            // Every row takes the same span, and the drag may have gone right
+            // to left, so the columns are ordered here rather than by the
+            // row-ordering swap above.
+            from = Math.min(selStart.x, selEnd.x)
+            to = Math.max(selStart.x, selEnd.x)
+          } else {
+            from = absRow === selStart.y ? selStart.x : 0
+            to = absRow === selEnd.y ? selEnd.x : cols - 1
+          }
           isSelected = c >= from && c <= to
         }
 
