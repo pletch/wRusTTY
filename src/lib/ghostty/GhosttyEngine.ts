@@ -142,6 +142,16 @@ export class GhosttyEngine implements TerminalEngine {
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
   private lastIsAlternate = false
 
+  /**
+   * Why the engine never started, or null while it still might. Retained (not
+   * just dispatched) so a handler registered after the failure still hears
+   * about it: `initWasm` is kicked off by the constructor, so nothing can
+   * subscribe before it begins, and a silent engine is exactly the failure
+   * mode this exists to make visible.
+   */
+  private initError: string | null = null
+  private onInitErrorHandlers = new Set<(message: string) => void>()
+
   private onSearchResultHandlers = new Set<(result: SearchResult) => void>()
   private searchMatches: { row: number; from: number; to: number }[] = []
   private searchIndex = -1
@@ -180,7 +190,7 @@ export class GhosttyEngine implements TerminalEngine {
         ...this.themeConfigColors(),
       })
       if (this.termPtr === 0) {
-        console.error('Failed to create Ghostty terminal')
+        this.failInit('Ghostty could not allocate a terminal.')
         return
       }
 
@@ -196,8 +206,30 @@ export class GhosttyEngine implements TerminalEngine {
         this.setupRenderer()
       }
     } catch (e) {
-      console.error("Failed to initialize Ghostty WASM:", e)
+      this.failInit(`Ghostty's WASM core failed to load: ${e}`)
     }
+  }
+
+  /**
+   * Record why the engine is dead and tell anyone listening. Without this the
+   * pane just stays blank: every method below no-ops on a null `wasm`, so a
+   * failed init is indistinguishable from a terminal with nothing on it yet.
+   */
+  private failInit(message: string) {
+    this.initError = message
+    console.error(message)
+    for (const cb of this.onInitErrorHandlers) cb(message)
+  }
+
+  /**
+   * Fires if the engine can't start. Fires immediately on registration when it
+   * already has — see `initError`. Not part of `TerminalEngine` as a required
+   * member: xterm has no comparable asynchronous startup to fail at.
+   */
+  onInitError(cb: (message: string) => void): IDisposable {
+    this.onInitErrorHandlers.add(cb)
+    if (this.initError !== null) cb(this.initError)
+    return { dispose: () => this.onInitErrorHandlers.delete(cb) }
   }
 
   private setupRenderer() {

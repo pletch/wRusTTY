@@ -15,6 +15,7 @@ import {
   Unplug,
 } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
+import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
@@ -29,6 +30,20 @@ import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 
 /** Matches .term-scrollbar-inner's width in index.css. */
 const SCROLLBAR_WIDTH = 8
+
+/**
+ * Push a dead-engine report into the Rust-side log, which in a release build
+ * is the only place it can land: the webview console isn't inspectable on a
+ * user's machine, so a `console.error` there is the same as saying nothing.
+ * See the log-plugin registration in src-tauri/src/lib.rs.
+ *
+ * Best-effort by design. `npm run dev` serves this in a plain browser with no
+ * Tauri backend to invoke, and a failed report about a failure should never
+ * become an unhandled rejection on top of the failure itself.
+ */
+function reportEngineFailure(engine: string, message: string) {
+  void logError(`terminal engine '${engine}' failed to start: ${message}`).catch(() => {})
+}
 
 interface Props {
   source: ConnectionSource
@@ -130,6 +145,12 @@ export function Terminal({
   // leaving a dead terminal (or auto-closing, which App does when the setting
   // is on). Reset to false on every remount, i.e. every reconnect.
   const [disconnected, setDisconnected] = useState(false)
+  // The rendering engine itself never came up, so this pane will stay blank no
+  // matter what the connection does. Deliberately distinct from the connection
+  // failures above rather than folded into them: the session underneath may be
+  // perfectly healthy, and reconnecting — the one remedy those overlays offer —
+  // fixes nothing here.
+  const [engineFailed, setEngineFailed] = useState<string | null>(null)
 
   // Settings can change without reconnecting the session, so they're read
   // through a ref rather than added to the effect's dependency array.
@@ -357,7 +378,15 @@ export function Terminal({
       if (disposed) return
       setSearchResults({ index: result.index, count: result.count })
     })
-    
+
+    // Engines that can fail to start say so here (see TerminalEngine.
+    // onInitError); ones that can't don't implement it.
+    const initErrorListener = term.onInitError?.((message) => {
+      reportEngineFailure(engine, message)
+      if (disposed) return
+      setEngineFailed(message)
+    })
+
     term.mount(container)
     term.fit()
 
@@ -932,6 +961,7 @@ export function Terminal({
       scrollListener.dispose()
       writeParsedListener.dispose()
       searchResultsListener.dispose()
+      initErrorListener?.dispose()
       bellListener.dispose()
       bufferListener.dispose()
       for (const listener of oscListeners) listener.dispose()
@@ -1030,6 +1060,26 @@ export function Terminal({
           <Unplug size={20} className="text-white/40" />
           <p className="max-w-xs text-white/70">Connection closed.</p>
           {disconnectActions}
+        </div>
+      )}
+      {engineFailed && (
+        // Last of the state overlays deliberately, so plain DOM order paints
+        // it over the connecting/failed/disconnected ones (see the z-index
+        // note by the scrollbar above — these divs rank by document order, not
+        // z-index). If the renderer never started, none of what those three
+        // report is actionable and this is the only true thing on screen.
+        //
+        // Worth having at all because Ghostty is the default for new panes:
+        // when its WASM core can't load, every method on the engine no-ops and
+        // the pane is simply, silently blank — which reads as "the app is
+        // broken" rather than as one component failing. There is no in-app
+        // engine switch to point at, so this says what happened and where the
+        // detail is, and stops short of implying a fix that doesn't exist.
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-fast">
+          <AlertTriangle size={20} className="text-red-400" />
+          <p className="max-w-xs text-white/70">This pane's terminal renderer failed to start.</p>
+          <p className="max-w-xs text-white/40">{engineFailed}</p>
+          <p className="max-w-xs text-white/40">Details are in the application log.</p>
         </div>
       )}
       {searchOpen && (

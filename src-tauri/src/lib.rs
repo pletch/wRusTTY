@@ -101,13 +101,33 @@ pub fn run() {
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());
             vault::migrate_os_unlock_key();
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // Registered in release builds too, not just debug. A release-only
+            // fault has nowhere else to surface: the webview's console is not
+            // watchable on a user's machine, so anything the frontend catches
+            // and logs — a terminal engine that fails to start, say — simply
+            // vanished, and the app just looked broken. The frontend routes
+            // those through this plugin (see reportEngineFailure in
+            // components/Terminal.tsx), which lands them in
+            // %LOCALAPPDATA%/sh.wrustty.app/logs alongside our own.
+            //
+            // Levels differ by profile rather than the whole plugin: in debug
+            // the dependency chatter is worth having, but in release it is
+            // both noise and a disclosure risk (russh and wry narrate
+            // connection-shaped detail at info/debug into a file we would then
+            // be writing to disk unprompted), so third-party crates are capped
+            // at warn there and only our own targets stay at info.
+            let log_builder = if cfg!(debug_assertions) {
+                tauri_plugin_log::Builder::default().level(log::LevelFilter::Info)
+            } else {
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Warn)
+                    .level_for("wrustty_lib", log::LevelFilter::Info)
+                    // Frontend records arrive as target `webview:<location>`;
+                    // fern matches per-target filters by prefix, so this one
+                    // covers every location.
+                    .level_for(tauri_plugin_log::WEBVIEW_TARGET, log::LevelFilter::Info)
+            };
+            app.handle().plugin(log_builder.build())?;
             session_lock::register(app.handle());
             Ok(())
         })

@@ -59,6 +59,16 @@ export interface TerminalEngine {
    */
   resetInputContext?(): void
 
+  /**
+   * Report that the engine failed to start and will never draw anything.
+   * Optional — only engines with asynchronous startup that can fail
+   * (Ghostty, whose core is a WASM module fetched and compiled at
+   * construction) implement it; xterm is ready the moment it is constructed.
+   * Callers must treat its absence as "cannot fail this way", not as "cannot
+   * fail".
+   */
+  onInitError?(cb: (message: string) => void): IDisposable
+
   // Search Addon related
   search(query: string, options?: SearchOptions): void
   clearSearchDecorations(): void
