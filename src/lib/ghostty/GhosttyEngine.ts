@@ -3,6 +3,7 @@ import type { SearchHighlight } from './WebGLRenderer'
 import type { IDisposable } from '@xterm/xterm'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
 import { scanOsc } from './oscScanner'
+import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
 import {
   compileGhosttyWasm,
@@ -1131,7 +1132,8 @@ export class GhosttyEngine implements TerminalEngine {
       this.writeBuffer.push(seg.slice())
       return
     }
-    writeBytes(this.wasm, this.termPtr, seg)
+    const wasm = this.wasm
+    phases.time('parse', () => writeBytes(wasm, this.termPtr, seg))
   }
 
   /** Fires onBufferChange if the screen buffer flipped since it was last read.
@@ -1166,7 +1168,13 @@ export class GhosttyEngine implements TerminalEngine {
    * payloads, which are short, are decoded now.
    */
   private parseAndDispatch(bytes: Uint8Array): void {
-    const { events, pending } = scanOsc(bytes, this.oscPending, this.oscDecoder)
+    // Timed apart from the parse it feeds: this is a full JS pass over every
+    // byte, taken only because a handler is registered, and the harness — which
+    // registers none — never pays it. That asymmetry is the first suspect for
+    // the harness/production throughput gap.
+    const { events, pending } = phases.time('scan', () =>
+      scanOsc(bytes, this.oscPending, this.oscDecoder),
+    )
     this.oscPending = pending
 
     let cursor = 0 // how much of `bytes` has reached the parser
@@ -1177,19 +1185,23 @@ export class GhosttyEngine implements TerminalEngine {
       }
       // Screen state has to be current before a handler runs — the whole point
       // of splitting the parse here.
-      this.notifyBufferChange()
+      phases.time('bufferChange', () => this.notifyBufferChange())
       if (ev.kind === 'bell') {
-        for (const h of this.onBellHandlers) h()
+        phases.time('handlers', () => {
+          for (const h of this.onBellHandlers) h()
+        })
         continue
       }
       const handlers = this.oscHandlers.get(ev.ident)
       if (!handlers) continue
-      for (const h of handlers) {
-        // A handler claiming the sequence stops the others for this ident. It
-        // cannot stop the core, which parses the bytes regardless — see
-        // registerOscHandler.
-        if (h(ev.payload) === true) break
-      }
+      phases.time('handlers', () => {
+        for (const h of handlers) {
+          // A handler claiming the sequence stops the others for this ident. It
+          // cannot stop the core, which parses the bytes regardless — see
+          // registerOscHandler.
+          if (h(ev.payload) === true) break
+        }
+      })
     }
 
     if (cursor < bytes.length) this.parseSegment(bytes.subarray(cursor))
@@ -1215,6 +1227,10 @@ export class GhosttyEngine implements TerminalEngine {
     // and lets a single byte-level scanner serve both without a second pending
     // buffer for the string case.
     const bytes = typeof data === 'string' ? this.oscEncoder.encode(data) : data
+    // Whole-write span, so the phases below can be stated as shares of it and
+    // anything they fail to account for shows up as unattributed rather than
+    // silently vanishing.
+    const startedAt = phases.now()
 
     // The core can refuse to allocate anywhere in here. Caught rather than
     // propagated because the caller is a PTY data callback with nowhere to put
@@ -1230,17 +1246,21 @@ export class GhosttyEngine implements TerminalEngine {
       // Drained here rather than on the frame: a reply is only correct for the
       // state that provoked it, and a cursor-position report that waits for the
       // next repaint can describe a cursor that has already moved on.
-      this.drainResponses()
+      phases.time('drain', () => this.drainResponses())
     } catch (e) {
       this.failFatal(e)
+      phases.recordWrite(bytes.length, phases.now() - startedAt)
       return
     }
     // Checked on the write that could have caused it rather than per frame:
     // switching screens is a parse-time event, and an idle pane shouldn't be
     // asking the core about it sixty times a second. parseAndDispatch already
     // checks between segments; this catches a change in the trailing one.
-    this.notifyBufferChange()
-    for (const h of this.onWriteParsedHandlers) h()
+    phases.time('bufferChange', () => this.notifyBufferChange())
+    phases.time('handlers', () => {
+      for (const h of this.onWriteParsedHandlers) h()
+    })
+    phases.recordWrite(bytes.length, phases.now() - startedAt)
   }
 
   writeln(data: string): void {

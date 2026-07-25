@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import * as writePhases from './writePhases'
 
 /**
  * Receive-side instrumentation for the real PTY delivery path.
@@ -494,7 +495,10 @@ export async function report(): Promise<string> {
     // Browser/dev-server context with no Tauri backend — the frontend half is
     // still worth having on its own.
   }
-  const text = formatReport(snapshot(), back)
+  // The phase breakdown is a strict subdivision of this report's `engine`
+  // line, so the two belong in one output rather than two calls that could be
+  // taken from different runs.
+  const text = `${formatReport(snapshot(), back)}\n${writePhases.formatReport()}`
   console.log(text)
   return text
 }
@@ -504,6 +508,7 @@ export function install(): void {
   ;(globalThis as Record<string, unknown>).__wrusttyDelivery = {
     start: async () => {
       start()
+      writePhases.start()
       try {
         await resetBackendStats()
       } catch {
@@ -511,9 +516,16 @@ export function install(): void {
       }
       return 'recording — reproduce the flood, then call __wrusttyDelivery.report()'
     },
-    stop,
-    reset,
+    stop: () => {
+      stop()
+      writePhases.stop()
+    },
+    reset: () => {
+      reset()
+      writePhases.reset()
+    },
     snapshot,
+    phases: writePhases.snapshot,
     backendStats,
     report,
   }
