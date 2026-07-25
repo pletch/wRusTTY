@@ -111,6 +111,18 @@ function describeCommandResult(result: CommandResult, tabTitle: string): string 
   return `${what} exited ${result.exitCode} after ${took} — ${tabTitle}`
 }
 
+/** Every dialog/prompt/palette App.tsx can show, as one value instead of
+ * five independently-toggled booleans/nullables — see the `modal` state
+ * below for why. */
+type Modal =
+  | { kind: 'none' }
+  | { kind: 'palette' }
+  | { kind: 'confirmClosePane'; tabId: string; paneId: string }
+  | { kind: 'confirmCloseTab'; tabId: string; count: number }
+  | { kind: 'confirmCloseWindow'; count: number }
+  | { kind: 'restorePrompt'; snapshot: SessionSnapshot }
+  | { kind: 'workspacePrompt'; workspace: Workspace; originTabId: string | null }
+
 function App() {
   // Temporary switch for Phase 2 go/no-go milestone test
 
@@ -179,7 +191,6 @@ function App() {
     return () => window.removeEventListener('focus', clear)
   }, [focusedPaneId])
   const [profilesVersion, setProfilesVersion] = useState(0)
-  const [paletteOpen, setPaletteOpen] = useState(false)
   // Kept fresh here (rather than fetched lazily wherever it's needed) since
   // it now backs both the quick-connect palette and the saved-sessions
   // sidebar inside every blank pane's connect dialog.
@@ -221,27 +232,35 @@ function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
-  // A previous run's session snapshot, awaiting Restore/Discard — set once
-  // at startup (see the mount effect below) and cleared either way. Nothing
-  // writes a fresh snapshot until this is resolved, so an unanswered prompt
-  // can't have its own answer overwritten by the still-default blank tab
-  // underneath it.
-  const [pendingRestore, setPendingRestore] = useState<SessionSnapshot | null>(null)
-  /** A close held back pending confirmation, because it would drop live
-   * connections — see ConfirmDialog at the bottom of the render. */
-  const [pendingClose, setPendingClose] = useState<
-    | { kind: 'tab'; tabId: string; count: number }
-    | { kind: 'pane'; tabId: string; paneId: string }
-    | { kind: 'window'; count: number }
-    | null
-  >(null)
-  /** A workspace waiting on a vault unlock before its tabs are materialised,
-   * with the tab it was launched from so that survives the prompt. */
-  const [pendingWorkspace, setPendingWorkspace] = useState<{
-    workspace: Workspace
-    originTabId: string | null
-  } | null>(null)
-  const [restoreDecided, setRestoreDecided] = useState(false)
+  // The quick-connect palette, a close confirmation, the launch-restore
+  // prompt and the open-workspace-needs-vault prompt used to be five
+  // separately-updated pieces of state (paletteOpen, pendingRestore,
+  // pendingClose, pendingWorkspace, restoreDecided) — nothing stopped two
+  // of them from being true at once, which is a real class of bug in an app
+  // with this many prompts. One value that can only ever be one thing at a
+  // time makes "two dialogs open simultaneously" unrepresentable instead of
+  // just unlikely.
+  //
+  // The restore-prompt decision itself used to run in a post-mount effect;
+  // it's a lazy initializer here instead; sessionSnapshot.loadSnapshot() is
+  // synchronous and local, same as terminalSettings just above, so there's
+  // nothing to wait for the DOM to exist for. That's also what lets
+  // `restoreDecided` disappear entirely below — the very first render
+  // already reflects the decision, rather than needing a moment before an
+  // effect resolves it.
+  const [modal, setModal] = useState<Modal>(() => {
+    if (!terminalSettings.restoreSessionsOnLaunch) return { kind: 'none' }
+    const snapshot = sessionSnapshot.loadSnapshot()
+    if (snapshot && sessionSnapshot.countSessions(snapshot.tabs) > 0) {
+      return { kind: 'restorePrompt', snapshot }
+    }
+    return { kind: 'none' }
+  })
+  const closeModal = () => setModal({ kind: 'none' })
+  // Derived, not stored: true from the first render onward once there was
+  // never a restore prompt to begin with, and forever after the one time
+  // the modal actually does leave 'restorePrompt'.
+  const restoreDecided = modal.kind !== 'restorePrompt'
   // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
   // by pane id, and portaled into whichever "slot" div currently represents
   // its position (see Pane.tsx). Dragging a connection between tabs/splits
@@ -380,7 +399,7 @@ function App() {
       const { connected, enabled } = closeGuardRef.current
       if (!enabled || connected === 0) return
       event.preventDefault()
-      setPendingClose({ kind: 'window', count: connected })
+      setModal({ kind: 'confirmCloseWindow', count: connected })
     })
     return () => {
       unlisten.then((f) => f()).catch(() => {})
@@ -441,26 +460,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Runs once at startup, before anything has a chance to overwrite last
-  // run's snapshot: if the setting is on and a snapshot with at least one
-  // restorable session exists, hold off on deciding anything (leaves the
-  // default blank tab showing underneath the prompt) until the user answers
-  // it. Otherwise there's nothing to ask about — mark it decided immediately
-  // so the persist-on-change effect below is free to start writing.
-  useEffect(() => {
-    if (!terminalSettings.restoreSessionsOnLaunch) {
-      setRestoreDecided(true)
-      return
-    }
-    const snapshot = sessionSnapshot.loadSnapshot()
-    if (snapshot && sessionSnapshot.countSessions(snapshot.tabs) > 0) {
-      setPendingRestore(snapshot)
-    } else {
-      setRestoreDecided(true)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   // Keeps the on-disk snapshot current as tabs/panes change, rather than
   // only writing it on a clean exit — a crash or force-quit shouldn't lose
   // it either. Gated on restoreDecided so this can't fire (and overwrite
@@ -487,18 +486,16 @@ function App() {
       tabs: refreshTabs(snapshot.tabs, sessions, vaultUsable),
       activeTabId: snapshot.activeTabId,
     })
-    setPendingRestore(null)
-    setRestoreDecided(true)
+    closeModal()
   }
 
   function discardRestore() {
     sessionSnapshot.clearSnapshot()
-    setPendingRestore(null)
-    setRestoreDecided(true)
+    closeModal()
   }
 
   function restoreSessions() {
-    if (pendingRestore) applyRestore(pendingRestore, vaultStatus === 'unlocked')
+    if (modal.kind === 'restorePrompt') applyRestore(modal.snapshot, vaultStatus === 'unlocked')
   }
 
   /** What a vault unlock was for — the launch-restore prompt, the
@@ -519,7 +516,7 @@ function App() {
         return
       case 'openWorkspace':
         materializeWorkspace(action.workspace, true, action.originTabId)
-        setPendingWorkspace(null)
+        closeModal()
         return
       case 'connectProfile': {
         // Checked fresh against the Rust side rather than trusting
@@ -575,7 +572,7 @@ function App() {
     const tab = tabs.find((t) => t.id === id)
     const count = tab ? connectedPanes(tab.root) : 0
     if (count > 0 && terminalSettings.confirmCloseWithConnection) {
-      setPendingClose({ kind: 'tab', tabId: id, count })
+      setModal({ kind: 'confirmCloseTab', tabId: id, count })
       return
     }
     closeTabNow(id)
@@ -693,17 +690,17 @@ function App() {
     if (sessionSnapshot.needsVaultUnlock(workspace.tabs, sessions) && vaultStatus === 'locked') {
       // The origin has to survive the prompt, or unlocking would materialise
       // the workspace next to the blank tab instead of over it.
-      setPendingWorkspace({ workspace, originTabId: originTabId ?? activeTabId })
+      setModal({ kind: 'workspacePrompt', workspace, originTabId: originTabId ?? activeTabId })
       return
     }
     materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
   }
 
   function openPendingWorkspace() {
-    if (!pendingWorkspace) return
-    const { workspace, originTabId } = pendingWorkspace
+    if (modal.kind !== 'workspacePrompt') return
+    const { workspace, originTabId } = modal
     materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
-    setPendingWorkspace(null)
+    closeModal()
   }
 
   function connectPane(
@@ -777,7 +774,7 @@ function App() {
 
   function closePane(tabId: string, paneId: string) {
     if (statusByPane[paneId] === 'connected' && terminalSettings.confirmCloseWithConnection) {
-      setPendingClose({ kind: 'pane', tabId, paneId })
+      setModal({ kind: 'confirmClosePane', tabId, paneId })
       return
     }
     closePaneNow(tabId, paneId)
@@ -985,7 +982,7 @@ function App() {
   }
 
   function openPalette() {
-    setPaletteOpen(true)
+    setModal({ kind: 'palette' })
   }
 
   // Keydown handlers close over state that changes every render; rather than
@@ -1435,13 +1432,13 @@ function App() {
             )
           })}
         </main>
-        {paletteOpen && (
+        {modal.kind === 'palette' && (
           <QuickConnectPalette
             sessions={sessions}
-            onClose={() => setPaletteOpen(false)}
+            onClose={closeModal}
             onSelect={(profile) => {
               openSavedSession(profile)
-              setPaletteOpen(false)
+              closeModal()
             }}
           />
         )}
@@ -1466,114 +1463,114 @@ function App() {
         />
       )}
       <ToastHost />
-      {pendingClose &&
-        (() => {
-          const plural = (n: number) => `${n} connection${n === 1 ? '' : 's'}`
-          const ends = (n: number) =>
-            `Closing ends ${n === 1 ? 'it' : 'them'} immediately.`
-          if (pendingClose.kind === 'pane') {
+      {(() => {
+        const plural = (n: number) => `${n} connection${n === 1 ? '' : 's'}`
+        const ends = (n: number) => `Closing ends ${n === 1 ? 'it' : 'them'} immediately.`
+        switch (modal.kind) {
+          case 'confirmClosePane':
             return (
               <ConfirmDialog
                 title="Close this pane?"
                 body={`Its connection is still open. ${ends(1)}`}
                 confirmLabel="Close pane"
                 onConfirm={() => {
-                  closePaneNow(pendingClose.tabId, pendingClose.paneId)
-                  setPendingClose(null)
+                  closePaneNow(modal.tabId, modal.paneId)
+                  closeModal()
                 }}
-                onCancel={() => setPendingClose(null)}
+                onCancel={closeModal}
               />
             )
-          }
-          if (pendingClose.kind === 'tab') {
+          case 'confirmCloseTab':
             return (
               <ConfirmDialog
                 title="Close this tab?"
-                body={`${plural(pendingClose.count)} still open in it. ${ends(pendingClose.count)}`}
+                body={`${plural(modal.count)} still open in it. ${ends(modal.count)}`}
                 confirmLabel="Close tab"
                 onConfirm={() => {
-                  closeTabNow(pendingClose.tabId)
-                  setPendingClose(null)
+                  closeTabNow(modal.tabId)
+                  closeModal()
                 }}
-                onCancel={() => setPendingClose(null)}
+                onCancel={closeModal}
               />
             )
-          }
-          return (
-            <ConfirmDialog
-              title="Quit wRusTTY?"
-              body={
-                `${plural(pendingClose.count)} still open. ${ends(pendingClose.count)}` +
-                // Only mentioned when it's true, since it materially changes
-                // how much closing costs — and claiming it when the setting
-                // is off would be worse than saying nothing.
-                (terminalSettings.restoreSessionsOnLaunch
-                  ? ' They can be reopened next launch.'
-                  : '')
-              }
-              confirmLabel="Quit"
-              onConfirm={() => {
-                setPendingClose(null)
-                // destroy() rather than close(): close() would just re-emit
-                // CloseRequested and land back in the hook above, which then
-                // destroys anyway — same outcome, one extra round trip, and
-                // it needs a flag to avoid asking twice.
-                getCurrentWindow()
-                  .destroy()
-                  .catch((e) => toast.error(`Couldn't close the window: ${e}`))
-              }}
-              onCancel={() => setPendingClose(null)}
-            />
-          )
-        })()}
-      {pendingRestore && sessionsLoaded && (
-        <RestoreSessionsPrompt
-          count={sessionSnapshot.countSessions(pendingRestore.tabs)}
-          needsVaultUnlock={
-            sessionSnapshot.needsVaultUnlock(pendingRestore.tabs, sessions) &&
-            vaultStatus !== 'unlocked'
-          }
-          osUnlockAvailable={osUnlockAvailable}
-          onRestore={restoreSessions}
-          onUnlockAndRestore={(password) =>
-            pendingRestore && unlockAndRun(password, { kind: 'restoreSessions', snapshot: pendingRestore })
-          }
-          onUnlockWithOsAndRestore={() =>
-            pendingRestore && unlockWithOsAndRun({ kind: 'restoreSessions', snapshot: pendingRestore })
-          }
-          onDiscard={discardRestore}
-        />
-      )}
-      {pendingWorkspace && (
-        <RestoreSessionsPrompt
-          count={sessionSnapshot.countSessions(pendingWorkspace.workspace.tabs)}
-          // Always true here — openWorkspace only sets this state when the
-          // vault is locked and the workspace needs it.
-          needsVaultUnlock
-          osUnlockAvailable={osUnlockAvailable}
-          title={`Open "${pendingWorkspace.workspace.name}"?`}
-          body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
-          cancelLabel="Open anyway — without unlocking"
-          onRestore={openPendingWorkspace}
-          onUnlockAndRestore={(password) =>
-            pendingWorkspace &&
-            unlockAndRun(password, {
-              kind: 'openWorkspace',
-              workspace: pendingWorkspace.workspace,
-              originTabId: pendingWorkspace.originTabId,
-            })
-          }
-          onUnlockWithOsAndRestore={() =>
-            pendingWorkspace &&
-            unlockWithOsAndRun({
-              kind: 'openWorkspace',
-              workspace: pendingWorkspace.workspace,
-              originTabId: pendingWorkspace.originTabId,
-            })
-          }
-          onDiscard={openPendingWorkspace}
-        />
-      )}
+          case 'confirmCloseWindow':
+            return (
+              <ConfirmDialog
+                title="Quit wRusTTY?"
+                body={
+                  `${plural(modal.count)} still open. ${ends(modal.count)}` +
+                  // Only mentioned when it's true, since it materially changes
+                  // how much closing costs — and claiming it when the setting
+                  // is off would be worse than saying nothing.
+                  (terminalSettings.restoreSessionsOnLaunch ? ' They can be reopened next launch.' : '')
+                }
+                confirmLabel="Quit"
+                onConfirm={() => {
+                  closeModal()
+                  // destroy() rather than close(): close() would just re-emit
+                  // CloseRequested and land back in the hook above, which then
+                  // destroys anyway — same outcome, one extra round trip, and
+                  // it needs a flag to avoid asking twice.
+                  getCurrentWindow()
+                    .destroy()
+                    .catch((e) => toast.error(`Couldn't close the window: ${e}`))
+                }}
+                onCancel={closeModal}
+              />
+            )
+          case 'restorePrompt':
+            return (
+              sessionsLoaded && (
+                <RestoreSessionsPrompt
+                  count={sessionSnapshot.countSessions(modal.snapshot.tabs)}
+                  needsVaultUnlock={
+                    sessionSnapshot.needsVaultUnlock(modal.snapshot.tabs, sessions) && vaultStatus !== 'unlocked'
+                  }
+                  osUnlockAvailable={osUnlockAvailable}
+                  onRestore={restoreSessions}
+                  onUnlockAndRestore={(password) =>
+                    unlockAndRun(password, { kind: 'restoreSessions', snapshot: modal.snapshot })
+                  }
+                  onUnlockWithOsAndRestore={() =>
+                    unlockWithOsAndRun({ kind: 'restoreSessions', snapshot: modal.snapshot })
+                  }
+                  onDiscard={discardRestore}
+                />
+              )
+            )
+          case 'workspacePrompt':
+            return (
+              <RestoreSessionsPrompt
+                count={sessionSnapshot.countSessions(modal.workspace.tabs)}
+                // Always true here — openWorkspace only sets this state when
+                // the vault is locked and the workspace needs it.
+                needsVaultUnlock
+                osUnlockAvailable={osUnlockAvailable}
+                title={`Open "${modal.workspace.name}"?`}
+                body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
+                cancelLabel="Open anyway — without unlocking"
+                onRestore={openPendingWorkspace}
+                onUnlockAndRestore={(password) =>
+                  unlockAndRun(password, {
+                    kind: 'openWorkspace',
+                    workspace: modal.workspace,
+                    originTabId: modal.originTabId,
+                  })
+                }
+                onUnlockWithOsAndRestore={() =>
+                  unlockWithOsAndRun({
+                    kind: 'openWorkspace',
+                    workspace: modal.workspace,
+                    originTabId: modal.originTabId,
+                  })
+                }
+                onDiscard={openPendingWorkspace}
+              />
+            )
+          default:
+            return null
+        }
+      })()}
     </div>
   )
 }
