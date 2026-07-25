@@ -43,10 +43,14 @@ export interface BuiltWorkload {
   teardown?: Uint8Array
   totalBytes: number
   /**
-   * Block workloads only: feed the payload in this many bytes per write, across
-   * event-loop turns, instead of one monolithic write. Set to the coalescer's
-   * flush size (32 KB) to measure the stall the app can actually produce; 0 or
-   * absent means a single write (the raw-parser / absolute-worst-case number).
+   * Block workloads only: the coalescer's flush threshold to model the feed
+   * against, across event-loop turns, instead of one monolithic write. Set to
+   * `COALESCE_THRESHOLD` to measure the stall the app can actually produce; 0
+   * or absent means a single write (the raw-parser / absolute-worst-case
+   * number).
+   *
+   * Deliveries are not this size — they are at least it. See
+   * `coalescedDeliveries`, which is what turns this into the actual sequence.
    */
   chunkBytes?: number
 }
@@ -156,9 +160,68 @@ export const flood: Workload = {
   },
 }
 
-/** The coalescer's flush size (see src-tauri/src/coalesce.rs) — the largest
- *  buffer the app ever hands the engine in one write. The realistic feed. */
-export const COALESCE_CHUNK = 32 * 1024
+/**
+ * The coalescer's flush *threshold* (`FLUSH_SIZE_THRESHOLD` in
+ * src-tauri/src/coalesce.rs).
+ *
+ * Not a cap, which is what this constant was previously documented as. The
+ * coalescer appends each upstream read to a buffer and flushes once that
+ * buffer *reaches* the threshold:
+ *
+ *     buf.extend_from_slice(&bytes);
+ *     if buf.len() >= FLUSH_SIZE_THRESHOLD { flush(...) }
+ *
+ * so a delivery is always at least 32 KB and routinely larger — by however
+ * much the read that crossed the line overshot. Feeding the engines exactly
+ * 32 KB therefore modelled a best case that the app never actually produces,
+ * and it mattered: at 32 KB a delivery parses in well under a frame for either
+ * engine, so the stall metric bottomed out at the display's refresh interval
+ * and reported the same number no matter how fast the engine was.
+ *
+ * The 8 ms `FLUSH_INTERVAL` is not a rate limit either. It only fires when
+ * output is trickling below the threshold; under a flood the size branch wins
+ * every time and the ticker never gets a look in.
+ */
+export const COALESCE_THRESHOLD = 32 * 1024
+
+/**
+ * One upstream read, before coalescing — an `ssh2` channel read, a serial
+ * read, a PTY read. The coalescer sees a stream of these and batches them.
+ *
+ * The range is what bounds a delivery's overshoot past the flush threshold,
+ * so it is the part of this model worth being explicit about rather than the
+ * delivery size itself: deliveries come out as `threshold + (0, MAX_READ]`.
+ */
+const MIN_READ = 4 * 1024
+const MAX_READ = 32 * 1024
+
+/**
+ * The delivery sizes `coalesce.rs` would emit for `total` bytes of output,
+ * by running its actual accumulate-and-flush loop over simulated reads.
+ *
+ * Deterministic (seeded) like every other input here, so a run reproduces and
+ * both engines are fed the identical sequence. Modelling the algorithm rather
+ * than picking a size distribution is deliberate — the shape of the output
+ * falls out of the threshold and the read size, which are both real numbers
+ * taken from the Rust, instead of a curve invented to look plausible.
+ */
+export function coalescedDeliveries(total: number, threshold: number, seed = 0xc0a1): number[] {
+  const rand = rng(seed)
+  const out: number[] = []
+  let remaining = total
+  let buffered = 0
+  while (remaining > 0) {
+    const read = Math.min(remaining, MIN_READ + Math.floor(rand() * (MAX_READ - MIN_READ)))
+    buffered += read
+    remaining -= read
+    if (buffered >= threshold) {
+      out.push(buffered)
+      buffered = 0
+    }
+  }
+  if (buffered > 0) out.push(buffered)
+  return out
+}
 
 /**
  * Flood stress at a chosen size, measured for the longest single main-thread
@@ -166,14 +229,14 @@ export const COALESCE_CHUNK = 32 * 1024
  * (moving the parser to a Web Worker) would remove.
  *
  * `chunkBytes` decides which stall you measure. Fed the way the app actually
- * delivers output — `COALESCE_CHUNK` per write, across event-loop turns — a
- * 32 KB parse is sub-frame for either engine, so this is the stall production
- * can produce. Fed as one monolithic write (`chunkBytes: 0`), both engines
- * block for the whole parse; that's the raw-parser drain / absolute worst case,
- * not a case the coalescer lets happen.
+ * delivers output — the coalescer's accumulate-and-flush loop replayed over
+ * simulated upstream reads, across event-loop turns — this is the stall
+ * production can produce. Fed as one monolithic write (`chunkBytes: 0`), both
+ * engines block for the whole parse; that's the raw-parser drain / absolute
+ * worst case, not a case the coalescer lets happen.
  */
-export function largeFlood(mb: number, chunkBytes = COALESCE_CHUNK, seed = 0x1234): Workload {
-  const feed = chunkBytes > 0 ? `${(chunkBytes / 1024) | 0} KB feed` : 'single write'
+export function largeFlood(mb: number, chunkBytes = COALESCE_THRESHOLD, seed = 0x1234): Workload {
+  const feed = chunkBytes > 0 ? `${(chunkBytes / 1024) | 0} KB+ feed` : 'single write'
   return {
     id: `flood-${mb}-${chunkBytes > 0 ? 'chunked' : 'mono'}`,
     label: `Flood ${mb} MB (${feed})`,
@@ -303,8 +366,8 @@ export const typing: Workload = {
 /** Wrap a real captured session dump as a flood-stress workload — the "on real
  *  traffic" case the exit criterion names, fed the way the app delivers it (in
  *  coalescer-sized chunks) and measured for its worst main-thread stall. */
-export function capturedFlood(bytes: Uint8Array, name: string, chunkBytes = COALESCE_CHUNK): Workload {
-  const feed = chunkBytes > 0 ? `${(chunkBytes / 1024) | 0} KB feed` : 'single write'
+export function capturedFlood(bytes: Uint8Array, name: string, chunkBytes = COALESCE_THRESHOLD): Workload {
+  const feed = chunkBytes > 0 ? `${(chunkBytes / 1024) | 0} KB+ feed` : 'single write'
   return {
     id: 'captured',
     label: `Captured: ${name}`,

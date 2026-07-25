@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { XtermEngine } from './xtermEngine'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import { probeGpu, gpuVerdict, type GpuInfo } from './gpuProbe'
-import { WORKLOADS, capturedFlood, largeFlood, FLOOD_SIZES, COALESCE_CHUNK, type Workload } from './workloads'
+import { WORKLOADS, capturedFlood, largeFlood, FLOOD_SIZES, COALESCE_THRESHOLD, type Workload } from './workloads'
 import {
   runWorkload,
   warmup,
@@ -328,7 +328,7 @@ export function BenchmarkHarness() {
             key={mb}
             style={{ ...S.btn, opacity: phase === 'ready' ? 1 : 0.5 }}
             disabled={phase !== 'ready'}
-            onClick={() => runList([largeFlood(mb, monolithic ? 0 : COALESCE_CHUNK)])}
+            onClick={() => runList([largeFlood(mb, monolithic ? 0 : COALESCE_THRESHOLD)])}
             title={`Drain a ${mb} MB flood and report the worst main-thread stall it causes.`}
           >
             {mb} MB
@@ -369,13 +369,17 @@ export function BenchmarkHarness() {
           </thead>
           <tbody>
             {results.map((w) => {
-              // Higher MB/s wins throughput; the smaller worst-stall wins a
-              // flood-stress (block) row; lower p50 latency wins otherwise.
+              // Higher MB/s wins throughput; lower p50 latency wins latency.
+              // A block row is judged on parse time, not on the worst stall:
+              // once a delivery fits inside a frame the stall metric floors at
+              // the display's refresh interval and reports the same number for
+              // both engines however fast either one is, so picking a winner
+              // on it was picking one on rounding noise.
               const better =
                 w.mode === 'throughput'
                   ? w.results.reduce((m, r) => ((r.throughputMBs ?? 0) > (m.throughputMBs ?? 0) ? r : m))
                   : w.mode === 'block'
-                    ? w.results.reduce((m, r) => (r.stats.max < m.stats.max ? r : m))
+                    ? w.results.reduce((m, r) => ((r.parseMBs ?? 0) > (m.parseMBs ?? 0) ? r : m))
                     : w.results.reduce((m, r) => (r.stats.p50 < m.stats.p50 ? r : m))
               return w.results.map((r, i) => (
                 <tr key={w.workloadId + r.engine} style={i === 0 ? S.rowTop : undefined}>
@@ -403,7 +407,7 @@ export function BenchmarkHarness() {
                         ? `${r.throughputMBs.toFixed(1)} MB/s`
                         : '—'
                       : w.mode === 'block'
-                        ? `⏸${frameMs > 0 ? (r.stats.max / frameMs).toFixed(1) : '?'}f · ${fmtDuration(r.drainMeanMs ?? 0)} drain`
+                        ? `⏸${frameMs > 0 ? (r.stats.max / frameMs).toFixed(1) : '?'}f · ${fmtDuration(r.parseMeanMs ?? 0)} parse (${(r.parseMBs ?? 0).toFixed(1)} MB/s) · ${fmtDuration(r.drainMeanMs ?? 0)} drain`
                         : frameMs > 0
                           ? `≈${(r.stats.p50 / frameMs).toFixed(1)} f`
                           : '—'}

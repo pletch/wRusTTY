@@ -19,7 +19,40 @@
 
 import { measurePresent, nextFrame, type Paintable } from './presentClock'
 import { summarize, type Stats } from './stats'
-import type { Workload } from './workloads'
+import { coalescedDeliveries, type Workload } from './workloads'
+
+/**
+ * Hands control back to the event loop for one macrotask, without the delay
+ * `setTimeout` would impose.
+ *
+ * `setTimeout(…, 0)` is the obvious way to do this and it silently wrecked the
+ * measurement it was used for. Per the HTML spec a timer nested more than five
+ * deep is clamped to a 4 ms minimum, and a feed loop that awaits a timer is
+ * nested by definition from its sixth turn on. At 100 MB that was 400 yields —
+ * 1.6 s of the reported drain spent asleep, against ~1.2 s of actual parsing,
+ * which buried the difference between two engines under a constant both of
+ * them paid equally.
+ *
+ * A `MessageChannel` message is also a macrotask (so the compositor still gets
+ * its turn, which is the point of yielding at all) but carries no clamp. One
+ * channel is shared and resolvers are queued, rather than building a channel
+ * per yield — at hundreds of yields per round that would be its own cost.
+ */
+let yieldPort: MessagePort | null = null
+const yieldWaiters: (() => void)[] = []
+
+function macrotaskYield(): Promise<void> {
+  if (!yieldPort) {
+    const channel = new MessageChannel()
+    channel.port1.onmessage = () => yieldWaiters.shift()?.()
+    channel.port1.start()
+    yieldPort = channel.port2
+  }
+  return new Promise((resolve) => {
+    yieldWaiters.push(resolve)
+    yieldPort!.postMessage(null)
+  })
+}
 
 export interface RunnableEngine extends Paintable {
   name: string
@@ -37,8 +70,19 @@ export interface EngineResult {
   stats: Stats
   /** MB/s for throughput and block workloads; undefined for latency ones. */
   throughputMBs?: number
-  /** Mean wall-clock to fully drain the payload (ms). Block workloads only. */
+  /** Mean wall-clock to fully drain the payload (ms). Block workloads only.
+   *  Includes the yields between deliveries, so it is a property of the feed
+   *  as much as of the engine — compare `parseMeanMs` to isolate the engine. */
   drainMeanMs?: number
+  /** Mean time actually spent inside the engine during a drain (ms), summed
+   *  across deliveries. Block workloads only. This is the engine's share of
+   *  the drain, and the figure that can tell two engines apart. */
+  parseMeanMs?: number
+  /** MB/s implied by `parseMeanMs` — throughput with the harness's own feed
+   *  overhead removed. Block workloads only. */
+  parseMBs?: number
+  /** How many deliveries the payload was fed as. Block workloads only. */
+  deliveries?: number
   /** Trials that produced no paint at all — measurement was invalid. */
   emptyTrials: number
   /** Trials that hit the wall-clock ceiling before settling. */
@@ -118,7 +162,7 @@ async function measureBlock(
   buf: Uint8Array,
   chunkBytes = 0,
   timeoutMs = 120000,
-): Promise<{ drainMs: number; maxStallMs: number; timedOut: boolean }> {
+): Promise<{ drainMs: number; parseMs: number; maxStallMs: number; deliveries: number; timedOut: boolean }> {
   let maxStall = 0
   let last = 0
   let painted = false
@@ -141,22 +185,33 @@ async function measureBlock(
   const t0 = performance.now()
   const overCeiling = () => performance.now() - t0 > timeoutMs
   let timedOut = false
+  // Time actually spent inside the engine, accumulated across deliveries and
+  // reported separately from the wall clock. Wall clock includes the yields
+  // between deliveries, which belong to the harness and not to the engine —
+  // conflating the two is what made the drain figure incomparable.
+  let parseMs = 0
+  let deliveries = 0
 
   if (chunkBytes > 0) {
-    // Give the compositor a paint opportunity every ~8 chunks so the stall the
-    // loop records is a real per-delivery stall, not the whole feed run.
-    const yieldEvery = 8 * chunkBytes
-    let sinceYield = 0
-    for (let i = 0; i < buf.length; i += chunkBytes) {
-      engine.write(buf.subarray(i, Math.min(i + chunkBytes, buf.length)))
-      sinceYield += chunkBytes
-      if (sinceYield >= yieldEvery) {
-        sinceYield = 0
-        await new Promise((r) => setTimeout(r, 0))
-        if (overCeiling()) {
-          timedOut = true
-          break
-        }
+    // The sizes the coalescer would actually emit for this payload — at least
+    // the flush threshold, larger by however much a read overshot it.
+    const sizes = coalescedDeliveries(buf.length, chunkBytes)
+    deliveries = sizes.length
+    let offset = 0
+    for (const size of sizes) {
+      const end = Math.min(offset + size, buf.length)
+      const w0 = performance.now()
+      engine.write(buf.subarray(offset, end))
+      parseMs += performance.now() - w0
+      offset = end
+      // Yield after every delivery, not every eighth. A delivery is exactly
+      // the unit the app hands over in one event-loop turn, so batching eight
+      // of them measured a stall the app cannot produce and hid the
+      // per-delivery one it can.
+      await macrotaskYield()
+      if (overCeiling()) {
+        timedOut = true
+        break
       }
     }
     let idle = 0
@@ -178,8 +233,11 @@ async function measureBlock(
     const timeout = new Promise<'timeout'>((res) => {
       timer = setTimeout(() => res('timeout'), timeoutMs)
     })
+    const w0 = performance.now()
     const done = engine.parse(buf).then(() => 'done' as const)
     timedOut = (await Promise.race([done, timeout])) === 'timeout'
+    parseMs = performance.now() - w0
+    deliveries = 1
     clearTimeout(timer!)
   }
 
@@ -189,7 +247,7 @@ async function measureBlock(
   await nextFrame()
   running = false
   sub.dispose()
-  return { drainMs, maxStallMs: maxStall, timedOut }
+  return { drainMs, parseMs, maxStallMs: maxStall, deliveries, timedOut }
 }
 
 /** Median interval between animation frames — the display's real cadence, so
@@ -296,7 +354,9 @@ async function runBlock(
   const rounds = opts.blockRounds ?? 3
   const stalls: Record<string, number[]> = { [a.name]: [], [b.name]: [] }
   const drains: Record<string, number[]> = { [a.name]: [], [b.name]: [] }
+  const parses: Record<string, number[]> = { [a.name]: [], [b.name]: [] }
   const failed: Record<string, number> = { [a.name]: 0, [b.name]: 0 }
+  let deliveries = 0
 
   for (let round = 0; round < rounds; round++) {
     const order = round % 2 === 0 ? [a, b] : [b, a]
@@ -309,6 +369,8 @@ async function runBlock(
       } else {
         stalls[engine.name].push(r.maxStallMs)
         drains[engine.name].push(r.drainMs)
+        parses[engine.name].push(r.parseMs)
+        deliveries = r.deliveries
       }
     }
   }
@@ -319,13 +381,20 @@ async function runBlock(
     unit: workload.unit,
     mode: workload.mode,
     chunkedFeed: chunkBytes > 0,
-    results: [a, b].map((e) => ({
-      engine: e.name,
-      stats: summarize(stalls[e.name]),
-      drainMeanMs: summarize(drains[e.name]).mean,
-      emptyTrials: 0,
-      failedTrials: failed[e.name],
-    })),
+    results: [a, b].map((e) => {
+      const parseMean = summarize(parses[e.name]).mean
+      const mb = built.totalBytes / (1024 * 1024)
+      return {
+        engine: e.name,
+        stats: summarize(stalls[e.name]),
+        drainMeanMs: summarize(drains[e.name]).mean,
+        parseMeanMs: parseMean,
+        parseMBs: parseMean > 0 ? mb / (parseMean / 1000) : 0,
+        deliveries,
+        emptyTrials: 0,
+        failedTrials: failed[e.name],
+      }
+    }),
   }
 }
 
@@ -430,12 +499,13 @@ export function resultsToMarkdown(
   lines.push(meta, '', gpuLine, '')
   lines.push(
     '',
-    '> Latency is frame-quantized: the last column shows p50 in whole display frames, which is the comparable figure across refresh rates. Throughput is a pure-parse measurement (each engine timed to its own parser completion). Flood-stress rows (`ms stall`) report the longest single main-thread stall during the drain — the freeze a user feels, with `max` the worst across rounds; the last column is that worst stall in frames and the wall-clock drain. A `KB feed` row is fed the way the app delivers output (coalescer-sized writes across event-loop turns) so its stall is one the app can produce; a `single write` row is the monolithic worst case the coalescer never allows.',
+    '> Latency is frame-quantized: the last column shows p50 in whole display frames, which is the comparable figure across refresh rates. Throughput is a pure-parse measurement (each engine timed to its own parser completion). Flood-stress rows (`ms stall`) report the longest single main-thread stall during the drain — the freeze a user feels, with `max` the worst across rounds; the last column is that worst stall in frames, then **parse** (time actually inside the engine, and the MB/s it implies) and **drain** (wall clock). Compare engines on *parse*: drain includes the yields between deliveries, which both engines pay equally, so it dilutes the difference. A `KB+ feed` row replays the coalescer\'s own accumulate-and-flush loop (deliveries of at least the 32 KB threshold, larger by however much a read overshot), one event-loop turn each, so its stall is one the app can produce; a `single write` row is the monolithic worst case the coalescer never allows.',
     '',
   )
   for (const w of results) {
     lines.push(`## ${w.label}  \`(${w.unit})\``, '')
-    const lastCol = w.mode === 'throughput' ? 'parse' : w.mode === 'block' ? 'worst stall · drain' : 'p50 frames'
+    const lastCol =
+      w.mode === 'throughput' ? 'parse' : w.mode === 'block' ? 'worst stall · parse · drain' : 'p50 frames'
     lines.push(`| engine | n | mean | p50 | p95 | p99 | max | ${lastCol} |`)
     lines.push('|---|---|---|---|---|---|---|---|')
     for (const r of w.results) {
@@ -446,7 +516,7 @@ export function resultsToMarkdown(
             ? `${r.throughputMBs.toFixed(1)} MB/s`
             : '—'
           : w.mode === 'block'
-            ? `⏸${frameMs > 0 ? (s.max / frameMs).toFixed(1) : '?'}f · ${fmtDuration(r.drainMeanMs ?? 0)} drain`
+            ? `⏸${frameMs > 0 ? (s.max / frameMs).toFixed(1) : '?'}f · ${fmtDuration(r.parseMeanMs ?? 0)} parse (${(r.parseMBs ?? 0).toFixed(1)} MB/s) · ${fmtDuration(r.drainMeanMs ?? 0)} drain`
             : frameMs > 0
               ? `≈${(s.p50 / frameMs).toFixed(1)} f`
               : '—'
