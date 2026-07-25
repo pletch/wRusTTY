@@ -10,17 +10,18 @@ export default defineConfig({
     environment: 'node',
     coverage: {
       provider: 'v8',
-      include: ['src/lib/**/*.{ts,tsx}', 'src/state/**/*.{ts,tsx}'],
+      include: ['src/lib/**/*.{ts,tsx}', 'src/state/**/*.{ts,tsx}', 'src/hooks/**/*.{ts,tsx}'],
       exclude: ['src/lib/**/*.test.ts', 'src/lib/ghostty/vendor/**'],
-      // Phase 1-4 baseline (paneTree, sessionSnapshot, shellIntegration,
+      // Phase 1-7 baseline (paneTree, sessionSnapshot, shellIntegration,
       // lineEditor, settings, theme, oscScanner, state/tabOps,
-      // state/paneRuntime, state/tabs). Ratchet upward as more of src/lib
-      // and src/state get covered — never lower these.
+      // state/paneRuntime, state/tabs, hooks/usePanePortals). Ratchet
+      // upward as more of src/lib, src/state and src/hooks get covered —
+      // never lower these.
       thresholds: {
-        lines: 24,
-        statements: 24,
-        functions: 32,
-        branches: 28,
+        lines: 26,
+        statements: 26,
+        functions: 34,
+        branches: 29,
       },
     },
   },
