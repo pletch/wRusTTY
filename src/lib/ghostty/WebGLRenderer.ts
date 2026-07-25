@@ -9,7 +9,8 @@ import {
   type GlyphRect,
 } from './GlyphAtlas'
 import {
-  parseCell,
+  parseCellInto,
+  emptyCell,
   CELL_BYTES,
   CELL_INVERSE,
   CELL_BOLD,
@@ -19,6 +20,7 @@ import {
   CELL_FAINT,
   CELL_INVISIBLE,
   CELL_BLINK,
+  allocBufferOrThrow,
   type GhosttyWasm,
 } from './wasmBindings'
 
@@ -235,6 +237,17 @@ export class WebGLRenderer {
   private linePtr = 0
   private lineCells = 0
   private graphemePtr = 0
+
+  // The whole viewport is read into a scratch buffer once per frame, per pane.
+  // Cached on the same terms as `lineBuffer` above rather than allocated and
+  // freed inside updateStaticGrid: at 200x60 that is a 192 KB malloc, a
+  // zero-fill and a free every frame, which is the one thing here its two
+  // neighbours were already careful not to do.
+  private viewportPtr = 0
+  private viewportCells = 0
+
+  /** One cell, reused for every cell of every frame — see `parseCellInto`. */
+  private scratchCell = emptyCell()
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -521,20 +534,48 @@ export class WebGLRenderer {
   /** Scratch buffer for one grapheme cluster's codepoints. */
   private graphemeBuffer(wasm: GhosttyWasm): number {
     if (this.graphemePtr === 0) {
-      this.graphemePtr = wasm.exports.ghostty_wasm_alloc_u8_array(GRAPHEME_CAP * 4)
+      this.graphemePtr = allocBufferOrThrow(wasm, GRAPHEME_CAP * 4)
       this.lineWasm = wasm
     }
     return this.graphemePtr
   }
 
+  /**
+   * Scratch buffer for the whole viewport, grown on demand — the same shape
+   * as `lineBuffer` below, deliberately, so the three scratch buffers in this
+   * class read the same way.
+   *
+   * Grown rather than resized exactly: a pane that shrinks keeps the larger
+   * allocation, which costs a little memory and saves a free/malloc pair on
+   * every drag of a split divider. The caller only ever reads the first
+   * `cells` of it.
+   */
+  private viewportBuffer(wasm: GhosttyWasm, cells: number): number {
+    if (this.viewportPtr !== 0 && this.viewportCells >= cells) return this.viewportPtr
+    // The replacement is taken before the incumbent is released, so a failure
+    // costs nothing. Freeing first meant one refused allocation also threw away
+    // the working buffer and pinned viewportCells at 0 — the pane could then
+    // never repaint again even once memory came back.
+    const next = allocBufferOrThrow(wasm, cells * CELL_BYTES)
+    if (this.viewportPtr !== 0) {
+      wasm.exports.ghostty_wasm_free_u8_array(this.viewportPtr, this.viewportCells * CELL_BYTES)
+    }
+    this.viewportPtr = next
+    this.viewportCells = cells
+    this.lineWasm = wasm
+    return this.viewportPtr
+  }
+
   /** Scratch buffer for one scrollback row, grown on demand. */
   private lineBuffer(wasm: GhosttyWasm, cells: number): number {
     if (this.linePtr !== 0 && this.lineCells >= cells) return this.linePtr
+    // Replacement before release — see viewportBuffer.
+    const next = allocBufferOrThrow(wasm, cells * CELL_BYTES)
     if (this.linePtr !== 0) {
       wasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
     }
-    this.linePtr = wasm.exports.ghostty_wasm_alloc_u8_array(cells * CELL_BYTES)
-    this.lineCells = this.linePtr === 0 ? 0 : cells
+    this.linePtr = next
+    this.lineCells = cells
     this.lineWasm = wasm
     return this.linePtr
   }
@@ -556,9 +597,16 @@ export class WebGLRenderer {
     // on one side before the other.
     const cellCount = wasmCols * wasmRows
     const expectedBufSize = cellCount * CELL_BYTES
-    const viewportBufPtr = wasm.exports.ghostty_wasm_alloc_u8_array(expectedBufSize)
-    if (viewportBufPtr === 0) return
+    const viewportBufPtr = this.viewportBuffer(wasm, cellCount)
 
+    // Kept even though the buffer is now cached rather than freshly allocated,
+    // and *because* of it. The vendored PR #142 zero-initialises WASM page
+    // buffers, which would make this redundant for a fresh allocation — but a
+    // reused buffer is exactly the case that fix does not cover, so without
+    // this a shrink (or a short `get_viewport` return) would leave the
+    // previous frame's cells sitting in the uncovered tail and paint them.
+    // Costs a memset against a malloc+free it replaces, which is the cheaper
+    // half of what was here before.
     new Uint8Array(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize).fill(0)
 
     // Takes a cell count, not a byte count.
@@ -658,9 +706,12 @@ export class WebGLRenderer {
         let bgIsDefault = true
 
         if (rowValid && c < wasmCols) {
+          // Read into the renderer's own scratch cell: every field is copied
+          // into locals on the next few lines and the object never escapes,
+          // so a fresh one per cell per frame was garbage by construction.
           const cell = isScrollback
-            ? parseCell(lineView!, c * CELL_BYTES)
-            : parseCell(viewportView, (activeRow * wasmCols + c) * CELL_BYTES)
+            ? parseCellInto(lineView!, c * CELL_BYTES, this.scratchCell)
+            : parseCellInto(viewportView, (activeRow * wasmCols + c) * CELL_BYTES, this.scratchCell)
 
           codepoint = cell.codepoint
           flags = cell.flags
@@ -856,8 +907,6 @@ export class WebGLRenderer {
       }
     }
 
-    wasm.exports.ghostty_wasm_free_u8_array(viewportBufPtr, expectedBufSize)
-
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData)
 
@@ -877,6 +926,11 @@ export class WebGLRenderer {
     this.canvas.removeEventListener('webglcontextlost', this.onContextLost)
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored)
     if (this.lineWasm) {
+      if (this.viewportPtr !== 0) {
+        this.lineWasm.exports.ghostty_wasm_free_u8_array(this.viewportPtr, this.viewportCells * CELL_BYTES)
+        this.viewportPtr = 0
+        this.viewportCells = 0
+      }
       if (this.linePtr !== 0) {
         this.lineWasm.exports.ghostty_wasm_free_u8_array(this.linePtr, this.lineCells * CELL_BYTES)
         this.linePtr = 0

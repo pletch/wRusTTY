@@ -9,13 +9,16 @@ import {
   createTerminal,
   writeBytes,
   readResponse,
-  parseCell,
+  parseCellInto,
+  emptyCell,
   MODE_APP_CURSOR_KEYS,
   MODE_BRACKETED_PASTE,
   MODE_MOUSE_BUTTON_EVENT,
   MODE_MOUSE_ANY_EVENT,
   MODE_MOUSE_SGR,
   MODE_FOCUS_REPORTING,
+  allocBufferOrThrow,
+  GhosttyOutOfMemoryError,
   type GhosttyWasm,
   CELL_BYTES,
 } from './wasmBindings'
@@ -48,30 +51,46 @@ const DRAG_SCROLL_INTERVAL_MS = 50
 const DRAG_SCROLL_MAX_LINES = 8
 
 /**
- * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
- * — the name reads like xterm's `scrollback` and it is not. Passing the app's
- * row setting straight through is why 10000 behaved like a few hundred lines:
- * the core took it as 10 KB, which is under its minimum page and so retained a
- * single page's worth of rows no matter what the setting said.
+ * `scrollbackLimit` in the core's config is a **line count**, and the value has
+ * to stay small enough that the core's own lines→bytes conversion doesn't
+ * overflow.
  *
- * Measured against this WASM build (rows retained at a fixed budget, swept
- * across widths) the cost is ~14.5 bytes per cell; 16 is that with headroom.
- * Rows are therefore only as promised at the width the pane was opened at —
- * widening it later trades rows for columns out of the same budget, which is
- * how Ghostty itself behaves.
+ * This was previously computed as a *byte* budget, which is what an older
+ * revision of the WASM API took. The current core multiplies the value by its
+ * per-line page cost with `std.math.mul(usize, lines, bytes_per_line)` — and
+ * `usize` is 32-bit on `wasm32`, so a byte-shaped value like 8,000,000 overflows
+ * and lands on the `catch std.math.maxInt(usize)` fallback, which means
+ * *unlimited*. The limit silently stopped existing: a 100 MB flood retained all
+ * 1.15 M rows and grew the WASM heap to ~2 GB, until an allocation failed and
+ * the pane wedged. Passing a line count keeps the multiply in range and the
+ * budget enforced (verified: 100 MB drains with the heap flat at ~9 MB).
  *
- * The floor is the core's own minimum, below which the setting does nothing.
- * The ceiling is this side's: the budget is committed for the life of the pane
- * and every pane is its own WASM instance, so an unguarded setting is a
- * per-pane memory multiplier across a window full of sessions.
+ * The ceiling is derived rather than picked, for the same reason the old byte
+ * budget had one: the limit is committed for the life of the pane and every
+ * pane is its own WASM instance, so an unguarded setting is a per-pane memory
+ * multiplier across a window full of sessions. Measured against this build the
+ * core spends ~12.4–12.65 bytes per cell per retained line, near-flat from 40 to
+ * 400 columns; 13 is that rounded up, which biases the cap conservative (a
+ * higher per-cell estimate yields *fewer* permitted lines). Lines are therefore
+ * only as promised at the width the pane was opened at — widening it later
+ * trades lines for columns out of the same ceiling, which is how Ghostty itself
+ * behaves.
+ *
+ * The number asked for is an upper bound, not a promise. The core evicts whole
+ * pages rather than single lines, so the retained count settles at or somewhat
+ * below the request — measured here, 1000 lines at 80 columns holds ~680 and
+ * 5000 holds ~4200. Its own `PageList.maxSize` calls the figure a heuristic and
+ * declines to be asserted on, so this side does not try to correct for it: the
+ * ceiling is what matters, and padding the request to hit a round number would
+ * be guesswork against page geometry that varies with width.
  */
-const SCROLLBACK_BYTES_PER_CELL = 16
-const SCROLLBACK_MIN_BYTES = 1024 * 1024
+const SCROLLBACK_BYTES_PER_CELL = 13
 const SCROLLBACK_MAX_BYTES = 64 * 1024 * 1024
+const SCROLLBACK_MIN_LINES = 100
 
-function scrollbackBytesFor(rows: number, cols: number): number {
-  const bytes = Math.max(1, rows) * Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL
-  return Math.min(Math.max(bytes, SCROLLBACK_MIN_BYTES), SCROLLBACK_MAX_BYTES)
+export function scrollbackLinesFor(lines: number, cols: number): number {
+  const maxLines = Math.floor(SCROLLBACK_MAX_BYTES / (Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL))
+  return Math.min(Math.max(Math.floor(lines), SCROLLBACK_MIN_LINES), maxLines)
 }
 
 export class GhosttyEngine implements TerminalEngine {
@@ -145,13 +164,18 @@ export class GhosttyEngine implements TerminalEngine {
   private lastIsAlternate = false
 
   /**
-   * Why the engine never started, or null while it still might. Retained (not
-   * just dispatched) so a handler registered after the failure still hears
-   * about it: `initWasm` is kicked off by the constructor, so nothing can
-   * subscribe before it begins, and a silent engine is exactly the failure
-   * mode this exists to make visible.
+   * Why the engine is dead, or null while it is alive. Retained (not just
+   * dispatched) so a handler registered after the failure still hears about it:
+   * `initWasm` is kicked off by the constructor, so nothing can subscribe
+   * before it begins, and a silent engine is exactly the failure mode this
+   * exists to make visible.
+   *
+   * Covers both never-started and died-later. The second case used to have no
+   * representation at all — an out-of-memory core kept returning null pointers,
+   * every call site did nothing about it, and the pane simply stopped
+   * responding with no error anywhere.
    */
-  private initError: string | null = null
+  private fatalError: string | null = null
   private onInitErrorHandlers = new Set<(message: string) => void>()
 
   private onSearchResultHandlers = new Set<(result: SearchResult) => void>()
@@ -188,7 +212,7 @@ export class GhosttyEngine implements TerminalEngine {
       // this theme's palette and defaults, and hands back finished RGB. The
       // renderer therefore never has to know what "color 4" means.
       this.termPtr = createTerminal(this.wasm, this._cols, this._rows, {
-        scrollbackLimit: scrollbackBytesFor(this._scrollback, this._cols),
+        scrollbackLimit: scrollbackLinesFor(this._scrollback, this._cols),
         ...this.themeConfigColors(),
       })
       if (this.termPtr === 0) {
@@ -216,11 +240,31 @@ export class GhosttyEngine implements TerminalEngine {
    * Record why the engine is dead and tell anyone listening. Without this the
    * pane just stays blank: every method below no-ops on a null `wasm`, so a
    * failed init is indistinguishable from a terminal with nothing on it yet.
+   *
+   * Idempotent, because the second report of a dead engine is noise — an OOM
+   * core will refuse the very next allocation too.
    */
   private failInit(message: string) {
-    this.initError = message
+    if (this.fatalError !== null) return
+    this.fatalError = message
     console.error(message)
     for (const cb of this.onInitErrorHandlers) cb(message)
+  }
+
+  /**
+   * The core has failed part-way through a session rather than at startup.
+   *
+   * Reported down the same channel as a failed init because it means the same
+   * thing to everyone above: this pane is finished, here is why. The render
+   * loop stops after this — with the error on screen, which is the difference
+   * between a terminal that says it died and one that merely appears hung.
+   */
+  private failFatal(e: unknown) {
+    this.failInit(
+      e instanceof GhosttyOutOfMemoryError
+        ? `Ghostty's WASM core ran out of memory; this terminal has stopped. (${e.message})`
+        : `Ghostty's WASM core failed: ${e}`,
+    )
   }
 
   /**
@@ -230,7 +274,7 @@ export class GhosttyEngine implements TerminalEngine {
    */
   onInitError(cb: (message: string) => void): IDisposable {
     this.onInitErrorHandlers.add(cb)
-    if (this.initError !== null) cb(this.initError)
+    if (this.fatalError !== null) cb(this.fatalError)
     return { dispose: () => this.onInitErrorHandlers.delete(cb) }
   }
 
@@ -511,12 +555,17 @@ export class GhosttyEngine implements TerminalEngine {
     // longer is truncated rather than grown for, since the cost is one buffer
     // held for the whole walk.
     const gCap = 16
+    // One scratch cell for the whole walk. Not per-frame like the renderer's,
+    // but a scrollback-wide search still walks hundreds of thousands of cells
+    // in one go, and the object never escapes the loop body.
+    const cell = emptyCell()
 
-    const viewPtr = wasm.exports.ghostty_wasm_alloc_u8_array(viewSize)
-    if (viewPtr === 0) return out
+    // Raising beats the old `return out` on a null pointer: that handed copy
+    // and search a page of blanks and called it the buffer's contents.
+    const viewPtr = allocBufferOrThrow(wasm, viewSize)
     wasm.exports.ghostty_render_state_get_viewport(this.termPtr, viewPtr, cellCount)
-    const linePtr = wasm.exports.ghostty_wasm_alloc_u8_array(lineSize)
-    const gPtr = wasm.exports.ghostty_wasm_alloc_u8_array(gCap * 4)
+    const linePtr = allocBufferOrThrow(wasm, lineSize)
+    const gPtr = allocBufferOrThrow(wasm, gCap * 4)
 
     // Every view is built after the last allocation: growing WASM memory
     // detaches the buffer any earlier one was made against.
@@ -543,7 +592,7 @@ export class GhosttyEngine implements TerminalEngine {
       const view = isScrollback ? lineV! : viewV
       for (let c = 0; c < this._cols && c < wasmCols; c++) {
         const offset = isScrollback ? c * CELL_BYTES : (activeRow * wasmCols + c) * CELL_BYTES
-        const cell = parseCell(view, offset)
+        parseCellInto(view, offset, cell)
         if (cell.width === 0) {
           // Trailing half of a wide character: it has no text of its own.
           row[c] = ''
@@ -731,7 +780,16 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  private startRenderLoop = () => {
+  /**
+   * One frame's work, split out so the loop below can own the error handling.
+   *
+   * Everything in here can throw now that a refused allocation raises instead
+   * of returning a null pointer, and this used to run inline in the loop with
+   * the `requestAnimationFrame` reschedule as its last statement — so a single
+   * throw skipped the reschedule and the pane never painted again, silently,
+   * for the rest of its life.
+   */
+  private renderFrame() {
     if (!this.wasm || !this.renderer) return
 
     // Safety net for the initial sizing race. The ResizeObserver in
@@ -784,7 +842,28 @@ export class GhosttyEngine implements TerminalEngine {
         for (const h of this.onRenderHandlers) h()
       }
     }
+  }
 
+  private startRenderLoop = () => {
+    // Nothing left to draw with, or into: end the loop rather than spin on it.
+    // This guard was the first line of the frame body before the two were
+    // split, and it has to stay a *loop* condition — an unmounted pane whose
+    // rAF still reschedules is a leak that outlives the pane.
+    if (!this.wasm || !this.renderer) return
+    try {
+      this.renderFrame()
+    } catch (e) {
+      // An exhausted core will refuse the next frame's allocation too, so
+      // there is nothing to come back for: report it and let the loop end,
+      // with the pane showing why. Anything else is treated as transient —
+      // one bad frame shouldn't cost the pane its render loop — so it is
+      // logged and the loop carries on below.
+      if (e instanceof GhosttyOutOfMemoryError) {
+        this.failFatal(e)
+        return
+      }
+      console.error('Ghostty render frame failed:', e)
+    }
     this.renderLoopId = requestAnimationFrame(this.startRenderLoop)
   }
 
@@ -1121,6 +1200,11 @@ export class GhosttyEngine implements TerminalEngine {
   // land in the middle of a later chunk and leave that chunk's SGR state
   // applied to output it was never meant to color.
   write(data: Uint8Array | string): void {
+    // A dead core cannot be written to, and the parser's state machine is
+    // already desynchronised from the stream by whatever it refused. Dropping
+    // the rest quietly is fine here *because* the failure was reported once,
+    // loudly, at the point it happened.
+    if (this.fatalError !== null) return
     this.needsRedraw = true
     this.bufferGen++
 
@@ -1130,16 +1214,25 @@ export class GhosttyEngine implements TerminalEngine {
     // buffer for the string case.
     const bytes = typeof data === 'string' ? this.oscEncoder.encode(data) : data
 
-    if (this.oscHandlers.size > 0 || this.onBellHandlers.size > 0) {
-      this.parseAndDispatch(bytes)
-    } else {
-      this.parseSegment(bytes)
-    }
+    // The core can refuse to allocate anywhere in here. Caught rather than
+    // propagated because the caller is a PTY data callback with nowhere to put
+    // an exception; the failure is recorded and reported instead, and the guard
+    // at the top of this method makes every later write a no-op.
+    try {
+      if (this.oscHandlers.size > 0 || this.onBellHandlers.size > 0) {
+        this.parseAndDispatch(bytes)
+      } else {
+        this.parseSegment(bytes)
+      }
 
-    // Drained here rather than on the frame: a reply is only correct for the
-    // state that provoked it, and a cursor-position report that waits for the
-    // next repaint can describe a cursor that has already moved on.
-    this.drainResponses()
+      // Drained here rather than on the frame: a reply is only correct for the
+      // state that provoked it, and a cursor-position report that waits for the
+      // next repaint can describe a cursor that has already moved on.
+      this.drainResponses()
+    } catch (e) {
+      this.failFatal(e)
+      return
+    }
     // Checked on the write that could have caused it rather than per frame:
     // switching screens is a parse-time event, and an idle pane shouldn't be
     // asking the core about it sixty times a second. parseAndDispatch already

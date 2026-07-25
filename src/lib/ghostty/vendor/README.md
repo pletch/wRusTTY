@@ -18,6 +18,24 @@ All three patch `patches/ghostty-wasm-api.patch`, which is applied to the
 via a package version bump. The WASM export surface is unchanged from stock
 `0.4.0-next.20.g1858a59` (79 exports, same names on both sides).
 
+## `scrollbackLimit` is a line count
+
+Worth knowing before touching it, because getting it wrong is silent and the
+symptom is a hung pane rather than an error.
+
+`GhosttyTerminalConfig.scrollback_limit` is a **line count**. The core converts
+it to bytes with `std.math.mul(usize, lines, bytes_per_line)`, and `usize` is
+32-bit on `wasm32` — so an out-of-range value does not error, it lands on
+`catch std.math.maxInt(usize)`, which the core reads as *unlimited*. Passing a
+byte-shaped value (this side did, for a while) therefore turns the scrollback
+cap off: a 100 MB flood retained ~1.15 M rows and grew the heap to ~2 GB before
+an allocation failed. Go through `scrollbackLinesFor` in `GhosttyEngine.ts`,
+which clamps to a range that cannot overflow; `scrollbackLimit.test.ts` pins it.
+
+An older revision of the WASM API did take a byte budget, so comments and
+snippets predating this build may say otherwise. The binary here is not at
+fault and needs no patch for it.
+
 ## Rebuilding
 
 Requires Zig 0.15.2 and a Linux (or WSL) build environment — building this

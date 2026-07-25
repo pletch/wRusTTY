@@ -112,6 +112,13 @@ export const CELL_BYTES = 16
 const CONFIG_BYTES = 4 * 4 + 16 * 4
 
 export interface TerminalConfig {
+  /**
+   * Lines of scrollback to retain — a **line count**, not a byte budget, and
+   * not free-form: the core multiplies it by its per-line page cost in 32-bit
+   * `usize`, and an out-of-range value overflows to "unlimited" rather than
+   * erroring. Always go through `scrollbackLinesFor` in GhosttyEngine, which
+   * documents the arithmetic and clamps to a range that cannot overflow.
+   */
   scrollbackLimit: number
   /** 0xRRGGBB. Zero means "let the core pick". */
   fgColor: number
@@ -180,24 +187,80 @@ export interface WasmCellData {
   graphemeLen: number
 }
 
-export function parseCell(view: DataView, byteOffset: number): WasmCellData {
+/** A zeroed cell, for use as a caller-owned scratch object with
+ * `parseCellInto`. Every field is overwritten on each parse, so the initial
+ * values only matter to the type. */
+export function emptyCell(): WasmCellData {
   return {
-    codepoint: view.getUint32(byteOffset, true),
-    fgR: view.getUint8(byteOffset + 4),
-    fgG: view.getUint8(byteOffset + 5),
-    fgB: view.getUint8(byteOffset + 6),
-    bgR: view.getUint8(byteOffset + 7),
-    bgG: view.getUint8(byteOffset + 8),
-    bgB: view.getUint8(byteOffset + 9),
-    flags: view.getUint8(byteOffset + 10),
-    width: view.getUint8(byteOffset + 11),
-    hyperlinkId: view.getUint16(byteOffset + 12, true),
-    graphemeLen: view.getUint8(byteOffset + 14),
+    codepoint: 0,
+    fgR: 0, fgG: 0, fgB: 0,
+    bgR: 0, bgG: 0, bgB: 0,
+    flags: 0,
+    width: 0,
+    hyperlinkId: 0,
+    graphemeLen: 0,
+  }
+}
+
+/**
+ * Reads one cell into a caller-supplied object rather than returning a fresh
+ * one. The render loop destructures the result into locals immediately and
+ * never holds onto it, so a per-cell object was pure garbage — at 200x60 and
+ * 60fps, ~720k allocations a second that V8 may or may not scalar-replace
+ * depending on whether this inlines. Handing in one long-lived object takes
+ * the question off the table.
+ *
+ * Returns `out` so it can still be used as an expression.
+ */
+export function parseCellInto(view: DataView, byteOffset: number, out: WasmCellData): WasmCellData {
+  out.codepoint = view.getUint32(byteOffset, true)
+  out.fgR = view.getUint8(byteOffset + 4)
+  out.fgG = view.getUint8(byteOffset + 5)
+  out.fgB = view.getUint8(byteOffset + 6)
+  out.bgR = view.getUint8(byteOffset + 7)
+  out.bgG = view.getUint8(byteOffset + 8)
+  out.bgB = view.getUint8(byteOffset + 9)
+  out.flags = view.getUint8(byteOffset + 10)
+  out.width = view.getUint8(byteOffset + 11)
+  out.hyperlinkId = view.getUint16(byteOffset + 12, true)
+  out.graphemeLen = view.getUint8(byteOffset + 14)
+  return out
+}
+
+/** Allocating form, for the handful of call sites that genuinely want their
+ * own object (or run once, not per cell per frame). Hot loops should own a
+ * scratch cell and call `parseCellInto`. */
+export function parseCell(view: DataView, byteOffset: number): WasmCellData {
+  return parseCellInto(view, byteOffset, emptyCell())
+}
+
+/**
+ * The core's allocator is out of memory.
+ *
+ * Distinguished from an ordinary error because it is the one failure every
+ * caller here used to swallow: `ghostty_wasm_alloc_u8_array` reports failure by
+ * returning a null pointer, and each call site simply returned on it. A pane
+ * whose writes and repaints have both quietly become no-ops is indistinguishable
+ * from a hung terminal — no error, no blank screen, no clue. Whoever catches
+ * this should treat the engine as dead and say so.
+ */
+export class GhosttyOutOfMemoryError extends Error {
+  constructor(bytes: number) {
+    super(`Ghostty's WASM core could not allocate ${bytes} bytes.`)
+    this.name = 'GhosttyOutOfMemoryError'
   }
 }
 
 export function allocBuffer(wasm: GhosttyWasm, size: number): number {
   return wasm.exports.ghostty_wasm_alloc_u8_array(size)
+}
+
+/** `allocBuffer`, but a failure is raised instead of returned. Prefer this
+ *  anywhere a null pointer would otherwise be handled by doing nothing. */
+export function allocBufferOrThrow(wasm: GhosttyWasm, size: number): number {
+  const ptr = wasm.exports.ghostty_wasm_alloc_u8_array(size)
+  if (ptr === 0) throw new GhosttyOutOfMemoryError(size)
+  return ptr
 }
 
 export function freeBuffer(wasm: GhosttyWasm, ptr: number, size: number): void {
@@ -212,8 +275,10 @@ export function freeBuffer(wasm: GhosttyWasm, ptr: number, size: number): void {
  */
 export function writeBytes(wasm: GhosttyWasm, termPtr: number, data: Uint8Array): void {
   if (data.length === 0) return
-  const bufPtr = allocBuffer(wasm, data.length)
-  if (bufPtr === 0) return
+  // Throws rather than returning on a failed allocation: silently dropping a
+  // write desynchronises the parser's state machine from the byte stream for
+  // the rest of the session, which is worse than stopping.
+  const bufPtr = allocBufferOrThrow(wasm, data.length)
   new Uint8Array(wasm.exports.memory.buffer, bufPtr, data.length).set(data)
   wasm.exports.ghostty_terminal_write(termPtr, bufPtr, data.length)
   freeBuffer(wasm, bufPtr, data.length)
@@ -227,8 +292,7 @@ export function writeString(wasm: GhosttyWasm, termPtr: number, str: string): vo
 export function readResponse(wasm: GhosttyWasm, termPtr: number): Uint8Array | null {
   if (!wasm.exports.ghostty_terminal_has_response(termPtr)) return null
   const cap = 256
-  const ptr = allocBuffer(wasm, cap)
-  if (ptr === 0) return null
+  const ptr = allocBufferOrThrow(wasm, cap)
   const n = wasm.exports.ghostty_terminal_read_response(termPtr, ptr, cap)
   const out = n > 0 ? new Uint8Array(wasm.exports.memory.buffer, ptr, n).slice() : null
   freeBuffer(wasm, ptr, cap)
