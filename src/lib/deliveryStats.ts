@@ -45,6 +45,18 @@ export interface DeliverySnapshot {
   /** Longest gap between the end of one delivery and the start of the next.
    *  A large value means the frontend was starved, not busy. */
   maxIdleMs: number
+  /** Longest gap between consecutive animation frames over the whole run.
+   *  rAF stops firing exactly when the main thread is blocked, so this is the
+   *  perceived freeze regardless of what caused it. */
+  maxFrameGapMs: number
+  /** The same two numbers restricted to the single longest idle gap above.
+   *  This is the pair that separates the two reasons the frontend can sit
+   *  there with no bytes: if frames kept firing across the window the main
+   *  thread was free and the bytes were not delivered (transport/IPC stall);
+   *  if frames stopped too, the thread was blocked and could not take
+   *  delivery. */
+  framesDuringMaxIdle: number
+  maxFrameGapInIdleMs: number
 }
 
 /** Backend counters, mirroring `DeliveryStats` in src-tauri/src/coalesce.rs. */
@@ -64,7 +76,11 @@ let firstAt = 0
 let lastEndAt = 0
 let lastAt = 0
 let maxIdle = 0
+let maxIdleStart = 0
+let maxIdleEnd = 0
 let parseTotal = 0
+let frameTimes: number[] = []
+let frameLoopId: number | null = null
 
 /** Bounds memory if instrumentation is left on for a long session: a 100 MB
  *  flood is only a few thousand deliveries, so this is generous, but an
@@ -72,13 +88,45 @@ let parseTotal = 0
  *  stop growing and the distribution describes the first N deliveries. */
 const MAX_SAMPLES = 100_000
 
+/** ~90 minutes at 60 Hz. Frame timestamps are only 8 bytes each, and the loop
+ *  stops with `stop()`, so this exists for the same reason as `MAX_SAMPLES`:
+ *  an instrument left on overnight must not grow without bound. */
+const MAX_FRAMES = 320_000
+
+/**
+ * Free-running rAF loop, live only while recording.
+ *
+ * It records nothing but frame arrival times. That is enough, because the
+ * browser cannot deliver a frame while the main thread is busy: a gap in this
+ * series *is* a main-thread stall, whatever produced it (parse, GC, layout).
+ * Pairing it with the delivery series is what distinguishes "the frontend was
+ * blocked" from "the frontend had nothing to do".
+ */
+function startFrameLoop(): void {
+  if (typeof requestAnimationFrame !== 'function' || frameLoopId !== null) return
+  const loop = (t: number) => {
+    if (frameTimes.length < MAX_FRAMES) frameTimes.push(t)
+    frameLoopId = requestAnimationFrame(loop)
+  }
+  frameLoopId = requestAnimationFrame(loop)
+}
+
+function stopFrameLoop(): void {
+  if (frameLoopId !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(frameLoopId)
+  }
+  frameLoopId = null
+}
+
 export function start(): void {
   reset()
   enabled = true
+  startFrameLoop()
 }
 
 export function stop(): void {
   enabled = false
+  stopFrameLoop()
 }
 
 export function reset(): void {
@@ -88,7 +136,17 @@ export function reset(): void {
   lastEndAt = 0
   lastAt = 0
   maxIdle = 0
+  maxIdleStart = 0
+  maxIdleEnd = 0
   parseTotal = 0
+  frameTimes = []
+}
+
+/** Injects a frame series without a real rAF loop, so the correlation logic is
+ *  testable in a headless run. Timestamps share `performance.now()`'s origin,
+ *  as rAF's do. */
+export function recordFrameForTest(t: number): void {
+  frameTimes.push(t)
 }
 
 export function isEnabled(): boolean {
@@ -110,7 +168,13 @@ export function record<T>(bytes: number, write: () => T): T {
   // nothing to do, which is the signature of an upstream bottleneck.
   if (lastEndAt > 0) {
     const idle = t0 - lastEndAt
-    if (idle > maxIdle) maxIdle = idle
+    if (idle > maxIdle) {
+      maxIdle = idle
+      // Remembered, not just measured: the frame series is later sliced to
+      // exactly this window to say whether the thread was free during it.
+      maxIdleStart = lastEndAt
+      maxIdleEnd = t0
+    }
   }
   try {
     return write()
@@ -132,11 +196,31 @@ function quantile(sorted: number[], q: number): number {
   return sorted[i]
 }
 
+/** Largest gap between consecutive frames, over the whole series or over a
+ *  window. Frames bounding the window are included so a stall that starts
+ *  before `from` and ends after it is still seen. */
+function frameGaps(from = -Infinity, to = Infinity): { count: number; maxGapMs: number } {
+  let count = 0
+  let maxGap = 0
+  let prev = 0
+  for (const t of frameTimes) {
+    if (prev > 0 && t > from && prev < to) {
+      const gap = t - prev
+      if (gap > maxGap) maxGap = gap
+    }
+    if (t >= from && t <= to) count++
+    prev = t
+  }
+  return { count, maxGapMs: maxGap }
+}
+
 export function snapshot(): DeliverySnapshot {
   const bySize = [...sizes].sort((a, b) => a - b)
   const byParse = [...parses].sort((a, b) => a - b)
   const spanMs = lastAt > firstAt ? lastAt - firstAt : 0
   const bytes = sizes.reduce((n, s) => n + s, 0)
+  const allFrames = frameGaps()
+  const idleFrames = maxIdle > 0 ? frameGaps(maxIdleStart, maxIdleEnd) : { count: 0, maxGapMs: 0 }
   return {
     count: sizes.length,
     bytes,
@@ -152,6 +236,9 @@ export function snapshot(): DeliverySnapshot {
     p95ParseMs: quantile(byParse, 0.95),
     maxParseMs: byParse[byParse.length - 1] ?? 0,
     maxIdleMs: maxIdle,
+    maxFrameGapMs: allFrames.maxGapMs,
+    framesDuringMaxIdle: idleFrames.count,
+    maxFrameGapInIdleMs: idleFrames.maxGapMs,
   }
 }
 
@@ -166,6 +253,29 @@ export function resetBackendStats(): Promise<void> {
 const mb = (n: number) => `${(n / 1048576).toFixed(2)} MB`
 const mbs = (n: number) => `${(n / 1048576).toFixed(1)} MB/s`
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`
+
+/**
+ * Why the frontend was idle across its longest starved window.
+ *
+ * The threshold is a frame budget, not a tuned constant: if the worst frame
+ * gap inside the window is under ~2 refreshes the thread was servicing frames
+ * normally and simply had no bytes, so the stall is upstream of the webview's
+ * event loop. If frames were absent for most of the window, the thread was
+ * blocked and could not have taken delivery even had bytes been waiting —
+ * which, when the backend is running ahead, they were.
+ */
+function idleReading(front: DeliverySnapshot): string {
+  if (front.framesDuringMaxIdle === 0 && front.maxIdleMs > 33) {
+    return 'MAIN THREAD BLOCKED (no frames at all)'
+  }
+  if (front.maxFrameGapInIdleMs > front.maxIdleMs * 0.5) {
+    return 'MAIN THREAD BLOCKED for most of it'
+  }
+  if (front.maxFrameGapInIdleMs < 33) {
+    return 'thread was FREE — bytes were not delivered'
+  }
+  return 'mixed — thread stalled for part of the window'
+}
 
 /**
  * Both ends of the path as one report, with the verdict spelled out rather
@@ -195,6 +305,16 @@ export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats
     `                       per delivery ${front.medianParseMs.toFixed(2)} median / ${front.p95ParseMs.toFixed(2)} p95 / ${front.maxParseMs.toFixed(2)} max ms`,
   )
   lines.push(`idle (starved)         longest gap between deliveries ${front.maxIdleMs.toFixed(1)} ms`)
+  if (front.maxFrameGapMs > 0) {
+    lines.push(
+      `main thread (rAF)      worst frame gap ${front.maxFrameGapMs.toFixed(1)} ms over the run`,
+    )
+    lines.push(
+      `                       during that idle gap: ${front.framesDuringMaxIdle} frames, worst ${front.maxFrameGapInIdleMs.toFixed(1)} ms => ${idleReading(front)}`,
+    )
+  } else {
+    lines.push('main thread (rAF)      not sampled (no animation frames recorded)')
+  }
 
   // The reading, stated. These thresholds are deliberately coarse: this is a
   // pointer at where to look next, not a measurement in its own right.

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as ds from './deliveryStats'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -12,6 +12,12 @@ describe('deliveryStats', () => {
   beforeEach(() => {
     ds.stop()
     ds.reset()
+  })
+
+  // The correlation tests replace `performance.now`; nothing else may inherit it.
+  afterEach(() => {
+    ds.stop()
+    vi.restoreAllMocks()
   })
 
   it('still runs the write when disabled, and records nothing', () => {
@@ -83,6 +89,59 @@ describe('deliveryStats', () => {
     expect(report).toContain('IPC/FRONTEND-BOUND')
   })
 
+  /**
+   * The reason the rAF series exists: an idle frontend and a blocked frontend
+   * look identical in the delivery numbers alone. These two cases differ only
+   * in whether frames kept arriving across the starved window.
+   */
+  describe('main-thread correlation across the longest idle gap', () => {
+    /** Drives `record` against a controlled clock so a 2.4 s gap can be
+     *  reproduced without waiting 2.4 s. */
+    function floodWithGap(framesDuringGap: boolean) {
+      let now = 0
+      vi.spyOn(performance, 'now').mockImplementation(() => now)
+      ds.start()
+
+      now = 1000
+      ds.record(36000, () => { now += 1 })   // ends at 1001
+
+      // Frames before the gap, in both cases.
+      for (let t = 900; t <= 1000; t += 16) ds.recordFrameForTest(t)
+      if (framesDuringGap) {
+        for (let t = 1016; t < 3401; t += 16) ds.recordFrameForTest(t)
+      }
+      // Frames resume after it, in both cases.
+      for (let t = 3402; t < 3500; t += 16) ds.recordFrameForTest(t)
+
+      now = 3401
+      ds.record(36000, () => { now += 1 })   // 2400 ms after the previous end
+      return ds.snapshot()
+    }
+
+    it('reads a free thread when frames kept arriving through the gap', () => {
+      const s = floodWithGap(true)
+      expect(s.maxIdleMs).toBeCloseTo(2400)
+      expect(s.framesDuringMaxIdle).toBeGreaterThan(100)
+      expect(s.maxFrameGapInIdleMs).toBeLessThan(33)
+      expect(ds.formatReport(s, null)).toContain('thread was FREE')
+    })
+
+    it('reads a blocked thread when frames stopped for the gap', () => {
+      const s = floodWithGap(false)
+      expect(s.maxIdleMs).toBeCloseTo(2400)
+      expect(s.framesDuringMaxIdle).toBe(0)
+      // The stall is visible as one enormous gap spanning the whole window.
+      expect(s.maxFrameGapMs).toBeGreaterThan(2000)
+      expect(ds.formatReport(s, null)).toContain('MAIN THREAD BLOCKED')
+    })
+  })
+
+  it('says the thread was not sampled when no frames were recorded', () => {
+    ds.start()
+    ds.record(1000, () => {})
+    expect(ds.formatReport(ds.snapshot(), null)).toContain('not sampled')
+  })
+
   it('says so plainly when nothing was recorded', () => {
     expect(ds.formatReport(base, null)).toContain('call start()')
   })
@@ -100,4 +159,5 @@ const base: ds.DeliverySnapshot = {
   count: 0, bytes: 0, spanMs: 0, bytesPerSec: 0, parseMs: 0, parseShare: 0,
   minBytes: 0, medianBytes: 0, p95Bytes: 0, maxBytes: 0,
   medianParseMs: 0, p95ParseMs: 0, maxParseMs: 0, maxIdleMs: 0,
+  maxFrameGapMs: 0, framesDuringMaxIdle: 0, maxFrameGapInIdleMs: 0,
 }
