@@ -2,6 +2,14 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { install as installDeliveryStats } from './lib/deliveryStats'
+
+// Puts `__wrusttyDelivery` on the global so the *real* PTY delivery path can be
+// measured from devtools in a live session — the half of a flood the benchmark
+// harness cannot see, because the harness starts from a buffer already in the
+// webview. Installing only registers the handle; recording stays off until
+// `__wrusttyDelivery.start()` is called, so this costs nothing by default.
+installDeliveryStats()
 
 // The Phase 7 benchmark harness runs in this exact WebView — same engines, same
 // WASM as production. It is reached either by loading with a `#bench` URL

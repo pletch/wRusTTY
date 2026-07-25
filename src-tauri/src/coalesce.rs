@@ -16,7 +16,9 @@
 //! `HostKeyPrompt` stay on the original JSON channel, where serde typing is
 //! actually useful.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -25,6 +27,107 @@ use wr_core::{ConnectionEvent, ConnectionStatus};
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 const FLUSH_SIZE_THRESHOLD: usize = 32 * 1024;
+
+/// Counters for what this forwarder actually pushed at the webview.
+///
+/// Exists to answer one question the engine benchmarks structurally cannot:
+/// when a flood is slow, is the frontend's parser the constraint or is it
+/// everything upstream of it — transport reads, this coalescer, and the IPC
+/// hop? Comparing the send rate recorded here against the receive rate the
+/// frontend records (`src/lib/deliveryStats.ts`) separates those.
+///
+/// Process-wide and lock-free rather than per-session: it is a diagnostic that
+/// must not perturb the thing it measures, and a flood is exactly when an
+/// added mutex would be least welcome. The consequence is that concurrent
+/// sessions aggregate together, which `reset` before a measurement makes
+/// manageable.
+///
+/// `FLUSH_SIZE_THRESHOLD` is a floor, not a cap: a flush carries however much
+/// the read that crossed the line overshot by, so `max_bytes` is the number
+/// worth looking at when reasoning about frontend stalls.
+mod stats {
+    use super::*;
+
+    pub(super) static FLUSHES: AtomicU64 = AtomicU64::new(0);
+    pub(super) static BYTES: AtomicU64 = AtomicU64::new(0);
+    pub(super) static MIN_BYTES: AtomicUsize = AtomicUsize::new(usize::MAX);
+    pub(super) static MAX_BYTES: AtomicUsize = AtomicUsize::new(0);
+    /// Micros since `origin()`, for the first and most recent flush — the span
+    /// the byte total was delivered over, and so the send rate.
+    pub(super) static FIRST_US: AtomicU64 = AtomicU64::new(0);
+    pub(super) static LAST_US: AtomicU64 = AtomicU64::new(0);
+
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+
+    pub(super) fn origin() -> Instant {
+        *ORIGIN.get_or_init(Instant::now)
+    }
+
+    pub(super) fn record(len: usize) {
+        let now = origin().elapsed().as_micros() as u64;
+        FLUSHES.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(len as u64, Ordering::Relaxed);
+        MIN_BYTES.fetch_min(len, Ordering::Relaxed);
+        MAX_BYTES.fetch_max(len, Ordering::Relaxed);
+        // Only the first flush sets the start of the window.
+        let _ = FIRST_US.compare_exchange(0, now.max(1), Ordering::Relaxed, Ordering::Relaxed);
+        LAST_US.store(now, Ordering::Relaxed);
+    }
+}
+
+/// What `coalesce.rs` sent to the webview, as of now. Paired with the
+/// frontend's own receive-side numbers to locate a throughput ceiling.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliveryStats {
+    pub flushes: u64,
+    pub bytes: u64,
+    /// Smallest and largest single flush. `min` is usually a partial tail or an
+    /// interval-tick flush; `max` shows how far past the 32 KB threshold a
+    /// delivery actually runs.
+    pub min_bytes: u64,
+    pub max_bytes: u64,
+    /// Wall time from the first flush to the most recent, in milliseconds.
+    pub span_ms: f64,
+    /// Bytes per second across that span — the rate the backend sustained.
+    pub bytes_per_sec: f64,
+}
+
+#[tauri::command]
+pub fn delivery_stats() -> DeliveryStats {
+    let flushes = stats::FLUSHES.load(Ordering::Relaxed);
+    if flushes == 0 {
+        return DeliveryStats::default();
+    }
+    let bytes = stats::BYTES.load(Ordering::Relaxed);
+    let first = stats::FIRST_US.load(Ordering::Relaxed);
+    let last = stats::LAST_US.load(Ordering::Relaxed);
+    let span_ms = (last.saturating_sub(first)) as f64 / 1000.0;
+    DeliveryStats {
+        flushes,
+        bytes,
+        min_bytes: stats::MIN_BYTES.load(Ordering::Relaxed) as u64,
+        max_bytes: stats::MAX_BYTES.load(Ordering::Relaxed) as u64,
+        span_ms,
+        bytes_per_sec: if span_ms > 0.0 {
+            bytes as f64 / (span_ms / 1000.0)
+        } else {
+            0.0
+        },
+    }
+}
+
+/// Zero the counters. Call immediately before the run being measured, since
+/// the counters are process-wide and every session feeds them.
+#[tauri::command]
+pub fn reset_delivery_stats() {
+    stats::FLUSHES.store(0, Ordering::Relaxed);
+    stats::BYTES.store(0, Ordering::Relaxed);
+    stats::MIN_BYTES.store(usize::MAX, Ordering::Relaxed);
+    stats::MAX_BYTES.store(0, Ordering::Relaxed);
+    stats::FIRST_US.store(0, Ordering::Relaxed);
+    stats::LAST_US.store(0, Ordering::Relaxed);
+}
 
 /// Now that output is coalesced (see above), far fewer, larger messages are
 /// ever in flight at once, so a modest bound already leaves ample slack —
@@ -105,6 +208,7 @@ fn flush(
         return true;
     }
     let bytes = std::mem::take(buf);
+    stats::record(bytes.len());
     log_data(&bytes);
     data_channel.send(InvokeResponseBody::Raw(bytes)).is_ok()
 }
@@ -113,6 +217,22 @@ fn flush(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// The delivery counters are process-wide, and `cargo test` runs these in
+    /// parallel on one process — so every test that flushes bumps the same
+    /// numbers. Each takes this first, which serialises them just enough for
+    /// the counter assertions to mean anything.
+    ///
+    /// Tokio's mutex rather than `std`'s because the guard is deliberately
+    /// held across the `.await`s that drive the forwarder, which is precisely
+    /// what a std guard must not do (and what `clippy::await_holding_lock`
+    /// exists to catch). It also has no poisoning, so one failing test cannot
+    /// cascade into the others.
+    static COALESCE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn serial_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        COALESCE_TESTS.lock().await
+    }
 
     #[derive(Clone, Serialize)]
     #[serde(
@@ -140,8 +260,58 @@ mod tests {
         (channel, received)
     }
 
+    /// The counters are process-wide, so this test owns them for its duration
+    /// — hence one test covering the whole surface rather than several racing
+    /// each other through `cargo test`'s thread pool.
+    #[tokio::test]
+    async fn delivery_stats_count_what_was_actually_flushed() {
+        let _serial = serial_guard().await;
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let status_channel = Channel::new(|_| Ok(()));
+        let (data_channel, _received) = recording_data_channel();
+
+        reset_delivery_stats();
+        assert_eq!(delivery_stats().flushes, 0, "reset should zero the counters");
+        assert_eq!(delivery_stats().bytes, 0);
+
+        let handle = tokio::spawn(forward_coalesced(
+            rx,
+            status_channel,
+            data_channel,
+            |status| TestEvent::Status {
+                status: format!("{status:?}"),
+            },
+            |_: &[u8]| {},
+        ));
+
+        // One oversized burst (flushes on the size branch, carrying the whole
+        // overshoot past the threshold) and one small tail (flushed on close).
+        let big = vec![b'x'; FLUSH_SIZE_THRESHOLD + 5000];
+        tx.send(ConnectionEvent::Data(big.clone())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tx.send(ConnectionEvent::Data(b"tail".to_vec()))
+            .await
+            .unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        let stats = delivery_stats();
+        assert_eq!(stats.flushes, 2);
+        assert_eq!(stats.bytes, (FLUSH_SIZE_THRESHOLD + 5000 + 4) as u64);
+        assert_eq!(stats.min_bytes, 4, "the tail is the smallest flush");
+        assert_eq!(
+            stats.max_bytes,
+            (FLUSH_SIZE_THRESHOLD + 5000) as u64,
+            "a flush carries past the threshold by the overshoot — the number \
+             that matters for frontend stalls"
+        );
+
+        reset_delivery_stats();
+    }
+
     #[tokio::test]
     async fn small_chunks_under_the_size_threshold_are_coalesced() {
+        let _serial = serial_guard().await;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let status_channel = Channel::new(|_| Ok(()));
         let (data_channel, received) = recording_data_channel();
@@ -174,6 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn exceeding_the_size_threshold_flushes_immediately() {
+        let _serial = serial_guard().await;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let status_channel = Channel::new(|_| Ok(()));
         let (data_channel, received) = recording_data_channel();
@@ -211,6 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_event_flushes_pending_data_first_preserving_order() {
+        let _serial = serial_guard().await;
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let status_received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let status_recorded = status_received.clone();

@@ -23,6 +23,7 @@ import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
+import * as deliveryStats from '../lib/deliveryStats'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 
@@ -664,7 +665,10 @@ export function Terminal({
     const onData = (bytes: Uint8Array) => {
       if (disposed) return
       setConnecting(false)
-      term.write(bytes)
+      // Wrapped rather than called directly so the real delivery path can be
+      // measured in a live session — see lib/deliveryStats.ts. Off by default,
+      // and when off this is a branch and a call, no clock reads.
+      deliveryStats.record(bytes.length, () => term.write(bytes))
     }
 
     // Readline/Readline-hex (serial only) buffer keystrokes locally and
