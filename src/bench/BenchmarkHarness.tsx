@@ -101,7 +101,7 @@ export function BenchmarkHarness() {
   const [captured, setCaptured] = useState<Workload | null>(null)
   const [copied, setCopied] = useState(false)
   const [frameMs, setFrameMs] = useState(0)
-  // Off = feed floods the way the app does (32 KB coalescer chunks); the
+  // Off = feed floods the way the app does (coalescer-sized deliveries); the
   // realistic stall. On = one monolithic write; the raw-parser worst case.
   const [monolithic, setMonolithic] = useState(false)
   const [gridSize, setGridSize] = useState<GridSizeId>('fit')
@@ -320,7 +320,7 @@ export function BenchmarkHarness() {
       </div>
 
       <div style={S.controls}>
-        <span style={S.groupLabel} title="Longest main-thread stall while the flood drains — the freeze a user feels. By default the flood is fed the way the app delivers output (32 KB coalescer chunks across event-loop turns), so the stall is one production can actually produce.">
+        <span style={S.groupLabel} title="Longest main-thread stall while the flood drains — the freeze a user feels. By default the flood is fed the way the app delivers output (coalescer-sized deliveries across event-loop turns), so the stall is one production can actually produce.">
           Flood stress (max stall):
         </span>
         {FLOOD_SIZES.map((mb) => (
@@ -334,7 +334,7 @@ export function BenchmarkHarness() {
             {mb} MB
           </button>
         ))}
-        <label style={S.checkLabel} title="One monolithic write instead of 32 KB coalescer chunks — the raw-parser worst case the app never actually produces.">
+        <label style={S.checkLabel} title="One monolithic write instead of coalescer-sized deliveries — the raw-parser worst case the app never actually produces.">
           <input type="checkbox" checked={monolithic} onChange={(e) => setMonolithic(e.target.checked)} />
           single write (worst case)
         </label>

@@ -26,7 +26,39 @@ use tokio::sync::mpsc::Receiver;
 use wr_core::{ConnectionEvent, ConnectionStatus};
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(8);
-const FLUSH_SIZE_THRESHOLD: usize = 32 * 1024;
+
+/// Buffered bytes that force a flush regardless of the interval.
+///
+/// This is a flood-path knob and nothing else. It can only bind when output
+/// arrives faster than `FLUSH_SIZE_THRESHOLD / FLUSH_INTERVAL`; below that
+/// rate the ticker always fires first, so interactive echo latency is
+/// governed by `FLUSH_INTERVAL` and is untouched by this value.
+///
+/// It was 32 KB, which put a 100 MB flood squarely on the size branch: 2931
+/// messages of ~33 KB. Measuring both ends of the real delivery path
+/// (`delivery_stats` here, `src/lib/deliveryStats.ts` in the webview) showed
+/// the per-message IPC tax at ~0.70 ms against ~1.06 ms of actual engine
+/// work — a 40% surcharge for crossing into the webview, paid 2931 times.
+/// The frontend was idle, not blocked, for most of the shortfall: a rAF
+/// series taken across its longest starved window showed frames arriving at a
+/// clean 15.2 ms cadence while it waited on bytes the backend had already
+/// sent.
+///
+/// Raising it to 256 KB measured 15.1 -> 19.7 MB/s on a 100 MB local flood,
+/// with 459 flushes in place of 2931. Note what that does *not* mean: a flood
+/// still flushes on the size branch, not the interval one. 256 KB accumulates
+/// in ~6 ms at 41 MB/s, just inside the tick, so the median flush comes out at
+/// 257 KB — threshold plus overshoot. Only the lulls flush on the ticker.
+///
+/// 256 KB is near the point of diminishing returns rather than an arbitrary
+/// step up. Measured across the two settings, the IPC cost decomposes into
+/// ~0.61 ms fixed per message plus ~2.9 ms per MB of copy; past this size the
+/// per-byte term dominates and there is little left for a bigger buffer to
+/// amortise. 1 MB would save a further ~6% of wall time while making each
+/// uninterrupted engine write ~32 ms — visible jank for very little. At
+/// 256 KB the write is ~8 ms, inside a frame, and the measured worst frame
+/// gap moved only 106 -> 121 ms.
+const FLUSH_SIZE_THRESHOLD: usize = 256 * 1024;
 
 /// Counters for what this forwarder actually pushed at the webview.
 ///

@@ -152,7 +152,8 @@ const BLOCK_SETTLE_FRAMES = 3
  *   - 0: one monolithic write. Both engines parse it uninterrupted, so the stall
  *     ≈ the whole parse — the raw-parser / absolute-worst-case number.
  *   - >0: the payload is written in chunkBytes pieces across event-loop turns,
- *     modelling the Rust coalescer that caps every real delivery at 32 KB. This
+ *     modelling the Rust coalescer, whose flush threshold is the *floor* on a
+ *     real delivery rather than a cap (see COALESCE_THRESHOLD). This
  *     is the stall the app can actually produce. Writes are fire-and-forget
  *     (like `onData`), so the drain is considered done only once paints settle —
  *     xterm parses its queue off the write call.

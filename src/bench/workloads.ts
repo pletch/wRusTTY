@@ -171,18 +171,28 @@ export const flood: Workload = {
  *     buf.extend_from_slice(&bytes);
  *     if buf.len() >= FLUSH_SIZE_THRESHOLD { flush(...) }
  *
- * so a delivery is always at least 32 KB and routinely larger — by however
- * much the read that crossed the line overshot. Feeding the engines exactly
- * 32 KB therefore modelled a best case that the app never actually produces,
- * and it mattered: at 32 KB a delivery parses in well under a frame for either
- * engine, so the stall metric bottomed out at the display's refresh interval
- * and reported the same number no matter how fast the engine was.
+ * so a delivery is always at least the threshold and routinely larger — by
+ * however much the read that crossed the line overshot. Feeding the engines
+ * exactly the threshold therefore modelled a best case the app never actually
+ * produces, and it mattered: a small delivery parses in well under a frame for
+ * either engine, so the stall metric bottomed out at the display's refresh
+ * interval and reported the same number no matter how fast the engine was.
  *
- * The 8 ms `FLUSH_INTERVAL` is not a rate limit either. It only fires when
- * output is trickling below the threshold; under a flood the size branch wins
- * every time and the ticker never gets a look in.
+ * Mirrors `FLUSH_SIZE_THRESHOLD` in src-tauri/src/coalesce.rs and must be
+ * changed with it — a harness modelling a coalescer the app no longer has
+ * measures nothing useful. It was raised from 32 KB to 256 KB after measuring
+ * the real path: at 32 KB the per-message IPC tax was ~40% on top of engine
+ * time, paid once per delivery.
+ *
+ * Measured against the real path at 256 KB, this model holds up: real flushes
+ * came out at a 257 KB median against a 256 KB threshold, which is exactly the
+ * `threshold + overshoot` shape produced here. The 8 ms `FLUSH_INTERVAL` does
+ * not take over at this size — 256 KB accumulates in ~6 ms at flood rates, so
+ * the size branch still wins and only lulls flush on the ticker. What the
+ * model does not reproduce is that minority of small ticker flushes, which is
+ * why its mean delivery runs a little high.
  */
-export const COALESCE_THRESHOLD = 32 * 1024
+export const COALESCE_THRESHOLD = 256 * 1024
 
 /**
  * One upstream read, before coalescing — an `ssh2` channel read, a serial
