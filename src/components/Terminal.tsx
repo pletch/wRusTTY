@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { TerminalEngine } from '../lib/terminalEngine'
-import { XtermEngine } from '../lib/xtermEngine'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import {
   Search,
@@ -17,7 +16,6 @@ import {
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import '@xterm/xterm/css/xterm.css'
 import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
@@ -41,8 +39,8 @@ const SCROLLBAR_WIDTH = 8
  * Tauri backend to invoke, and a failed report about a failure should never
  * become an unhandled rejection on top of the failure itself.
  */
-function reportEngineFailure(engine: string, message: string) {
-  void logError(`terminal engine '${engine}' failed to start: ${message}`).catch(() => {})
+function reportEngineFailure(message: string) {
+  void logError(`terminal engine failed to start: ${message}`).catch(() => {})
 }
 
 interface Props {
@@ -83,8 +81,6 @@ interface Props {
    * overlays as a "Reconnect" action. */
   /** Reopen failed connections in place. */
   onReconnect?: () => void
-  /** Which engine to use for rendering. Defaults to 'ghostty' (Phase 7). */
-  engine?: 'xterm' | 'ghostty'
 }
 
 interface PendingHostKey {
@@ -116,7 +112,6 @@ export function Terminal({
   onBell,
   onBackToConnect,
   onReconnect,
-  engine = 'ghostty',
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -351,17 +346,7 @@ export function Terminal({
     let disposed = false
     let sessionId: string | null = null
 
-    if (engine === 'ghostty') {
-      termRef.current = new GhosttyEngine()
-    } else {
-      termRef.current = new XtermEngine({
-        fontFamily: settingsRef.current.fontFamily,
-        fontSize: settingsRef.current.fontSize,
-        scrollback: settingsRef.current.scrollback,
-        themeName: settingsRef.current.themeName,
-        backgroundOpacity: settingsRef.current.backgroundOpacity,
-      })
-    }
+    termRef.current = new GhosttyEngine()
     const term = termRef.current
 
     // The theme/font effects above are declared before this one, so on a first
@@ -382,7 +367,7 @@ export function Terminal({
     // Engines that can fail to start say so here (see TerminalEngine.
     // onInitError); ones that can't don't implement it.
     const initErrorListener = term.onInitError?.((message) => {
-      reportEngineFailure(engine, message)
+      reportEngineFailure(message)
       if (disposed) return
       setEngineFailed(message)
     })

@@ -131,22 +131,6 @@ describe('paneReconnected', () => {
   })
 })
 
-describe('paneEngineSet', () => {
-  it('sets the engine and bumps generation', () => {
-    const l = leaf({ engine: 'ghostty', generation: 0 })
-    const t = tab(l)
-    const state = tabsReducer({ tabs: [t], activeTabId: t.id }, {
-      type: 'paneEngineSet',
-      tabId: t.id,
-      paneId: l.id,
-      engine: 'xterm',
-    })
-    const updated = state.tabs[0].root as typeof l
-    expect(updated.engine).toBe('xterm')
-    expect(updated.generation).toBe(1)
-  })
-})
-
 describe('workspaceMaterialized', () => {
   it('is a no-op when nothing was restored', () => {
     const before: TabsState = { tabs: [tab(leaf())], activeTabId: null }

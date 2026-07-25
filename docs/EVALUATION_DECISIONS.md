@@ -1,0 +1,37 @@
+# Evaluation decisions — post-refactor review
+
+Outcomes for the review items in `EVALUATION_PLAN.md` (Tracks A, B and C;
+Track D — features — was explicitly out of scope for this pass).
+
+The `why` matters more than the outcome. An item evaluated and rejected is a
+finished item, and this is what stops it being re-litigated.
+
+| ID | Evidence | Decision | Why |
+|---|---|---|---|
+| A1 | 8 fresh `Record`s per App render; reducer already returns identity-stable state on no-op actions | **Done** (option 1) | `useMemo` on `[paneRuntime]`, 8 lines. Not on the throughput path — terminal output bypasses React — but it is the precondition for `React.memo` on TabBar/StatusBar/Pane ever being measurable. Option 2 (pass `paneRuntime` whole, delete the eight `*Of()`) deliberately **not** taken: it touches 4 components to remove a shim that now costs nothing per render. Revisit only alongside actually adding `React.memo`. |
+| A2 | Mutation-tested three ways: wrong palette index → 7 failures, dropped `inverse` → 1, perturbed default colour → 11 | **Done** — extended, not narrowed | Per C1: you cannot delete the user-facing engine on the strength of an oracle that only compares text. `GridSnapshot` now carries per-cell `fg`/`bg`/`flags`. **It passed first time** — contrary to the plan's expectation — so the mutation testing above is what establishes the assertions aren't vacuous. Both engines are pinned to one palette (`gridPalette.ts`) because neither side's native colour representation is convertible to the other's after the fact. |
+| A3 | Union was declared inside App's component body, unreachable from any test file | **Done** | Type, dispatcher and the one real decision (`profileConnectionSource`) moved to `state/vaultGate.ts`; effects injected as `VaultGateEffects`, so App keeps the reducer/modal calls. 7 tests now cover the routing, including the vault-query-rejects case. Phase 5's "a fourth gated action is a new union member" is now a checkable claim. |
+| A4 | `allLeaves(t.root)` re-walked inside a `.find` callback | **Done** (bundled with A5) | Bounded by `MAX_PANES_PER_TAB = 8`, so invisible in practice — fixed only because A5 put us in adjacent code, exactly as the plan directed. Pre-split ids now walked once into a `Set`. Legibility more than speed. |
+| A5 | Prune `useEffect` had no dep array | **Done** — `[liveLeafIds.join(',')]` | The plan flagged this as defensibly "leave alone" given the risk of pruning a container from under a live pane. Taken because the risk is one-directional: the effect only ever *removes* containers whose pane is no longer live, so running too often does nothing and running too rarely defers a cleanup. The dangerous case is a *stale* live set, which a value dep cannot produce. A reference dep would have changed nothing — the caller rebuilds the array every render. |
+| B0 | No recorded numbers existed to regress against | **Partly done — harness prepared, measurement not run** | Added a **pinned grid selector** (fit / 80×24 / 200×60) to the harness and recorded the grid mode in the Markdown export, plus `docs/bench/README.md` with the full protocol and the 5%/p99 noise gate. The plan's 200×60 requirement needed more than a workload variant: workloads are built at the engine's own `cols`/`rows`, so the engines themselves had to be resizable, or a "200×60" run would still have rendered at whatever the window fit. **The measurement runs themselves are yours** — they need your machine, your GPU, mains power and an untouched window. |
+| B1 | Not profiled — see B0 | **B1a done, B1b rejected** | `parseCellInto(view, offset, out)` with one renderer-owned scratch cell, plus the same in `GhosttyEngine.readRows` (a scrollback-wide search walks hundreds of thousands of cells). Shipped without the profile the plan asks for because B1a is strictly fewer allocations with no readability cost and no behaviour change — there is no version of the evidence that argues against it. **B1b (inline typed-array reads) is rejected until B1a is measured and lands short of target**, per the plan's own rule; it trades real legibility for an unmeasured gain. |
+| B2 | The asymmetry with `lineBuffer`/`graphemeBuffer` beside it — both already cache and realloc only on size change | **Done** | Now `viewportBuffer(wasm, cells)`, mirroring `lineBuffer`'s shape exactly; freed in `dispose`. Was a malloc + zero-fill + free of 30 KB (80×24) to 192 KB (200×60) every frame, per pane. **The `.fill(0)` was kept, and the plan's own reasoning is why**: PR #142 zero-initialises WASM *page* buffers, and a cached buffer is reused — precisely the case #142 does not cover. A memset is far cheaper than the malloc it replaces. |
+| B3 | **`ghostty_render_state_is_row_dirty(term, y)` is already in the vendored ABI** (`wasmBindings.ts:71`) and is never called | **Deferred** — but not dead | The plan expected this to be the item's killer ("if there is no per-row damage query, this item is dead"). It isn't: precondition (a) is satisfied with no new WASM build. Precondition (b) — that B1+B2 left you short of target — is unevaluated because B0 hasn't been run. So this is deferred on *missing evidence*, not on missing capability, which is a materially better position than the plan assumed. Still the most invasive change on the list and the most likely to produce a machine-specific visual artefact. |
+| B4 | Not measured — needs the 3×2 matrix (`FLUSH_INTERVAL` 8/16/24 ms × typing/flood) | **Deferred, unchanged at 8 ms** | This is a tradeoff, not a bug, and the plan is explicit that it is what the `latency` and `throughput` workloads exist to settle. Changing the constant on reasoning alone would trade a known-good echo latency for an unmeasured throughput gain. `FLUSH_INTERVAL` is `src-tauri/src/coalesce.rs:26`; the matrix is a one-line edit and a rebuild per cell. |
+| C1 | Bundle measured at HEAD vs after: app chunk **928.88 kB → 429.06 kB** (gzip 259.13 → 128.45 kB); app CSS 28.90 → 24.66 kB | **Option 2 — oracle only** | Engine picker, `paneEngineSet` reducer action, `PaneLeaf.engine`, and Terminal.tsx's branch all gone; `xtermEngine.ts` relocated to `src/bench/`. xterm.js now loads only in the lazily-split benchmark chunk (27.41 → 527.69 kB), which is where the ~500 kB came from — a payoff the plan didn't anticipate and the strongest single argument for the decision. **What it cost:** the WebGL-context-loss fallback. Judged acceptable because context loss is recoverable in-engine and a dead WASM core is not something a second renderer fixes; if that turns out to be wrong, the fix is an automatic fallback on failure, not restoring the picker. Rationale written into `parity.ts`'s header as the plan requires. Option 3 (full removal) not taken — the parity test would become a self-snapshot. |
+| D1–D9 | — | **Out of scope** | Features were excluded from this pass by request. |
+
+## Verification
+
+`tsc -b` clean, `oxlint` clean, `vite build` clean, 278 tests passing across 16
+files (up from 257/15 — the vault-gate, palette and colour/attribute parity
+tests are new; the `paneEngineSet` reducer test is gone with the feature).
+
+## What is still owed
+
+1. **Run B0.** Everything left in Track B is unfalsifiable without it, and the
+   baseline is what makes the next six months of changes evaluable rather than
+   speculative. `docs/bench/README.md` has the protocol.
+2. Re-measure B1a and B2 against that baseline. Both are believed-good on
+   structural grounds; neither has a number.
+3. Then, and only then, decide B3 and B4 on evidence.

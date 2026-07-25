@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -25,7 +25,6 @@ import {
   ArrowLeftRight,
   Folder,
   Search,
-  Cpu,
 } from 'lucide-react'
 import { toast } from './lib/toast'
 import * as profiles from './lib/profiles'
@@ -53,6 +52,8 @@ import type { SplitLimit } from './lib/paneTree'
 import * as sessionSnapshot from './lib/sessionSnapshot'
 import type { SessionSnapshot } from './lib/sessionSnapshot'
 import type { PaneLeaf, PaneNode, Tab } from './types'
+import { runVaultGatedAction } from './state/vaultGate'
+import type { VaultGatedAction, VaultGateEffects } from './state/vaultGate'
 import {
   splitLimitHint,
   profileToInitial,
@@ -154,15 +155,23 @@ function App() {
   // id. The *ByPane/attentionPanes names below are kept as the read-side
   // views so the rest of this component (and the child components they're
   // passed to) didn't need to change.
+  //
+  // Memoized on `paneRuntime` because the reducer already returns the *same*
+  // object when nothing changed (see its no-op cases), so these eight views
+  // only need rebuilding when it genuinely does. Unmemoized they were eight
+  // fresh Records per App render — not on the output path, since terminal
+  // output bypasses React entirely, but it also means no child prop identity
+  // ever survives a render, which is what makes React.memo on TabBar /
+  // StatusBar / Pane worth nothing today.
   const [paneRuntime, dispatchPaneRuntime] = useReducer(paneRuntimeReducer, {})
-  const statusByPane = statusByPaneOf(paneRuntime)
-  const connectedAtByPane = connectedAtByPaneOf(paneRuntime)
-  const loggingByPane = loggingByPaneOf(paneRuntime)
-  const forwardsOpenByPane = forwardsOpenByPaneOf(paneRuntime)
-  const filesOpenByPane = filesOpenByPaneOf(paneRuntime)
-  const sessionIdByPane = sessionIdByPaneOf(paneRuntime)
-  const activityByPane = activityByPaneOf(paneRuntime)
-  const attentionPanes = attentionPanesOf(paneRuntime)
+  const statusByPane = useMemo(() => statusByPaneOf(paneRuntime), [paneRuntime])
+  const connectedAtByPane = useMemo(() => connectedAtByPaneOf(paneRuntime), [paneRuntime])
+  const loggingByPane = useMemo(() => loggingByPaneOf(paneRuntime), [paneRuntime])
+  const forwardsOpenByPane = useMemo(() => forwardsOpenByPaneOf(paneRuntime), [paneRuntime])
+  const filesOpenByPane = useMemo(() => filesOpenByPaneOf(paneRuntime), [paneRuntime])
+  const sessionIdByPane = useMemo(() => sessionIdByPaneOf(paneRuntime), [paneRuntime])
+  const activityByPane = useMemo(() => activityByPaneOf(paneRuntime), [paneRuntime])
+  const attentionPanes = useMemo(() => attentionPanesOf(paneRuntime), [paneRuntime])
   // Set by the toolbar search button to ask one specific pane's terminal to
   // open its search box (the box itself is per-Terminal local state, so this
   // is how an App-level control reaches into it). Targeted by pane id — not a
@@ -412,38 +421,17 @@ function App() {
     if (modal.kind === 'restorePrompt') applyRestore(modal.snapshot, vaultStatus === 'unlocked')
   }
 
-  /** What a vault unlock was for — the launch-restore prompt, the
-   * open-workspace prompt, and the per-pane saved-session sidebar's own
-   * unlock form each used to hand-roll their own password/OS pair of
-   * unlock-then-act functions (six total). One dispatcher plus two shared
-   * unlock entry points below replace all six; adding a fourth vault-gated
-   * action is a new union member here, not a new pair of functions. */
-  type VaultGatedAction =
-    | { kind: 'restoreSessions'; snapshot: SessionSnapshot }
-    | { kind: 'openWorkspace'; workspace: Workspace; originTabId: string | null }
-    | { kind: 'connectProfile'; tabId: string; paneId: string; profile: SessionProfile }
-
-  async function runVaultGatedAction(action: VaultGatedAction) {
-    switch (action.kind) {
-      case 'restoreSessions':
-        applyRestore(action.snapshot, true)
-        return
-      case 'openWorkspace':
-        materializeWorkspace(action.workspace, true, action.originTabId)
-        closeModal()
-        return
-      case 'connectProfile': {
-        // Checked fresh against the Rust side rather than trusting
-        // `vaultStatus` React state, which wouldn't have caught up yet at
-        // this point in the same call.
-        const hasCredential = await vault.hasCredential(action.profile.id).catch(() => false)
-        const source: ConnectionSource | null = hasCredential
-          ? { protocol: 'sshProfile', profileId: action.profile.id }
-          : null
-        applyProfileToPane(action.tabId, action.paneId, source, profileToInitial(action.profile))
-        return
-      }
-    }
+  /** The effects half of the vault-gated action dispatcher; the union and the
+   * routing between these live in state/vaultGate.ts, where they can be
+   * tested without a React tree. Only the parts that genuinely need App's
+   * reducers and modal state are here. */
+  const vaultGateEffects: VaultGateEffects = {
+    applyRestore,
+    materializeWorkspace,
+    closeModal,
+    hasCredential: (profileId) => vault.hasCredential(profileId),
+    applyProfileToPane: (tabId, paneId, source, profile) =>
+      applyProfileToPane(tabId, paneId, source, profileToInitial(profile)),
   }
 
   /** Unlocks the vault with a freshly-typed master password, then runs
@@ -451,7 +439,7 @@ function App() {
   async function unlockAndRun(password: string, action: VaultGatedAction) {
     await vault.unlock(password)
     refreshVaultStatus()
-    await runVaultGatedAction(action)
+    await runVaultGatedAction(action, vaultGateEffects)
   }
 
   /** Same as unlockAndRun, but via the OS-keychain unlock (Windows sign-in,
@@ -468,7 +456,7 @@ function App() {
       .setFocus()
       .catch(() => {})
     refreshVaultStatus()
-    await runVaultGatedAction(action)
+    await runVaultGatedAction(action, vaultGateEffects)
   }
 
   function newTab() {
@@ -548,15 +536,6 @@ function App() {
   function reconnectTab(id: string) {
     const tab = tabs.find((t) => t.id === id)
     if (tab) reconnectPane(id, tab.activePaneId)
-  }
-
-  /** Switches one pane's rendering engine. The grid and scrollback live inside
-   *  the engine, so swapping it means tearing one down and building the other —
-   *  there is nothing to hand over — which the generation bump does by remounting
-   *  the Terminal (and thereby reconnecting the session). Deliberate and rare:
-   *  the escape hatch for the handful of upstream ghostty-web ABI gaps. */
-  function setPaneEngine(tabId: string, paneId: string, engine: 'xterm' | 'ghostty') {
-    dispatchTabs({ type: 'paneEngineSet', tabId, paneId, engine })
   }
 
   /** Adds a saved workspace's tabs to the window and focuses its first.
@@ -1068,25 +1047,6 @@ function App() {
                 <ScrollText size={15} strokeWidth={2} />
               </button>
             )}
-            {activeLeaf?.source &&
-              (() => {
-                const current = activeLeaf.engine ?? 'ghostty'
-                const other = current === 'ghostty' ? 'xterm' : 'ghostty'
-                const label = (e: 'xterm' | 'ghostty') => (e === 'ghostty' ? 'Ghostty' : 'xterm')
-                return (
-                  <button
-                    className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
-                      // Highlighted only when overridden to xterm, so a pane on
-                      // the non-default fallback engine reads at a glance.
-                      current === 'xterm' ? 'text-amber-400 hover:text-amber-300' : 'text-white/50 hover:text-white/90'
-                    }`}
-                    title={`Rendering engine: ${label(current)}${current === 'ghostty' ? ' (default)' : ''} — click to switch to ${label(other)} (reconnects this pane)`}
-                    onClick={() => activeTab && activePaneId && setPaneEngine(activeTab.id, activePaneId, other)}
-                  >
-                    <Cpu size={15} strokeWidth={2} />
-                  </button>
-                )
-              })()}
             {activeIsSsh && activeSessionId && (
               <button
                 className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
@@ -1237,7 +1197,6 @@ function App() {
                   source={leaf.source}
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
                   settings={terminalSettings}
-                  engine={leaf.engine}
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}

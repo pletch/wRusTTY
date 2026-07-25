@@ -21,7 +21,6 @@ export type TabsAction =
   | { type: 'tabSelected'; tabId: string }
   | { type: 'tabsReordered'; draggedId: string; targetId: string }
   | { type: 'paneReconnected'; tabId: string; paneId: string }
-  | { type: 'paneEngineSet'; tabId: string; paneId: string; engine: 'xterm' | 'ghostty' }
   | { type: 'workspaceMaterialized'; restored: Tab[]; originTabId: string | null }
   | {
       type: 'paneConnected'
@@ -109,19 +108,6 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
         })),
       }
 
-    case 'paneEngineSet':
-      return {
-        ...state,
-        tabs: mapTab(state.tabs, action.tabId, (t) => ({
-          ...t,
-          root: updateLeaf(t.root, action.paneId, (l) => ({
-            ...l,
-            engine: action.engine,
-            generation: l.generation + 1,
-          })),
-        })),
-      }
-
     case 'workspaceMaterialized': {
       if (action.restored.length === 0) return state
       // Consume the tab this was launched from when it has nothing in it —
@@ -178,7 +164,13 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
           // the pane map can draw is worse than silently doing nothing.
           if (!canSplitLeaf(t.root, action.paneId, action.direction)) return t
           const root = splitLeaf(t.root, action.paneId, action.direction)
-          const newLeafId = allLeaves(root).find((l) => !allLeaves(t.root).some((old) => old.id === l.id))?.id
+          // The pre-split ids are walked once into a Set rather than
+          // re-walked inside the .find callback, which made this O(n²)
+          // allocations per split for a question that is the same every
+          // iteration. Bounded by MAX_PANES_PER_TAB either way, so this is
+          // legibility more than speed.
+          const oldIds = new Set(allLeaves(t.root).map((l) => l.id))
+          const newLeafId = allLeaves(root).find((l) => !oldIds.has(l.id))?.id
           return { ...t, root, activePaneId: newLeafId ?? t.activePaneId }
         }),
       }

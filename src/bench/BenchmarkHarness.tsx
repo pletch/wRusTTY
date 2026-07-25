@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { XtermEngine } from '../lib/xtermEngine'
+import { XtermEngine } from './xtermEngine'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import { probeGpu, gpuVerdict, type GpuInfo } from './gpuProbe'
 import { WORKLOADS, capturedFlood, largeFlood, FLOOD_SIZES, COALESCE_CHUNK, type Workload } from './workloads'
@@ -17,6 +17,34 @@ import '@xterm/xterm/css/xterm.css'
 
 const THROUGHPUT_ROUNDS = 7
 const BLOCK_ROUNDS = 3
+
+/**
+ * Grid sizes a run can be pinned to, rather than always taking whatever the
+ * window happens to fit.
+ *
+ * Two of the renderer's costs scale with cell count and nothing else — the
+ * per-cell parse in `updateStaticGrid` and the per-frame viewport buffer — so
+ * a baseline measured only at ~80x24 cannot distinguish "this optimisation
+ * did nothing" from "this grid was too small for it to matter". 200x60 is
+ * about six times the cells, which is also a realistic maximised-window size
+ * on a 1440p display.
+ *
+ * `fit` keeps the old behaviour (whatever the host container measures). Pinned
+ * sizes call `resize` without `fit`, so the canvas can exceed its container —
+ * the hosts clip, and a benchmark cares about the cell count the renderer
+ * processes, not whether all of it is on screen.
+ */
+const GRID_SIZES = [
+  { id: 'fit', label: 'Fit window', cols: 0, rows: 0 },
+  { id: 'small', label: '80×24', cols: 80, rows: 24 },
+  { id: 'large', label: '200×60', cols: 200, rows: 60 },
+] as const
+
+type GridSizeId = (typeof GRID_SIZES)[number]['id']
+
+function nextFrame(): Promise<void> {
+  return new Promise((r) => requestAnimationFrame(() => r()))
+}
 
 /** Adapts a concrete engine to the runner's minimal surface. */
 function adapt(name: string, engine: XtermEngine | GhosttyEngine): RunnableEngine {
@@ -76,6 +104,7 @@ export function BenchmarkHarness() {
   // Off = feed floods the way the app does (32 KB coalescer chunks); the
   // realistic stall. On = one monolithic write; the raw-parser worst case.
   const [monolithic, setMonolithic] = useState(false)
+  const [gridSize, setGridSize] = useState<GridSizeId>('fit')
 
   useEffect(() => {
     if (initedRef.current) return
@@ -132,11 +161,32 @@ export function BenchmarkHarness() {
     }
   }, [])
 
+  /** Pins both engines to the selected grid before a run. Applied here rather
+   *  than in an effect on `gridSize` so it always takes effect immediately
+   *  before the measurement it belongs to, and so switching the selector
+   *  between runs can't leave the engines mid-resize. */
+  async function applyGridSize() {
+    const xterm = xtermRef.current
+    const ghostty = ghosttyRef.current
+    if (!xterm || !ghostty) return
+    const size = GRID_SIZES.find((g) => g.id === gridSize)!
+    for (const e of [xterm, ghostty]) {
+      if (size.cols === 0) e.fit(true)
+      else e.resize(size.cols, size.rows)
+    }
+    // A resize reallocates the instance buffer and the viewport scratch buffer
+    // on the Ghostty side and reflows xterm's; letting a few frames pass keeps
+    // that cost out of the first round's numbers.
+    for (let i = 0; i < 4; i++) await nextFrame()
+  }
+
   async function runList(list: Workload[]) {
     const ab = abRef.current
     if (!ab || phase === 'running') return
     setPhase('running')
     setResults([])
+    setProgress('sizing grid…')
+    await applyGridSize()
     const collected: WorkloadResult[] = []
     for (const w of list) {
       const r = await runWorkload(ab.a, ab.b, w, {
@@ -160,7 +210,12 @@ export function BenchmarkHarness() {
   function exportMarkdown() {
     const verdict = gpu ? gpuVerdict(gpu) : { ok: false, text: 'GPU not probed' }
     const hz = frameMs > 0 ? ` (~${(1000 / frameMs).toFixed(0)} Hz)` : ''
-    const meta = `Run at DPR ${window.devicePixelRatio}, ${frameMs.toFixed(1)} ms/frame${hz}, grid ${abRef.current?.a.cols}×${abRef.current?.a.rows} (xterm) / ${abRef.current?.b.cols}×${abRef.current?.b.rows} (ghostty), ${THROUGHPUT_ROUNDS} throughput / ${BLOCK_ROUNDS} flood-stress rounds. Throughput = pure parse; latency = input→present; flood stress = worst main-thread stall.`
+    // The grid mode is recorded, not just the resulting dimensions: a `fit` run
+    // is only reproducible on the same window size, and a diff between two
+    // baselines taken at different cell counts is not a diff at all.
+    const gridMode = GRID_SIZES.find((g) => g.id === gridSize)!
+    const gridNote = gridMode.cols === 0 ? 'fit to window (not reproducible across window sizes)' : `pinned ${gridMode.label}`
+    const meta = `Run at DPR ${window.devicePixelRatio}, ${frameMs.toFixed(1)} ms/frame${hz}, grid ${abRef.current?.a.cols}×${abRef.current?.a.rows} (xterm) / ${abRef.current?.b.cols}×${abRef.current?.b.rows} (ghostty) — ${gridNote}, ${THROUGHPUT_ROUNDS} throughput / ${BLOCK_ROUNDS} flood-stress rounds. Throughput = pure parse; latency = input→present; flood stress = worst main-thread stall.`
     const md = resultsToMarkdown(results, verdict.text, meta, frameMs)
     navigator.clipboard.writeText(md).then(() => {
       setCopied(true)
@@ -223,6 +278,28 @@ export function BenchmarkHarness() {
             {w.label}
           </button>
         ))}
+        <span style={S.gridPicker}>
+          Grid:
+          {GRID_SIZES.map((g) => (
+            <button
+              key={g.id}
+              style={{
+                ...S.btn,
+                ...(gridSize === g.id ? S.btnActive : null),
+                opacity: phase === 'ready' ? 1 : 0.5,
+              }}
+              disabled={phase !== 'ready'}
+              onClick={() => setGridSize(g.id)}
+              title={
+                g.cols === 0
+                  ? 'Whatever the host container measures'
+                  : `Pin both engines to ${g.cols}×${g.rows} = ${g.cols * g.rows} cells`
+              }
+            >
+              {g.label}
+            </button>
+          ))}
+        </span>
         <label style={{ ...S.btn, cursor: 'pointer' }}>
           Load capture…
           <input
@@ -387,6 +464,8 @@ const S: Record<string, CSSProperties> = {
   checkLabel: { fontSize: 12, opacity: 0.7, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginLeft: 4 },
   btn: { background: '#1a1c24', color: '#e5e7eb', border: '1px solid #2a2d3a', borderRadius: 6, padding: '7px 12px', fontSize: 13, cursor: 'pointer' },
   btnPrimary: { background: '#0ea5e9', borderColor: '#0ea5e9', color: '#04141f', fontWeight: 600 },
+  btnActive: { background: '#243044', borderColor: '#3d5273', color: '#bfdbfe' },
+  gridPicker: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, opacity: 0.85 },
   smallBtn: { background: '#1a1c24', color: '#93c5fd', border: '1px solid #2a2d3a', borderRadius: 5, padding: '4px 10px', fontSize: 12, cursor: 'pointer' },
   status: { fontSize: 13, minHeight: 30, display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 13, marginBottom: 20 },

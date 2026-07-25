@@ -98,23 +98,18 @@ body {
   background: transparent;
 }
 
-/* xterm.js's own scrollbar widget (a Monaco/VSCode-derived custom-drawn
-   control, not a native `overflow` scrollbar — the ::-webkit-scrollbar
-   rules above never touch it) hard-disables arrow buttons: its bundled
-   source throws if `verticalHasArrows` is ever set. Hidden entirely in
-   favor of the .term-scrollbar-* replacement built in Terminal.tsx, which
-   supports arrows. */
-.xterm .xterm-scrollable-element > .scrollbar {
-  display: none !important;
-}
-
-/* Custom scrollbar overlay for xterm panes (see Terminal.tsx), styled to
+/* Custom scrollbar overlay for terminal panes (see Terminal.tsx), styled to
    match PowerShell/Windows Terminal: rectangular track/thumb and arrow
-   buttons, instead of xterm's own scrollbar (which can't have arrows — see
-   above). Colored from the active terminal theme's foreground color via
+   buttons. Colored from the active terminal theme's foreground color via
    the --term-scrollbar-fg custom property Terminal.tsx sets on .term-scrollbar,
    so it stays legible against any preset theme rather than a fixed light/dark
-   guess. */
+   guess.
+
+   Predates the Ghostty renderer, which has no scrollbar of its own at all —
+   it was originally the replacement for xterm.js's own scrollbar widget, a
+   Monaco-derived control that hard-disables arrow buttons (its bundled source
+   throws if `verticalHasArrows` is set). The rule that hid that widget is gone
+   along with the user-facing xterm path; see src/bench/parity.ts. */
 .term-scrollbar {
   position: absolute;
   top: 0;

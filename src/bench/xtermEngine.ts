@@ -1,10 +1,23 @@
+/**
+ * The xterm.js implementation of `TerminalEngine`. It lives under `src/bench/`
+ * rather than `src/lib/` because it is no longer a renderer the app can be
+ * asked to use — it is the **reference implementation** the Ghostty path is
+ * measured and tested against: the second engine in the A/B harness, and the
+ * oracle `gridSnapshot.ts` compares grid state with. See parity.ts's header
+ * for the decision that put it here and what it costs.
+ *
+ * It still satisfies the full `TerminalEngine` interface, deliberately. That
+ * interface is what makes the two comparable at all, and a cut-down version
+ * would only be able to answer questions about the parts someone remembered
+ * to keep.
+ */
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 
-import type { TerminalEngine, SearchOptions, SearchResult } from './terminalEngine'
-import { findTheme, backgroundWithOpacity } from './theme'
+import type { TerminalEngine, SearchOptions, SearchResult } from '../lib/terminalEngine'
+import { findTheme, backgroundWithOpacity } from '../lib/theme'
 
 const SEARCH_DECORATIONS = {
   matchBackground: '#5c4a1c',

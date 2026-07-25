@@ -19,12 +19,11 @@ import {
 } from './paneTree'
 
 describe('blankLeaf', () => {
-  it('creates a fresh, unconnected leaf defaulting to the ghostty engine', () => {
+  it('creates a fresh, unconnected leaf', () => {
     const leaf = blankLeaf()
     expect(leaf.type).toBe('leaf')
     expect(leaf.source).toBeNull()
     expect(leaf.generation).toBe(0)
-    expect(leaf.engine).toBe('ghostty')
   })
 
   it('assigns each leaf a distinct id', () => {

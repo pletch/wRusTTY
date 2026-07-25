@@ -9,21 +9,37 @@
  * WebGLRenderer (`ghostty_render_state_*`), and xterm.js's buffer is usable
  * without ever calling `open()` — so both sides run with no canvas, no GL
  * context, and no jsdom.
+ *
+ * A snapshot covers glyphs, layout, cursor, **per-cell colours and text
+ * attributes**. The colours are only meaningful because both engines are
+ * pinned to one palette first — see gridPalette.ts for why that is a
+ * precondition rather than a convenience.
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { Terminal as XTerm } from '@xterm/xterm'
+import type { IBufferCell } from '@xterm/xterm'
 import {
   instantiateGhosttyWasm,
   createTerminal,
   writeBytes,
   allocBuffer,
   freeBuffer,
-  parseCell,
+  parseCellInto,
+  emptyCell,
   CELL_BYTES,
+  CELL_BOLD,
+  CELL_ITALIC,
+  CELL_UNDERLINE,
+  CELL_STRIKETHROUGH,
+  CELL_INVERSE,
+  CELL_INVISIBLE,
+  CELL_BLINK,
+  CELL_FAINT,
   type GhosttyWasm,
 } from '../lib/ghostty/wasmBindings'
+import { PALETTE_16, PALETTE_256, DEFAULT_FG, DEFAULT_BG } from './gridPalette'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const WASM_PATH = join(here, '../lib/ghostty/vendor/ghostty-vt.wasm')
@@ -36,10 +52,29 @@ function loadWasm(): Promise<GhosttyWasm> {
   return wasmModule
 }
 
+/** Attributes the two engines both surface, on the CELL_* bit positions so a
+ * ghostty flags byte is already in this form. Overline and the double/curly
+ * underline variants are deliberately absent: the core does not expose them
+ * (see parity.ts's upstream gap), so including them would compare xterm
+ * against a constant zero and read as a divergence every time. */
+export const COMPARED_ATTRS =
+  CELL_BOLD | CELL_ITALIC | CELL_UNDERLINE | CELL_STRIKETHROUGH |
+  CELL_INVERSE | CELL_INVISIBLE | CELL_BLINK | CELL_FAINT
+
 export interface GridSnapshot {
   /** One string per row, trailing whitespace trimmed (the customary way to
    * compare terminal grid content — trailing blank cells aren't meaningful). */
   rows: string[]
+  /** Per-row foreground colours as 0xRRGGBB, index-aligned with `rows`:
+   * `fg[y][i]` is the colour of `rows[y][i]`. A wide glyph contributes one
+   * entry, matching how `rows` folds its continuation cell away, and the row
+   * is truncated to the trimmed string's length for the same reason `rows` is
+   * trimmed — a trailing blank cell's colour is not something the two engines
+   * meaningfully agree or disagree about. */
+  fg: number[][]
+  bg: number[][]
+  /** Per-row attribute bitsets over COMPARED_ATTRS, aligned as `fg` is. */
+  flags: number[][]
   cursorX: number
   cursorY: number
 }
@@ -62,14 +97,28 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out
 }
 
+/** Trims a row to its last non-space character and truncates the parallel
+ * attribute arrays to match, so every index of `rows[y]` has a colour and a
+ * flag set at the same index and nothing beyond it does. */
+function trimRow(line: string, fg: number[], bg: number[], flags: number[]) {
+  const trimmed = line.replace(/\s+$/, '')
+  fg.length = trimmed.length
+  bg.length = trimmed.length
+  flags.length = trimmed.length
+  return trimmed
+}
+
 export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnapshot> {
   const { cols, rows } = input
   const wasm = await loadWasm()
   const termPtr = createTerminal(wasm, cols, rows, {
     scrollbackLimit: 1024 * 1024,
-    fgColor: 0,
-    bgColor: 0,
+    // Pinned rather than left at the core's own defaults so the colours read
+    // back here are comparable with xterm's — see gridPalette.ts.
+    fgColor: DEFAULT_FG,
+    bgColor: DEFAULT_BG,
     cursorColor: 0,
+    palette: [...PALETTE_16],
   })
   if (termPtr === 0) throw new Error('ghostty_terminal_new_with_config failed')
 
@@ -85,22 +134,38 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
     const view = new DataView(wasm.exports.memory.buffer, cellsPtr, cellCount * CELL_BYTES)
 
     const outRows: string[] = []
+    const outFg: number[][] = []
+    const outBg: number[][] = []
+    const outFlags: number[][] = []
+    const cell = emptyCell()
     for (let y = 0; y < rows; y++) {
       let line = ''
+      const fg: number[] = []
+      const bg: number[] = []
+      const flags: number[] = []
       let x = 0
       while (x < cols) {
-        const cell = parseCell(view, (y * cols + x) * CELL_BYTES)
+        parseCellInto(view, (y * cols + x) * CELL_BYTES, cell)
         line += cell.codepoint === 0 ? ' ' : String.fromCodePoint(cell.codepoint)
+        fg.push((cell.fgR << 16) | (cell.fgG << 8) | cell.fgB)
+        bg.push((cell.bgR << 16) | (cell.bgG << 8) | cell.bgB)
+        flags.push(cell.flags & COMPARED_ATTRS)
         // A wide glyph occupies two grid cells; the second is a spacer with
         // no codepoint of its own, matching how xterm's translateToString
         // already folds a wide character's continuation cell away.
         x += cell.width === 2 ? 2 : 1
       }
-      outRows.push(line.replace(/\s+$/, ''))
+      outRows.push(trimRow(line, fg, bg, flags))
+      outFg.push(fg)
+      outBg.push(bg)
+      outFlags.push(flags)
     }
 
     return {
       rows: outRows,
+      fg: outFg,
+      bg: outBg,
+      flags: outFlags,
       cursorX: wasm.exports.ghostty_render_state_get_cursor_x(termPtr),
       cursorY: wasm.exports.ghostty_render_state_get_cursor_y(termPtr),
     }
@@ -108,6 +173,36 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
     freeBuffer(wasm, cellsPtr, cellCount * CELL_BYTES)
     wasm.exports.ghostty_terminal_free(termPtr)
   }
+}
+
+/** xterm reports a colour as one of three modes; only the palette case needs
+ * the shared table, and only the default case needs to agree with what
+ * ghostty was configured with. */
+function xtermColor(
+  isDefault: boolean,
+  isPalette: boolean,
+  raw: number,
+  fallback: number,
+): number {
+  if (isDefault) return fallback
+  if (isPalette) return PALETTE_256[raw] ?? fallback
+  return raw & 0xffffff
+}
+
+function xtermFlags(cell: IBufferCell): number {
+  // xterm's predicates return the attribute's raw bits rather than a boolean,
+  // so each is compared against zero and re-encoded on the CELL_* positions
+  // ghostty already uses. `isDim` is ghostty's `faint`.
+  let f = 0
+  if (cell.isBold() !== 0) f |= CELL_BOLD
+  if (cell.isItalic() !== 0) f |= CELL_ITALIC
+  if (cell.isUnderline() !== 0) f |= CELL_UNDERLINE
+  if (cell.isStrikethrough() !== 0) f |= CELL_STRIKETHROUGH
+  if (cell.isInverse() !== 0) f |= CELL_INVERSE
+  if (cell.isInvisible() !== 0) f |= CELL_INVISIBLE
+  if (cell.isBlink() !== 0) f |= CELL_BLINK
+  if (cell.isDim() !== 0) f |= CELL_FAINT
+  return f
 }
 
 export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapshot> {
@@ -119,11 +214,41 @@ export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapsh
 
     const buf = term.buffer.active
     const outRows: string[] = []
+    const outFg: number[][] = []
+    const outBg: number[][] = []
+    const outFlags: number[][] = []
+    const scratch = buf.getNullCell()
     for (let y = 0; y < rows; y++) {
       const line = buf.getLine(buf.viewportY + y)
-      outRows.push((line?.translateToString(true) ?? '').replace(/\s+$/, ''))
+      const text = line?.translateToString(true) ?? ''
+      const fg: number[] = []
+      const bg: number[] = []
+      const flags: number[] = []
+      // Walked with the same wide-character stride the ghostty side uses, so
+      // the arrays stay index-aligned with `translateToString`'s output —
+      // which likewise emits one character for a wide glyph's two cells.
+      let x = 0
+      while (line && x < cols) {
+        const cell = line.getCell(x, scratch)
+        if (!cell) break
+        fg.push(xtermColor(cell.isFgDefault(), cell.isFgPalette(), cell.getFgColor(), DEFAULT_FG))
+        bg.push(xtermColor(cell.isBgDefault(), cell.isBgPalette(), cell.getBgColor(), DEFAULT_BG))
+        flags.push(xtermFlags(cell))
+        x += cell.getWidth() === 2 ? 2 : 1
+      }
+      outRows.push(trimRow(text, fg, bg, flags))
+      outFg.push(fg)
+      outBg.push(bg)
+      outFlags.push(flags)
     }
-    return { rows: outRows, cursorX: buf.cursorX, cursorY: buf.cursorY }
+    return {
+      rows: outRows,
+      fg: outFg,
+      bg: outBg,
+      flags: outFlags,
+      cursorX: buf.cursorX,
+      cursorY: buf.cursorY,
+    }
   } finally {
     term.dispose()
   }

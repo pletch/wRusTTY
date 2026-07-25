@@ -108,6 +108,16 @@ export function usePanePortals(liveLeafIds: string[]) {
   // Prunes home containers for leaves that are truly gone (disconnected or
   // closed, not just mid-move) — otherwise every one ever created would sit
   // in the DOM forever.
+  //
+  // Keyed on the *contents* of liveLeafIds, not the array: the caller rebuilds
+  // it fresh from the pane tree every render, so a reference dep would fire
+  // every render exactly as no dep at all does. Erring toward running too
+  // often is the safe direction here anyway — this effect only ever removes
+  // containers whose pane is no longer live, so a skipped run defers a
+  // cleanup, while a spurious run does nothing at all. The dangerous
+  // direction would be a dep that let it run with a *stale* live set, which
+  // a value dep on the ids themselves cannot do.
+  const liveKey = liveLeafIds.join(',')
   useEffect(() => {
     const liveIds = new Set(liveLeafIds)
     for (const [id, el] of Object.entries(homeContainers.current)) {
@@ -116,7 +126,8 @@ export function usePanePortals(liveLeafIds: string[]) {
         delete homeContainers.current[id]
       }
     }
-  })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKey])
 
   return { registerSlot, getHomeContainer }
 }
