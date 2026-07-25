@@ -501,15 +501,52 @@ function App() {
     if (pendingRestore) applyRestore(pendingRestore, vaultStatus === 'unlocked')
   }
 
-  async function unlockAndRestoreSessions(password: string) {
-    if (!pendingRestore) return
-    await vault.unlock(password)
-    refreshVaultStatus()
-    applyRestore(pendingRestore, true)
+  /** What a vault unlock was for — the launch-restore prompt, the
+   * open-workspace prompt, and the per-pane saved-session sidebar's own
+   * unlock form each used to hand-roll their own password/OS pair of
+   * unlock-then-act functions (six total). One dispatcher plus two shared
+   * unlock entry points below replace all six; adding a fourth vault-gated
+   * action is a new union member here, not a new pair of functions. */
+  type VaultGatedAction =
+    | { kind: 'restoreSessions'; snapshot: SessionSnapshot }
+    | { kind: 'openWorkspace'; workspace: Workspace; originTabId: string | null }
+    | { kind: 'connectProfile'; tabId: string; paneId: string; profile: SessionProfile }
+
+  async function runVaultGatedAction(action: VaultGatedAction) {
+    switch (action.kind) {
+      case 'restoreSessions':
+        applyRestore(action.snapshot, true)
+        return
+      case 'openWorkspace':
+        materializeWorkspace(action.workspace, true, action.originTabId)
+        setPendingWorkspace(null)
+        return
+      case 'connectProfile': {
+        // Checked fresh against the Rust side rather than trusting
+        // `vaultStatus` React state, which wouldn't have caught up yet at
+        // this point in the same call.
+        const hasCredential = await vault.hasCredential(action.profile.id).catch(() => false)
+        const source: ConnectionSource | null = hasCredential
+          ? { protocol: 'sshProfile', profileId: action.profile.id }
+          : null
+        applyProfileToPane(action.tabId, action.paneId, source, profileToInitial(action.profile))
+        return
+      }
+    }
   }
 
-  async function unlockWithOsAndRestoreSessions() {
-    if (!pendingRestore) return
+  /** Unlocks the vault with a freshly-typed master password, then runs
+   * whatever vault-gated action was waiting on it. */
+  async function unlockAndRun(password: string, action: VaultGatedAction) {
+    await vault.unlock(password)
+    refreshVaultStatus()
+    await runVaultGatedAction(action)
+  }
+
+  /** Same as unlockAndRun, but via the OS-keychain unlock (Windows sign-in,
+   * gated by a fresh Windows Hello/PIN check on Windows) instead of a typed
+   * master password. */
+  async function unlockWithOsAndRun(action: VaultGatedAction) {
     await vault.unlockWithOs()
     // The Windows Hello/PIN prompt is a native OS-level dialog, not an
     // in-page one — closing it doesn't hand keyboard focus back to our
@@ -520,7 +557,7 @@ function App() {
       .setFocus()
       .catch(() => {})
     refreshVaultStatus()
-    applyRestore(pendingRestore, true)
+    await runVaultGatedAction(action)
   }
 
   function newTab() {
@@ -666,28 +703,6 @@ function App() {
     if (!pendingWorkspace) return
     const { workspace, originTabId } = pendingWorkspace
     materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
-    setPendingWorkspace(null)
-  }
-
-  async function unlockAndOpenWorkspace(password: string) {
-    if (!pendingWorkspace) return
-    const { workspace, originTabId } = pendingWorkspace
-    await vault.unlock(password)
-    refreshVaultStatus()
-    materializeWorkspace(workspace, true, originTabId)
-    setPendingWorkspace(null)
-  }
-
-  async function unlockWithOsAndOpenWorkspace() {
-    if (!pendingWorkspace) return
-    const { workspace, originTabId } = pendingWorkspace
-    await vault.unlockWithOs()
-    // Same native-prompt focus problem as the launch-restore path.
-    getCurrentWindow()
-      .setFocus()
-      .catch(() => {})
-    refreshVaultStatus()
-    materializeWorkspace(workspace, true, originTabId)
     setPendingWorkspace(null)
   }
 
@@ -900,50 +915,6 @@ function App() {
    * a credential for it. */
   function editPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
     applyProfileToPane(tabId, paneId, null, profileToInitial(profile))
-  }
-
-  /** Unlocks the vault with a freshly-typed master password, then connects
-   * the picked session exactly as it would have if the vault had already
-   * been unlocked — checking `hasCredential` fresh against the Rust side
-   * rather than trusting `vaultStatus` React state, which wouldn't have
-   * caught up yet at this point in the same call. */
-  async function unlockVaultAndConnectProfile(
-    tabId: string,
-    paneId: string,
-    profile: SessionProfile,
-    password: string,
-  ) {
-    await vault.unlock(password)
-    refreshVaultStatus()
-    const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
-    const source: ConnectionSource | null = hasCredential
-      ? { protocol: 'sshProfile', profileId: profile.id }
-      : null
-    applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
-  }
-
-  /** Same as unlockVaultAndConnectProfile, but via the OS-keychain unlock
-   * (Windows sign-in, gated by a fresh Windows Hello/PIN check on Windows)
-   * instead of a typed master password. */
-  async function unlockWithOsAndConnectProfile(
-    tabId: string,
-    paneId: string,
-    profile: SessionProfile,
-  ) {
-    await vault.unlockWithOs()
-    // See the identical comment in unlockWithOsAndRestoreSessions — the
-    // native OS unlock prompt doesn't return keyboard focus to our window
-    // on its own, which otherwise left the freshly-connected terminal's
-    // auto-focus call landing on an unfocused window.
-    getCurrentWindow()
-      .setFocus()
-      .catch(() => {})
-    refreshVaultStatus()
-    const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
-    const source: ConnectionSource | null = hasCredential
-      ? { protocol: 'sshProfile', profileId: profile.id }
-      : null
-    applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
   }
 
   function deleteSessionProfile(profile: SessionProfile) {
@@ -1331,11 +1302,11 @@ function App() {
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}
                 onUnlockAndSelectSession={(paneId, profile, password) =>
-                  unlockVaultAndConnectProfile(tab.id, paneId, profile, password)
+                  unlockAndRun(password, { kind: 'connectProfile', tabId: tab.id, paneId, profile })
                 }
                 osUnlockAvailable={osUnlockAvailable}
                 onUnlockWithOsAndSelectSession={(paneId, profile) =>
-                  unlockWithOsAndConnectProfile(tab.id, paneId, profile)
+                  unlockWithOsAndRun({ kind: 'connectProfile', tabId: tab.id, paneId, profile })
                 }
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
@@ -1564,8 +1535,12 @@ function App() {
           }
           osUnlockAvailable={osUnlockAvailable}
           onRestore={restoreSessions}
-          onUnlockAndRestore={unlockAndRestoreSessions}
-          onUnlockWithOsAndRestore={unlockWithOsAndRestoreSessions}
+          onUnlockAndRestore={(password) =>
+            pendingRestore && unlockAndRun(password, { kind: 'restoreSessions', snapshot: pendingRestore })
+          }
+          onUnlockWithOsAndRestore={() =>
+            pendingRestore && unlockWithOsAndRun({ kind: 'restoreSessions', snapshot: pendingRestore })
+          }
           onDiscard={discardRestore}
         />
       )}
@@ -1580,8 +1555,22 @@ function App() {
           body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
           cancelLabel="Open anyway — without unlocking"
           onRestore={openPendingWorkspace}
-          onUnlockAndRestore={unlockAndOpenWorkspace}
-          onUnlockWithOsAndRestore={unlockWithOsAndOpenWorkspace}
+          onUnlockAndRestore={(password) =>
+            pendingWorkspace &&
+            unlockAndRun(password, {
+              kind: 'openWorkspace',
+              workspace: pendingWorkspace.workspace,
+              originTabId: pendingWorkspace.originTabId,
+            })
+          }
+          onUnlockWithOsAndRestore={() =>
+            pendingWorkspace &&
+            unlockWithOsAndRun({
+              kind: 'openWorkspace',
+              workspace: pendingWorkspace.workspace,
+              originTabId: pendingWorkspace.originTabId,
+            })
+          }
           onDiscard={openPendingWorkspace}
         />
       )}
