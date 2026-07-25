@@ -128,21 +128,65 @@ export interface TerminalConfig {
   palette?: number[]
 }
 
-export async function instantiateGhosttyWasm(bytes: ArrayBuffer): Promise<GhosttyWasm> {
-  let wasmMemory: WebAssembly.Memory
-
-  const { instance } = await WebAssembly.instantiate(bytes, {
+/** Imports for one instance. Built per instance rather than shared: `log` has
+ *  to decode out of *that* instance's linear memory, and every instance has
+ *  its own. */
+function ghosttyImports(memoryOf: () => WebAssembly.Memory) {
+  return {
     env: {
       log(ptr: number, len: number) {
-        const text = new TextDecoder().decode(new Uint8Array(wasmMemory.buffer, ptr, len))
+        const text = new TextDecoder().decode(new Uint8Array(memoryOf().buffer, ptr, len))
         console.log('[ghostty-vt]', text)
       },
     },
-  })
+  }
+}
 
+/**
+ * The compiled module, shared by every pane.
+ *
+ * Compiling is the expensive half and it produces the same artifact every
+ * time, but a `WebAssembly.Instance` cannot be shared — each pane needs its
+ * own linear memory, which is the whole point of one instance per pane. So the
+ * module is compiled once and instantiated per pane. Measured, that is 0.087 ms
+ * per pane against 1.5-3 ms to compile and instantiate from bytes each time,
+ * and the gap widens with the size of the binary: it is what makes the
+ * `ReleaseFast` build (3 MB, ~12% faster parse) cost nothing at pane open.
+ *
+ * A rejected compile is evicted rather than cached, so one failed fetch does
+ * not permanently poison every pane opened afterwards.
+ */
+let compiling: Promise<WebAssembly.Module> | null = null
+
+export function compileGhosttyWasm(url: string): Promise<WebAssembly.Module> {
+  if (compiling) return compiling
+  const started = (async () => {
+    const response = await fetch(url)
+    if (!response.ok) throw new Error(`fetching ${url} returned HTTP ${response.status}`)
+    return WebAssembly.compile(await response.arrayBuffer())
+  })()
+  compiling = started
+  started.catch(() => {
+    if (compiling === started) compiling = null
+  })
+  return started
+}
+
+/** A fresh instance — its own memory, its own terminal state — of an
+ *  already-compiled module. */
+export async function instantiateGhosttyModule(module: WebAssembly.Module): Promise<GhosttyWasm> {
+  let wasmMemory: WebAssembly.Memory
+  const instance = await WebAssembly.instantiate(module, ghosttyImports(() => wasmMemory))
   wasmMemory = instance.exports.memory as WebAssembly.Memory
   const exports = instance.exports as unknown as GhosttyExports
   return { exports, instance }
+}
+
+/** Compile-and-instantiate in one step, for callers holding bytes rather than
+ *  a URL (the bench's node-side snapshot harness). Panes should go through
+ *  `compileGhosttyWasm` + `instantiateGhosttyModule` so they share the compile. */
+export async function instantiateGhosttyWasm(bytes: ArrayBuffer): Promise<GhosttyWasm> {
+  return instantiateGhosttyModule(await WebAssembly.compile(bytes))
 }
 
 /**

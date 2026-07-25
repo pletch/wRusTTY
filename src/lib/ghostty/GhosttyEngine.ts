@@ -5,7 +5,8 @@ import { WebGLRenderer, measureCell } from './WebGLRenderer'
 import { scanOsc } from './oscScanner'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
 import {
-  instantiateGhosttyWasm,
+  compileGhosttyWasm,
+  instantiateGhosttyModule,
   createTerminal,
   writeBytes,
   readResponse,
@@ -204,9 +205,10 @@ export class GhosttyEngine implements TerminalEngine {
 
   private async initWasm() {
     try {
-      const response = await fetch(ghosttyWasmUrl)
-      const bytes = await response.arrayBuffer()
-      this.wasm = await instantiateGhosttyWasm(bytes)
+      // Compiled once for the whole app, instantiated per pane — see
+      // compileGhosttyWasm. Fetching and compiling here instead put the cost of
+      // the entire binary on every pane opened.
+      this.wasm = await instantiateGhosttyModule(await compileGhosttyWasm(ghosttyWasmUrl))
 
       // Colors go in at construction so the core resolves every cell against
       // this theme's palette and defaults, and hands back finished RGB. The

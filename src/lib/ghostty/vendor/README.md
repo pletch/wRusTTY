@@ -55,9 +55,33 @@ git merge pr-142   # clean
 git submodule update --init --recursive
 cd ghostty
 git apply ../patches/ghostty-wasm-api.patch
-zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall
+zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 cp zig-out/bin/ghostty-vt.wasm ../../ghostty-vt.wasm   # -> this directory
 ```
+
+### Why `ReleaseFast` and not `ReleaseSmall`
+
+`ReleaseSmall` was the original build mode and it costs ~12% of parse
+throughput: measured on the benchmark's own flood payload, 74.1 MB/s against
+83.4 MB/s for `ReleaseFast` (90.4 vs 97.0 MB/s on long printable runs). Size
+is the wrong thing to optimise for here — this is a Tauri desktop app, so the
+binary is bundled on disk rather than fetched over a network.
+
+It is not free, though. The module is 3007 kB rather than 415 kB, and every
+pane is its own WASM instance, so per-pane `compile+instantiate` goes from
+~0.7 ms to ~1.5-3 ms. That cost disappears almost entirely if the compiled
+`WebAssembly.Module` is cached and shared across panes, leaving only a
+per-pane `WebAssembly.Instance` — measured at 0.087 ms to instantiate, and
+identical for both builds. `GhosttyEngine.initWasm` currently compiles per
+pane, so the win is still on the table.
+
+Do not reach for `-Dcpu=generic+simd128`: it was measured at +0.5-2%, which is
+noise. Ghostty's real SIMD paths are C++ (Google Highway, simdutf, utfcpp) and
+its own build config disables them for wasm outright —
+`if (target.result.cpu.arch.isWasm()) break :simd false;` in
+`src/build/Config.zig`. Forcing `-Dsimd=true` fails to compile those
+dependencies for `wasm32-freestanding`. Native SIMD throughput is not
+reachable from a `.wasm` at all; it needs native `libghostty` in the backend.
 
 ## Reverting to stock
 
