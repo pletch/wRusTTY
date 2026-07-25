@@ -43,14 +43,11 @@ import { DRAG_PANE_MIME } from './lib/dragTypes'
 import {
   allLeaves,
   blankLeaf,
-  canSplitLeaf,
   closeLeaf,
   findLeaf,
   firstLeaf,
   reidentify,
   splitBlocker,
-  splitLeaf,
-  updateLeaf,
 } from './lib/paneTree'
 import type { SplitLimit } from './lib/paneTree'
 import * as sessionSnapshot from './lib/sessionSnapshot'
@@ -60,7 +57,6 @@ import {
   splitLimitHint,
   profileToInitial,
   refreshTabs,
-  isBlankTab,
   newTabId,
   leafTitle,
   dataBitsDigit,
@@ -77,6 +73,7 @@ import {
   activityByPaneOf,
   attentionPanesOf,
 } from './state/paneRuntime'
+import { tabsReducer, layoutSignature } from './state/tabs'
 
 function refit() {
   // Terminal listens for window resize to re-fit; nudge it after a tab or
@@ -118,8 +115,25 @@ function App() {
   // Temporary switch for Phase 2 go/no-go milestone test
 
 
-  const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
+  // tabs/activeTabId used to be two separately-updated useState hooks; see
+  // state/tabs.ts for why moving the tree surgery (split/close/pop/attach)
+  // into one reducer both fixes a class of cross-hook staleness and makes
+  // every mutating operation on it unit-testable with no React.
+  const [{ tabs, activeTabId }, dispatchTabs] = useReducer(tabsReducer, null, () => {
+    const initial = blankTab()
+    return { tabs: [initial], activeTabId: initial.id }
+  })
+  // Replaces a `refit()` call manually appended to every function that could
+  // change what's on screen (closing a pane/tab, splitting, popping,
+  // attaching, switching tabs) — easy to add a new such function and forget
+  // it, which is exactly why the eight pane-runtime tables leaked. Keyed on
+  // the active tab's visible split geometry rather than on `tabs` itself, so
+  // dragging a divider (which changes `sizes`, not which pane is where)
+  // doesn't refire it — see layoutSignature.
+  useLayoutEffect(() => {
+    refit()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutSignature(tabs, activeTabId)])
   const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
   // Live, ephemeral per-pane state (connection status, logging, forwarded
   // panels, activity, attention) — see state/paneRuntime.ts for why this is
@@ -468,8 +482,11 @@ function App() {
    * so the state still reads 'locked' and every pane just unlocked for would
    * be blanked. */
   function applyRestore(snapshot: SessionSnapshot, vaultUsable: boolean) {
-    setTabs(refreshTabs(snapshot.tabs, sessions, vaultUsable))
-    setActiveTabId(snapshot.activeTabId)
+    dispatchTabs({
+      type: 'restored',
+      tabs: refreshTabs(snapshot.tabs, sessions, vaultUsable),
+      activeTabId: snapshot.activeTabId,
+    })
     setPendingRestore(null)
     setRestoreDecided(true)
   }
@@ -507,9 +524,7 @@ function App() {
   }
 
   function newTab() {
-    const tab = blankTab()
-    setTabs((prev) => [...prev, tab])
-    setActiveTabId(tab.id)
+    dispatchTabs({ type: 'tabOpened', tab: blankTab() })
   }
 
   /** Panes in this subtree holding a live connection — what closing would
@@ -541,43 +556,18 @@ function App() {
         dispatchPaneRuntime({ type: 'paneClosed', paneId: leaf.id })
       }
     }
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id)
-      if (activeTabId === id) {
-        const idx = prev.findIndex((t) => t.id === id)
-        const neighbor = next[idx] ?? next[idx - 1] ?? null
-        setActiveTabId(neighbor?.id ?? null)
-      }
-      return next
-    })
-    // Closing the active tab reveals its neighbour, which was hidden (and so
-    // sized 0x0) until now — the same "a pane just became visible" situation
-    // selectTab handles, reached by a different route. Without this the newly
-    // shown pane is left to Terminal.tsx's ResizeObserver alone, and an
-    // observer delivers between layout and paint, which is exactly the moment
-    // refit()'s double-rAF exists to wait past: a fit computed against a
-    // transitional size leaves xterm's column count disagreeing with the
-    // remote PTY's, which shows up as the cursor blinking a few columns away
-    // from the end of the prompt until the next full redraw.
-    refit()
+    dispatchTabs({ type: 'tabClosed', tabId: id })
+    // Closing the active tab can reveal its neighbour, which was hidden (and
+    // so sized 0x0) until now — handled by the layoutSignature-keyed refit
+    // effect below rather than a call here, same as every other tree change.
   }
 
   function selectTab(id: string) {
-    setActiveTabId(id)
-    refit()
+    dispatchTabs({ type: 'tabSelected', tabId: id })
   }
 
   function reorderTabs(draggedId: string, targetId: string) {
-    if (draggedId === targetId) return
-    setTabs((prev) => {
-      const from = prev.findIndex((t) => t.id === draggedId)
-      const to = prev.findIndex((t) => t.id === targetId)
-      if (from === -1 || to === -1) return prev
-      const next = [...prev]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return next
-    })
+    dispatchTabs({ type: 'tabsReordered', draggedId, targetId })
   }
 
   function stepTab(delta: 1 | -1) {
@@ -597,32 +587,13 @@ function App() {
     leaf.source = activeLeaf.source
     leaf.initial = activeLeaf.initial
     const tab: Tab = { id: newTabId(), title: sourceTab.title, root: leaf, activePaneId: leaf.id }
-    setTabs((prev) => [...prev, tab])
-    setActiveTabId(tab.id)
+    dispatchTabs({ type: 'tabOpened', tab })
   }
 
   /** Reconnects one specific pane in place (generation bump remounts its
    * Terminal, which reconnects). */
   function reconnectPane(tabId: string, paneId: string) {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId
-          ? {
-              ...t,
-              root: updateLeaf(t.root, paneId, (l) => ({
-                ...l,
-                // Re-resolve from the profile instead of replaying the source
-                // baked in at the original connect time — otherwise editing a
-                // profile's host/port after connecting has no effect on
-                // Reconnect, since sshProfile sources are the only ones
-                // re-read fresh from disk on connect.
-                source: l.initial?.id ? { protocol: 'sshProfile', profileId: l.initial.id } : l.source,
-                generation: l.generation + 1,
-              })),
-            }
-          : t,
-      ),
-    )
+    dispatchTabs({ type: 'paneReconnected', tabId, paneId })
   }
 
   /** Reconnects the tab's active pane in place (the tab-context-menu action). */
@@ -637,20 +608,7 @@ function App() {
    *  the Terminal (and thereby reconnecting the session). Deliberate and rare:
    *  the escape hatch for the handful of upstream ghostty-web ABI gaps. */
   function setPaneEngine(tabId: string, paneId: string, engine: 'xterm' | 'ghostty') {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId
-          ? {
-              ...t,
-              root: updateLeaf(t.root, paneId, (l) => ({
-                ...l,
-                engine,
-                generation: l.generation + 1,
-              })),
-            }
-          : t,
-      ),
-    )
+    dispatchTabs({ type: 'paneEngineSet', tabId, paneId, engine })
   }
 
   /** Adds a saved workspace's tabs to the window and focuses its first.
@@ -682,18 +640,7 @@ function App() {
       const active = firstLeaf(root)
       return { ...t, id: newTabId(), root, activePaneId: active.id, title: leafTitle(active, t.title) }
     })
-    if (restored.length === 0) return
-    setTabs((prev) => {
-      // Consume the tab this was launched from when it has nothing in it —
-      // typically the blank tab whose connect dialog was just used. Splicing
-      // rather than appending also puts the workspace where that tab sat,
-      // instead of after everything else.
-      const target = originTabId ?? activeTabId
-      const index = prev.findIndex((t) => t.id === target)
-      if (index === -1 || !isBlankTab(prev[index])) return [...prev, ...restored]
-      return [...prev.slice(0, index), ...restored, ...prev.slice(index + 1)]
-    })
-    setActiveTabId(restored[0].id)
+    dispatchTabs({ type: 'workspaceMaterialized', restored, originTabId: originTabId ?? null })
   }
 
   /** Gates on the vault the same way the launch-restore flow does, rather
@@ -753,22 +700,16 @@ function App() {
   ) {
     // Set logging state before the source, so the Terminal mounts with logging
     // already armed and captures output from the first byte (batched with the
-    // setTabs below in the same event, so it's a single render). The toolbar
+    // dispatch below in the same event, so it's a single render). The toolbar
     // icon then reflects this and can stop it mid-session.
     dispatchPaneRuntime({ type: 'loggingSet', paneId, logging: logSession })
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId) return t
-        const root = updateLeaf(t.root, paneId, (l) => ({
-          ...l,
-          source,
-          backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
-        }))
-        const leaf = allLeaves(root).find((l) => l.id === paneId)
-        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
-        return { ...t, root, title }
-      }),
-    )
+    dispatchTabs({
+      type: 'paneConnected',
+      tabId,
+      paneId,
+      source,
+      backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
+    })
   }
 
   /** Clears a pane's connection back to blank (reopening the connect
@@ -781,45 +722,18 @@ function App() {
    * editing it (e.g. re-importing a missing vaulted key) rather than
    * picking something else entirely. */
   function disconnectPane(tabId: string, paneId: string) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId) return t
-        const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source: null }))
-        const leaf = allLeaves(root).find((l) => l.id === paneId)
-        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
-        return { ...t, root, title }
-      }),
-    )
+    dispatchTabs({ type: 'paneDisconnected', tabId, paneId })
   }
 
   function focusPane(tabId: string, paneId: string) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId || t.activePaneId === paneId) return t
-        const leaf = allLeaves(t.root).find((l) => l.id === paneId)
-        return {
-          ...t,
-          activePaneId: paneId,
-          title: leaf ? leafTitle(leaf, t.title) : t.title,
-        }
-      }),
-    )
+    dispatchTabs({ type: 'paneFocused', tabId, paneId })
   }
 
   function splitPane(tabId: string, paneId: string, direction: 'horizontal' | 'vertical') {
-    setTabs((prev) =>
-      prev.map((t) => {
-        // The limit check lives here as well as on the toolbar buttons: the
-        // buttons are disabled at a limit, so this only catches a caller
-        // that hasn't asked first, but silently growing a layout past what
-        // the pane map can draw is worse than silently doing nothing.
-        if (t.id !== tabId || !canSplitLeaf(t.root, paneId, direction)) return t
-        const root = splitLeaf(t.root, paneId, direction)
-        const newLeafId = allLeaves(root).find((l) => !allLeaves(t.root).some((old) => old.id === l.id))?.id
-        return { ...t, root, activePaneId: newLeafId ?? t.activePaneId }
-      }),
-    )
-    refit()
+    // The limit check also lives on the toolbar buttons, which disable
+    // themselves at a limit — this only catches a caller that hasn't asked
+    // first, and the reducer itself no-ops past the cap regardless.
+    dispatchTabs({ type: 'paneSplit', tabId, paneId, direction })
   }
 
   function toggleLogging(paneId: string) {
@@ -857,8 +771,7 @@ function App() {
   function closePaneNow(tabId: string, paneId: string) {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
-    const newRoot = closeLeaf(tab.root, paneId)
-    if (!newRoot) {
+    if (!closeLeaf(tab.root, paneId)) {
       // Already confirmed as a pane close if it needed to be — going through
       // closeTab here would ask a second time for the same one connection.
       // closeTabNow dispatches paneClosed for every leaf still in the tab
@@ -868,15 +781,7 @@ function App() {
       return
     }
     dispatchPaneRuntime({ type: 'paneClosed', paneId })
-    const activePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
-    // Same reasoning as popPaneToNewTab below: the tab's title may have been
-    // describing the pane that just closed (e.g. you closed the one that was
-    // focused), so it needs to follow whichever pane is left behind as
-    // active now instead of staying stuck on the closed pane's old title.
-    const activeLeaf = allLeaves(newRoot).find((l) => l.id === activePaneId)
-    const title = activeLeaf ? leafTitle(activeLeaf, tab.title) : tab.title
-    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, root: newRoot, activePaneId, title } : t)))
-    refit()
+    dispatchTabs({ type: 'paneClosed', tabId, paneId })
   }
 
   /** Extracts a pane out of its (split) tab into its own new tab. The leaf
@@ -886,29 +791,14 @@ function App() {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
     const leaf = findLeaf(tab.root, paneId)
-    const newRoot = closeLeaf(tab.root, paneId)
-    if (!leaf || !newRoot) return // only offered when the tab actually has a split
-    const newActivePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
+    if (!leaf || !closeLeaf(tab.root, paneId)) return // only offered when the tab actually has a split
     const poppedTab: Tab = {
       id: newTabId(),
       title: leafTitle(leaf, 'New Connection'),
       root: leaf,
       activePaneId: leaf.id,
     }
-    // The remaining tab's title may have been describing the pane that
-    // just left — e.g. it was named after the pane you're popping out —
-    // so it needs to follow whichever pane is left behind as active now,
-    // the same way focusPane already does when switching panes normally.
-    const remainingActiveLeaf = allLeaves(newRoot).find((l) => l.id === newActivePaneId)
-    const remainingTitle = remainingActiveLeaf ? leafTitle(remainingActiveLeaf, tab.title) : tab.title
-    setTabs((prev) => [
-      ...prev.map((t) =>
-        t.id === tabId ? { ...t, root: newRoot, activePaneId: newActivePaneId, title: remainingTitle } : t,
-      ),
-      poppedTab,
-    ])
-    setActiveTabId(poppedTab.id)
-    refit()
+    dispatchTabs({ type: 'panePoppedToNewTab', tabId, paneId, poppedTab })
   }
 
   /** Attaches a dragged tab's connection into an empty pane elsewhere,
@@ -919,43 +809,15 @@ function App() {
     const draggedTab = tabs.find((t) => t.id === draggedTabId)
     if (!draggedTab || draggedTab.root.type !== 'leaf' || !draggedTab.root.source) return
     const draggedLeaf: PaneLeaf = draggedTab.root
-    const withoutDragged = tabs.filter((t) => t.id !== draggedTabId)
     // Whatever was at targetPaneId before is discarded from the tree by the
-    // updateLeaf below — its own leaf id is targetPaneId, since that's how
-    // it was found — so its runtime state (if it has any at all) needs to
-    // go too, same as any other pane that stops being reachable in the
-    // tree. The dragged leaf itself keeps its own id and needs no such
-    // cleanup; it's still live, just relocated.
-    let replacedExisting = false
-    const next = withoutDragged.map((t) => {
-      if (!findLeaf(t.root, targetPaneId)) return t
-      replacedExisting = true
-      const root = updateLeaf(t.root, targetPaneId, () => draggedLeaf)
-      // The attached leaf keeps the dragged leaf's own id (not
-      // targetPaneId) — see the comment above this function — so
-      // activePaneId, if it was pointing at targetPaneId, is left
-      // referencing an id that no longer exists anywhere in the tree
-      // unless it's remapped onto the new one here. Left stale, it
-      // silently breaks every later lookup keyed off activePaneId — not
-      // just the active-pane highlight, but e.g. popPaneToNewTab's title
-      // recompute too, since its "is this the pane that's active" check
-      // can never match again.
-      const activePaneId = t.activePaneId === targetPaneId ? draggedLeaf.id : t.activePaneId
-      // Same reasoning as connectPane: only follow the newly-attached
-      // connection if it landed on the tab's actual active pane, so an
-      // attach into some other (non-focused) split pane doesn't rename a
-      // tab that's still showing something else.
-      const title = targetPaneId === t.activePaneId ? leafTitle(draggedLeaf, t.title) : t.title
-      return { ...t, root, activePaneId, title }
-    })
+    // reducer — its own leaf id is targetPaneId, since that's how it was
+    // found — so its runtime state (if it has any at all) needs to go too,
+    // same as any other pane that stops being reachable in the tree. The
+    // dragged leaf itself keeps its own id and needs no such cleanup; it's
+    // still live, just relocated.
+    const replacedExisting = tabs.some((t) => t.id !== draggedTabId && findLeaf(t.root, targetPaneId))
     if (replacedExisting) dispatchPaneRuntime({ type: 'paneClosed', paneId: targetPaneId })
-    setTabs(next)
-    if (activeTabId === draggedTabId) {
-      const idx = tabs.findIndex((t) => t.id === draggedTabId)
-      const neighbor = next[idx] ?? next[idx - 1] ?? null
-      setActiveTabId(neighbor?.id ?? null)
-    }
-    refit()
+    dispatchTabs({ type: 'tabAttachedToPane', targetPaneId, draggedTabId })
     toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
   }
 
@@ -1009,8 +871,7 @@ function App() {
     leaf.source = source
     leaf.initial = initial
     const tab: Tab = { id: newTabId(), title: profile.label, root: leaf, activePaneId: leaf.id }
-    setTabs((prev) => [...prev, tab])
-    setActiveTabId(tab.id)
+    dispatchTabs({ type: 'tabOpened', tab })
   }
 
   /** Applies a source/initial pair to an already-open pane, in place —
@@ -1022,23 +883,7 @@ function App() {
     source: ConnectionSource | null,
     initial: PaneLeaf['initial'],
   ) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId) return t
-        // Also carried onto the leaf directly: connecting straight from the
-        // sidebar never opens the dialog, so this is the only path by which
-        // a saved session's backspace preference reaches its terminal.
-        const root = updateLeaf(t.root, paneId, (l) => ({
-          ...l,
-          source: source ?? l.source,
-          initial,
-          backspaceSendsCtrlH: initial?.backspaceSendsCtrlH ?? null,
-        }))
-        const leaf = allLeaves(root).find((l) => l.id === paneId)
-        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
-        return { ...t, root, title }
-      }),
-    )
+    dispatchTabs({ type: 'paneProfileApplied', tabId, paneId, source, initial })
   }
 
   /** Loads a saved session into an already-open (blank) pane, in place —

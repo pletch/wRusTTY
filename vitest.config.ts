@@ -12,15 +12,15 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/lib/**/*.{ts,tsx}', 'src/state/**/*.{ts,tsx}'],
       exclude: ['src/lib/**/*.test.ts', 'src/lib/ghostty/vendor/**'],
-      // Phase 1-3 baseline (paneTree, sessionSnapshot, shellIntegration,
+      // Phase 1-4 baseline (paneTree, sessionSnapshot, shellIntegration,
       // lineEditor, settings, theme, oscScanner, state/tabOps,
-      // state/paneRuntime). Ratchet upward as more of src/lib and
-      // src/state get covered — never lower these.
+      // state/paneRuntime, state/tabs). Ratchet upward as more of src/lib
+      // and src/state get covered — never lower these.
       thresholds: {
-        lines: 21,
-        statements: 21,
-        functions: 26,
-        branches: 23,
+        lines: 24,
+        statements: 24,
+        functions: 32,
+        branches: 28,
       },
     },
   },
