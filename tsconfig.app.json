@@ -4,7 +4,11 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // "node" is here for src/bench's test-support files (gridSnapshot.ts
+    // reads the vendored .wasm off disk to instantiate it headlessly under
+    // Vitest) — ambient types only, nothing in the shipped app imports Node
+    // builtins.
+    "types": ["vite/client", "node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

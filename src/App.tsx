@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -36,163 +36,45 @@ import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
-import type { CommandActivity, CommandResult } from './lib/shellIntegration'
+import type { CommandResult } from './lib/shellIntegration'
 import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
 import { DRAG_PANE_MIME } from './lib/dragTypes'
 import {
   allLeaves,
   blankLeaf,
-  canSplitLeaf,
   closeLeaf,
   findLeaf,
   firstLeaf,
   reidentify,
   splitBlocker,
-  splitLeaf,
-  updateLeaf,
-  MAX_PANES_PER_TAB,
-  MAX_PANE_COLUMNS,
-  MAX_PANE_ROWS,
 } from './lib/paneTree'
 import type { SplitLimit } from './lib/paneTree'
 import * as sessionSnapshot from './lib/sessionSnapshot'
 import type { SessionSnapshot } from './lib/sessionSnapshot'
 import type { PaneLeaf, PaneNode, Tab } from './types'
-
-/** Tooltip on a split button that's been disabled by one of the limits in
- * paneTree.ts. Says which ceiling was hit and what to do instead, since a
- * dimmed button on its own just looks broken — and with per-axis caps the
- * other split direction is often still available, which isn't guessable. */
-function splitLimitHint(limit: SplitLimit): string {
-  switch (limit) {
-    case 'panes':
-      return `Split limit reached (${MAX_PANES_PER_TAB} panes per tab) — open a new tab instead`
-    case 'rows':
-      return `Split limit reached (${MAX_PANE_ROWS} panes top to bottom) — try splitting right`
-    case 'columns':
-      return `Split limit reached (${MAX_PANE_COLUMNS} panes side by side) — try splitting down`
-  }
-}
-
-function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
-  return {
-    id: profile.id,
-    protocol: profile.protocol,
-    label: profile.label,
-    folder: profile.folder,
-    host: profile.host,
-    port: profile.port,
-    username: profile.username,
-    authType:
-      profile.authType === 'password'
-        ? 'Password'
-        : profile.authType === 'agent'
-          ? 'Agent'
-          : 'PublicKey',
-    keyPath: profile.keyPath ?? undefined,
-    hasCredential: profile.hasCredential,
-    jumpProfileId: profile.jumpProfileId,
-    termType: profile.termType,
-    backspaceSendsCtrlH: profile.backspaceSendsCtrlH,
-  }
-}
-
-/** Re-resolves saved-profile panes against the live profile list as a stored
- * arrangement (a workspace, or the launch snapshot) is brought back.
- *
- * Both stores keep a copy of the profile's details in `initial`, captured when
- * the arrangement was saved — possibly months ago, and it only ever feeds the
- * connect form and the tab title (the connection itself carries just a profile
- * id, which Rust resolves fresh). So the live profile wins outright and the
- * stored copy is demoted to a fallback for one case: a profile that no longer
- * exists. That's what keeps a renamed or re-hosted profile from coming back
- * under its old name, and it holds for edits made outside the app or by a
- * vault import too — none of which could have written back into these files.
- *
- * Three outcomes per pane:
- *  - profile gone: blanked to a connect form, prefilled from the stored copy,
- *    since mounting it would only fail with "profile not found";
- *  - profile needs the vault and we don't have it: blanked to a connect form,
- *    prefilled from the *live* profile, which offers to unlock;
- *  - otherwise: kept connected, with its details refreshed. */
-function refreshProfilePanes(
-  node: PaneNode,
-  sessions: SessionProfile[],
-  vaultUsable: boolean,
-): PaneNode {
-  if (node.type === 'split') {
-    return {
-      ...node,
-      children: [
-        refreshProfilePanes(node.children[0], sessions, vaultUsable),
-        refreshProfilePanes(node.children[1], sessions, vaultUsable),
-      ],
-    }
-  }
-
-  const source = node.source
-  if (source?.protocol !== 'sshProfile') return node
-  const profile = sessions.find((s) => s.id === source.profileId)
-  if (!profile) return { ...node, source: null }
-  const initial = profileToInitial(profile)
-  if (!vaultUsable && sessionSnapshot.isVaultBound(source, sessions)) {
-    return { ...node, source: null, initial }
-  }
-  return { ...node, initial }
-}
-
-/** Applies `refreshProfilePanes` to whole tabs, re-deriving each title from
- * the pane that will be showing when it opens — otherwise a renamed profile
- * still surfaces under its old name in the tab bar, which is the one place
- * the staleness was actually visible. */
-function refreshTabs(tabs: Tab[], sessions: SessionProfile[], vaultUsable: boolean): Tab[] {
-  return tabs.map((t) => {
-    const root = refreshProfilePanes(t.root, sessions, vaultUsable)
-    const active = findLeaf(root, t.activePaneId) ?? firstLeaf(root)
-    return { ...t, root, title: leafTitle(active, t.title) }
-  })
-}
-
-/** A tab holding one pane that has never connected — the state a new tab
- * starts in, showing the connect dialog. Opening a workspace from such a tab
- * should consume it rather than leave it stranded in front of the tabs it
- * just created. Any half-filled connect form in it goes too, which is fine:
- * choosing a workspace from that very form is choosing to move on. */
-function isBlankTab(tab: Tab): boolean {
-  const leaves = allLeaves(tab.root)
-  return leaves.length === 1 && !leaves[0].source
-}
-
-function newTabId() {
-  return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-// A leaf connected via a saved profile carries a `sshProfile` source whose
-// only field is the profile's id — sourceLabel() for that variant returns
-// the raw (UUID-looking) id, since resolving it to the profile's actual
-// name requires the profile list, which isn't available down in lib/
-// connection.ts. leaf.initial.label is filled in with the real name at
-// connect time and is always the better title when present; every title
-// computation should go through this instead of calling sourceLabel(source)
-// directly, or a saved-profile pane's title regresses to its profile id
-// the moment anything (focus, split, pop-out, attach) recomputes it.
-function leafTitle(leaf: PaneLeaf, fallback: string): string {
-  if (leaf.initial?.label) return leaf.initial.label
-  if (leaf.source) return sourceLabel(leaf.source)
-  return fallback
-}
-
-// Serial data-bits enum → the digit used in conventional framing notation
-// (e.g. the "8" in "8N1"), for the status bar's serial detail string.
-function dataBitsDigit(bits: 'Five' | 'Six' | 'Seven' | 'Eight'): number {
-  return { Five: 5, Six: 6, Seven: 7, Eight: 8 }[bits]
-}
-
-function blankTab(): Tab {
-  const leaf = blankLeaf()
-  return { id: newTabId(), title: 'New Connection', root: leaf, activePaneId: leaf.id }
-}
+import {
+  splitLimitHint,
+  profileToInitial,
+  refreshTabs,
+  newTabId,
+  leafTitle,
+  dataBitsDigit,
+  blankTab,
+} from './state/tabOps'
+import {
+  paneRuntimeReducer,
+  statusByPaneOf,
+  connectedAtByPaneOf,
+  loggingByPaneOf,
+  forwardsOpenByPaneOf,
+  filesOpenByPaneOf,
+  sessionIdByPaneOf,
+  activityByPaneOf,
+  attentionPanesOf,
+} from './state/paneRuntime'
+import { tabsReducer, layoutSignature } from './state/tabs'
+import { usePanePortals } from './hooks/usePanePortals'
 
 function refit() {
   // Terminal listens for window resize to re-fit; nudge it after a tab or
@@ -230,14 +112,57 @@ function describeCommandResult(result: CommandResult, tabTitle: string): string 
   return `${what} exited ${result.exitCode} after ${took} — ${tabTitle}`
 }
 
+/** Every dialog/prompt/palette App.tsx can show, as one value instead of
+ * five independently-toggled booleans/nullables — see the `modal` state
+ * below for why. */
+type Modal =
+  | { kind: 'none' }
+  | { kind: 'palette' }
+  | { kind: 'confirmClosePane'; tabId: string; paneId: string }
+  | { kind: 'confirmCloseTab'; tabId: string; count: number }
+  | { kind: 'confirmCloseWindow'; count: number }
+  | { kind: 'restorePrompt'; snapshot: SessionSnapshot }
+  | { kind: 'workspacePrompt'; workspace: Workspace; originTabId: string | null }
+
 function App() {
   // Temporary switch for Phase 2 go/no-go milestone test
 
 
-  const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
+  // tabs/activeTabId used to be two separately-updated useState hooks; see
+  // state/tabs.ts for why moving the tree surgery (split/close/pop/attach)
+  // into one reducer both fixes a class of cross-hook staleness and makes
+  // every mutating operation on it unit-testable with no React.
+  const [{ tabs, activeTabId }, dispatchTabs] = useReducer(tabsReducer, null, () => {
+    const initial = blankTab()
+    return { tabs: [initial], activeTabId: initial.id }
+  })
+  // Replaces a `refit()` call manually appended to every function that could
+  // change what's on screen (closing a pane/tab, splitting, popping,
+  // attaching, switching tabs) — easy to add a new such function and forget
+  // it, which is exactly why the eight pane-runtime tables leaked. Keyed on
+  // the active tab's visible split geometry rather than on `tabs` itself, so
+  // dragging a divider (which changes `sizes`, not which pane is where)
+  // doesn't refire it — see layoutSignature.
+  useLayoutEffect(() => {
+    refit()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutSignature(tabs, activeTabId)])
   const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
-  const [statusByPane, setStatusByPane] = useState<Record<string, string>>({})
+  // Live, ephemeral per-pane state (connection status, logging, forwarded
+  // panels, activity, attention) — see state/paneRuntime.ts for why this is
+  // one reducer instead of eight separately-managed Records keyed by pane
+  // id. The *ByPane/attentionPanes names below are kept as the read-side
+  // views so the rest of this component (and the child components they're
+  // passed to) didn't need to change.
+  const [paneRuntime, dispatchPaneRuntime] = useReducer(paneRuntimeReducer, {})
+  const statusByPane = statusByPaneOf(paneRuntime)
+  const connectedAtByPane = connectedAtByPaneOf(paneRuntime)
+  const loggingByPane = loggingByPaneOf(paneRuntime)
+  const forwardsOpenByPane = forwardsOpenByPaneOf(paneRuntime)
+  const filesOpenByPane = filesOpenByPaneOf(paneRuntime)
+  const sessionIdByPane = sessionIdByPaneOf(paneRuntime)
+  const activityByPane = activityByPaneOf(paneRuntime)
+  const attentionPanes = attentionPanesOf(paneRuntime)
   // Set by the toolbar search button to ask one specific pane's terminal to
   // open its search box (the box itself is per-Terminal local state, so this
   // is how an App-level control reaches into it). Targeted by pane id — not a
@@ -245,23 +170,6 @@ function App() {
   // would open search in background tabs too. The nonce lets a repeat click on
   // the same pane re-fire.
   const [searchRequest, setSearchRequest] = useState<{ nonce: number; paneId: string } | null>(null)
-  // Epoch ms a pane reached 'connected', for the status bar's uptime readout.
-  // Set on the connected transition, cleared on any other status (see the
-  // onStatus handler) so a reconnect restarts the clock rather than counting
-  // through the outage.
-  const [connectedAtByPane, setConnectedAtByPane] = useState<Record<string, number>>({})
-  const [loggingByPane, setLoggingByPane] = useState<Record<string, boolean>>({})
-  const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
-  const [filesOpenByPane, setFilesOpenByPane] = useState<Record<string, boolean>>({})
-  const [sessionIdByPane, setSessionIdByPane] = useState<Record<string, string | null>>({})
-  // Per-pane command state, driven by the remote shell's OSC 133 reports —
-  // stays permanently idle for any host without shell integration set up.
-  const [activityByPane, setActivityByPane] = useState<Record<string, CommandActivity>>({})
-  // Panes holding something you haven't seen: a bell rang, or a long command
-  // finished, while the tab was in the background. Keyed by pane so the tab
-  // strip can put the marker on the segment of the pane it actually happened
-  // in, rather than only saying "somewhere in this tab".
-  const [attentionPanes, setAttentionPanes] = useState<Record<string, true>>({})
 
   // The single pane you are actually looking at: the focused pane of the
   // active tab. Everything else is out of view as far as the marker is
@@ -278,19 +186,12 @@ function App() {
   // itself the acknowledgement.
   useEffect(() => {
     if (!focusedPaneId) return
-    const clear = () =>
-      setAttentionPanes((prev) => {
-        if (!(focusedPaneId in prev)) return prev
-        const next = { ...prev }
-        delete next[focusedPaneId]
-        return next
-      })
+    const clear = () => dispatchPaneRuntime({ type: 'attentionCleared', paneId: focusedPaneId })
     clear()
     window.addEventListener('focus', clear)
     return () => window.removeEventListener('focus', clear)
   }, [focusedPaneId])
   const [profilesVersion, setProfilesVersion] = useState(0)
-  const [paletteOpen, setPaletteOpen] = useState(false)
   // Kept fresh here (rather than fetched lazily wherever it's needed) since
   // it now backs both the quick-connect palette and the saved-sessions
   // sidebar inside every blank pane's connect dialog.
@@ -332,124 +233,45 @@ function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
-  // A previous run's session snapshot, awaiting Restore/Discard — set once
-  // at startup (see the mount effect below) and cleared either way. Nothing
-  // writes a fresh snapshot until this is resolved, so an unanswered prompt
-  // can't have its own answer overwritten by the still-default blank tab
-  // underneath it.
-  const [pendingRestore, setPendingRestore] = useState<SessionSnapshot | null>(null)
-  /** A close held back pending confirmation, because it would drop live
-   * connections — see ConfirmDialog at the bottom of the render. */
-  const [pendingClose, setPendingClose] = useState<
-    | { kind: 'tab'; tabId: string; count: number }
-    | { kind: 'pane'; tabId: string; paneId: string }
-    | { kind: 'window'; count: number }
-    | null
-  >(null)
-  /** A workspace waiting on a vault unlock before its tabs are materialised,
-   * with the tab it was launched from so that survives the prompt. */
-  const [pendingWorkspace, setPendingWorkspace] = useState<{
-    workspace: Workspace
-    originTabId: string | null
-  } | null>(null)
-  const [restoreDecided, setRestoreDecided] = useState(false)
-  // Every live <Terminal> is mounted exactly once here, in a flat pool keyed
-  // by pane id, and portaled into whichever "slot" div currently represents
-  // its position (see Pane.tsx). Dragging a connection between tabs/splits
-  // only ever changes which slot its portal points at — the Terminal
-  // component itself, and the session/xterm instance it owns, never
-  // unmounts, so the live connection survives the move untouched.
-  const [slots, setSlots] = useState<Record<string, HTMLDivElement>>({})
-
-  // Stable across renders (empty deps — setSlots itself is guaranteed
-  // stable by React) so that the per-leaf ref callbacks built from it in
-  // Pane.tsx can themselves stay stable. Without that, a fresh callback
-  // identity every render makes React think the ref "changed" on every
-  // single render, perpetually detaching and reattaching it — each of
-  // which calls setSlots, triggering another render, forever.
-  const registerSlot = useCallback((paneId: string, el: HTMLDivElement | null) => {
-    setSlots((prev) => {
-      if (el) {
-        if (prev[paneId] === el) return prev
-        return { ...prev, [paneId]: el }
-      }
-      if (!(paneId in prev)) return prev
-      const next = { ...prev }
-      delete next[paneId]
-      return next
-    })
-  }, [])
-
-  // React's own reconciler (updatePortal, in react-dom's createChildReconciler)
-  // discards and recreates a portal's entire subtree whenever the target
-  // container passed to createPortal differs from the previous render's —
-  // *even when the key is identical*. Splitting a pane or popping it to a
-  // new tab reparents PaneLeafView in the React tree (it switches position
-  // between a plain leaf and a child of a new PanelGroup), which unmounts
-  // and remounts it, producing a brand new slot div — so portaling directly
-  // into `slots[leaf.id]` (whatever it currently is) forces exactly this
-  // "different container" case, tearing down and reconnecting the live
-  // session, no matter how briefly the container changes. (Two earlier
-  // attempts assumed the cause was a timing gap where the slot went
-  // missing — a fixed delay, then a hidden fallback container — and both
-  // still hit this, since switching between real-slot and fallback is
-  // itself a container change.)
+  // The quick-connect palette, a close confirmation, the launch-restore
+  // prompt and the open-workspace-needs-vault prompt used to be five
+  // separately-updated pieces of state (paletteOpen, pendingRestore,
+  // pendingClose, pendingWorkspace, restoreDecided) — nothing stopped two
+  // of them from being true at once, which is a real class of bug in an app
+  // with this many prompts. One value that can only ever be one thing at a
+  // time makes "two dialogs open simultaneously" unrepresentable instead of
+  // just unlikely.
   //
-  // The fix: never change what a leaf's portal targets. Each connected leaf
-  // gets exactly one permanent container div, created once and portaled
-  // into for its entire connected lifetime; a layout effect below physically
-  // relocates *that same div* (plain DOM appendChild, invisible to React)
-  // into whichever slot currently represents its position. The div's
-  // identity — and therefore React's containerInfo — never changes, so
-  // updatePortal always takes the "reuse" branch.
-  const homeContainers = useRef<Record<string, HTMLDivElement>>({})
-
-  function getHomeContainer(paneId: string): HTMLDivElement {
-    let el = homeContainers.current[paneId]
-    if (!el) {
-      el = document.createElement('div')
-      el.style.position = 'fixed'
-      el.style.top = '0'
-      el.style.left = '0'
-      el.style.width = '0'
-      el.style.height = '0'
-      el.style.overflow = 'hidden'
-      el.style.pointerEvents = 'none'
-      document.body.appendChild(el)
-      homeContainers.current[paneId] = el
+  // The restore-prompt decision itself used to run in a post-mount effect;
+  // it's a lazy initializer here instead; sessionSnapshot.loadSnapshot() is
+  // synchronous and local, same as terminalSettings just above, so there's
+  // nothing to wait for the DOM to exist for. That's also what lets
+  // `restoreDecided` disappear entirely below — the very first render
+  // already reflects the decision, rather than needing a moment before an
+  // effect resolves it.
+  const [modal, setModal] = useState<Modal>(() => {
+    if (!terminalSettings.restoreSessionsOnLaunch) return { kind: 'none' }
+    const snapshot = sessionSnapshot.loadSnapshot()
+    if (snapshot && sessionSnapshot.countSessions(snapshot.tabs) > 0) {
+      return { kind: 'restorePrompt', snapshot }
     }
-    return el
-  }
-
-  // Runs after every commit (so after a slot div's own mount/unmount has
-  // already happened) and physically moves each connected leaf's permanent
-  // container into its current slot, or parks it invisibly off-tree if it
-  // doesn't have one at the moment — using useLayoutEffect rather than
-  // useEffect so the move happens before the browser paints, avoiding a
-  // visible flash of the pane looking empty.
-  useLayoutEffect(() => {
-    for (const paneId of Object.keys(homeContainers.current)) {
-      const home = homeContainers.current[paneId]
-      const slot = slots[paneId]
-      if (slot && home.parentElement !== slot) {
-        home.style.position = 'relative'
-        home.style.inset = ''
-        home.style.width = '100%'
-        home.style.height = '100%'
-        home.style.overflow = ''
-        home.style.pointerEvents = ''
-        slot.appendChild(home)
-      } else if (!slot && home.parentElement !== document.body) {
-        home.style.position = 'fixed'
-        home.style.inset = '0'
-        home.style.width = '0'
-        home.style.height = '0'
-        home.style.overflow = 'hidden'
-        home.style.pointerEvents = 'none'
-        document.body.appendChild(home)
-      }
-    }
+    return { kind: 'none' }
   })
+  const closeModal = () => setModal({ kind: 'none' })
+  // Derived, not stored: true from the first render onward once there was
+  // never a restore prompt to begin with, and forever after the one time
+  // the modal actually does leave 'restorePrompt'.
+  const restoreDecided = modal.kind !== 'restorePrompt'
+  // Flat list of every live (source-holding) pane across every tab — the
+  // pool that Terminal instances are portaled from, and what usePanePortals
+  // prunes its home containers against. See usePanePortals.ts for why
+  // Terminal isn't just rendered inline per tab.
+  const connectedEntries = tabs.flatMap((tab) =>
+    allLeaves(tab.root)
+      .filter((leaf) => leaf.source)
+      .map((leaf) => ({ tab, leaf })),
+  )
+  const { registerSlot, getHomeContainer } = usePanePortals(connectedEntries.map(({ leaf }) => leaf.id))
 
   // The window starts hidden (see tauri.conf.json) specifically so this can
   // show it only once real content is actually painted — tauri-plugin-
@@ -491,7 +313,7 @@ function App() {
       const { connected, enabled } = closeGuardRef.current
       if (!enabled || connected === 0) return
       event.preventDefault()
-      setPendingClose({ kind: 'window', count: connected })
+      setModal({ kind: 'confirmCloseWindow', count: connected })
     })
     return () => {
       unlisten.then((f) => f()).catch(() => {})
@@ -552,26 +374,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Runs once at startup, before anything has a chance to overwrite last
-  // run's snapshot: if the setting is on and a snapshot with at least one
-  // restorable session exists, hold off on deciding anything (leaves the
-  // default blank tab showing underneath the prompt) until the user answers
-  // it. Otherwise there's nothing to ask about — mark it decided immediately
-  // so the persist-on-change effect below is free to start writing.
-  useEffect(() => {
-    if (!terminalSettings.restoreSessionsOnLaunch) {
-      setRestoreDecided(true)
-      return
-    }
-    const snapshot = sessionSnapshot.loadSnapshot()
-    if (snapshot && sessionSnapshot.countSessions(snapshot.tabs) > 0) {
-      setPendingRestore(snapshot)
-    } else {
-      setRestoreDecided(true)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   // Keeps the on-disk snapshot current as tabs/panes change, rather than
   // only writing it on a clean exit — a crash or force-quit shouldn't lose
   // it either. Gated on restoreDecided so this can't fire (and overwrite
@@ -593,31 +395,69 @@ function App() {
    * so the state still reads 'locked' and every pane just unlocked for would
    * be blanked. */
   function applyRestore(snapshot: SessionSnapshot, vaultUsable: boolean) {
-    setTabs(refreshTabs(snapshot.tabs, sessions, vaultUsable))
-    setActiveTabId(snapshot.activeTabId)
-    setPendingRestore(null)
-    setRestoreDecided(true)
+    dispatchTabs({
+      type: 'restored',
+      tabs: refreshTabs(snapshot.tabs, sessions, vaultUsable),
+      activeTabId: snapshot.activeTabId,
+    })
+    closeModal()
   }
 
   function discardRestore() {
     sessionSnapshot.clearSnapshot()
-    setPendingRestore(null)
-    setRestoreDecided(true)
+    closeModal()
   }
 
   function restoreSessions() {
-    if (pendingRestore) applyRestore(pendingRestore, vaultStatus === 'unlocked')
+    if (modal.kind === 'restorePrompt') applyRestore(modal.snapshot, vaultStatus === 'unlocked')
   }
 
-  async function unlockAndRestoreSessions(password: string) {
-    if (!pendingRestore) return
+  /** What a vault unlock was for — the launch-restore prompt, the
+   * open-workspace prompt, and the per-pane saved-session sidebar's own
+   * unlock form each used to hand-roll their own password/OS pair of
+   * unlock-then-act functions (six total). One dispatcher plus two shared
+   * unlock entry points below replace all six; adding a fourth vault-gated
+   * action is a new union member here, not a new pair of functions. */
+  type VaultGatedAction =
+    | { kind: 'restoreSessions'; snapshot: SessionSnapshot }
+    | { kind: 'openWorkspace'; workspace: Workspace; originTabId: string | null }
+    | { kind: 'connectProfile'; tabId: string; paneId: string; profile: SessionProfile }
+
+  async function runVaultGatedAction(action: VaultGatedAction) {
+    switch (action.kind) {
+      case 'restoreSessions':
+        applyRestore(action.snapshot, true)
+        return
+      case 'openWorkspace':
+        materializeWorkspace(action.workspace, true, action.originTabId)
+        closeModal()
+        return
+      case 'connectProfile': {
+        // Checked fresh against the Rust side rather than trusting
+        // `vaultStatus` React state, which wouldn't have caught up yet at
+        // this point in the same call.
+        const hasCredential = await vault.hasCredential(action.profile.id).catch(() => false)
+        const source: ConnectionSource | null = hasCredential
+          ? { protocol: 'sshProfile', profileId: action.profile.id }
+          : null
+        applyProfileToPane(action.tabId, action.paneId, source, profileToInitial(action.profile))
+        return
+      }
+    }
+  }
+
+  /** Unlocks the vault with a freshly-typed master password, then runs
+   * whatever vault-gated action was waiting on it. */
+  async function unlockAndRun(password: string, action: VaultGatedAction) {
     await vault.unlock(password)
     refreshVaultStatus()
-    applyRestore(pendingRestore, true)
+    await runVaultGatedAction(action)
   }
 
-  async function unlockWithOsAndRestoreSessions() {
-    if (!pendingRestore) return
+  /** Same as unlockAndRun, but via the OS-keychain unlock (Windows sign-in,
+   * gated by a fresh Windows Hello/PIN check on Windows) instead of a typed
+   * master password. */
+  async function unlockWithOsAndRun(action: VaultGatedAction) {
     await vault.unlockWithOs()
     // The Windows Hello/PIN prompt is a native OS-level dialog, not an
     // in-page one — closing it doesn't hand keyboard focus back to our
@@ -628,13 +468,11 @@ function App() {
       .setFocus()
       .catch(() => {})
     refreshVaultStatus()
-    applyRestore(pendingRestore, true)
+    await runVaultGatedAction(action)
   }
 
   function newTab() {
-    const tab = blankTab()
-    setTabs((prev) => [...prev, tab])
-    setActiveTabId(tab.id)
+    dispatchTabs({ type: 'tabOpened', tab: blankTab() })
   }
 
   /** Panes in this subtree holding a live connection — what closing would
@@ -648,50 +486,36 @@ function App() {
     const tab = tabs.find((t) => t.id === id)
     const count = tab ? connectedPanes(tab.root) : 0
     if (count > 0 && terminalSettings.confirmCloseWithConnection) {
-      setPendingClose({ kind: 'tab', tabId: id, count })
+      setModal({ kind: 'confirmCloseTab', tabId: id, count })
       return
     }
     closeTabNow(id)
   }
 
   function closeTabNow(id: string) {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id)
-      if (activeTabId === id) {
-        const idx = prev.findIndex((t) => t.id === id)
-        const neighbor = next[idx] ?? next[idx - 1] ?? null
-        setActiveTabId(neighbor?.id ?? null)
+    // Every pane in the tab is gone, not just the active one — a closed
+    // split tab used to leak its runtime state (status, logging, activity,
+    // ...) for every pane but the one or two spots that happened to clean up
+    // after themselves. One dispatch per leaf, closing the class of bug
+    // rather than one instance of it.
+    const closing = tabs.find((t) => t.id === id)
+    if (closing) {
+      for (const leaf of allLeaves(closing.root)) {
+        dispatchPaneRuntime({ type: 'paneClosed', paneId: leaf.id })
       }
-      return next
-    })
-    // Closing the active tab reveals its neighbour, which was hidden (and so
-    // sized 0x0) until now — the same "a pane just became visible" situation
-    // selectTab handles, reached by a different route. Without this the newly
-    // shown pane is left to Terminal.tsx's ResizeObserver alone, and an
-    // observer delivers between layout and paint, which is exactly the moment
-    // refit()'s double-rAF exists to wait past: a fit computed against a
-    // transitional size leaves xterm's column count disagreeing with the
-    // remote PTY's, which shows up as the cursor blinking a few columns away
-    // from the end of the prompt until the next full redraw.
-    refit()
+    }
+    dispatchTabs({ type: 'tabClosed', tabId: id })
+    // Closing the active tab can reveal its neighbour, which was hidden (and
+    // so sized 0x0) until now — handled by the layoutSignature-keyed refit
+    // effect below rather than a call here, same as every other tree change.
   }
 
   function selectTab(id: string) {
-    setActiveTabId(id)
-    refit()
+    dispatchTabs({ type: 'tabSelected', tabId: id })
   }
 
   function reorderTabs(draggedId: string, targetId: string) {
-    if (draggedId === targetId) return
-    setTabs((prev) => {
-      const from = prev.findIndex((t) => t.id === draggedId)
-      const to = prev.findIndex((t) => t.id === targetId)
-      if (from === -1 || to === -1) return prev
-      const next = [...prev]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return next
-    })
+    dispatchTabs({ type: 'tabsReordered', draggedId, targetId })
   }
 
   function stepTab(delta: 1 | -1) {
@@ -711,32 +535,13 @@ function App() {
     leaf.source = activeLeaf.source
     leaf.initial = activeLeaf.initial
     const tab: Tab = { id: newTabId(), title: sourceTab.title, root: leaf, activePaneId: leaf.id }
-    setTabs((prev) => [...prev, tab])
-    setActiveTabId(tab.id)
+    dispatchTabs({ type: 'tabOpened', tab })
   }
 
   /** Reconnects one specific pane in place (generation bump remounts its
    * Terminal, which reconnects). */
   function reconnectPane(tabId: string, paneId: string) {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId
-          ? {
-              ...t,
-              root: updateLeaf(t.root, paneId, (l) => ({
-                ...l,
-                // Re-resolve from the profile instead of replaying the source
-                // baked in at the original connect time — otherwise editing a
-                // profile's host/port after connecting has no effect on
-                // Reconnect, since sshProfile sources are the only ones
-                // re-read fresh from disk on connect.
-                source: l.initial?.id ? { protocol: 'sshProfile', profileId: l.initial.id } : l.source,
-                generation: l.generation + 1,
-              })),
-            }
-          : t,
-      ),
-    )
+    dispatchTabs({ type: 'paneReconnected', tabId, paneId })
   }
 
   /** Reconnects the tab's active pane in place (the tab-context-menu action). */
@@ -751,20 +556,7 @@ function App() {
    *  the Terminal (and thereby reconnecting the session). Deliberate and rare:
    *  the escape hatch for the handful of upstream ghostty-web ABI gaps. */
   function setPaneEngine(tabId: string, paneId: string, engine: 'xterm' | 'ghostty') {
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === tabId
-          ? {
-              ...t,
-              root: updateLeaf(t.root, paneId, (l) => ({
-                ...l,
-                engine,
-                generation: l.generation + 1,
-              })),
-            }
-          : t,
-      ),
-    )
+    dispatchTabs({ type: 'paneEngineSet', tabId, paneId, engine })
   }
 
   /** Adds a saved workspace's tabs to the window and focuses its first.
@@ -796,18 +588,7 @@ function App() {
       const active = firstLeaf(root)
       return { ...t, id: newTabId(), root, activePaneId: active.id, title: leafTitle(active, t.title) }
     })
-    if (restored.length === 0) return
-    setTabs((prev) => {
-      // Consume the tab this was launched from when it has nothing in it —
-      // typically the blank tab whose connect dialog was just used. Splicing
-      // rather than appending also puts the workspace where that tab sat,
-      // instead of after everything else.
-      const target = originTabId ?? activeTabId
-      const index = prev.findIndex((t) => t.id === target)
-      if (index === -1 || !isBlankTab(prev[index])) return [...prev, ...restored]
-      return [...prev.slice(0, index), ...restored, ...prev.slice(index + 1)]
-    })
-    setActiveTabId(restored[0].id)
+    dispatchTabs({ type: 'workspaceMaterialized', restored, originTabId: originTabId ?? null })
   }
 
   /** Gates on the vault the same way the launch-restore flow does, rather
@@ -823,39 +604,17 @@ function App() {
     if (sessionSnapshot.needsVaultUnlock(workspace.tabs, sessions) && vaultStatus === 'locked') {
       // The origin has to survive the prompt, or unlocking would materialise
       // the workspace next to the blank tab instead of over it.
-      setPendingWorkspace({ workspace, originTabId: originTabId ?? activeTabId })
+      setModal({ kind: 'workspacePrompt', workspace, originTabId: originTabId ?? activeTabId })
       return
     }
     materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
   }
 
   function openPendingWorkspace() {
-    if (!pendingWorkspace) return
-    const { workspace, originTabId } = pendingWorkspace
+    if (modal.kind !== 'workspacePrompt') return
+    const { workspace, originTabId } = modal
     materializeWorkspace(workspace, vaultStatus === 'unlocked', originTabId)
-    setPendingWorkspace(null)
-  }
-
-  async function unlockAndOpenWorkspace(password: string) {
-    if (!pendingWorkspace) return
-    const { workspace, originTabId } = pendingWorkspace
-    await vault.unlock(password)
-    refreshVaultStatus()
-    materializeWorkspace(workspace, true, originTabId)
-    setPendingWorkspace(null)
-  }
-
-  async function unlockWithOsAndOpenWorkspace() {
-    if (!pendingWorkspace) return
-    const { workspace, originTabId } = pendingWorkspace
-    await vault.unlockWithOs()
-    // Same native-prompt focus problem as the launch-restore path.
-    getCurrentWindow()
-      .setFocus()
-      .catch(() => {})
-    refreshVaultStatus()
-    materializeWorkspace(workspace, true, originTabId)
-    setPendingWorkspace(null)
+    closeModal()
   }
 
   function connectPane(
@@ -867,22 +626,16 @@ function App() {
   ) {
     // Set logging state before the source, so the Terminal mounts with logging
     // already armed and captures output from the first byte (batched with the
-    // setTabs below in the same event, so it's a single render). The toolbar
+    // dispatch below in the same event, so it's a single render). The toolbar
     // icon then reflects this and can stop it mid-session.
-    setLoggingByPane((prev) => ({ ...prev, [paneId]: logSession }))
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId) return t
-        const root = updateLeaf(t.root, paneId, (l) => ({
-          ...l,
-          source,
-          backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
-        }))
-        const leaf = allLeaves(root).find((l) => l.id === paneId)
-        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
-        return { ...t, root, title }
-      }),
-    )
+    dispatchPaneRuntime({ type: 'loggingSet', paneId, logging: logSession })
+    dispatchTabs({
+      type: 'paneConnected',
+      tabId,
+      paneId,
+      source,
+      backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
+    })
   }
 
   /** Clears a pane's connection back to blank (reopening the connect
@@ -895,74 +648,47 @@ function App() {
    * editing it (e.g. re-importing a missing vaulted key) rather than
    * picking something else entirely. */
   function disconnectPane(tabId: string, paneId: string) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId) return t
-        const root = updateLeaf(t.root, paneId, (l) => ({ ...l, source: null }))
-        const leaf = allLeaves(root).find((l) => l.id === paneId)
-        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
-        return { ...t, root, title }
-      }),
-    )
+    dispatchTabs({ type: 'paneDisconnected', tabId, paneId })
   }
 
   function focusPane(tabId: string, paneId: string) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId || t.activePaneId === paneId) return t
-        const leaf = allLeaves(t.root).find((l) => l.id === paneId)
-        return {
-          ...t,
-          activePaneId: paneId,
-          title: leaf ? leafTitle(leaf, t.title) : t.title,
-        }
-      }),
-    )
+    dispatchTabs({ type: 'paneFocused', tabId, paneId })
   }
 
   function splitPane(tabId: string, paneId: string, direction: 'horizontal' | 'vertical') {
-    setTabs((prev) =>
-      prev.map((t) => {
-        // The limit check lives here as well as on the toolbar buttons: the
-        // buttons are disabled at a limit, so this only catches a caller
-        // that hasn't asked first, but silently growing a layout past what
-        // the pane map can draw is worse than silently doing nothing.
-        if (t.id !== tabId || !canSplitLeaf(t.root, paneId, direction)) return t
-        const root = splitLeaf(t.root, paneId, direction)
-        const newLeafId = allLeaves(root).find((l) => !allLeaves(t.root).some((old) => old.id === l.id))?.id
-        return { ...t, root, activePaneId: newLeafId ?? t.activePaneId }
-      }),
-    )
-    refit()
+    // The limit check also lives on the toolbar buttons, which disable
+    // themselves at a limit — this only catches a caller that hasn't asked
+    // first, and the reducer itself no-ops past the cap regardless.
+    dispatchTabs({ type: 'paneSplit', tabId, paneId, direction })
   }
 
   function toggleLogging(paneId: string) {
-    setLoggingByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+    dispatchPaneRuntime({ type: 'loggingToggled', paneId })
   }
 
   function toggleForwards(paneId: string) {
-    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+    dispatchPaneRuntime({ type: 'panelToggled', paneId, panel: 'forwards' })
     // Both panels anchor to the same corner of the pane — keep them
     // mutually exclusive rather than stacking or overlapping.
-    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'files', open: false })
   }
 
   function closeForwards(paneId: string) {
-    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'forwards', open: false })
   }
 
   function toggleFiles(paneId: string) {
-    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
-    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelToggled', paneId, panel: 'files' })
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'forwards', open: false })
   }
 
   function closeFiles(paneId: string) {
-    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'files', open: false })
   }
 
   function closePane(tabId: string, paneId: string) {
     if (statusByPane[paneId] === 'connected' && terminalSettings.confirmCloseWithConnection) {
-      setPendingClose({ kind: 'pane', tabId, paneId })
+      setModal({ kind: 'confirmClosePane', tabId, paneId })
       return
     }
     closePaneNow(tabId, paneId)
@@ -971,22 +697,17 @@ function App() {
   function closePaneNow(tabId: string, paneId: string) {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
-    const newRoot = closeLeaf(tab.root, paneId)
-    if (!newRoot) {
+    if (!closeLeaf(tab.root, paneId)) {
       // Already confirmed as a pane close if it needed to be — going through
       // closeTab here would ask a second time for the same one connection.
+      // closeTabNow dispatches paneClosed for every leaf still in the tab
+      // (just this one, here), so there's nothing left to clean up on this
+      // path.
       closeTabNow(tabId)
       return
     }
-    const activePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
-    // Same reasoning as popPaneToNewTab below: the tab's title may have been
-    // describing the pane that just closed (e.g. you closed the one that was
-    // focused), so it needs to follow whichever pane is left behind as
-    // active now instead of staying stuck on the closed pane's old title.
-    const activeLeaf = allLeaves(newRoot).find((l) => l.id === activePaneId)
-    const title = activeLeaf ? leafTitle(activeLeaf, tab.title) : tab.title
-    setTabs((prev) => prev.map((t) => (t.id === tabId ? { ...t, root: newRoot, activePaneId, title } : t)))
-    refit()
+    dispatchPaneRuntime({ type: 'paneClosed', paneId })
+    dispatchTabs({ type: 'paneClosed', tabId, paneId })
   }
 
   /** Extracts a pane out of its (split) tab into its own new tab. The leaf
@@ -996,29 +717,14 @@ function App() {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
     const leaf = findLeaf(tab.root, paneId)
-    const newRoot = closeLeaf(tab.root, paneId)
-    if (!leaf || !newRoot) return // only offered when the tab actually has a split
-    const newActivePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
+    if (!leaf || !closeLeaf(tab.root, paneId)) return // only offered when the tab actually has a split
     const poppedTab: Tab = {
       id: newTabId(),
       title: leafTitle(leaf, 'New Connection'),
       root: leaf,
       activePaneId: leaf.id,
     }
-    // The remaining tab's title may have been describing the pane that
-    // just left — e.g. it was named after the pane you're popping out —
-    // so it needs to follow whichever pane is left behind as active now,
-    // the same way focusPane already does when switching panes normally.
-    const remainingActiveLeaf = allLeaves(newRoot).find((l) => l.id === newActivePaneId)
-    const remainingTitle = remainingActiveLeaf ? leafTitle(remainingActiveLeaf, tab.title) : tab.title
-    setTabs((prev) => [
-      ...prev.map((t) =>
-        t.id === tabId ? { ...t, root: newRoot, activePaneId: newActivePaneId, title: remainingTitle } : t,
-      ),
-      poppedTab,
-    ])
-    setActiveTabId(poppedTab.id)
-    refit()
+    dispatchTabs({ type: 'panePoppedToNewTab', tabId, paneId, poppedTab })
   }
 
   /** Attaches a dragged tab's connection into an empty pane elsewhere,
@@ -1029,34 +735,15 @@ function App() {
     const draggedTab = tabs.find((t) => t.id === draggedTabId)
     if (!draggedTab || draggedTab.root.type !== 'leaf' || !draggedTab.root.source) return
     const draggedLeaf: PaneLeaf = draggedTab.root
-    const withoutDragged = tabs.filter((t) => t.id !== draggedTabId)
-    const next = withoutDragged.map((t) => {
-      if (!findLeaf(t.root, targetPaneId)) return t
-      const root = updateLeaf(t.root, targetPaneId, () => draggedLeaf)
-      // The attached leaf keeps the dragged leaf's own id (not
-      // targetPaneId) — see the comment above this function — so
-      // activePaneId, if it was pointing at targetPaneId, is left
-      // referencing an id that no longer exists anywhere in the tree
-      // unless it's remapped onto the new one here. Left stale, it
-      // silently breaks every later lookup keyed off activePaneId — not
-      // just the active-pane highlight, but e.g. popPaneToNewTab's title
-      // recompute too, since its "is this the pane that's active" check
-      // can never match again.
-      const activePaneId = t.activePaneId === targetPaneId ? draggedLeaf.id : t.activePaneId
-      // Same reasoning as connectPane: only follow the newly-attached
-      // connection if it landed on the tab's actual active pane, so an
-      // attach into some other (non-focused) split pane doesn't rename a
-      // tab that's still showing something else.
-      const title = targetPaneId === t.activePaneId ? leafTitle(draggedLeaf, t.title) : t.title
-      return { ...t, root, activePaneId, title }
-    })
-    setTabs(next)
-    if (activeTabId === draggedTabId) {
-      const idx = tabs.findIndex((t) => t.id === draggedTabId)
-      const neighbor = next[idx] ?? next[idx - 1] ?? null
-      setActiveTabId(neighbor?.id ?? null)
-    }
-    refit()
+    // Whatever was at targetPaneId before is discarded from the tree by the
+    // reducer — its own leaf id is targetPaneId, since that's how it was
+    // found — so its runtime state (if it has any at all) needs to go too,
+    // same as any other pane that stops being reachable in the tree. The
+    // dragged leaf itself keeps its own id and needs no such cleanup; it's
+    // still live, just relocated.
+    const replacedExisting = tabs.some((t) => t.id !== draggedTabId && findLeaf(t.root, targetPaneId))
+    if (replacedExisting) dispatchPaneRuntime({ type: 'paneClosed', paneId: targetPaneId })
+    dispatchTabs({ type: 'tabAttachedToPane', targetPaneId, draggedTabId })
     toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
   }
 
@@ -1110,8 +797,7 @@ function App() {
     leaf.source = source
     leaf.initial = initial
     const tab: Tab = { id: newTabId(), title: profile.label, root: leaf, activePaneId: leaf.id }
-    setTabs((prev) => [...prev, tab])
-    setActiveTabId(tab.id)
+    dispatchTabs({ type: 'tabOpened', tab })
   }
 
   /** Applies a source/initial pair to an already-open pane, in place —
@@ -1123,23 +809,7 @@ function App() {
     source: ConnectionSource | null,
     initial: PaneLeaf['initial'],
   ) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.id !== tabId) return t
-        // Also carried onto the leaf directly: connecting straight from the
-        // sidebar never opens the dialog, so this is the only path by which
-        // a saved session's backspace preference reaches its terminal.
-        const root = updateLeaf(t.root, paneId, (l) => ({
-          ...l,
-          source: source ?? l.source,
-          initial,
-          backspaceSendsCtrlH: initial?.backspaceSendsCtrlH ?? null,
-        }))
-        const leaf = allLeaves(root).find((l) => l.id === paneId)
-        const title = paneId === t.activePaneId && leaf ? leafTitle(leaf, t.title) : t.title
-        return { ...t, root, title }
-      }),
-    )
+    dispatchTabs({ type: 'paneProfileApplied', tabId, paneId, source, initial })
   }
 
   /** Loads a saved session into an already-open (blank) pane, in place —
@@ -1156,50 +826,6 @@ function App() {
    * a credential for it. */
   function editPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
     applyProfileToPane(tabId, paneId, null, profileToInitial(profile))
-  }
-
-  /** Unlocks the vault with a freshly-typed master password, then connects
-   * the picked session exactly as it would have if the vault had already
-   * been unlocked — checking `hasCredential` fresh against the Rust side
-   * rather than trusting `vaultStatus` React state, which wouldn't have
-   * caught up yet at this point in the same call. */
-  async function unlockVaultAndConnectProfile(
-    tabId: string,
-    paneId: string,
-    profile: SessionProfile,
-    password: string,
-  ) {
-    await vault.unlock(password)
-    refreshVaultStatus()
-    const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
-    const source: ConnectionSource | null = hasCredential
-      ? { protocol: 'sshProfile', profileId: profile.id }
-      : null
-    applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
-  }
-
-  /** Same as unlockVaultAndConnectProfile, but via the OS-keychain unlock
-   * (Windows sign-in, gated by a fresh Windows Hello/PIN check on Windows)
-   * instead of a typed master password. */
-  async function unlockWithOsAndConnectProfile(
-    tabId: string,
-    paneId: string,
-    profile: SessionProfile,
-  ) {
-    await vault.unlockWithOs()
-    // See the identical comment in unlockWithOsAndRestoreSessions — the
-    // native OS unlock prompt doesn't return keyboard focus to our window
-    // on its own, which otherwise left the freshly-connected terminal's
-    // auto-focus call landing on an unfocused window.
-    getCurrentWindow()
-      .setFocus()
-      .catch(() => {})
-    refreshVaultStatus()
-    const hasCredential = await vault.hasCredential(profile.id).catch(() => false)
-    const source: ConnectionSource | null = hasCredential
-      ? { protocol: 'sshProfile', profileId: profile.id }
-      : null
-    applyProfileToPane(tabId, paneId, source, profileToInitial(profile))
   }
 
   function deleteSessionProfile(profile: SessionProfile) {
@@ -1270,7 +896,7 @@ function App() {
   }
 
   function openPalette() {
-    setPaletteOpen(true)
+    setModal({ kind: 'palette' })
   }
 
   // Keydown handlers close over state that changes every render; rather than
@@ -1355,28 +981,6 @@ function App() {
   const activePaneIndex = activePaneId
     ? activePaneLeaves.findIndex((l) => l.id === activePaneId) + 1
     : 0
-
-  // Flat list of every live (source-holding) pane across every tab — the
-  // pool that Terminal instances are portaled from. See the `slots` comment
-  // above for why this exists instead of rendering Terminal inline per tab.
-  const connectedEntries = tabs.flatMap((tab) =>
-    allLeaves(tab.root)
-      .filter((leaf) => leaf.source)
-      .map((leaf) => ({ tab, leaf })),
-  )
-
-  // Prunes home containers for leaves that are truly gone (disconnected or
-  // closed, not just mid-move) — otherwise every one ever created would sit
-  // in the DOM forever.
-  useEffect(() => {
-    const liveIds = new Set(connectedEntries.map(({ leaf }) => leaf.id))
-    for (const [id, el] of Object.entries(homeContainers.current)) {
-      if (!liveIds.has(id)) {
-        el.remove()
-        delete homeContainers.current[id]
-      }
-    }
-  })
 
   return (
     <div
@@ -1587,11 +1191,11 @@ function App() {
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}
                 onUnlockAndSelectSession={(paneId, profile, password) =>
-                  unlockVaultAndConnectProfile(tab.id, paneId, profile, password)
+                  unlockAndRun(password, { kind: 'connectProfile', tabId: tab.id, paneId, profile })
                 }
                 osUnlockAvailable={osUnlockAvailable}
                 onUnlockWithOsAndSelectSession={(paneId, profile) =>
-                  unlockWithOsAndConnectProfile(tab.id, paneId, profile)
+                  unlockWithOsAndRun({ kind: 'connectProfile', tabId: tab.id, paneId, profile })
                 }
                 onSaveProfile={saveProfile}
                 onSaveCredential={saveCredential}
@@ -1640,19 +1244,12 @@ function App() {
                   paneId={leaf.id}
                   searchRequest={searchRequest}
                   onStatus={(s) => {
-                    setStatusByPane((prev) => ({ ...prev, [leaf.id]: s }))
-                    // Stamp the connect time once per connected run; drop it on
-                    // anything else so the uptime clock resets on reconnect and
-                    // disappears while disconnected/failed.
-                    setConnectedAtByPane((prev) => {
-                      if (s === 'connected') {
-                        return leaf.id in prev ? prev : { ...prev, [leaf.id]: Date.now() }
-                      }
-                      if (!(leaf.id in prev)) return prev
-                      const next = { ...prev }
-                      delete next[leaf.id]
-                      return next
-                    })
+                    // The connectedAt coupling (stamp once per connected run,
+                    // drop on anything else, so the uptime clock resets on
+                    // reconnect instead of counting through the outage) lives
+                    // in the reducer now — see paneRuntime.ts's statusChanged
+                    // case.
+                    dispatchPaneRuntime({ type: 'statusChanged', paneId: leaf.id, status: s, now: Date.now() })
                     // Surfaced even for background tabs — otherwise a
                     // failed connection in a tab you're not looking at is
                     // silent.
@@ -1677,16 +1274,9 @@ function App() {
                       setTimeout(() => closePaneNow(tab.id, leaf.id), 800)
                     }
                   }}
-                  onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
+                  onSessionId={(id) => dispatchPaneRuntime({ type: 'sessionIdSet', paneId: leaf.id, sessionId: id })}
                   onActivity={(activity) =>
-                    setActivityByPane((prev) => {
-                      // Idle is the resting state for the overwhelming
-                      // majority of panes (every host with no shell
-                      // integration, forever), so don't allocate a new map
-                      // to store what the absence of an entry already means.
-                      if (activity.state === 'idle' && !(leaf.id in prev)) return prev
-                      return { ...prev, [leaf.id]: activity }
-                    })
+                    dispatchPaneRuntime({ type: 'activityChanged', paneId: leaf.id, activity })
                   }
                   onCommandComplete={(result) => {
                     if (!terminalSettings.notifyOnCommandComplete) return
@@ -1704,7 +1294,7 @@ function App() {
                     const paneInView = leaf.id === focusedPaneId && document.hasFocus()
                     const tabInView = tab.id === activeTabId && document.hasFocus()
                     if (!paneInView) {
-                      setAttentionPanes((prev) => ({ ...prev, [leaf.id]: true }))
+                      dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                     }
                     if (tabInView) return
                     const message = describeCommandResult(result, tab.title)
@@ -1723,7 +1313,7 @@ function App() {
                     // bell from the other half of a split still deserves a
                     // marker.
                     if (leaf.id === focusedPaneId && document.hasFocus()) return
-                    setAttentionPanes((prev) => ({ ...prev, [leaf.id]: true }))
+                    dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                   }}
                   onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
                   onReconnect={() => reconnectPane(tab.id, leaf.id)}
@@ -1734,13 +1324,13 @@ function App() {
             )
           })}
         </main>
-        {paletteOpen && (
+        {modal.kind === 'palette' && (
           <QuickConnectPalette
             sessions={sessions}
-            onClose={() => setPaletteOpen(false)}
+            onClose={closeModal}
             onSelect={(profile) => {
               openSavedSession(profile)
-              setPaletteOpen(false)
+              closeModal()
             }}
           />
         )}
@@ -1765,96 +1355,114 @@ function App() {
         />
       )}
       <ToastHost />
-      {pendingClose &&
-        (() => {
-          const plural = (n: number) => `${n} connection${n === 1 ? '' : 's'}`
-          const ends = (n: number) =>
-            `Closing ends ${n === 1 ? 'it' : 'them'} immediately.`
-          if (pendingClose.kind === 'pane') {
+      {(() => {
+        const plural = (n: number) => `${n} connection${n === 1 ? '' : 's'}`
+        const ends = (n: number) => `Closing ends ${n === 1 ? 'it' : 'them'} immediately.`
+        switch (modal.kind) {
+          case 'confirmClosePane':
             return (
               <ConfirmDialog
                 title="Close this pane?"
                 body={`Its connection is still open. ${ends(1)}`}
                 confirmLabel="Close pane"
                 onConfirm={() => {
-                  closePaneNow(pendingClose.tabId, pendingClose.paneId)
-                  setPendingClose(null)
+                  closePaneNow(modal.tabId, modal.paneId)
+                  closeModal()
                 }}
-                onCancel={() => setPendingClose(null)}
+                onCancel={closeModal}
               />
             )
-          }
-          if (pendingClose.kind === 'tab') {
+          case 'confirmCloseTab':
             return (
               <ConfirmDialog
                 title="Close this tab?"
-                body={`${plural(pendingClose.count)} still open in it. ${ends(pendingClose.count)}`}
+                body={`${plural(modal.count)} still open in it. ${ends(modal.count)}`}
                 confirmLabel="Close tab"
                 onConfirm={() => {
-                  closeTabNow(pendingClose.tabId)
-                  setPendingClose(null)
+                  closeTabNow(modal.tabId)
+                  closeModal()
                 }}
-                onCancel={() => setPendingClose(null)}
+                onCancel={closeModal}
               />
             )
-          }
-          return (
-            <ConfirmDialog
-              title="Quit wRusTTY?"
-              body={
-                `${plural(pendingClose.count)} still open. ${ends(pendingClose.count)}` +
-                // Only mentioned when it's true, since it materially changes
-                // how much closing costs — and claiming it when the setting
-                // is off would be worse than saying nothing.
-                (terminalSettings.restoreSessionsOnLaunch
-                  ? ' They can be reopened next launch.'
-                  : '')
-              }
-              confirmLabel="Quit"
-              onConfirm={() => {
-                setPendingClose(null)
-                // destroy() rather than close(): close() would just re-emit
-                // CloseRequested and land back in the hook above, which then
-                // destroys anyway — same outcome, one extra round trip, and
-                // it needs a flag to avoid asking twice.
-                getCurrentWindow()
-                  .destroy()
-                  .catch((e) => toast.error(`Couldn't close the window: ${e}`))
-              }}
-              onCancel={() => setPendingClose(null)}
-            />
-          )
-        })()}
-      {pendingRestore && sessionsLoaded && (
-        <RestoreSessionsPrompt
-          count={sessionSnapshot.countSessions(pendingRestore.tabs)}
-          needsVaultUnlock={
-            sessionSnapshot.needsVaultUnlock(pendingRestore.tabs, sessions) &&
-            vaultStatus !== 'unlocked'
-          }
-          osUnlockAvailable={osUnlockAvailable}
-          onRestore={restoreSessions}
-          onUnlockAndRestore={unlockAndRestoreSessions}
-          onUnlockWithOsAndRestore={unlockWithOsAndRestoreSessions}
-          onDiscard={discardRestore}
-        />
-      )}
-      {pendingWorkspace && (
-        <RestoreSessionsPrompt
-          count={sessionSnapshot.countSessions(pendingWorkspace.workspace.tabs)}
-          // Always true here — openWorkspace only sets this state when the
-          // vault is locked and the workspace needs it.
-          needsVaultUnlock
-          osUnlockAvailable={osUnlockAvailable}
-          title={`Open "${pendingWorkspace.workspace.name}"?`}
-          body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
-          cancelLabel="Open anyway — without unlocking"
-          onRestore={openPendingWorkspace}
-          onUnlockAndRestore={unlockAndOpenWorkspace}
-          onUnlockWithOsAndRestore={unlockWithOsAndOpenWorkspace}
-          onDiscard={openPendingWorkspace}
-        />
-      )}
+          case 'confirmCloseWindow':
+            return (
+              <ConfirmDialog
+                title="Quit wRusTTY?"
+                body={
+                  `${plural(modal.count)} still open. ${ends(modal.count)}` +
+                  // Only mentioned when it's true, since it materially changes
+                  // how much closing costs — and claiming it when the setting
+                  // is off would be worse than saying nothing.
+                  (terminalSettings.restoreSessionsOnLaunch ? ' They can be reopened next launch.' : '')
+                }
+                confirmLabel="Quit"
+                onConfirm={() => {
+                  closeModal()
+                  // destroy() rather than close(): close() would just re-emit
+                  // CloseRequested and land back in the hook above, which then
+                  // destroys anyway — same outcome, one extra round trip, and
+                  // it needs a flag to avoid asking twice.
+                  getCurrentWindow()
+                    .destroy()
+                    .catch((e) => toast.error(`Couldn't close the window: ${e}`))
+                }}
+                onCancel={closeModal}
+              />
+            )
+          case 'restorePrompt':
+            return (
+              sessionsLoaded && (
+                <RestoreSessionsPrompt
+                  count={sessionSnapshot.countSessions(modal.snapshot.tabs)}
+                  needsVaultUnlock={
+                    sessionSnapshot.needsVaultUnlock(modal.snapshot.tabs, sessions) && vaultStatus !== 'unlocked'
+                  }
+                  osUnlockAvailable={osUnlockAvailable}
+                  onRestore={restoreSessions}
+                  onUnlockAndRestore={(password) =>
+                    unlockAndRun(password, { kind: 'restoreSessions', snapshot: modal.snapshot })
+                  }
+                  onUnlockWithOsAndRestore={() =>
+                    unlockWithOsAndRun({ kind: 'restoreSessions', snapshot: modal.snapshot })
+                  }
+                  onDiscard={discardRestore}
+                />
+              )
+            )
+          case 'workspacePrompt':
+            return (
+              <RestoreSessionsPrompt
+                count={sessionSnapshot.countSessions(modal.workspace.tabs)}
+                // Always true here — openWorkspace only sets this state when
+                // the vault is locked and the workspace needs it.
+                needsVaultUnlock
+                osUnlockAvailable={osUnlockAvailable}
+                title={`Open "${modal.workspace.name}"?`}
+                body="Some of its sessions need the vault unlocked. You can open it locked — those panes will come up on their connect form instead."
+                cancelLabel="Open anyway — without unlocking"
+                onRestore={openPendingWorkspace}
+                onUnlockAndRestore={(password) =>
+                  unlockAndRun(password, {
+                    kind: 'openWorkspace',
+                    workspace: modal.workspace,
+                    originTabId: modal.originTabId,
+                  })
+                }
+                onUnlockWithOsAndRestore={() =>
+                  unlockWithOsAndRun({
+                    kind: 'openWorkspace',
+                    workspace: modal.workspace,
+                    originTabId: modal.originTabId,
+                  })
+                }
+                onDiscard={openPendingWorkspace}
+              />
+            )
+          default:
+            return null
+        }
+      })()}
     </div>
   )
 }
