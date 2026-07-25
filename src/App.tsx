@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -36,7 +36,7 @@ import type { ConnectionSource } from './lib/connection'
 import { sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
-import type { CommandActivity, CommandResult } from './lib/shellIntegration'
+import type { CommandResult } from './lib/shellIntegration'
 import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
 import { DRAG_PANE_MIME } from './lib/dragTypes'
@@ -66,6 +66,17 @@ import {
   dataBitsDigit,
   blankTab,
 } from './state/tabOps'
+import {
+  paneRuntimeReducer,
+  statusByPaneOf,
+  connectedAtByPaneOf,
+  loggingByPaneOf,
+  forwardsOpenByPaneOf,
+  filesOpenByPaneOf,
+  sessionIdByPaneOf,
+  activityByPaneOf,
+  attentionPanesOf,
+} from './state/paneRuntime'
 
 function refit() {
   // Terminal listens for window resize to re-fit; nudge it after a tab or
@@ -110,7 +121,21 @@ function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => [blankTab()])
   const [activeTabId, setActiveTabId] = useState<string | null>(() => tabs[0]?.id ?? null)
   const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
-  const [statusByPane, setStatusByPane] = useState<Record<string, string>>({})
+  // Live, ephemeral per-pane state (connection status, logging, forwarded
+  // panels, activity, attention) — see state/paneRuntime.ts for why this is
+  // one reducer instead of eight separately-managed Records keyed by pane
+  // id. The *ByPane/attentionPanes names below are kept as the read-side
+  // views so the rest of this component (and the child components they're
+  // passed to) didn't need to change.
+  const [paneRuntime, dispatchPaneRuntime] = useReducer(paneRuntimeReducer, {})
+  const statusByPane = statusByPaneOf(paneRuntime)
+  const connectedAtByPane = connectedAtByPaneOf(paneRuntime)
+  const loggingByPane = loggingByPaneOf(paneRuntime)
+  const forwardsOpenByPane = forwardsOpenByPaneOf(paneRuntime)
+  const filesOpenByPane = filesOpenByPaneOf(paneRuntime)
+  const sessionIdByPane = sessionIdByPaneOf(paneRuntime)
+  const activityByPane = activityByPaneOf(paneRuntime)
+  const attentionPanes = attentionPanesOf(paneRuntime)
   // Set by the toolbar search button to ask one specific pane's terminal to
   // open its search box (the box itself is per-Terminal local state, so this
   // is how an App-level control reaches into it). Targeted by pane id — not a
@@ -118,23 +143,6 @@ function App() {
   // would open search in background tabs too. The nonce lets a repeat click on
   // the same pane re-fire.
   const [searchRequest, setSearchRequest] = useState<{ nonce: number; paneId: string } | null>(null)
-  // Epoch ms a pane reached 'connected', for the status bar's uptime readout.
-  // Set on the connected transition, cleared on any other status (see the
-  // onStatus handler) so a reconnect restarts the clock rather than counting
-  // through the outage.
-  const [connectedAtByPane, setConnectedAtByPane] = useState<Record<string, number>>({})
-  const [loggingByPane, setLoggingByPane] = useState<Record<string, boolean>>({})
-  const [forwardsOpenByPane, setForwardsOpenByPane] = useState<Record<string, boolean>>({})
-  const [filesOpenByPane, setFilesOpenByPane] = useState<Record<string, boolean>>({})
-  const [sessionIdByPane, setSessionIdByPane] = useState<Record<string, string | null>>({})
-  // Per-pane command state, driven by the remote shell's OSC 133 reports —
-  // stays permanently idle for any host without shell integration set up.
-  const [activityByPane, setActivityByPane] = useState<Record<string, CommandActivity>>({})
-  // Panes holding something you haven't seen: a bell rang, or a long command
-  // finished, while the tab was in the background. Keyed by pane so the tab
-  // strip can put the marker on the segment of the pane it actually happened
-  // in, rather than only saying "somewhere in this tab".
-  const [attentionPanes, setAttentionPanes] = useState<Record<string, true>>({})
 
   // The single pane you are actually looking at: the focused pane of the
   // active tab. Everything else is out of view as far as the marker is
@@ -151,13 +159,7 @@ function App() {
   // itself the acknowledgement.
   useEffect(() => {
     if (!focusedPaneId) return
-    const clear = () =>
-      setAttentionPanes((prev) => {
-        if (!(focusedPaneId in prev)) return prev
-        const next = { ...prev }
-        delete next[focusedPaneId]
-        return next
-      })
+    const clear = () => dispatchPaneRuntime({ type: 'attentionCleared', paneId: focusedPaneId })
     clear()
     window.addEventListener('focus', clear)
     return () => window.removeEventListener('focus', clear)
@@ -528,6 +530,17 @@ function App() {
   }
 
   function closeTabNow(id: string) {
+    // Every pane in the tab is gone, not just the active one — a closed
+    // split tab used to leak its runtime state (status, logging, activity,
+    // ...) for every pane but the one or two spots that happened to clean up
+    // after themselves. One dispatch per leaf, closing the class of bug
+    // rather than one instance of it.
+    const closing = tabs.find((t) => t.id === id)
+    if (closing) {
+      for (const leaf of allLeaves(closing.root)) {
+        dispatchPaneRuntime({ type: 'paneClosed', paneId: leaf.id })
+      }
+    }
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== id)
       if (activeTabId === id) {
@@ -742,7 +755,7 @@ function App() {
     // already armed and captures output from the first byte (batched with the
     // setTabs below in the same event, so it's a single render). The toolbar
     // icon then reflects this and can stop it mid-session.
-    setLoggingByPane((prev) => ({ ...prev, [paneId]: logSession }))
+    dispatchPaneRuntime({ type: 'loggingSet', paneId, logging: logSession })
     setTabs((prev) =>
       prev.map((t) => {
         if (t.id !== tabId) return t
@@ -810,27 +823,27 @@ function App() {
   }
 
   function toggleLogging(paneId: string) {
-    setLoggingByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+    dispatchPaneRuntime({ type: 'loggingToggled', paneId })
   }
 
   function toggleForwards(paneId: string) {
-    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
+    dispatchPaneRuntime({ type: 'panelToggled', paneId, panel: 'forwards' })
     // Both panels anchor to the same corner of the pane — keep them
     // mutually exclusive rather than stacking or overlapping.
-    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'files', open: false })
   }
 
   function closeForwards(paneId: string) {
-    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'forwards', open: false })
   }
 
   function toggleFiles(paneId: string) {
-    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: !prev[paneId] }))
-    setForwardsOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelToggled', paneId, panel: 'files' })
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'forwards', open: false })
   }
 
   function closeFiles(paneId: string) {
-    setFilesOpenByPane((prev) => ({ ...prev, [paneId]: false }))
+    dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'files', open: false })
   }
 
   function closePane(tabId: string, paneId: string) {
@@ -848,9 +861,13 @@ function App() {
     if (!newRoot) {
       // Already confirmed as a pane close if it needed to be — going through
       // closeTab here would ask a second time for the same one connection.
+      // closeTabNow dispatches paneClosed for every leaf still in the tab
+      // (just this one, here), so there's nothing left to clean up on this
+      // path.
       closeTabNow(tabId)
       return
     }
+    dispatchPaneRuntime({ type: 'paneClosed', paneId })
     const activePaneId = tab.activePaneId === paneId ? firstLeaf(newRoot).id : tab.activePaneId
     // Same reasoning as popPaneToNewTab below: the tab's title may have been
     // describing the pane that just closed (e.g. you closed the one that was
@@ -903,8 +920,16 @@ function App() {
     if (!draggedTab || draggedTab.root.type !== 'leaf' || !draggedTab.root.source) return
     const draggedLeaf: PaneLeaf = draggedTab.root
     const withoutDragged = tabs.filter((t) => t.id !== draggedTabId)
+    // Whatever was at targetPaneId before is discarded from the tree by the
+    // updateLeaf below — its own leaf id is targetPaneId, since that's how
+    // it was found — so its runtime state (if it has any at all) needs to
+    // go too, same as any other pane that stops being reachable in the
+    // tree. The dragged leaf itself keeps its own id and needs no such
+    // cleanup; it's still live, just relocated.
+    let replacedExisting = false
     const next = withoutDragged.map((t) => {
       if (!findLeaf(t.root, targetPaneId)) return t
+      replacedExisting = true
       const root = updateLeaf(t.root, targetPaneId, () => draggedLeaf)
       // The attached leaf keeps the dragged leaf's own id (not
       // targetPaneId) — see the comment above this function — so
@@ -923,6 +948,7 @@ function App() {
       const title = targetPaneId === t.activePaneId ? leafTitle(draggedLeaf, t.title) : t.title
       return { ...t, root, activePaneId, title }
     })
+    if (replacedExisting) dispatchPaneRuntime({ type: 'paneClosed', paneId: targetPaneId })
     setTabs(next)
     if (activeTabId === draggedTabId) {
       const idx = tabs.findIndex((t) => t.id === draggedTabId)
@@ -1513,19 +1539,12 @@ function App() {
                   paneId={leaf.id}
                   searchRequest={searchRequest}
                   onStatus={(s) => {
-                    setStatusByPane((prev) => ({ ...prev, [leaf.id]: s }))
-                    // Stamp the connect time once per connected run; drop it on
-                    // anything else so the uptime clock resets on reconnect and
-                    // disappears while disconnected/failed.
-                    setConnectedAtByPane((prev) => {
-                      if (s === 'connected') {
-                        return leaf.id in prev ? prev : { ...prev, [leaf.id]: Date.now() }
-                      }
-                      if (!(leaf.id in prev)) return prev
-                      const next = { ...prev }
-                      delete next[leaf.id]
-                      return next
-                    })
+                    // The connectedAt coupling (stamp once per connected run,
+                    // drop on anything else, so the uptime clock resets on
+                    // reconnect instead of counting through the outage) lives
+                    // in the reducer now — see paneRuntime.ts's statusChanged
+                    // case.
+                    dispatchPaneRuntime({ type: 'statusChanged', paneId: leaf.id, status: s, now: Date.now() })
                     // Surfaced even for background tabs — otherwise a
                     // failed connection in a tab you're not looking at is
                     // silent.
@@ -1550,16 +1569,9 @@ function App() {
                       setTimeout(() => closePaneNow(tab.id, leaf.id), 800)
                     }
                   }}
-                  onSessionId={(id) => setSessionIdByPane((prev) => ({ ...prev, [leaf.id]: id }))}
+                  onSessionId={(id) => dispatchPaneRuntime({ type: 'sessionIdSet', paneId: leaf.id, sessionId: id })}
                   onActivity={(activity) =>
-                    setActivityByPane((prev) => {
-                      // Idle is the resting state for the overwhelming
-                      // majority of panes (every host with no shell
-                      // integration, forever), so don't allocate a new map
-                      // to store what the absence of an entry already means.
-                      if (activity.state === 'idle' && !(leaf.id in prev)) return prev
-                      return { ...prev, [leaf.id]: activity }
-                    })
+                    dispatchPaneRuntime({ type: 'activityChanged', paneId: leaf.id, activity })
                   }
                   onCommandComplete={(result) => {
                     if (!terminalSettings.notifyOnCommandComplete) return
@@ -1577,7 +1589,7 @@ function App() {
                     const paneInView = leaf.id === focusedPaneId && document.hasFocus()
                     const tabInView = tab.id === activeTabId && document.hasFocus()
                     if (!paneInView) {
-                      setAttentionPanes((prev) => ({ ...prev, [leaf.id]: true }))
+                      dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                     }
                     if (tabInView) return
                     const message = describeCommandResult(result, tab.title)
@@ -1596,7 +1608,7 @@ function App() {
                     // bell from the other half of a split still deserves a
                     // marker.
                     if (leaf.id === focusedPaneId && document.hasFocus()) return
-                    setAttentionPanes((prev) => ({ ...prev, [leaf.id]: true }))
+                    dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                   }}
                   onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
                   onReconnect={() => reconnectPane(tab.id, leaf.id)}
