@@ -77,13 +77,34 @@ export function scanOsc(
   let i = 0
   let unterminatedAt = -1
 
-  while (i < scan.length) {
-    const b = scan[i]
-    if (b !== ESC && b !== BEL) {
-      i++
-      continue
-    }
+  // Jump between the only two bytes that can start anything, rather than
+  // stepping through every byte in JS.
+  //
+  // This is the whole cost of the scanner on a flood: it walks every delivered
+  // byte, and almost none of them are interesting. Measured on a 100 MB flood
+  // into a live pane it was 2.38 ms/MB against the parser's 11.85 — about 20%
+  // on top of the parse, paid only because the app registers OSC and bell
+  // handlers.
+  //
+  // The positions are cached rather than recomputed each step, which matters
+  // more than the jump itself: calling indexOf for both bytes at every escape
+  // would rescan to the end of the buffer for whichever one is absent, once per
+  // escape, turning escape-dense output quadratic. Recomputing only when the
+  // cursor passes a cached hit keeps each byte value to a single forward pass,
+  // and a value that never appears costs exactly one scan that returns -1.
+  let escAt = scan.indexOf(ESC)
+  let belAt = scan.indexOf(BEL)
 
+  while (i < scan.length) {
+    if (escAt >= 0 && escAt < i) escAt = scan.indexOf(ESC, i)
+    if (belAt >= 0 && belAt < i) belAt = scan.indexOf(BEL, i)
+    // Whichever comes first; -1 means that byte does not occur again at all.
+    const next =
+      escAt < 0 ? belAt : belAt < 0 ? escAt : escAt < belAt ? escAt : belAt
+    if (next < 0) break
+    i = next
+
+    const b = scan[i]
     if (b === BEL) {
       ;(events ??= []).push({ kind: 'bell', ident: 0, payload: '', segEnd: i + 1 - base })
       i++

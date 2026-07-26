@@ -178,6 +178,51 @@ describe('scanOsc', () => {
     })
   })
 
+  /**
+   * The scanner walks every delivered byte, which on a flood made it the second
+   * largest cost in the write path — 2.38 ms/MB against the parser's 11.85 in a
+   * live pane. It now jumps between ESC and BEL with indexOf instead of
+   * stepping. These pin the two ways that goes wrong.
+   */
+  describe('skipping between the bytes that matter', () => {
+    it('finds sequences that follow a long run of ordinary bytes', () => {
+      const filler = 'x'.repeat(100_000)
+      const { log } = replay([`${filler}\x1b]0;title\x07${filler}\x07`])
+      expect(log).toContain('osc:0:title')
+      expect(log.filter((l) => l === 'bell')).toHaveLength(1)
+      expect(parsedText(log)).toBe(`${filler}\x1b]0;title\x07${filler}\x07`)
+    })
+
+    it('handles content with no interesting bytes at all', () => {
+      const { log } = replay(['x'.repeat(50_000)])
+      expect(log.filter((l) => !l.startsWith('parse:'))).toEqual([])
+    })
+
+    /**
+     * The trap the caching exists for. Recomputing both positions at every
+     * escape rescans to the end of the buffer for whichever byte is absent —
+     * once per escape — so escape-dense output with no BEL in it goes
+     * quadratic. At this size that is the difference between milliseconds and
+     * minutes, so a generous bound catches it without being timing-flaky.
+     */
+    it('stays linear on escape-dense content that contains no bell', () => {
+      const dense = '\x1b[38;5;196merror\x1b[0m'.repeat(120_000)
+      expect(dense).not.toContain('\x07')
+      const started = Date.now()
+      const { events } = scanOsc(B(dense), null, dec)
+      expect(events).toHaveLength(0)
+      expect(Date.now() - started).toBeLessThan(2000)
+    })
+
+    it('still resumes correctly at an ESC that aborted an unterminated OSC', () => {
+      // The abort path moves the cursor backwards relative to where the inner
+      // scan reached, which is exactly where a cached position can go stale.
+      const { log } = replay(['\x1b]0;unterminated\x1b]1;good\x07tail'])
+      expect(log).toContain('osc:1:good')
+      expect(parsedText(log)).toBe('\x1b]0;unterminated\x1b]1;good\x07tail')
+    })
+  })
+
   describe('UTF-8 integrity', () => {
     it('decodes a multi-byte payload and preserves surrounding bytes', () => {
       const src = '世界 ✓\x1b]0;タイトル\x07more 世界'
