@@ -207,7 +207,42 @@ export class GhosttyEngine implements TerminalEngine {
 
   constructor() {
     GhosttyEngine.liveEngines.add(this)
+    // Registered here rather than at module scope so importing the engine has
+    // no side effect: if something constructed one, there is state worth
+    // reporting. Idempotent — every engine re-registers the same function.
+    phases.setContext(GhosttyEngine.formatDiagnostics)
     this.initWasm()
+  }
+
+  /**
+   * What this page is holding: engines alive, terminals allocated, and the WASM
+   * linear memory they hold between them.
+   *
+   * Each engine gets its own `Instance` and therefore its own linear memory
+   * (the module is shared, the instance never is — see moduleCache), so these
+   * sum rather than coincide.
+   *
+   * Reported alongside every throughput figure because of a result neither the
+   * workload nor the terminal state explains: the same WASM parses ~2.6x faster
+   * in one page session than another, stable within each, while the pure-JS
+   * pass over the same bytes barely moves. Two candidates remain — engines
+   * accumulating across hot reloads (each with its own memory, spreading the
+   * working set) and V8's WASM tier being fixed early — and these numbers tell
+   * them apart: the first shows here, the second does not.
+   */
+  static diagnostics(): { engines: number; terminals: number; wasmBytes: number } {
+    let wasmBytes = 0
+    let terminals = 0
+    for (const e of GhosttyEngine.liveEngines) {
+      if (e.wasm) wasmBytes += e.wasm.exports.memory.buffer.byteLength
+      if (e.termPtr !== 0) terminals++
+    }
+    return { engines: GhosttyEngine.liveEngines.size, terminals, wasmBytes }
+  }
+
+  static formatDiagnostics(): string {
+    const d = GhosttyEngine.diagnostics()
+    return `page: ${d.engines} live engine(s), ${d.terminals} terminal(s), ${(d.wasmBytes / 1048576).toFixed(1)} MB WASM linear memory`
   }
 
   private async initWasm() {

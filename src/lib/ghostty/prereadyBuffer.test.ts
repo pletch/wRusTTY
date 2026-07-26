@@ -27,6 +27,11 @@ describe('writes that arrive before the core is ready', () => {
     // A fetch that never settles: initWasm stays pending, so `wasm` is null for
     // the life of the engine and no error is ever raised by the load itself.
     vi.stubGlobal('fetch', () => new Promise(() => {}))
+    // Enough of a DOM for teardown: dispose unmounts, which cancels the render
+    // loop and drops window listeners. Nothing here is mounted, so these only
+    // need to exist, not to work.
+    vi.stubGlobal('cancelAnimationFrame', () => {})
+    vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} })
   })
 
   afterEach(() => {
@@ -81,6 +86,36 @@ describe('writes that arrive before the core is ready', () => {
    * that were only buffered are counted separately so the throughput line can
    * be marked invalid instead of celebrated.
    */
+  /**
+   * The count is the point: engines surviving a hot reload, each with its own
+   * linear memory, is one of the two live explanations for the same WASM
+   * parsing 2.6x faster in one page session than another.
+   */
+  it('counts every live engine, and stops counting a disposed one', async () => {
+    const { GhosttyEngine } = await import('./GhosttyEngine')
+    const a = new GhosttyEngine()
+    const b = new GhosttyEngine()
+    expect(GhosttyEngine.diagnostics().engines).toBe(2)
+    // No core loaded here, so there is no terminal and no linear memory to hold.
+    expect(GhosttyEngine.diagnostics().terminals).toBe(0)
+    expect(GhosttyEngine.diagnostics().wasmBytes).toBe(0)
+
+    a.dispose()
+    expect(GhosttyEngine.diagnostics().engines).toBe(1)
+    b.dispose()
+    expect(GhosttyEngine.diagnostics().engines).toBe(0)
+  })
+
+  it('reports the page state alongside the throughput figure', async () => {
+    const rec = await recorder()
+    rec.start()
+    const { engine } = await newEngine()
+    engine.write(new Uint8Array(1024))
+    // Registered by the engine's own constructor, so any report taken during a
+    // session carries the state that produced it.
+    expect(rec.formatReport()).toContain('1 live engine(s)')
+  })
+
   it('tells the instrument the bytes were never parsed', async () => {
     const rec = await recorder()
     rec.start()

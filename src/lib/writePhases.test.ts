@@ -180,6 +180,42 @@ describe('writePhases', () => {
     })
   })
 
+  /**
+   * A throughput figure with no record of the state that produced it is what
+   * let a 2.6x page-session difference go unnoticed. The context line is only
+   * useful if it sits beside the rate and cannot be lost.
+   */
+  describe('page context', () => {
+    afterEach(() => phases.setContext(null))
+
+    it('prints the supplied state next to the throughput, above the phases', () => {
+      let now = 0
+      vi.spyOn(performance, 'now').mockImplementation(() => now)
+      phases.setContext(() => 'page: 3 live engine(s), 3 terminal(s), 48.0 MB WASM linear memory')
+      phases.start()
+      const started = phases.now()
+      phases.time('parse', () => { now += 10 })
+      phases.recordWrite(1048576, phases.now() - started)
+
+      const report = phases.formatReport()
+      expect(report).toContain('3 live engine(s)')
+      expect(report.indexOf('live engine')).toBeLessThan(report.indexOf('parse'))
+    })
+
+    it('omits the line entirely when nobody supplies one', () => {
+      phases.start()
+      phases.recordWrite(1024, 1)
+      expect(phases.formatReport()).not.toContain('page:')
+    })
+
+    it('survives start(), which clears counters and not the supplier', () => {
+      phases.setContext(() => 'page: still here')
+      phases.start()
+      phases.recordWrite(1024, 1)
+      expect(phases.formatReport()).toContain('still here')
+    })
+  })
+
   it('says so plainly when nothing was recorded', () => {
     expect(phases.formatReport()).toContain('call start()')
   })

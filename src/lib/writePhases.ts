@@ -81,6 +81,30 @@ export function isEnabled(): boolean {
 }
 
 /**
+ * An optional line of page state printed beside the throughput, for whoever can
+ * describe what the process is holding — in practice GhosttyEngine, which
+ * registers this when the first engine is constructed.
+ *
+ * A hook rather than a direct import because this module is the instrument and
+ * has no business knowing about engines, and because the production report
+ * (`deliveryStats`) and the benchmark harness both want the same line without
+ * either reaching for the other.
+ *
+ * It exists for a specific unexplained result: the same WASM, in the same
+ * binary, parses at 11.9 ms/MB in one page session and 30.5 in another, stable
+ * to 0.2% within each, while the pure-JS pass over the same bytes moves 8%.
+ * Something about the page — not the workload, the grid, the scrollback, the
+ * volume or the backend, all of which were measured and cleared — selects which.
+ * A throughput figure with no record of the state that produced it is what let
+ * that go unnoticed for weeks.
+ */
+let context: (() => string) | null = null
+
+export function setContext(fn: (() => string) | null): void {
+  context = fn
+}
+
+/**
  * Runs `fn` — always — attributing its duration to `phase` when recording.
  *
  * Top-level phases partition `write`; sub-phases partition `parse`. Nothing
@@ -202,6 +226,10 @@ export function formatReport(s: PhaseSnapshot = snapshot()): string {
       `!! spent parsing only some of them, so it overstates by roughly ${(100 / Math.max(1, 100 - share)).toFixed(1)}x. Discard this run.`,
     )
   }
+  // Beside the rate, not at the foot of the report: it is there to be compared
+  // against the rate on the line above it, across sessions.
+  const ctx = context?.()
+  if (ctx) lines.push(ctx)
   // Ordered by cost, because the first line is the one worth acting on.
   const ranked = [...PHASES].sort((a, b) => s.totals[b] - s.totals[a])
   for (const p of ranked) {
