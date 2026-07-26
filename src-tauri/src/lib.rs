@@ -100,6 +100,7 @@ pub fn run() {
             coalesce::delivery_stats,
             coalesce::reset_delivery_stats,
             coalesce::ack_delivery,
+            coalesce::set_inflight_window,
         ])
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());

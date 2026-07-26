@@ -98,6 +98,18 @@ export function ackDelivery(sessionId: string, bytes: number) {
   return invoke<void>('ack_delivery', { sessionId, bytes })
 }
 
+/**
+ * Retunes the backpressure window and returns the value it was clamped to.
+ *
+ * Exists to be driven from a keyboard shortcut rather than the console: the
+ * balance being tuned is between the backend's send rate and the frontend's
+ * parse rate, and an attached inspector makes the latter ~2.75x slower, so a
+ * value chosen with DevTools open would be chosen against the wrong frontend.
+ */
+export function setInflightWindow(bytes: number) {
+  return invoke<number>('set_inflight_window', { bytes })
+}
+
 /** No-op for serial — it has no concept of terminal size to negotiate. */
 export function resize(source: ConnectionSource, sessionId: string, cols: number, rows: number) {
   if (source.protocol === 'serial') return Promise.resolve()

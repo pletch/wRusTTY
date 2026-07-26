@@ -25,6 +25,7 @@
 
 import { report as deliveryReport, startRecording, stopRecording } from './deliveryStats'
 import { run as runPaneFlood } from './paneFlood'
+import { setInflightWindow } from './connection'
 
 const OVERLAY_ID = 'wrustty-measure-overlay'
 const BADGE_ID = 'wrustty-measure-badge'
@@ -136,6 +137,33 @@ function showReport(title: string, body: string): void {
 let busy = false
 let recording = false
 
+/**
+ * Backpressure windows to cycle through, in MB.
+ *
+ * The open question these answer: a 100 MB flood leaves the frontend idle 33%
+ * of the active window, of which ~431 ms across 475 deliveries is genuine —
+ * about 0.9 ms each. That is either the backpressure window being too tight, or
+ * the IPC round trip showing through now that the queue is 4 MB deep instead of
+ * 50. Raising the window separates them: if idle collapses, the window costs
+ * throughput; if it does not move, 0.9 ms is inherent and 4 MB stands.
+ */
+const WINDOW_STEPS_MB = [4, 8, 16, 32]
+let windowStep = 0
+
+async function cycleInflightWindow(): Promise<void> {
+  windowStep = (windowStep + 1) % WINDOW_STEPS_MB.length
+  const mb = WINDOW_STEPS_MB[windowStep]
+  try {
+    const applied = await setInflightWindow(mb * 1024 * 1024)
+    showBadge(`backpressure window ${(applied / 1048576).toFixed(0)} MB`)
+  } catch (e) {
+    showBadge(`window change failed: ${String(e)}`)
+  }
+  // Left visible briefly rather than pinned: it is a confirmation, not state,
+  // and a badge that never clears would sit over a session for good.
+  setTimeout(() => dismiss(BADGE_ID), 2500)
+}
+
 async function paneFlood(): Promise<void> {
   if (busy) return
   busy = true
@@ -177,7 +205,8 @@ async function toggleDeliveryRecording(): Promise<void> {
 
 /**
  * Ctrl+Alt+F floods the visible pane from inside the page; Ctrl+Alt+D arms and
- * then reports the real PTY delivery path. Neither needs the console.
+ * then reports the real PTY delivery path; Ctrl+Alt+W cycles the backpressure
+ * window. None of them needs the console.
  *
  * Chosen to sit beside Ctrl+Alt+B for the benchmark harness, and checked
  * against `code` rather than `key` so a terminal that has swallowed the keyboard
@@ -192,6 +221,9 @@ export function install(): void {
     } else if (e.code === 'KeyD') {
       e.preventDefault()
       void toggleDeliveryRecording()
+    } else if (e.code === 'KeyW') {
+      e.preventDefault()
+      void cycleInflightWindow()
     }
   })
   window.addEventListener('keydown', (e) => {

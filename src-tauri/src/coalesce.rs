@@ -177,8 +177,8 @@ pub fn reset_delivery_stats() {
 /// `FlowControl`, which is what actually makes this bound reachable.
 pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 
-/// Bytes that may be sitting in the webview's IPC queue, unwritten, before the
-/// forwarder stops draining its input.
+/// Default bytes that may be sitting in the webview's IPC queue, unwritten,
+/// before the forwarder stops draining its input.
 ///
 /// Measured on a 100 MB flood over LAN SSH: the backend finished sending at
 /// 2.56 s while the frontend was still draining at 3.69 s, so roughly 50 MB of
@@ -192,7 +192,40 @@ pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 /// round trip needs, so the frontend still never runs dry. Smaller would start
 /// to serialise the pipeline; larger buys nothing, since the frontend cannot
 /// get further ahead than it can parse.
-const MAX_INFLIGHT_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_MAX_INFLIGHT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The live window, so it can be retuned without a rebuild.
+///
+/// Adjustable because the value has to be chosen from a measurement that
+/// DevTools cannot be present for — an attached inspector puts V8's WebAssembly
+/// in a debuggable tier and makes the frontend ~2.75x slower, which would move
+/// the very balance being tuned. A console-driven knob is therefore useless
+/// here; this one is reachable from a keyboard shortcut with DevTools shut (see
+/// `measureOverlay.ts`).
+static INFLIGHT_WINDOW: AtomicU64 = AtomicU64::new(DEFAULT_MAX_INFLIGHT_BYTES);
+
+/// One delivery, so the window can never be set below the size of the thing it
+/// gates — which would stall the session outright.
+const MIN_INFLIGHT_BYTES: u64 = FLUSH_SIZE_THRESHOLD as u64;
+/// Past this the bound stops being a memory-safety bound worth having.
+const MAX_INFLIGHT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn inflight_window() -> u64 {
+    INFLIGHT_WINDOW.load(Ordering::Relaxed)
+}
+
+/// Sets the window and returns what it was clamped to. Wakes every waiter, so
+/// raising it takes effect on a session that is already gated rather than only
+/// on the next one.
+#[tauri::command]
+pub fn set_inflight_window(bytes: u64) -> u64 {
+    let clamped = bytes.clamp(MIN_INFLIGHT_BYTES, MAX_INFLIGHT_BYTES);
+    INFLIGHT_WINDOW.store(clamped, Ordering::Relaxed);
+    for flow in flow_registry().lock().unwrap().values() {
+        flow.credit.notify_waiters();
+    }
+    clamped
+}
 
 /// How long to wait for credit before sending anyway.
 ///
@@ -247,12 +280,12 @@ impl FlowControl {
     /// timeout gives up on hearing from it at all. The timeout is a parameter so
     /// a test can pin the give-up behaviour without waiting the real interval.
     async fn wait_for_room(&self, timeout: Duration) {
-        while self.inflight.load(Ordering::Relaxed) >= MAX_INFLIGHT_BYTES {
+        while self.inflight.load(Ordering::Relaxed) >= inflight_window() {
             // Registered before the re-check inside `timeout` so an ack landing
             // in between is not missed, which would park this task until the
             // next one — or forever, on the last delivery.
             let waiter = self.credit.notified();
-            if self.inflight.load(Ordering::Relaxed) < MAX_INFLIGHT_BYTES {
+            if self.inflight.load(Ordering::Relaxed) < inflight_window() {
                 return;
             }
             if tokio::time::timeout(timeout, waiter).await.is_err() {
@@ -526,11 +559,12 @@ mod tests {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
 
+        let window = inflight_window();
         let sent: usize = received.lock().unwrap().iter().map(|b| b.len()).sum();
         assert!(
-            (sent as u64) <= MAX_INFLIGHT_BYTES + FLUSH_SIZE_THRESHOLD as u64,
+            (sent as u64) <= window + FLUSH_SIZE_THRESHOLD as u64,
             "expected the forwarder to stop within one delivery of the window, \
-             sent {sent} bytes against a {MAX_INFLIGHT_BYTES} byte window"
+             sent {sent} bytes against a {window} byte window"
         );
         assert!(sent > 0, "it should have sent up to the window, not nothing");
 
@@ -557,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn gives_up_waiting_for_credit_rather_than_hanging() {
         let flow = FlowControl::default();
-        flow.sent(MAX_INFLIGHT_BYTES * 2);
+        flow.sent(inflight_window() * 2);
         let short = Duration::from_millis(20);
         let started = Instant::now();
         flow.wait_for_room(short).await;
@@ -566,7 +600,7 @@ mod tests {
             "it should have waited for credit before giving up"
         );
         assert!(
-            flow.inflight.load(Ordering::Relaxed) >= MAX_INFLIGHT_BYTES,
+            flow.inflight.load(Ordering::Relaxed) >= inflight_window(),
             "giving up must not fabricate credit — it proceeds despite the window"
         );
     }
@@ -581,12 +615,29 @@ mod tests {
         assert_eq!(flow.inflight.load(Ordering::Relaxed), 0);
     }
 
+    /// The window is retuned from a keyboard shortcut during a live flood, so a
+    /// value that stalled a session outright — or one large enough to stop being
+    /// a bound at all — has to be refused rather than accepted.
+    #[tokio::test]
+    async fn the_window_cannot_be_set_somewhere_useless() {
+        let _serial = serial_guard().await;
+        assert_eq!(set_inflight_window(0), MIN_INFLIGHT_BYTES);
+        assert_eq!(set_inflight_window(1), MIN_INFLIGHT_BYTES);
+        assert_eq!(set_inflight_window(u64::MAX), MAX_INFLIGHT_BYTES);
+        assert_eq!(set_inflight_window(8 * 1024 * 1024), 8 * 1024 * 1024);
+        assert_eq!(inflight_window(), 8 * 1024 * 1024);
+        assert_eq!(
+            set_inflight_window(DEFAULT_MAX_INFLIGHT_BYTES),
+            DEFAULT_MAX_INFLIGHT_BYTES
+        );
+    }
+
     /// The registry is keyed by session, so one stalled tab cannot throttle
     /// another — and an ack for a session that has gone must not resurrect it.
     #[tokio::test]
     async fn flow_is_per_session_and_does_not_leak() {
         let a = flow_for("session-a");
-        a.sent(MAX_INFLIGHT_BYTES);
+        a.sent(inflight_window());
         let b = flow_for("session-b");
         assert_eq!(b.inflight.load(Ordering::Relaxed), 0, "sessions are separate");
 
