@@ -115,6 +115,30 @@ export interface RunOptions {
    *  a full large-flood drain. Defaults to 3. */
   blockRounds?: number
   onProgress?: (msg: string) => void
+  /**
+   * Checked between trials. Returning a reason aborts the run by throwing
+   * `RunAborted` rather than returning what has been collected so far.
+   *
+   * Throwing is the point. A latency distribution that stopped early is
+   * indistinguishable from a complete one once it reaches a table — the same
+   * failure mode as the empty-trial flag this exists to replace (see
+   * hostVisibility.ts). A caller that wants the partial data can catch and keep
+   * it; a caller that forgets gets nothing, which is the safer default.
+   */
+  shouldAbort?: () => string | null
+}
+
+/** A run stopped because a precondition of the measurement stopped holding. */
+export class RunAborted extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'RunAborted'
+  }
+}
+
+function checkAbort(opts: RunOptions): void {
+  const reason = opts.shouldAbort?.()
+  if (reason != null) throw new RunAborted(reason)
 }
 
 const RESET_SEQ = '\x1bc' // RIS — full terminal reset between trials
@@ -369,6 +393,7 @@ async function runThroughput(
     // Flip order each round so neither engine always runs first.
     const order = round % 2 === 0 ? [a, b] : [b, a]
     for (const engine of order) {
+      checkAbort(opts)
       await reset(engine)
       opts.onProgress?.(`${workload.label}: ${engine.name} round ${round + 1}/${opts.throughputRounds}`)
       const r = await measureParse(engine, buf)
@@ -432,6 +457,7 @@ async function runBlock(
   for (let round = 0; round < rounds; round++) {
     const order = round % 2 === 0 ? [a, b] : [b, a]
     for (const engine of order) {
+      checkAbort(opts)
       await reset(engine)
       opts.onProgress?.(`${workload.label}: ${engine.name} round ${round + 1}/${rounds}`)
       const r = await measureBlock(engine, buf, chunkBytes)
@@ -506,6 +532,9 @@ async function runLatency(
         ? [[a, builtA.events[i]], [b, builtB.events[i]]]
         : [[b, builtB.events[i]], [a, builtA.events[i]]]
     for (const [engine, ev] of pair) {
+      // Before the trial, not after: a host that has already scrolled away
+      // would otherwise contribute one more empty sample on the way out.
+      checkAbort(opts)
       const r = await measurePresent(engine, () => engine.write(ev), { timeoutMs: 2000 })
       if (r.timedOut) failed[engine.name]++
       else if (r.paints === 0) empty[engine.name]++

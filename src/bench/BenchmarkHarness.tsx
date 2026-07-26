@@ -10,9 +10,11 @@ import {
   resultsToMarkdown,
   measureFrameInterval,
   fmtDuration,
+  RunAborted,
   type RunnableEngine,
   type WorkloadResult,
 } from './runner'
+import { observeHosts, visibilityMessage, type HostVisibility } from './hostVisibility'
 import { PARITY, parityTotals, type ParityStatus } from './parity'
 import '@xterm/xterm/css/xterm.css'
 
@@ -99,6 +101,7 @@ export function BenchmarkHarness() {
   const ghosttyRef = useRef<GhosttyEngine | null>(null)
   const abRef = useRef<{ a: RunnableEngine; b: RunnableEngine } | null>(null)
   const initedRef = useRef(false)
+  const visibilityRef = useRef<HostVisibility | null>(null)
 
   const [gpu, setGpu] = useState<GpuInfo | null>(null)
   const [phase, setPhase] = useState<'booting' | 'ready' | 'running' | 'unusable'>('booting')
@@ -159,6 +162,10 @@ export function BenchmarkHarness() {
     const a = adapt('xterm', xterm)
     const b = adapt('ghostty', ghostty)
     abRef.current = { a, b }
+    visibilityRef.current = observeHosts([
+      { name: 'xterm', el: xtermHost.current! },
+      { name: 'ghostty', el: ghosttyHost.current! },
+    ])
 
     let cancelled = false
     ;(async () => {
@@ -194,6 +201,8 @@ export function BenchmarkHarness() {
 
     return () => {
       cancelled = true
+      visibilityRef.current?.dispose()
+      visibilityRef.current = null
       xterm.dispose()
       ghostty.dispose()
     }
@@ -239,6 +248,28 @@ export function BenchmarkHarness() {
     setPhase('running')
     setResults([])
     setBootError('')
+
+    // Both hosts on screen before anything is measured. xterm stops rendering
+    // when its host leaves the viewport and reports zero paints instead, which
+    // the latency loop counts as an empty trial — see hostVisibility.ts.
+    // Scrolled into view rather than merely checked, because the usual cause is
+    // someone reading the tables from the previous run.
+    const watch = visibilityRef.current
+    xtermHost.current?.scrollIntoView({ block: 'nearest' })
+    // Two frames: one for the scroll to land, one for the observer to report on
+    // it. IntersectionObserver delivers asynchronously, so checking immediately
+    // reads the state from before the scroll.
+    await nextFrame()
+    await nextFrame()
+    watch?.arm()
+    const offscreen = watch?.hidden() ?? []
+    if (offscreen.length > 0) {
+      setBootError(visibilityMessage(offscreen, false))
+      setPhase('ready')
+      setProgress('')
+      return
+    }
+
     setProgress('sizing grid…')
     const gridProblem = await applyGridSize()
     if (gridProblem !== '') {
@@ -257,16 +288,36 @@ export function BenchmarkHarness() {
     // engines run. xterm's figures are unaffected.
     writePhases.start()
     const collected: WorkloadResult[] = []
-    for (const w of list) {
-      const r = await runWorkload(ab.a, ab.b, w, {
-        throughputRounds: THROUGHPUT_ROUNDS,
-        blockRounds: BLOCK_ROUNDS,
-        onProgress: setProgress,
-      })
-      collected.push(r)
-      setResults([...collected])
+    try {
+      for (const w of list) {
+        const r = await runWorkload(ab.a, ab.b, w, {
+          throughputRounds: THROUGHPUT_ROUNDS,
+          blockRounds: BLOCK_ROUNDS,
+          onProgress: setProgress,
+          // Latched, not sampled: the observer is asynchronous, so a scroll
+          // that happens and reverses between two trials still paused the
+          // renderer for the ones in between and would otherwise go unseen.
+          shouldAbort: () => {
+            const lost = watch?.lost() ?? []
+            return lost.length > 0 ? visibilityMessage(lost, true) : null
+          },
+        })
+        collected.push(r)
+        setResults([...collected])
+      }
+    } catch (e) {
+      // The partial results are dropped rather than shown. A latency table
+      // built from the first fraction of a run reads exactly like a complete
+      // one, which is the failure this guard exists to end — not to relocate.
+      if (!(e instanceof RunAborted)) throw e
+      setResults([])
+      setBootError(e.message)
+      setProgress('')
+      setPhase('ready')
+      return
+    } finally {
+      writePhases.stop()
     }
-    writePhases.stop()
     setPhaseReport(writePhases.formatReport())
     setProgress('')
     setPhase('ready')
