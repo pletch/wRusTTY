@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>wRusTTY — visual check</title>
+    <style>
+      body { background: #0b0c10; color: #cfd3dc; font: 13px ui-sans-serif, system-ui; margin: 16px; }
+      h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+      p { margin: 0 0 12px; opacity: 0.6; }
+      #pane { width: 900px; height: 420px; }
+      #err { color: #fca5a5; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Attributes &amp; cursor — Ghostty/WebGL</h1>
+    <p>Not a benchmark. Renders the attributes the parity work added so they can be looked at.</p>
+    <div id="pane"></div>
+    <div id="err"></div>
+    <script type="module" src="/src/dev/visualCheck.ts"></script>
+  </body>
+</html>
