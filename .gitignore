@@ -28,5 +28,11 @@ coverage
 /target
 /src-tauri/gen/schemas
 
-# Claude Code local session state — machine/user-specific, never shared
-.claude/
+# Claude Code local session state — machine/user-specific, never shared.
+# Skills are the exception: they are checked-in tooling, not session state, and
+# an agent working anywhere in the repo discovers them from here. Ignoring the
+# contents rather than the directory is what lets one child back in — git will
+# not descend into an excluded directory, so `!.claude/skills/` alone would not
+# work.
+.claude/*
+!.claude/skills/
