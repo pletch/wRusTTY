@@ -61,6 +61,10 @@ export interface RunnableEngine extends Paintable {
   parse(data: Uint8Array | string): Promise<void>
   readonly cols: number
   readonly rows: number
+  /** Total rows the engine is holding — viewport plus retained scrollback. Read
+   *  before and after a flood to prove the payload actually landed somewhere;
+   *  see `deadTrials`. Optional so a test double need not model a buffer. */
+  readonly scrollbackLength?: number
 }
 
 export interface EngineResult {
@@ -87,6 +91,10 @@ export interface EngineResult {
   emptyTrials: number
   /** Trials that hit the wall-clock ceiling before settling. */
   failedTrials: number
+  /** Trials the engine accepted the payload for without parsing it. Excluded
+   *  from `stats` and every mean, because averaging them in understates the
+   *  cost by exactly the fraction of rounds that died. Block workloads only. */
+  deadTrials: number
 }
 
 export interface WorkloadResult {
@@ -141,6 +149,34 @@ async function measureParse(
 const BLOCK_SETTLE_FRAMES = 3
 
 /**
+ * Whether a flood round actually happened, judged by what the terminal gained
+ * rather than by how long it claimed to take.
+ *
+ * This exists because the harness published a Ghostty parse figure roughly 3x
+ * too fast for weeks. The engine can enter a state where it accepts writes and
+ * parses none of them: bytes go in, no error is raised, and the round completes
+ * in milliseconds — so the round is averaged in as though it were the fastest
+ * result ever recorded, and every mean it touches is pulled down by the share
+ * of rounds that died. A run with two of three rounds dead reported ~82 MB/s
+ * against a true ~31, which is the whole reason a live pane appeared to be 2.7x
+ * slower than this harness. Both were always the same speed.
+ *
+ * Timing cannot catch it: a dead round's headline is "impossibly fast", but
+ * xterm legitimately reports impossible rates here because its `write` is
+ * asynchronous and returns before parsing, so a rate ceiling would flag every
+ * honest xterm round instead. What cannot be faked is the buffer. Any payload
+ * of a megabyte or more must push at least a screenful of lines off the top of
+ * a grid this size, whatever its content — even a single unbroken line wraps.
+ * So "gained fewer rows than it has" means the bytes went nowhere.
+ */
+const MIN_FLOOD_BYTES = 1024 * 1024
+
+export function roundIsDead(payloadBytes: number, rowsAdded: number, rows: number): boolean {
+  if (payloadBytes < MIN_FLOOD_BYTES) return false
+  return rowsAdded < rows
+}
+
+/**
  * Times a flood drain while watching for the longest single main-thread stall —
  * the freeze Phase 8 (WASM in a Web Worker) would remove.
  *
@@ -163,7 +199,14 @@ async function measureBlock(
   buf: Uint8Array,
   chunkBytes = 0,
   timeoutMs = 120000,
-): Promise<{ drainMs: number; parseMs: number; maxStallMs: number; deliveries: number; timedOut: boolean }> {
+): Promise<{
+  drainMs: number
+  parseMs: number
+  maxStallMs: number
+  deliveries: number
+  timedOut: boolean
+  rowsAdded: number
+}> {
   let maxStall = 0
   let last = 0
   let painted = false
@@ -183,6 +226,7 @@ async function measureBlock(
   await nextFrame() // settle to a steady cadence, then discard warm-up gaps
   maxStall = 0
 
+  const rowsBefore = engine.scrollbackLength ?? 0
   const t0 = performance.now()
   const overCeiling = () => performance.now() - t0 > timeoutMs
   let timedOut = false
@@ -248,7 +292,10 @@ async function measureBlock(
   await nextFrame()
   running = false
   sub.dispose()
-  return { drainMs, parseMs, maxStallMs: maxStall, deliveries, timedOut }
+  // Sampled here rather than at `drainMs`, so an engine that parses off the
+  // write call (xterm) has finished its queue before it is asked.
+  const rowsAdded = (engine.scrollbackLength ?? 0) - rowsBefore
+  return { drainMs, parseMs, maxStallMs: maxStall, deliveries, timedOut, rowsAdded }
 }
 
 /** Median interval between animation frames — the display's real cadence, so
@@ -329,6 +376,7 @@ async function runThroughput(
         throughputMBs: stats.mean > 0 ? mb / (stats.mean / 1000) : 0,
         emptyTrials: 0,
         failedTrials: failed[e.name],
+        deadTrials: 0,
       }
     }),
   }
@@ -357,6 +405,7 @@ async function runBlock(
   const drains: Record<string, number[]> = { [a.name]: [], [b.name]: [] }
   const parses: Record<string, number[]> = { [a.name]: [], [b.name]: [] }
   const failed: Record<string, number> = { [a.name]: 0, [b.name]: 0 }
+  const dead: Record<string, number> = { [a.name]: 0, [b.name]: 0 }
   let deliveries = 0
 
   for (let round = 0; round < rounds; round++) {
@@ -367,6 +416,12 @@ async function runBlock(
       const r = await measureBlock(engine, buf, chunkBytes)
       if (r.timedOut) {
         failed[engine.name]++
+      } else if (roundIsDead(built.totalBytes, r.rowsAdded, engine.rows)) {
+        dead[engine.name]++
+        console.warn(
+          `[bench] ${engine.name} ${workload.id} round ${round + 1}: accepted ${(built.totalBytes / 1048576).toFixed(0)} MB ` +
+            `in ${r.parseMs.toFixed(0)} ms but the buffer gained ${r.rowsAdded} rows — nothing was parsed. Round discarded.`,
+        )
       } else {
         stalls[engine.name].push(r.maxStallMs)
         drains[engine.name].push(r.drainMs)
@@ -394,6 +449,7 @@ async function runBlock(
         deliveries,
         emptyTrials: 0,
         failedTrials: failed[e.name],
+        deadTrials: dead[e.name],
       }
     }),
   }
@@ -454,6 +510,7 @@ async function runLatency(
       stats: summarize(samples[e.name]),
       emptyTrials: empty[e.name],
       failedTrials: failed[e.name],
+      deadTrials: 0,
     })),
   }
 }
@@ -498,6 +555,21 @@ export function resultsToMarkdown(
   const lines: string[] = []
   lines.push('# wRusTTY Phase 7 — engine A/B', '')
   lines.push(meta, '', gpuLine, '')
+
+  // A per-row flag is too easy to miss in an exported table that someone reads
+  // weeks later, and quoting a figure from a run with dead rounds is precisely
+  // the mistake this is here to prevent. Say it once, at the top, in the way a
+  // reader cannot skip.
+  const deadTotal = results.reduce((n, w) => n + w.results.reduce((m, r) => m + (r.deadTrials ?? 0), 0), 0)
+  if (deadTotal > 0) {
+    lines.push(
+      '',
+      `> ☠️ **This run is not quotable.** ${deadTotal} flood round${deadTotal === 1 ? '' : 's'} accepted the payload without parsing it, and ` +
+        'were discarded rather than averaged in. Every figure below rests on fewer rounds than it claims to, and the affected engine may ' +
+        'have been in a degraded state for the rounds that did count. Restart the app and run it again.',
+      '',
+    )
+  }
   lines.push(
     '',
     '> Latency is frame-quantized: the last column shows p50 in whole display frames, which is the comparable figure across refresh rates. Throughput is a pure-parse measurement (each engine timed to its own parser completion). Flood-stress rows (`ms stall`) report the longest single main-thread stall during the drain — the freeze a user feels, with `max` the worst across rounds; the last column is that worst stall in frames, then **parse** (time actually inside the engine, and the MB/s it implies) and **drain** (wall clock). Compare engines on *parse*: drain includes the yields between deliveries, which both engines pay equally, so it dilutes the difference — and at the current delivery size the stall column is floored by the frame interval and cannot separate them at all. Where parse and drain disagree sharply, the difference is per-delivery work outside the parser and is worth more attention than either column alone. A `KB+ feed` row replays the coalescer\'s own accumulate-and-flush loop (deliveries of at least the flush threshold, larger by however much a read overshot), one event-loop turn each, so its stall is one the app can produce; a `single write` row is the monolithic worst case the coalescer never allows.',
@@ -522,7 +594,9 @@ export function resultsToMarkdown(
               ? `≈${(s.p50 / frameMs).toFixed(1)} f`
               : '—'
       const flags =
-        (r.failedTrials ? ` ⛔${r.failedTrials} timeout` : '') + (r.emptyTrials ? ` ⚠️${r.emptyTrials} empty` : '')
+        (r.failedTrials ? ` ⛔${r.failedTrials} timeout` : '') +
+        (r.emptyTrials ? ` ⚠️${r.emptyTrials} empty` : '') +
+        (r.deadTrials ? ` ☠️${r.deadTrials} unparsed` : '')
       lines.push(
         `| ${r.engine}${flags} | ${s.n} | ${s.mean.toFixed(2)} | ${s.p50.toFixed(2)} | ${s.p95.toFixed(2)} | ${s.p99.toFixed(2)} | ${s.max.toFixed(2)} | ${last} |`,
       )
@@ -542,13 +616,14 @@ export function resultsToMarkdown(
 const FINDINGS: string[] = [
   '## Findings',
   '',
-  '**Ghostty parses faster than xterm.js — but drains slower, and the gap between those two facts is the thing worth chasing.** On the large flood Ghostty parses at ~88 MB/s against xterm.js at ~62 MB/s (a 41% win, earned by the `ReleaseFast` rebuild), yet its wall-clock drain is ~35 MB/s against xterm.js\'s ~49. Roughly 60% of Ghostty\'s drain time is outside the parser, against ~21% for xterm.js. Parse throughput is no longer the interesting number for this engine; whatever it does per delivery around the parse is.',
+  '**Ghostty parses faster than xterm.js — but drains slower, and the gap between those two facts is the thing worth chasing.** On the large flood Ghostty parses at ~82 MB/s against xterm.js at ~60 MB/s (a ~37% win, earned by the `ReleaseFast` rebuild), yet its wall-clock drain is ~37 MB/s against xterm.js\'s ~51. Roughly 55% of Ghostty\'s drain time is outside the parser, against ~15% for xterm.js. Parse throughput is no longer the interesting number for this engine; whatever it does per delivery around the parse is. **Read the parse figures against the payload the phase block below reports** — this row is a few MB per round, and a live 100 MB flood measures very differently (see the fourth bullet).',
   '',
   "- The vendored `ghostty-web@0.4.0` WASM is **scalar**: inspecting the binary shows zero `v128` types in any function signature and zero `v128` locals. Ghostty's native SIMD parser paths are not compiled into this build (the library's own pitch is *correctness* — grapheme handling, XTPUSHSGR/XTPOPSGR — not throughput).",
   '- Even with `+simd128` enabled, WASM SIMD is fixed **128-bit**, versus native **AVX2 (256-bit)** / AVX-512, plus bounds-checked linear-memory loads and JS↔WASM boundary cost. Native multi-GB/s parse throughput structurally cannot transfer to a `.wasm`. Measured, `+simd128` moved this build by 0.5–2%, i.e. noise.',
   '- So ~88 MB/s from a scalar WASM parser against a table-driven state machine over typed arrays is already a good result, and the remaining parser headroom is small. The **Placement 3** prize (native `libghostty` in the Rust backend) is real but unreachable from WASM.',
-  '- **A live pane does not see that ~88 MB/s, and the difference is inside the core.** Measured end to end on a 100 MB local flood, `engine.write` runs at ~31 MB/s, and `src/lib/writePhases.ts` attributes **93%** of it to `writeBytes` itself — the WASM parse. Everything around it is noise: the JS `scanOsc` pass the app takes and the harness does not costs 195 ms (6%, ~495 MB/s), response draining 1 ms, buffer-change checks 0 ms, callbacks 11 ms, unattributed 4 ms. So the same `.wasm` parses at ~88 MB/s here and ~33 MB/s in a pane, and no wrapper accounts for the gap.',
-  '- What still differs between the two is **grid geometry and scrollback**: this harness runs Ghostty at 81x18 with the bench\'s own settings, while a pane is fit-to-window and configured with the user\'s scrollback. A row is allocated at full grid width, so per-row cost should scale with columns — untested, and the cheapest way to test it is to run the same flood in a deliberately narrow window and see whether throughput tracks the column count. Content shape is already ruled out: newline-dense and long-line floods measure the same (see below).',
+  '- **A live pane does not see that ~82 MB/s, and the difference is inside `ghostty_terminal_write`.** Both figures now come from the same recorder (`src/lib/writePhases.ts`, reported below): this harness measures **82.2 MB/s**, a live pane on a 100 MB flood measures **32.5 MB/s**. Nothing around the call accounts for it. Of the harness write, `coreWrite` is 98.8% and the whole buffer handoff — alloc, copy into linear memory, free — is 1.2%. In the pane, `writeBytes` is 93% of the write and the JS `scanOsc` pass the app takes and the harness does not is 6% (~495 MB/s); draining, buffer-change checks and callbacks are ~0.',
+  '- Four candidate explanations for that gap are measured and dead: **content shape** (newline-dense vs long-line: 32.5 vs 31.3 MB/s), **grid geometry** (~80 vs ~200 columns, i.e. 2.5x the rows for the same bytes: 31.9 vs 33.2), **scrollback depth** (10000 vs 1000 retained rows: 32.5 vs 32.5), and everything wrapping the call. Parse cost is invariant to every piece of terminal state, at ~28 ns/byte.',
+  '- What remains untested is **sustained volume**. The phase line below reports the payload it measured: this harness runs ~3 MB per round with a reset between rounds, against 96 MB delivered continuously into one terminal in the live test — a 30x difference that no run so far has controlled for. The flood-stress rows at 10 / 50 / 100 MB answer it directly: if their parse column falls off with size, throughput degrades with sustained output and the pane is not doing anything wrong.',
   '',
   '**A flood is bounded by memory, not by parse time — and that is what actually broke.** The stall numbers below were always right and always beside the point: at 100 MB the Ghostty pane wedged outright, reproducibly on the third round. The cause was retention, not throughput. `scrollbackLimit` is a **line count**, which the core multiplies by its per-line page cost in 32-bit `usize`; this side was passing a *byte* budget, so a normal 5000-line setting arrived as ~8,000,000, overflowed, and hit the core\'s `catch maxInt(usize)` fallback — meaning unlimited. Scrollback was uncapped: 100 MB retained all ~1.15 M rows and grew the WASM heap ~25x the input (~51x at 200 columns) to ~2 GB, until an allocation was refused. Every refusal was then swallowed — `writeBytes` and the renderer\'s buffer helpers both returned on a null pointer — so the pane stopped writing and stopped painting with nothing logged, which is the "wedge". Fixed on this side (`scrollbackLinesFor`, pinned by `scrollbackLimit.test.ts`); the vendored WASM was correct all along and is unchanged. 100 MB x 3 rounds now drains with the heap flat at ~9 MB (~17 MB at 200x60). Allocation failure is now raised and reported instead of ignored.',
   '',

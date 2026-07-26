@@ -60,6 +60,11 @@ function adapt(name: string, engine: XtermEngine | GhosttyEngine): RunnableEngin
     get rows() {
       return engine.rows
     },
+    // Proof a flood round actually landed, rather than being accepted and
+    // dropped — see `roundIsDead` in the runner.
+    get scrollbackLength() {
+      return engine.scrollbackLength
+    },
   }
 }
 
