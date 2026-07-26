@@ -71,6 +71,20 @@ describe('roundIsDead', () => {
   it('does not judge payloads too small to guarantee a scroll', () => {
     expect(roundIsDead(64 * 1024, 0, 24)).toBe(false)
   })
+
+  /**
+   * A workload that writes no cells on purpose — the parse-only probes, or
+   * anything redrawing on the alternate screen — cannot be judged this way and
+   * says so, rather than the threshold being loosened for everyone.
+   */
+  it('exempts a workload that declares it will not scroll', () => {
+    expect(roundIsDead(100 * MB, 0, 18, false)).toBe(false)
+    expect(roundIsDead(100 * MB, 0, 18, true)).toBe(true)
+  })
+
+  it('judges by default, so a new workload is covered unless it opts out', () => {
+    expect(roundIsDead(100 * MB, 0, 18)).toBe(true)
+  })
 })
 
 describe('unparsed flood rounds', () => {

@@ -62,6 +62,17 @@ export interface Workload {
   /** What the number means, shown in the results table. */
   unit: string
   description: string
+  /**
+   * Whether this payload is expected to scroll the main screen.
+   *
+   * The runner proves a round happened by checking the buffer grew (see
+   * `roundIsDead`), which a flood of ordinary output always does. A workload
+   * that deliberately writes no cells — or one that redraws in place on the
+   * alternate screen — would read as unparsed however well it parsed, so it
+   * opts out here. Defaults to true: the guard exists because a silent failure
+   * cost weeks, and opting out should be a decision, not an omission.
+   */
+  scrollsMainScreen?: boolean
   build(cols: number, rows: number): BuiltWorkload
 }
 
@@ -156,6 +167,94 @@ export const flood: Workload = {
   description: '~3 MB of mixed coloured output written at once; timed to full presentation.',
   build() {
     const buf = generateFlood(3 * 1024 * 1024, 0x1234)
+    return { events: [buf], totalBytes: buf.length }
+  },
+}
+
+/**
+ * Where the parse time actually goes: the byte-level state machine, the actions
+ * it dispatches, or the per-cell work a printable character triggers.
+ *
+ * The question these answer. Ghostty's WASM parses at ~29 ns/byte, which at this
+ * clock is 100+ cycles for every byte. A table-driven VT state machine costs a
+ * handful of cycles per byte; even a careless one costs tens. And xterm.js — a
+ * state machine in JavaScript — is about twice as fast on the same flood.
+ * Compiled WASM losing to JIT'd JS is not a codegen story, so the suspicion is
+ * that this build does far more work per *cell* than per byte: grapheme
+ * segmentation, width, style resolution and PageList bookkeeping on every
+ * printable character, with none of the SIMD fast paths that let native Ghostty
+ * skip that route for runs of plain ASCII (the vendored binary has no v128 in
+ * any signature or local).
+ *
+ * Why three and not two. Comparing printable text against `ESC [ 0 m` confounds
+ * two things: the SGR stream writes no cells, but it also spends four bytes per
+ * action against printable text's one, so a 4x result could mean either "cells
+ * are expensive" or "actions are expensive and bytes are free". The long-SGR
+ * variant separates them — same one action, five times the bytes. Read them as:
+ *
+ *   - long ≈ short (per byte)  → cost tracks bytes; the state machine itself is
+ *     slow, and only native libghostty helps.
+ *   - long >> short (per byte) → cost tracks actions, not bytes. Then compare
+ *     cost per action: printable is 1 byte/action, short SGR is 4. If printable
+ *     is far dearer per action, the per-cell path is the answer and it is the
+ *     thing to attack.
+ *
+ * Deliberately plain ASCII with no wide or combining characters, so a slow
+ * result cannot be blamed on Unicode: this is the cheapest cell there is.
+ */
+const PARSE_PROBE_BYTES = 2 * 1024 * 1024
+
+/** Repeats `unit` until at least `targetBytes`, cut to a whole number of units
+ *  so the stream never ends mid-sequence and leaves the parser mid-state. */
+function repeatUnit(unit: string, targetBytes: number): Uint8Array {
+  const bytes = enc.encode(unit)
+  const count = Math.max(1, Math.floor(targetBytes / bytes.length))
+  const out = new Uint8Array(bytes.length * count)
+  for (let i = 0; i < count; i++) out.set(bytes, i * bytes.length)
+  return out
+}
+
+/** Printable ASCII, one cell per byte — the per-cell cost, at its cheapest.
+ *  80 columns then a wrap, matching the `tr '\0' 'x'` flood a live pane sees. */
+export const parseCells: Workload = {
+  id: 'parse-cells',
+  label: 'Parse: printable (1 cell/byte)',
+  mode: 'throughput',
+  unit: 'MB/s',
+  description: '2 MB of plain ASCII in 80-column lines. One parse action and one cell write per byte.',
+  build() {
+    const buf = repeatUnit('x'.repeat(80) + '\r\n', PARSE_PROBE_BYTES)
+    return { events: [buf], totalBytes: buf.length }
+  },
+}
+
+/** Well-formed SGR resets: fully parsed, pen state updated, no cell written and
+ *  no page grown. Four bytes per action. */
+export const parseShortSgr: Workload = {
+  id: 'parse-sgr-short',
+  label: 'Parse: short SGR (0 cells)',
+  mode: 'throughput',
+  unit: 'MB/s',
+  description: '2 MB of ESC[0m. Fully parsed, one action per 4 bytes, no cell written.',
+  scrollsMainScreen: false,
+  build() {
+    const buf = repeatUnit(RESET, PARSE_PROBE_BYTES)
+    return { events: [buf], totalBytes: buf.length }
+  },
+}
+
+/** The same single action carrying ten redundant parameters — five times the
+ *  bytes through the state machine for identical work at the end of it. This is
+ *  what separates per-byte cost from per-action cost. */
+export const parseLongSgr: Workload = {
+  id: 'parse-sgr-long',
+  label: 'Parse: long SGR (0 cells)',
+  mode: 'throughput',
+  unit: 'MB/s',
+  description: '2 MB of ESC[0;0;0;0;0;0;0;0;0;0m. Same one action as the short form, 5x the bytes.',
+  scrollsMainScreen: false,
+  build() {
+    const buf = repeatUnit(`\x1b[${'0;'.repeat(9)}0m`, PARSE_PROBE_BYTES)
     return { events: [buf], totalBytes: buf.length }
   },
 }
@@ -390,4 +489,4 @@ export function capturedFlood(bytes: Uint8Array, name: string, chunkBytes = COAL
   }
 }
 
-export const WORKLOADS: Workload[] = [typing, streaming, tui, flood]
+export const WORKLOADS: Workload[] = [typing, streaming, tui, flood, parseCells, parseShortSgr, parseLongSgr]

@@ -184,7 +184,8 @@ const BLOCK_SETTLE_FRAMES = 3
  */
 const MIN_FLOOD_BYTES = 1024 * 1024
 
-export function roundIsDead(payloadBytes: number, rowsAdded: number, rows: number): boolean {
+export function roundIsDead(payloadBytes: number, rowsAdded: number, rows: number, scrolls = true): boolean {
+  if (!scrolls) return false
   if (payloadBytes < MIN_FLOOD_BYTES) return false
   return rowsAdded < rows
 }
@@ -372,7 +373,7 @@ async function runThroughput(
       opts.onProgress?.(`${workload.label}: ${engine.name} round ${round + 1}/${opts.throughputRounds}`)
       const r = await measureParse(engine, buf)
       if (r.timedOut) failed[engine.name]++
-      else if (roundIsDead(built.totalBytes, r.rowsAdded, engine.rows)) {
+      else if (roundIsDead(built.totalBytes, r.rowsAdded, engine.rows, workload.scrollsMainScreen)) {
         dead[engine.name]++
         console.warn(
           `[bench] ${engine.name} ${workload.id} round ${round + 1}: accepted ${(built.totalBytes / 1048576).toFixed(1)} MB ` +
@@ -436,7 +437,7 @@ async function runBlock(
       const r = await measureBlock(engine, buf, chunkBytes)
       if (r.timedOut) {
         failed[engine.name]++
-      } else if (roundIsDead(built.totalBytes, r.rowsAdded, engine.rows)) {
+      } else if (roundIsDead(built.totalBytes, r.rowsAdded, engine.rows, workload.scrollsMainScreen)) {
         dead[engine.name]++
         console.warn(
           `[bench] ${engine.name} ${workload.id} round ${round + 1}: accepted ${(built.totalBytes / 1048576).toFixed(0)} MB ` +
