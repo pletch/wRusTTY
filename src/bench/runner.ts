@@ -132,8 +132,9 @@ async function measureParse(
   engine: RunnableEngine,
   buf: Uint8Array,
   timeoutMs = 20000,
-): Promise<{ ms: number; timedOut: boolean }> {
+): Promise<{ ms: number; timedOut: boolean; rowsAdded: number }> {
   await nextFrame()
+  const rowsBefore = engine.scrollbackLength ?? 0
   const t0 = performance.now()
   let timer: ReturnType<typeof setTimeout>
   const timeout = new Promise<'timeout'>((res) => {
@@ -141,16 +142,20 @@ async function measureParse(
   })
   const done = engine.parse(buf).then(() => 'done' as const)
   const outcome = await Promise.race([done, timeout])
+  const ms = performance.now() - t0
   clearTimeout(timer!)
-  return { ms: performance.now() - t0, timedOut: outcome === 'timeout' }
+  // Both engines are awaited to parser completion here, so the buffer is
+  // settled by now for either of them.
+  return { ms, timedOut: outcome === 'timeout', rowsAdded: (engine.scrollbackLength ?? 0) - rowsBefore }
 }
 
 /** Consecutive paint-free frames that count a chunked drain as finished. */
 const BLOCK_SETTLE_FRAMES = 3
 
 /**
- * Whether a flood round actually happened, judged by what the terminal gained
- * rather than by how long it claimed to take.
+ * Whether a round actually happened, judged by what the terminal gained rather
+ * than by how long it claimed to take. Applied to throughput and flood-stress
+ * rounds alike.
  *
  * This exists because the harness published a Ghostty parse figure roughly 3x
  * too fast for weeks. The engine can enter a state where it accepts writes and
@@ -168,6 +173,14 @@ const BLOCK_SETTLE_FRAMES = 3
  * of a megabyte or more must push at least a screenful of lines off the top of
  * a grid this size, whatever its content — even a single unbroken line wraps.
  * So "gained fewer rows than it has" means the bytes went nowhere.
+ *
+ * The assumption that carries all of it: **the payload scrolls the main screen**.
+ * Every workload judged today does, being a flood of ordinary output. A
+ * workload that spends its bytes redrawing in place would break this — most
+ * obviously one that switches to the alternate screen, which has no scrollback
+ * at all and would read as dead however well it parsed. If such a workload is
+ * ever added at a megabyte or more, give it a way to opt out rather than
+ * loosening the threshold, which would let the real failure back through.
  */
 const MIN_FLOOD_BYTES = 1024 * 1024
 
@@ -349,6 +362,7 @@ async function runThroughput(
   const buf = built.events[0]
   const samples: Record<string, number[]> = { [a.name]: [], [b.name]: [] }
   const failed: Record<string, number> = { [a.name]: 0, [b.name]: 0 }
+  const dead: Record<string, number> = { [a.name]: 0, [b.name]: 0 }
 
   for (let round = 0; round < opts.throughputRounds; round++) {
     // Flip order each round so neither engine always runs first.
@@ -358,7 +372,13 @@ async function runThroughput(
       opts.onProgress?.(`${workload.label}: ${engine.name} round ${round + 1}/${opts.throughputRounds}`)
       const r = await measureParse(engine, buf)
       if (r.timedOut) failed[engine.name]++
-      else samples[engine.name].push(r.ms)
+      else if (roundIsDead(built.totalBytes, r.rowsAdded, engine.rows)) {
+        dead[engine.name]++
+        console.warn(
+          `[bench] ${engine.name} ${workload.id} round ${round + 1}: accepted ${(built.totalBytes / 1048576).toFixed(1)} MB ` +
+            `in ${r.ms.toFixed(0)} ms but the buffer gained ${r.rowsAdded} rows — nothing was parsed. Round discarded.`,
+        )
+      } else samples[engine.name].push(r.ms)
     }
   }
 
@@ -376,7 +396,7 @@ async function runThroughput(
         throughputMBs: stats.mean > 0 ? mb / (stats.mean / 1000) : 0,
         emptyTrials: 0,
         failedTrials: failed[e.name],
-        deadTrials: 0,
+        deadTrials: dead[e.name],
       }
     }),
   }
@@ -564,7 +584,7 @@ export function resultsToMarkdown(
   if (deadTotal > 0) {
     lines.push(
       '',
-      `> ☠️ **This run is not quotable.** ${deadTotal} flood round${deadTotal === 1 ? '' : 's'} accepted the payload without parsing it, and ` +
+      `> ☠️ **This run is not quotable.** ${deadTotal} round${deadTotal === 1 ? '' : 's'} accepted the payload without parsing it, and ` +
         'were discarded rather than averaged in. Every figure below rests on fewer rounds than it claims to, and the affected engine may ' +
         'have been in a degraded state for the rounds that did count. Restart the app and run it again.',
       '',

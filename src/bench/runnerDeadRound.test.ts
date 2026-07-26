@@ -118,7 +118,7 @@ describe('unparsed flood rounds', () => {
       'meta',
       15.1,
     )
-    expect(md).toContain('3 flood rounds')
+    expect(md).toContain('3 rounds')
   })
 
   it('keeps the singular readable for a single dead round', () => {
@@ -128,6 +128,6 @@ describe('unparsed flood rounds', () => {
       'meta',
       15.1,
     )
-    expect(md).toContain('1 flood round accepted')
+    expect(md).toContain('1 round accepted')
   })
 })
