@@ -34,9 +34,14 @@ const SCROLLBAR_WIDTH = 8
 /**
  * Bytes to write before telling the backend it may send more.
  *
- * A quarter of the backend's 4 MB window (`MAX_INFLIGHT_BYTES` in
- * coalesce.rs), so credit arrives well before the gate closes while costing one
- * IPC round trip per four deliveries rather than one per delivery.
+ * A sixteenth of the backend's 16 MB window (`DEFAULT_MAX_INFLIGHT_BYTES` in
+ * coalesce.rs), so credit flows back steadily rather than in lumps that let the
+ * window drain to empty before it is topped up, while still costing one IPC
+ * round trip per four deliveries rather than one per delivery.
+ *
+ * Left at 1 MB when the window went from 4 MB to 16: a larger batch would mean
+ * fewer, bigger credit grants, which is the shape that starved the frontend at
+ * the smaller window in the first place.
  */
 const ACK_THRESHOLD_BYTES = 1024 * 1024
 

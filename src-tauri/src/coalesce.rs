@@ -187,12 +187,28 @@ pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 /// or `cat /dev/urandom` grows it without limit until the webview process is
 /// killed. This is a memory-safety bound, not a throughput one.
 ///
-/// 4 MB is about sixteen deliveries at the 256 KB flush threshold, which at the
-/// measured 3.5 ms per delivery is ~56 ms of queued work — far more than an ack
-/// round trip needs, so the frontend still never runs dry. Smaller would start
-/// to serialise the pipeline; larger buys nothing, since the frontend cannot
-/// get further ahead than it can parse.
-const DEFAULT_MAX_INFLIGHT_BYTES: u64 = 4 * 1024 * 1024;
+/// 16 MB is the knee, measured rather than reasoned. Three 100 MB floods over
+/// LAN SSH, identical engine work each time (1553/1551/1543 ms inside write,
+/// coreWrite 1305/1309/1309), varying only this value:
+///
+///   window   genuinely starved   active window   worst freeze
+///     4 MB     448 ms (19.2%)      44.3 MB/s        25.2 ms
+///    16 MB      93 ms  (4.3%)      47.6 MB/s        25.1 ms
+///    32 MB      54 ms  (2.5%)      48.8 MB/s        25.1 ms
+///
+/// 4 MB was the first guess and it starved the frontend for a fifth of the run;
+/// the reasoning behind it — that ~56 ms of queued work is plenty — ignored that
+/// the queue is drained in bursts against a frame budget, not smoothly.
+///
+/// Past 16 MB there is almost nothing left to recover, because the constraint
+/// stops being this window and becomes `FRAME_BUDGET_MS` in the write
+/// scheduler: as starvation fell, deliberate pacing rose to take its place
+/// (328 -> 529 ms), and throughput moved only 10%. The freeze is unchanged at
+/// every setting, which is the scheduler bounding it independently.
+///
+/// Note this is per session, so N flooding panes hold N times this. 8 MB is on
+/// the Ctrl+Alt+W cycle if that trade needs revisiting.
+const DEFAULT_MAX_INFLIGHT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The live window, so it can be retuned without a rebuild.
 ///
@@ -534,6 +550,10 @@ mod tests {
     #[tokio::test]
     async fn stops_sending_once_the_frontend_falls_far_enough_behind() {
         let _serial = serial_guard().await;
+        // Pinned small rather than taking the default, so the test stays fast
+        // and keeps working when the default is retuned — which it already was
+        // once, from 4 MB to 16, silently breaking this.
+        set_inflight_window(1024 * 1024);
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let status_channel = Channel::new(|_| Ok(()));
         let (data_channel, received) = recording_data_channel();
@@ -583,6 +603,7 @@ mod tests {
         ack_delivery(session.clone(), u64::MAX);
         let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
         reset_delivery_stats();
+        set_inflight_window(DEFAULT_MAX_INFLIGHT_BYTES);
     }
 
     /// A session that never acks — an older frontend, a wedged page — must
