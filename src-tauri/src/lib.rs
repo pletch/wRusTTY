@@ -99,6 +99,7 @@ pub fn run() {
             window_effects::set_window_vibrancy,
             coalesce::delivery_stats,
             coalesce::reset_delivery_stats,
+            coalesce::ack_delivery,
         ])
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());

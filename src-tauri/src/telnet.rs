@@ -65,6 +65,7 @@ pub async fn telnet_connect(
         let log_app = app.clone();
         let log_session_id = cleanup_session_id.clone();
         let forward = tokio::spawn(crate::coalesce::forward_coalesced(
+            cleanup_session_id.clone(),
             rx,
             channel,
             data_channel,

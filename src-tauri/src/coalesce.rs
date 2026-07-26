@@ -16,13 +16,15 @@
 //! `HostKeyPrompt` stay on the original JSON channel, where serde typing is
 //! actually useful.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::Notify;
 use wr_core::{ConnectionEvent, ConnectionStatus};
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(8);
@@ -166,7 +168,128 @@ pub fn reset_delivery_stats() {
 /// while still giving a stalled/slow frontend real backpressure through to
 /// each transport's own read loop (and, for SSH, its channel flow control)
 /// instead of letting an unbounded channel balloon memory under a firehose.
+///
+/// On its own this bound could never engage. `Channel::send` is
+/// fire-and-forget: it hands the message to the webview and returns, so the
+/// forwarder always drained `rx` at full speed, `rx` never filled, and the
+/// transport was never pushed back on. The unbounded growth was never here —
+/// it was in the webview's own message queue, downstream of this. See
+/// `FlowControl`, which is what actually makes this bound reachable.
 pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
+
+/// Bytes that may be sitting in the webview's IPC queue, unwritten, before the
+/// forwarder stops draining its input.
+///
+/// Measured on a 100 MB flood over LAN SSH: the backend finished sending at
+/// 2.56 s while the frontend was still draining at 3.69 s, so roughly 50 MB of
+/// `ArrayBuffer`s were resident in the webview at peak — and that is a function
+/// of how long the producer runs, not of anything the frontend controls. `yes`
+/// or `cat /dev/urandom` grows it without limit until the webview process is
+/// killed. This is a memory-safety bound, not a throughput one.
+///
+/// 4 MB is about sixteen deliveries at the 256 KB flush threshold, which at the
+/// measured 3.5 ms per delivery is ~56 ms of queued work — far more than an ack
+/// round trip needs, so the frontend still never runs dry. Smaller would start
+/// to serialise the pipeline; larger buys nothing, since the frontend cannot
+/// get further ahead than it can parse.
+const MAX_INFLIGHT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// How long to wait for credit before sending anyway.
+///
+/// A frontend that never acknowledges — an older build, a wedged page, a
+/// renderer killed by the OS — must not silently freeze the session. Timing out
+/// degrades to the previous unbounded behaviour, which is bad, rather than to a
+/// hang, which is worse and much harder to diagnose. A dead webview is caught
+/// separately: `Channel::send` fails and the loop exits.
+const CREDIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-session accounting of bytes sent to the webview but not yet written by
+/// it, and the gate the forwarder waits on.
+///
+/// Backpressure needs a signal from the consumer, and IPC gives none: a send
+/// that succeeded means the message was queued, not that anyone read it. So the
+/// frontend reports what it has written (`ack_delivery`, called from the write
+/// scheduler once it has actually handed bytes to the engine) and this credits
+/// them back. Without that report there is no way to distinguish a frontend
+/// keeping up from one falling 50 MB behind.
+#[derive(Default)]
+pub struct FlowControl {
+    inflight: AtomicU64,
+    credit: Notify,
+}
+
+impl FlowControl {
+    fn sent(&self, bytes: u64) {
+        self.inflight.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn ack(&self, bytes: u64) {
+        // Saturating: an ack for more than is outstanding means the counters
+        // disagree, and clamping to zero keeps the gate open rather than
+        // wrapping to u64::MAX and stalling the session forever.
+        let mut current = self.inflight.load(Ordering::Relaxed);
+        loop {
+            let next = current.saturating_sub(bytes);
+            match self.inflight.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(seen) => current = seen,
+            }
+        }
+        self.credit.notify_waiters();
+    }
+
+    /// Blocks until the webview has caught up enough to take more, or until the
+    /// timeout gives up on hearing from it at all. The timeout is a parameter so
+    /// a test can pin the give-up behaviour without waiting the real interval.
+    async fn wait_for_room(&self, timeout: Duration) {
+        while self.inflight.load(Ordering::Relaxed) >= MAX_INFLIGHT_BYTES {
+            // Registered before the re-check inside `timeout` so an ack landing
+            // in between is not missed, which would park this task until the
+            // next one — or forever, on the last delivery.
+            let waiter = self.credit.notified();
+            if self.inflight.load(Ordering::Relaxed) < MAX_INFLIGHT_BYTES {
+                return;
+            }
+            if tokio::time::timeout(timeout, waiter).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+static FLOW: OnceLock<Mutex<HashMap<String, Arc<FlowControl>>>> = OnceLock::new();
+
+fn flow_registry() -> &'static Mutex<HashMap<String, Arc<FlowControl>>> {
+    FLOW.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn flow_for(session_id: &str) -> Arc<FlowControl> {
+    flow_registry()
+        .lock()
+        .unwrap()
+        .entry(session_id.to_string())
+        .or_default()
+        .clone()
+}
+
+/// Credits bytes the frontend has finished writing, freeing the forwarder to
+/// send more. Called by the write scheduler, batched — see `ACK_THRESHOLD_BYTES`
+/// in `src/components/Terminal.tsx`.
+#[tauri::command]
+pub fn ack_delivery(session_id: String, bytes: u64) {
+    // Looked up rather than created: an ack for a session that has already gone
+    // is not worth resurrecting an entry for, and doing so would leak one per
+    // stale ack.
+    let flow = flow_registry().lock().unwrap().get(&session_id).cloned();
+    if let Some(flow) = flow {
+        flow.ack(bytes);
+    }
+}
 
 /// Drains `rx` until it closes, coalescing consecutive `Data` chunks and
 /// flushing (sending one raw `InvokeResponseBody::Raw` message on
@@ -181,12 +304,14 @@ pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 /// session-transcript logging hooks in here (see `logging.rs`) so logged
 /// bytes never have to round-trip back over IPC from the frontend.
 pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
+    session_id: String,
     mut rx: Receiver<ConnectionEvent>,
     status_channel: Channel<E>,
     data_channel: Channel<InvokeResponseBody>,
     make_status: impl Fn(&ConnectionStatus) -> E,
     log_data: impl Fn(&[u8]) + Send,
 ) {
+    let flow = flow_for(&session_id);
     let mut buf: Vec<u8> = Vec::new();
     let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -195,19 +320,27 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     ticker.tick().await;
 
     loop {
+        // Awaited before taking anything else off `rx`, which is what turns
+        // CONNECTION_EVENT_CHANNEL_BOUND from decoration into real
+        // backpressure: not draining lets `rx` fill, which blocks the
+        // transport's read loop on `tx.send().await`, which for SSH closes the
+        // channel window and slows the remote host — a terminal that has
+        // stopped reading, exactly as any other does.
+        flow.wait_for_room(CREDIT_TIMEOUT).await;
+
         tokio::select! {
             maybe_event = rx.recv() => {
                 match maybe_event {
                     Some(ConnectionEvent::Data(bytes)) => {
                         buf.extend_from_slice(&bytes);
                         if buf.len() >= FLUSH_SIZE_THRESHOLD
-                            && !flush(&data_channel, &mut buf, &log_data)
+                            && !flush(&data_channel, &mut buf, &log_data, &flow)
                         {
                             break;
                         }
                     }
                     Some(ConnectionEvent::Status(status)) => {
-                        if !flush(&data_channel, &mut buf, &log_data) {
+                        if !flush(&data_channel, &mut buf, &log_data, &flow) {
                             break;
                         }
                         if status_channel.send(make_status(&status)).is_err() {
@@ -215,18 +348,23 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
                         }
                     }
                     None => {
-                        flush(&data_channel, &mut buf, &log_data);
+                        flush(&data_channel, &mut buf, &log_data, &flow);
                         break;
                     }
                 }
             }
             _ = ticker.tick() => {
-                if !buf.is_empty() && !flush(&data_channel, &mut buf, &log_data) {
+                if !buf.is_empty() && !flush(&data_channel, &mut buf, &log_data, &flow) {
                     break;
                 }
             }
         }
     }
+
+    // The session is over; nothing will ever ack these bytes. Left behind, the
+    // entry would hold a counter for a session that no longer exists and leak
+    // one per connection for the life of the process.
+    flow_registry().lock().unwrap().remove(&session_id);
 }
 
 /// Returns `false` if the channel is gone (send failed) — callers stop
@@ -235,14 +373,27 @@ fn flush(
     data_channel: &Channel<InvokeResponseBody>,
     buf: &mut Vec<u8>,
     log_data: &impl Fn(&[u8]),
+    flow: &FlowControl,
 ) -> bool {
     if buf.is_empty() {
         return true;
     }
     let bytes = std::mem::take(buf);
+    let len = bytes.len() as u64;
     stats::record(bytes.len());
     log_data(&bytes);
-    data_channel.send(InvokeResponseBody::Raw(bytes)).is_ok()
+    // Counted before the send: once it is queued the frontend owns it, and
+    // counting after would leave a window where the bytes are in flight but
+    // invisible to the gate.
+    flow.sent(len);
+    if data_channel.send(InvokeResponseBody::Raw(bytes)).is_ok() {
+        true
+    } else {
+        // The channel is gone, so no ack is coming for these. Credit them back
+        // so a caller that keeps the flow alive is not left permanently short.
+        flow.ack(len);
+        false
+    }
 }
 
 #[cfg(test)]
@@ -307,6 +458,7 @@ mod tests {
         assert_eq!(delivery_stats().bytes, 0);
 
         let handle = tokio::spawn(forward_coalesced(
+            "test-session".to_string(),
             rx,
             status_channel,
             data_channel,
@@ -341,6 +493,112 @@ mod tests {
         reset_delivery_stats();
     }
 
+    /// The bound on `rx` existed for a long time and could never engage, because
+    /// `Channel::send` returns as soon as the message is queued and the
+    /// forwarder therefore always drained its input at full speed. These pin the
+    /// piece that makes it real: the forwarder must stop taking events once the
+    /// webview is far enough behind, and start again when it catches up.
+    #[tokio::test]
+    async fn stops_sending_once_the_frontend_falls_far_enough_behind() {
+        let _serial = serial_guard().await;
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let status_channel = Channel::new(|_| Ok(()));
+        let (data_channel, received) = recording_data_channel();
+        let session = "backpressure-test".to_string();
+
+        let handle = tokio::spawn(forward_coalesced(
+            session.clone(),
+            rx,
+            status_channel,
+            data_channel,
+            |status| TestEvent::Status {
+                status: format!("{status:?}"),
+            },
+            |_: &[u8]| {},
+        ));
+
+        // Enough to overrun the window several times over, with nothing acking.
+        let burst = vec![b'x'; FLUSH_SIZE_THRESHOLD];
+        for _ in 0..48 {
+            if tx.send(ConnectionEvent::Data(burst.clone())).await.is_err() {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let sent: usize = received.lock().unwrap().iter().map(|b| b.len()).sum();
+        assert!(
+            (sent as u64) <= MAX_INFLIGHT_BYTES + FLUSH_SIZE_THRESHOLD as u64,
+            "expected the forwarder to stop within one delivery of the window, \
+             sent {sent} bytes against a {MAX_INFLIGHT_BYTES} byte window"
+        );
+        assert!(sent > 0, "it should have sent up to the window, not nothing");
+
+        // Crediting the whole lot back must let it move again.
+        ack_delivery(session.clone(), sent as u64);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let after = received.lock().unwrap().iter().map(|b| b.len()).sum::<usize>();
+        assert!(
+            after > sent,
+            "acking should have released more; stuck at {sent} bytes"
+        );
+
+        drop(tx);
+        // Credit generously so the forwarder can finish and exit rather than
+        // sitting on the gate until the test times out.
+        ack_delivery(session.clone(), u64::MAX);
+        let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        reset_delivery_stats();
+    }
+
+    /// A session that never acks — an older frontend, a wedged page — must
+    /// degrade to the old unbounded behaviour rather than hanging, which would
+    /// look like a dead connection and be far harder to diagnose.
+    #[tokio::test]
+    async fn gives_up_waiting_for_credit_rather_than_hanging() {
+        let flow = FlowControl::default();
+        flow.sent(MAX_INFLIGHT_BYTES * 2);
+        let short = Duration::from_millis(20);
+        let started = Instant::now();
+        flow.wait_for_room(short).await;
+        assert!(
+            started.elapsed() >= short,
+            "it should have waited for credit before giving up"
+        );
+        assert!(
+            flow.inflight.load(Ordering::Relaxed) >= MAX_INFLIGHT_BYTES,
+            "giving up must not fabricate credit — it proceeds despite the window"
+        );
+    }
+
+    /// An ack larger than the outstanding total must clamp rather than wrap: a
+    /// `u64` underflow here would park the session on a full window forever.
+    #[test]
+    fn over_acking_cannot_wrap_the_counter() {
+        let flow = FlowControl::default();
+        flow.sent(1024);
+        flow.ack(u64::MAX);
+        assert_eq!(flow.inflight.load(Ordering::Relaxed), 0);
+    }
+
+    /// The registry is keyed by session, so one stalled tab cannot throttle
+    /// another — and an ack for a session that has gone must not resurrect it.
+    #[tokio::test]
+    async fn flow_is_per_session_and_does_not_leak() {
+        let a = flow_for("session-a");
+        a.sent(MAX_INFLIGHT_BYTES);
+        let b = flow_for("session-b");
+        assert_eq!(b.inflight.load(Ordering::Relaxed), 0, "sessions are separate");
+
+        flow_registry().lock().unwrap().remove("session-a");
+        flow_registry().lock().unwrap().remove("session-b");
+        ack_delivery("session-a".to_string(), 1);
+        assert!(
+            !flow_registry().lock().unwrap().contains_key("session-a"),
+            "an ack for a finished session should not recreate its entry"
+        );
+    }
+
     #[tokio::test]
     async fn small_chunks_under_the_size_threshold_are_coalesced() {
         let _serial = serial_guard().await;
@@ -349,6 +607,7 @@ mod tests {
         let (data_channel, received) = recording_data_channel();
 
         let handle = tokio::spawn(forward_coalesced(
+            "test-session".to_string(),
             rx,
             status_channel,
             data_channel,
@@ -382,6 +641,7 @@ mod tests {
         let (data_channel, received) = recording_data_channel();
 
         let handle = tokio::spawn(forward_coalesced(
+            "test-session".to_string(),
             rx,
             status_channel,
             data_channel,
@@ -427,6 +687,7 @@ mod tests {
         let (data_channel, data_received) = recording_data_channel();
 
         let handle = tokio::spawn(forward_coalesced(
+            "test-session".to_string(),
             rx,
             status_channel,
             data_channel,

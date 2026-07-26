@@ -32,6 +32,15 @@ import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 const SCROLLBAR_WIDTH = 8
 
 /**
+ * Bytes to write before telling the backend it may send more.
+ *
+ * A quarter of the backend's 4 MB window (`MAX_INFLIGHT_BYTES` in
+ * coalesce.rs), so credit arrives well before the gate closes while costing one
+ * IPC round trip per four deliveries rather than one per delivery.
+ */
+const ACK_THRESHOLD_BYTES = 1024 * 1024
+
+/**
  * Push a dead-engine report into the Rust-side log, which in a release build
  * is the only place it can land: the webview console isn't inspectable on a
  * user's machine, so a `console.error` there is the same as saying nothing.
@@ -669,12 +678,27 @@ export function Terminal({
     // with no chance to render between them, because IPC had a queue behind it.
     // An idle terminal is unaffected: a keystroke echo is one small delivery
     // into a full budget and still goes in synchronously. See lib/writeScheduler.
+    // Bytes written but not yet credited to the backend. Batched rather than
+    // acked per delivery: the backend's window is 4 MB, so crediting every
+    // 1 MB keeps it comfortably fed at a quarter of the IPC round trips.
+    let unacked = 0
     const scheduler = createWriteScheduler(
-      (bytes) =>
+      (bytes) => {
         // Wrapped rather than called directly so the real delivery path can be
         // measured in a live session — see lib/deliveryStats.ts. Off by default,
         // and when off this is a branch and a call, no clock reads.
-        deliveryStats.record(bytes.length, () => term.write(bytes)),
+        deliveryStats.record(bytes.length, () => term.write(bytes))
+        unacked += bytes.length
+        // Also sent the moment the queue drains, so a quiet session cannot
+        // leave credit stranded below the batch size and slowly starve itself
+        // over a long connection.
+        if (unacked >= ACK_THRESHOLD_BYTES || scheduler.pending === 0) {
+          const credit = unacked
+          unacked = 0
+          const id = sessionIdRef.current
+          if (id) conn.ackDelivery(id, credit).catch(() => {})
+        }
+      },
       undefined,
       undefined,
       // Declared so the report can tell pacing from starvation; without it a

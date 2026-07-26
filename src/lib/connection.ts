@@ -77,6 +77,27 @@ export function write(source: ConnectionSource, sessionId: string, data: Uint8Ar
   return invoke<void>(command, { sessionId, data: Array.from(data) })
 }
 
+/**
+ * Tells the backend how many delivered bytes have now been written to the
+ * engine, so it can send more.
+ *
+ * IPC gives the sender no backpressure of its own — a successful send means the
+ * message was queued for the webview, not that anything read it — so without
+ * this report the coalescer cannot tell a frontend keeping up from one falling
+ * tens of megabytes behind. Measured on a 100 MB flood, the backend finished
+ * sending 1.1 s before the frontend finished draining, with ~50 MB of buffers
+ * resident in the webview at peak and no bound on it beyond how long the
+ * producer ran.
+ *
+ * Protocol-independent: the flow control is keyed by session id in
+ * `coalesce.rs`, which every transport shares. Fire-and-forget by design — a
+ * lost ack costs a little throughput at worst, and the backend's credit timeout
+ * covers a frontend that stops acking entirely.
+ */
+export function ackDelivery(sessionId: string, bytes: number) {
+  return invoke<void>('ack_delivery', { sessionId, bytes })
+}
+
 /** No-op for serial — it has no concept of terminal size to negotiate. */
 export function resize(source: ConnectionSource, sessionId: string, cols: number, rows: number) {
   if (source.protocol === 'serial') return Promise.resolve()
