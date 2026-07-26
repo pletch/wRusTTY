@@ -26,6 +26,14 @@ import {
   CELL_INVISIBLE,
   CELL_BLINK,
   CELL_FAINT,
+  CELL2_OVERLINE,
+  CELL2_UNDERLINE_MASK,
+  UNDERLINE_NONE,
+  UNDERLINE_SINGLE,
+  UNDERLINE_DOUBLE,
+  UNDERLINE_CURLY,
+  UNDERLINE_DOTTED,
+  UNDERLINE_DASHED,
 } from '../lib/ghostty/wasmBindings'
 
 const COLS = 80
@@ -196,5 +204,50 @@ describe('colour and attribute parity on directed SGR cases', () => {
     const { ghostty, xterm } = await compareBytes(text)
     expect(ghostty.rows).toEqual(xterm.rows)
     expectRowwise(ghostty, xterm, (s, y) => colorRow(s, y, 'bg'))
+  })
+})
+
+/**
+ * Overline and the five underline styles, which the core has always carried and
+ * our cell packing used to drop: every underline arrived as the same single bit
+ * and overline never arrived at all.
+ *
+ * Only overline gets a parity assertion. xterm's buffer API exposes
+ * `isOverline()` but not *which* underline it drew, so the style is asserted
+ * against the SGR that set it rather than against a second engine. That is
+ * weaker on purpose, and saying so is cheaper than a test that looks like
+ * parity and is not.
+ */
+describe('overline and underline styles', () => {
+  it('agrees with xterm on overline', async () => {
+    const { ghostty, xterm } = await compareBytes('[53mover[55m plain')
+    expectRowwise(ghostty, xterm, (s, y) =>
+      s.attrs2[y].map((a, i) => `${s.rows[y][i] ?? ' '}:${a & CELL2_OVERLINE ? 'over' : '-'}`).join(' '),
+    )
+  })
+
+  it('distinguishes all five underline styles', async () => {
+    // 4:1 single, 4:2 double, 4:3 curly, 4:4 dotted, 4:5 dashed.
+    const { ghostty } = await compareBytes('[4:1mS[4:2mD[4:3mC[4:4mO[4:5mA[0mP')
+    expect(ghostty.attrs2[0].slice(0, 6).map((a) => a & CELL2_UNDERLINE_MASK)).toEqual([
+      UNDERLINE_SINGLE,
+      UNDERLINE_DOUBLE,
+      UNDERLINE_CURLY,
+      UNDERLINE_DOTTED,
+      UNDERLINE_DASHED,
+      UNDERLINE_NONE,
+    ])
+    // The plain "is it underlined at all" bit has to agree with the style, or
+    // the renderer picks a shape for a cell it never underlines.
+    expect(ghostty.flags[0].slice(0, 6).map((f) => (f & CELL_UNDERLINE) !== 0)).toEqual([
+      true, true, true, true, true, false,
+    ])
+  })
+
+  it('keeps overline and underline independent', async () => {
+    const { ghostty } = await compareBytes('[4:3;53mB[0mP')
+    expect(ghostty.attrs2[0][0] & CELL2_UNDERLINE_MASK).toBe(UNDERLINE_CURLY)
+    expect(ghostty.attrs2[0][0] & CELL2_OVERLINE).toBeTruthy()
+    expect(ghostty.attrs2[0][1]).toBe(0)
   })
 })

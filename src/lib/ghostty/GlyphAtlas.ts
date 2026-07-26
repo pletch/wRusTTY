@@ -1,3 +1,10 @@
+import {
+  UNDERLINE_DOUBLE,
+  UNDERLINE_CURLY,
+  UNDERLINE_DOTTED,
+  UNDERLINE_DASHED,
+} from './wasmBindings'
+
 export interface GlyphRect {
   x: number
   y: number
@@ -25,7 +32,16 @@ export const GLYPH_STRIKETHROUGH = 1 << 3
  * made them come out narrow and overlapped.
  */
 export const GLYPH_WIDE = 1 << 4
-export const GLYPH_STYLE_COUNT = 32
+export const GLYPH_OVERLINE = 1 << 5
+/**
+ * Which underline to draw, in bits 6-8, using the `UNDERLINE_*` values from
+ * wasmBindings. `GLYPH_UNDERLINE` above still means "underlined at all" and is
+ * what gates the drawing; this only selects the shape, so a caller that never
+ * sets it gets the plain rule it always got.
+ */
+export const GLYPH_UL_SHIFT = 6
+export const GLYPH_UL_MASK = 0x07 << GLYPH_UL_SHIFT
+export const GLYPH_STYLE_COUNT = 1 << 9
 
 /**
  * The hollow rectangle an unfocused pane draws instead of a filled block. It is
@@ -38,6 +54,17 @@ export const GLYPH_STYLE_COUNT = 32
  */
 export const GLYPH_CURSOR_OUTLINE = 0xfdd0
 const CURSOR_OUTLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_OUTLINE)
+
+/**
+ * The non-block DECSCUSR shapes, drawn the same way as the outline above: as
+ * cached glyphs substituted for the cell's own, so a shaped cursor costs no
+ * extra geometry and no second draw call. A block cursor stays a recolour of
+ * the cell, which is what it is.
+ */
+export const GLYPH_CURSOR_BAR = 0xfdd1
+export const GLYPH_CURSOR_UNDERLINE = 0xfdd2
+const CURSOR_BAR_TEXT = String.fromCodePoint(GLYPH_CURSOR_BAR)
+const CURSOR_UNDERLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_UNDERLINE)
 
 export class GlyphAtlas {
   private canvas: HTMLCanvasElement
@@ -155,6 +182,60 @@ export class GlyphAtlas {
     return this.rasterize(text, style, (r) => this.clusterCache.set(key, r))
   }
 
+  /**
+   * One underline in the style SGR asked for. Everything is drawn as filled
+   * rects on whole pixels rather than stroked paths, for the same reason the
+   * cursor outline is: a stroke straddles its path and comes out half-covered
+   * on both sides at these sizes. The curl is the exception and is stroked,
+   * because a wave built from rects reads as a dotted line.
+   *
+   * `kind` is a `UNDERLINE_*` value; anything unrecognised (including `none`,
+   * which the caller should not have passed) falls back to a plain rule so an
+   * underlined cell is never silently un-underlined.
+   */
+  private drawUnderline(x: number, y: number, w: number, kind: number): void {
+    const t = this.lineThickness
+    switch (kind) {
+      case UNDERLINE_DOUBLE: {
+        // Pulled up rather than down: the lower rule would otherwise sit on the
+        // cell boundary and touch the row beneath.
+        const gap = Math.max(1, Math.round(t * 2))
+        this.ctx.fillRect(x, Math.max(0, y - gap), w, t)
+        this.ctx.fillRect(x, y, w, t)
+        break
+      }
+      case UNDERLINE_DOTTED: {
+        const dot = Math.max(1, Math.round(t))
+        for (let i = 0; i < w; i += dot * 2) this.ctx.fillRect(x + i, y, Math.min(dot, w - i), t)
+        break
+      }
+      case UNDERLINE_DASHED: {
+        const dash = Math.max(2, Math.round(t * 3))
+        for (let i = 0; i < w; i += dash * 2) this.ctx.fillRect(x + i, y, Math.min(dash, w - i), t)
+        break
+      }
+      case UNDERLINE_CURLY: {
+        const amp = Math.max(1, t)
+        const period = Math.max(4, amp * 4)
+        const mid = y + t / 2
+        this.ctx.save()
+        this.ctx.strokeStyle = this.ctx.fillStyle
+        this.ctx.lineWidth = t
+        this.ctx.beginPath()
+        for (let i = 0; i <= w; i++) {
+          const py = mid + Math.sin((i / period) * Math.PI * 2) * amp
+          if (i === 0) this.ctx.moveTo(x, py)
+          else this.ctx.lineTo(x + i, py)
+        }
+        this.ctx.stroke()
+        this.ctx.restore()
+        break
+      }
+      default:
+        this.ctx.fillRect(x, y, w, t)
+    }
+  }
+
   private rasterize(text: string, style: number, remember: (r: GlyphRect) => void): GlyphRect {
 
     // A wide glyph is rasterized across a two-cell slot and later drawn as two
@@ -182,7 +263,14 @@ export class GlyphAtlas {
     this.ctx.font = this.fontFor(style)
     this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
 
-    if (text === CURSOR_OUTLINE_TEXT) {
+    if (text === CURSOR_BAR_TEXT) {
+      // A bar sits at the leading edge of the cell and is deliberately thicker
+      // than a rule: at one pixel it disappears against text on a HiDPI pane.
+      this.ctx.fillRect(x, y, Math.max(1, Math.round(this.lineThickness * 2)), this.cellHeight)
+    } else if (text === CURSOR_UNDERLINE_TEXT) {
+      const t = Math.max(1, Math.round(this.lineThickness * 2))
+      this.ctx.fillRect(x, y + this.cellHeight - t, slotWidth, t)
+    } else if (text === CURSOR_OUTLINE_TEXT) {
       // Drawn as four edges rather than a stroked rect so the line lands on
       // whole pixels; a stroke straddles its path and comes out half-covered on
       // both sides of it.
@@ -197,7 +285,10 @@ export class GlyphAtlas {
 
     if (style & GLYPH_UNDERLINE) {
       const uy = Math.min(this.cellHeight - this.lineThickness, this.baseline + this.lineThickness)
-      this.ctx.fillRect(x, y + uy, slotWidth, this.lineThickness)
+      this.drawUnderline(x, y + uy, slotWidth, (style & GLYPH_UL_MASK) >> GLYPH_UL_SHIFT)
+    }
+    if (style & GLYPH_OVERLINE) {
+      this.ctx.fillRect(x, y, slotWidth, this.lineThickness)
     }
     if (style & GLYPH_STRIKETHROUGH) {
       const sy = Math.max(0, Math.round(this.baseline - this.ascent * 0.3))

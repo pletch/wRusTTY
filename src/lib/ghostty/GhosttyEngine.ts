@@ -100,6 +100,18 @@ export function scrollbackLinesFor(lines: number, cols: number): number {
   return Math.min(Math.max(Math.floor(lines), SCROLLBACK_MIN_LINES), maxLines)
 }
 
+/**
+ * One search hit. `row`/`from`/`to` are its head, which is all a match that
+ * does not wrap ever needs; `segments` is every row it covers, so a hit across
+ * a wrapped line highlights on each of them while still counting once.
+ */
+interface SearchMatch {
+  row: number
+  from: number
+  to: number
+  segments: { row: number; from: number; to: number }[]
+}
+
 export class GhosttyEngine implements TerminalEngine {
   private container: HTMLElement | null = null
   private canvas: HTMLCanvasElement | null = null
@@ -191,7 +203,7 @@ export class GhosttyEngine implements TerminalEngine {
   private onInitErrorHandlers = new Set<(message: string) => void>()
 
   private onSearchResultHandlers = new Set<(result: SearchResult) => void>()
-  private searchMatches: { row: number; from: number; to: number }[] = []
+  private searchMatches: SearchMatch[] = []
   private searchIndex = -1
   private searchSignature = ''
   private searchGen = -1
@@ -895,7 +907,16 @@ export class GhosttyEngine implements TerminalEngine {
       const cursorCol = this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr)
       const cursorRow = this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr)
       this.renderer.cursor = cursorVisible
-        ? { col: cursorCol, row: cursorRow, on: this.cursorBlinkOn, focused: this.focused }
+        ? {
+            col: cursorCol,
+            row: cursorRow,
+            on: this.cursorBlinkOn,
+            focused: this.focused,
+            // DECSCUSR. Read off the same snapshot as the position above, for
+            // the same reason: a shape sampled either side of update() belongs
+            // to a different frame than the cell it is drawn on.
+            shape: this.wasm.exports.ghostty_render_state_get_cursor_style(this.termPtr),
+          }
         : null
       // Keeps the IME's candidate window with the text being composed.
       if (this.inputHandler) {
@@ -1701,20 +1722,68 @@ export class GhosttyEngine implements TerminalEngine {
     for (const h of this.onSearchResultHandlers) h({ index: this.searchIndex, count })
   }
 
-  private findMatches(re: RegExp): { row: number; from: number; to: number }[] {
+  /**
+   * Which absolute rows continue the row above them.
+   *
+   * One call per row, which sounds worse than it is: `findMatches` already
+   * reads every row, and the result is cached behind the same query/buffer
+   * signature the matches are.
+   */
+  private readWrapFlags(total: number): boolean[] {
+    const out = new Array<boolean>(Math.max(0, total)).fill(false)
+    if (!this.wasm || !this.termPtr) return out
+    const wasm = this.wasm
+    const scrollbackCount = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    for (let abs = 0; abs < total; abs++) {
+      out[abs] =
+        abs < scrollbackCount
+          ? wasm.exports.ghostty_terminal_is_scrollback_row_wrapped(this.termPtr, abs) !== 0
+          : wasm.exports.ghostty_terminal_is_row_wrapped(this.termPtr, abs - scrollbackCount) !== 0
+    }
+    return out
+  }
+
+  /**
+   * Matches over *logical* lines, not visual rows.
+   *
+   * A wrapped line is several rows on screen but one line of text, and
+   * searching row by row missed anything straddling the wrap. That used to be
+   * unavoidable: the core answered `is_row_wrapped` only for the active screen,
+   * so a hit that had scrolled into history could not be reassembled. Our own
+   * shim now exports the scrollback form too, so rows are joined into the line
+   * they belong to before matching.
+   *
+   * A match still highlights per row — it has to, the rows are apart on screen
+   * — so each carries the segments it covers, while navigation treats it as the
+   * single hit it is.
+   */
+  private findMatches(re: RegExp): SearchMatch[] {
     const total = this.scrollbackLength
     const rows = this.readRows(0, total - 1)
-    const out: { row: number; from: number; to: number }[] = []
+    const wrapped = this.readWrapFlags(rows.length)
+    const out: SearchMatch[] = []
 
-    for (let i = 0; i < rows.length; i++) {
-      const cells = rows[i]
+    let i = 0
+    while (i < rows.length) {
+      // This row plus every continuation of it.
+      let end = i + 1
+      while (end < rows.length && wrapped[end]) end++
+
       // A column can hold more than one character (a grapheme cluster), so the
-      // offset a match reports is not a column. This maps back.
+      // offset a match reports is not a column. These map back, and now also
+      // say which row the offset landed on.
       let text = ''
-      const columnAt: number[] = []
-      for (let c = 0; c < cells.length; c++) {
-        for (let k = 0; k < cells[c].length; k++) columnAt.push(c)
-        text += cells[c]
+      const rowAt: number[] = []
+      const colAt: number[] = []
+      for (let r = i; r < end; r++) {
+        const cells = rows[r]
+        for (let c = 0; c < cells.length; c++) {
+          for (let k = 0; k < cells[c].length; k++) {
+            rowAt.push(r)
+            colAt.push(c)
+          }
+          text += cells[c]
+        }
       }
 
       re.lastIndex = 0
@@ -1725,10 +1794,24 @@ export class GhosttyEngine implements TerminalEngine {
           re.lastIndex++
           continue
         }
-        const from = columnAt[m.index]
-        const to = columnAt[Math.min(m.index + m[0].length - 1, columnAt.length - 1)]
-        if (from !== undefined && to !== undefined) out.push({ row: i, from, to })
+        const from = m.index
+        const to = Math.min(m.index + m[0].length - 1, rowAt.length - 1)
+        if (rowAt[from] === undefined || rowAt[to] === undefined) continue
+
+        const segments: { row: number; from: number; to: number }[] = []
+        let k = from
+        while (k <= to) {
+          const row = rowAt[k]
+          let j = k
+          while (j + 1 <= to && rowAt[j + 1] === row) j++
+          segments.push({ row, from: colAt[k], to: colAt[j] })
+          k = j + 1
+        }
+        // The head doubles as the match's own position, so reveal and ordering
+        // keep working on matches that never wrap.
+        out.push({ ...segments[0], segments })
       }
+      i = end
     }
     return out
   }
@@ -1751,10 +1834,13 @@ export class GhosttyEngine implements TerminalEngine {
     } else {
       const byRow = new Map<number, SearchHighlight[]>()
       for (let i = 0; i < this.searchMatches.length; i++) {
-        const m = this.searchMatches[i]
-        let list = byRow.get(m.row)
-        if (!list) byRow.set(m.row, (list = []))
-        list.push({ from: m.from, to: m.to, active: i === this.searchIndex })
+        // Every row the match covers, not just its head: a match across a wrap
+        // is one hit but two or more highlights.
+        for (const seg of this.searchMatches[i].segments) {
+          let list = byRow.get(seg.row)
+          if (!list) byRow.set(seg.row, (list = []))
+          list.push({ from: seg.from, to: seg.to, active: i === this.searchIndex })
+        }
       }
       this.renderer.searchHighlights = byRow
     }

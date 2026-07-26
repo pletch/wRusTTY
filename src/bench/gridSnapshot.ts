@@ -37,6 +37,8 @@ import {
   CELL_INVISIBLE,
   CELL_BLINK,
   CELL_FAINT,
+  CELL2_OVERLINE,
+  CELL2_UNDERLINE_MASK,
   type GhosttyWasm,
 } from '../lib/ghostty/wasmBindings'
 import { PALETTE_16, PALETTE_256, DEFAULT_FG, DEFAULT_BG } from './gridPalette'
@@ -53,13 +55,22 @@ function loadWasm(): Promise<GhosttyWasm> {
 }
 
 /** Attributes the two engines both surface, on the CELL_* bit positions so a
- * ghostty flags byte is already in this form. Overline and the double/curly
- * underline variants are deliberately absent: the core does not expose them
- * (see parity.ts's upstream gap), so including them would compare xterm
+ * ghostty flags byte is already in this form. Overline and the underline
+ * variants live in `COMPARED_ATTRS2` below rather than here, because they are
+ * a second byte and only one of them has an oracle; including them would compare xterm
  * against a constant zero and read as a divergence every time. */
 export const COMPARED_ATTRS =
   CELL_BOLD | CELL_ITALIC | CELL_UNDERLINE | CELL_STRIKETHROUGH |
   CELL_INVERSE | CELL_INVISIBLE | CELL_BLINK | CELL_FAINT
+
+/**
+ * The second attribute byte, compared separately because only part of it has an
+ * oracle. xterm exposes `isOverline()`, so overline is a real parity check; it
+ * does not expose *which* underline is drawn, so the underline style in bits
+ * 0-2 is only populated on the ghostty side and must not be compared —
+ * `gridSnapshot.test.ts` asserts that directly against the SGR that set it.
+ */
+export const COMPARED_ATTRS2 = CELL2_OVERLINE
 
 export interface GridSnapshot {
   /** One string per row, trailing whitespace trimmed (the customary way to
@@ -75,6 +86,8 @@ export interface GridSnapshot {
   bg: number[][]
   /** Per-row attribute bitsets over COMPARED_ATTRS, aligned as `fg` is. */
   flags: number[][]
+  /** Per-row second attribute byte: underline style and overline. */
+  attrs2: number[][]
   cursorX: number
   cursorY: number
 }
@@ -137,12 +150,14 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
     const outFg: number[][] = []
     const outBg: number[][] = []
     const outFlags: number[][] = []
+    const outAttrs2: number[][] = []
     const cell = emptyCell()
     for (let y = 0; y < rows; y++) {
       let line = ''
       const fg: number[] = []
       const bg: number[] = []
       const flags: number[] = []
+      const attrs2: number[] = []
       let x = 0
       while (x < cols) {
         parseCellInto(view, (y * cols + x) * CELL_BYTES, cell)
@@ -150,6 +165,7 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
         fg.push((cell.fgR << 16) | (cell.fgG << 8) | cell.fgB)
         bg.push((cell.bgR << 16) | (cell.bgG << 8) | cell.bgB)
         flags.push(cell.flags & COMPARED_ATTRS)
+        attrs2.push(cell.attrs2 & (COMPARED_ATTRS2 | CELL2_UNDERLINE_MASK))
         // A wide glyph occupies two grid cells; the second is a spacer with
         // no codepoint of its own, matching how xterm's translateToString
         // already folds a wide character's continuation cell away.
@@ -159,6 +175,7 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
       outFg.push(fg)
       outBg.push(bg)
       outFlags.push(flags)
+      outAttrs2.push(attrs2)
     }
 
     return {
@@ -166,6 +183,7 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
       fg: outFg,
       bg: outBg,
       flags: outFlags,
+      attrs2: outAttrs2,
       cursorX: wasm.exports.ghostty_render_state_get_cursor_x(termPtr),
       cursorY: wasm.exports.ghostty_render_state_get_cursor_y(termPtr),
     }
@@ -205,6 +223,11 @@ function xtermFlags(cell: IBufferCell): number {
   return f
 }
 
+/** Only overline: xterm's buffer API has no accessor for the underline style. */
+function xtermAttrs2(cell: IBufferCell): number {
+  return cell.isOverline() !== 0 ? CELL2_OVERLINE : 0
+}
+
 export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapshot> {
   const { cols, rows } = input
   const term = new XTerm({ cols, rows, allowProposedApi: true })
@@ -217,6 +240,7 @@ export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapsh
     const outFg: number[][] = []
     const outBg: number[][] = []
     const outFlags: number[][] = []
+    const outAttrs2: number[][] = []
     const scratch = buf.getNullCell()
     for (let y = 0; y < rows; y++) {
       const line = buf.getLine(buf.viewportY + y)
@@ -224,6 +248,7 @@ export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapsh
       const fg: number[] = []
       const bg: number[] = []
       const flags: number[] = []
+      const attrs2: number[] = []
       // Walked with the same wide-character stride the ghostty side uses, so
       // the arrays stay index-aligned with `translateToString`'s output —
       // which likewise emits one character for a wide glyph's two cells.
@@ -234,18 +259,21 @@ export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapsh
         fg.push(xtermColor(cell.isFgDefault(), cell.isFgPalette(), cell.getFgColor(), DEFAULT_FG))
         bg.push(xtermColor(cell.isBgDefault(), cell.isBgPalette(), cell.getBgColor(), DEFAULT_BG))
         flags.push(xtermFlags(cell))
+        attrs2.push(xtermAttrs2(cell))
         x += cell.getWidth() === 2 ? 2 : 1
       }
       outRows.push(trimRow(text, fg, bg, flags))
       outFg.push(fg)
       outBg.push(bg)
       outFlags.push(flags)
+      outAttrs2.push(attrs2)
     }
     return {
       rows: outRows,
       fg: outFg,
       bg: outBg,
       flags: outFlags,
+      attrs2: outAttrs2,
       cursorX: buf.cursorX,
       cursorY: buf.cursorY,
     }

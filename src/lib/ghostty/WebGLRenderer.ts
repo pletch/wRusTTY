@@ -6,6 +6,10 @@ import {
   GLYPH_STRIKETHROUGH,
   GLYPH_WIDE,
   GLYPH_CURSOR_OUTLINE,
+  GLYPH_CURSOR_BAR,
+  GLYPH_CURSOR_UNDERLINE,
+  GLYPH_OVERLINE,
+  GLYPH_UL_SHIFT,
   type GlyphRect,
 } from './GlyphAtlas'
 import {
@@ -22,6 +26,11 @@ import {
   CELL_BLINK,
   allocBufferOrThrow,
   type GhosttyWasm,
+  CELL2_UNDERLINE_MASK,
+  CELL2_OVERLINE,
+  CURSOR_STYLE_BLOCK,
+  CURSOR_STYLE_BAR,
+  CURSOR_STYLE_UNDERLINE,
 } from './wasmBindings'
 
 const VERTEX_SHADER_SRC = `#version 300 es
@@ -140,6 +149,8 @@ export interface CursorState {
   /** A blinked-off or unfocused cursor still occupies its cell. */
   on: boolean
   focused: boolean
+  /** DECSCUSR shape as a CURSOR_STYLE_* value; block when unset. */
+  shape?: number
 }
 
 export class WebGLRenderer {
@@ -692,6 +703,8 @@ export class WebGLRenderer {
         let cellWidth = 1
         /** Codepoints beyond the first; non-zero means a cluster to compose. */
         let graphemeLen = 0
+        /** Underline style and overline; see CELL2_* in wasmBindings. */
+        let attrs2 = 0
         // Cells outside the core's grid (a resize we've seen but it hasn't)
         // fall back to the theme's own colors.
         let finalFgR = this.defaultFgR
@@ -717,6 +730,7 @@ export class WebGLRenderer {
           flags = cell.flags
           cellWidth = cell.width
           graphemeLen = cell.graphemeLen
+          attrs2 = cell.attrs2
           // Already resolved to RGB by the core against the palette and
           // defaults it was configured with, so the only substitution left is
           // pulling default-coloured cells onto the current theme.
@@ -758,7 +772,12 @@ export class WebGLRenderer {
           let style = wide ? GLYPH_WIDE : 0
           if (flags & CELL_BOLD) style |= GLYPH_BOLD
           if (flags & CELL_ITALIC) style |= GLYPH_ITALIC
-          if (flags & CELL_UNDERLINE) style |= GLYPH_UNDERLINE
+          if (flags & CELL_UNDERLINE) {
+            // The bit says underlined; attrs2 says which of the five, and is
+            // folded into the glyph key so each shape is its own raster.
+            style |= GLYPH_UNDERLINE | ((attrs2 & CELL2_UNDERLINE_MASK) << GLYPH_UL_SHIFT)
+          }
+          if (attrs2 & CELL2_OVERLINE) style |= GLYPH_OVERLINE
           if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
 
           // A cell whose character carries combining marks or emoji joiners has
@@ -852,7 +871,31 @@ export class WebGLRenderer {
         cursorOnWide = atCursor && cellWidth === 2
 
         if (cursor && atCursor) {
-          if (cursor.on && cursor.focused) {
+          const shape = cursor.shape ?? CURSOR_STYLE_BLOCK
+          const shaped =
+            cursor.on && cursor.focused && shape !== CURSOR_STYLE_BLOCK
+              ? shape === CURSOR_STYLE_BAR
+                ? GLYPH_CURSOR_BAR
+                : shape === CURSOR_STYLE_UNDERLINE
+                  ? GLYPH_CURSOR_UNDERLINE
+                  : GLYPH_CURSOR_OUTLINE // hollow block
+              : 0
+          if (shaped !== 0) {
+            // A bar or underline does not cover the character, so unlike the
+            // block it leaves the cell's own colours alone and only replaces
+            // the glyph — the same substitution the unfocused outline makes.
+            // A bar always draws in the leading column, so a wide cell's
+            // trailing spacer must not draw one too.
+            const spansTwo = shape !== CURSOR_STYLE_BAR && (cellWidth === 2 || cellWidth === 0)
+            if (!(shape === CURSOR_STYLE_BAR && cellWidth === 0)) {
+              const rect = this.atlas.getGlyph(shaped, spansTwo ? GLYPH_WIDE : 0)
+              const mid = (rect.u0 + rect.u1) / 2
+              v0 = rect.v0; v1 = rect.v1
+              u0 = spansTwo && cellWidth === 0 ? mid : rect.u0
+              u1 = spansTwo && cellWidth === 2 ? mid : rect.u1
+              finalFgR = this.cursorR; finalFgG = this.cursorG; finalFgB = this.cursorB
+            }
+          } else if (cursor.on && cursor.focused) {
             finalFgR = this.defaultBgR; finalFgG = this.defaultBgG; finalFgB = this.defaultBgB
             finalBgR = this.cursorR; finalBgG = this.cursorG; finalBgB = this.cursorB
             bgIsDefault = false

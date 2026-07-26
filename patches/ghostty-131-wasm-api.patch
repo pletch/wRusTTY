@@ -310,10 +310,10 @@ index 0000000..c467102
 +
 +#endif /* GHOSTTY_VT_TERMINAL_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 4266606..a238a6a 100644
+index 4266606..5aa769c 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -143,6 +143,45 @@ comptime {
+@@ -143,6 +143,47 @@ comptime {
          @export(&c.sgr_unknown_partial, .{ .name = "ghostty_sgr_unknown_partial" });
          @export(&c.sgr_attribute_tag, .{ .name = "ghostty_sgr_attribute_tag" });
          @export(&c.sgr_attribute_value, .{ .name = "ghostty_sgr_attribute_value" });
@@ -348,6 +348,8 @@ index 4266606..a238a6a 100644
 +        @export(&c.terminal_get_scrollback_line, .{ .name = "ghostty_terminal_get_scrollback_line" });
 +        @export(&c.terminal_get_scrollback_grapheme, .{ .name = "ghostty_terminal_get_scrollback_grapheme" });
 +        @export(&c.terminal_is_row_wrapped, .{ .name = "ghostty_terminal_is_row_wrapped" });
++        @export(&c.terminal_is_scrollback_row_wrapped, .{ .name = "ghostty_terminal_is_scrollback_row_wrapped" });
++        @export(&c.render_state_get_cursor_style, .{ .name = "ghostty_render_state_get_cursor_style" });
 +
 +        // Hyperlink API
 +        @export(&c.terminal_get_hyperlink_uri, .{ .name = "ghostty_terminal_get_hyperlink_uri" });
@@ -416,7 +418,7 @@ index ea8ca14..2a47581 100644
              self.clearCells(
                  page,
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index bc92597..d0ee49c 100644
+index bc92597..734a79b 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
 @@ -4,6 +4,7 @@ pub const key_event = @import("key_event.zig");
@@ -427,7 +429,7 @@ index bc92597..d0ee49c 100644
  
  // The full C API, unexported.
  pub const osc_new = osc.new;
-@@ -52,6 +53,46 @@ pub const key_encoder_encode = key_encode.encode;
+@@ -52,6 +53,48 @@ pub const key_encoder_encode = key_encode.encode;
  
  pub const paste_is_safe = paste.is_safe;
  
@@ -462,6 +464,8 @@ index bc92597..d0ee49c 100644
 +pub const terminal_get_scrollback_line = terminal.getScrollbackLine;
 +pub const terminal_get_scrollback_grapheme = terminal.getScrollbackGrapheme;
 +pub const terminal_is_row_wrapped = terminal.isRowWrapped;
++pub const terminal_is_scrollback_row_wrapped = terminal.isScrollbackRowWrapped;
++pub const render_state_get_cursor_style = terminal.renderStateGetCursorStyle;
 +
 +// Hyperlink API
 +pub const terminal_get_hyperlink_uri = terminal.getHyperlinkUri;
@@ -474,7 +478,7 @@ index bc92597..d0ee49c 100644
  test {
      _ = color;
      _ = osc;
-@@ -59,6 +100,7 @@ test {
+@@ -59,6 +102,7 @@ test {
      _ = key_encode;
      _ = paste;
      _ = sgr;
@@ -484,10 +488,10 @@ index bc92597..d0ee49c 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 0000000..a7efce0
+index 0000000..009b7e7
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1106 @@
+@@ -0,0 +1,1150 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -825,7 +829,13 @@ index 0000000..a7efce0
 +    width: u8,
 +    hyperlink_id: u16,
 +    grapheme_len: u8 = 0, // Number of extra codepoints beyond first
-+    _pad: u8 = 0,
++    /// The attributes that do not fit in `flags`, which is full. Packed into
++    /// what was padding so the cell stays 16 bytes and every buffer sized
++    /// against it is unaffected: bits 0-2 are the underline style
++    /// (sgr.Attribute.Underline, 0 none .. 5 dashed) and bit 3 is overline.
++    /// `flags` keeps its single "underlined at all" bit, so a reader that never
++    /// looks here behaves exactly as before.
++    attrs2: u8 = 0,
 +};
 +
 +/// Dirty state
@@ -1146,6 +1156,10 @@ index 0000000..a7efce0
 +            if (sty.flags.blink) flags |= 1 << 6;
 +            if (sty.flags.faint) flags |= 1 << 7;
 +
++            // Underline style and overline. See GhosttyCell.attrs2.
++            var attrs2: u8 = @intFromEnum(sty.flags.underline);
++            if (sty.flags.overline) attrs2 |= 1 << 3;
++
 +            // Get grapheme length if cell has grapheme data
 +            const grapheme_len: u8 = if (cell.hasGrapheme())
 +                @min(@as(u8, @intCast(cached_graphemes[x].len)), 255)
@@ -1168,6 +1182,7 @@ index 0000000..a7efce0
 +                },
 +                .hyperlink_id = if (cell.hyperlink) 1 else 0,
 +                .grapheme_len = grapheme_len,
++                .attrs2 = attrs2,
 +            };
 +            idx += 1;
 +        }
@@ -1337,6 +1352,10 @@ index 0000000..a7efce0
 +        if (sty.flags.blink) flags |= 1 << 6;
 +        if (sty.flags.faint) flags |= 1 << 7;
 +
++        // Underline style and overline. See GhosttyCell.attrs2.
++        var attrs2: u8 = @intFromEnum(sty.flags.underline);
++        if (sty.flags.overline) attrs2 |= 1 << 3;
++
 +        // Get grapheme length if cell has grapheme data
 +        const grapheme_len: u8 = if (cell.hasGrapheme())
 +            if (page.lookupGrapheme(cell)) |cps| @min(@as(u8, @intCast(cps.len)), 255) else 0
@@ -1359,9 +1378,38 @@ index 0000000..a7efce0
 +            },
 +            .hyperlink_id = if (cell.hyperlink) 1 else 0,
 +            .grapheme_len = grapheme_len,
++            .attrs2 = attrs2,
 +        };
 +    }
 +    return @intCast(cols);
++}
++
++/// Whether a scrollback row continues the row above it.
++///
++/// `isRowWrapped` answers this for the active screen only, which left search
++/// unable to reassemble a match straddling a wrap point once the line had
++/// scrolled off. Addressed the same way as `getScrollbackLine`: offset 0 is the
++/// oldest row.
++pub fn isScrollbackRowWrapped(ptr: ?*anyopaque, offset: c_int) callconv(.c) bool {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
++    if (offset < 0) return false;
++    if (offset >= getScrollbackLength(ptr)) return false;
++    const pages = &wrapper.terminal.screens.active.pages;
++    const pin = pages.pin(.{ .history = .{ .y = @intCast(offset) } }) orelse return false;
++    return pin.rowAndCell().row.wrap_continuation;
++}
++
++/// The cursor's visual style (DECSCUSR). The core tracks it and the render
++/// state already carries it; only the getter was missing.
++/// 0 block, 1 bar, 2 underline, 3 hollow block, -1 on a bad handle.
++pub fn renderStateGetCursorStyle(ptr: ?*anyopaque) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
++    return switch (wrapper.render_state.cursor.visual_style) {
++        .block => 0,
++        .bar => 1,
++        .underline => 2,
++        .block_hollow => 3,
++    };
 +}
 +
 +/// Get grapheme codepoints for a cell in the scrollback buffer.

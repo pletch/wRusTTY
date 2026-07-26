@@ -46,9 +46,11 @@
  * **That flag used to mean "we cannot close this", and no longer does.** It was
  * written when the binary came from `ghostty-web@0.4.0`, whose export surface we
  * had no way to extend. We now build our own from the Ghostty v1.3.1 tag (see
- * `patches/`), so extending the ABI is a patch we own, not a wait on someone
- * else. Every remaining gap below was re-checked against that build and is
- * ours to close.
+ * `patches/`), so extending the ABI is a patch we own rather than a wait on
+ * someone else — and the four gaps that carried the flag are gone: one was
+ * never a gap (Primary DA already replied), and the other three were closed by
+ * two new exports and a spare byte in the cell struct. Nothing here is
+ * currently blocked on upstream.
  */
 
 export type ParityStatus = 'parity' | 'better' | 'gap'
@@ -74,18 +76,19 @@ export const PARITY: ParityItem[] = [
   { area: 'Render', item: 'Grapheme clusters (combining marks, ZWJ emoji)', status: 'parity' },
   { area: 'Render', item: 'Text attrs: bold, italic, underline, strikethrough', status: 'parity' },
   { area: 'Render', item: 'Text attrs: inverse, faint, invisible, blink', status: 'parity' },
-  // The core has these: style.zig carries `overline: bool` and underline
-  // `.double`/`.curly`/`.dotted`/`.dashed`. Our own cell packing is what drops
-  // them — it collapses every underline style into one bit and never reads
-  // overline (see the flag block in c/terminal.zig). Widening GhosttyCell.flags
-  // closes it.
-  { area: 'Render', item: 'Overline, double / curly underline', status: 'gap', upstream: true, note: 'core has them; our cell packing collapses them' },
+  // Closed by widening the cell rather than the core: the attributes were
+  // always there and our packing dropped them. They now ride in what was the
+  // GhosttyCell padding byte, so a cell is still 16 bytes. Overline is compared
+  // against xterm; the underline *style* has no oracle (xterm exposes
+  // isOverline but not which underline it drew) and is asserted against the SGR
+  // that set it — see gridSnapshot.test.ts.
+  { area: 'Render', item: 'Overline, double / curly underline', status: 'parity', note: 'underline style has no xterm oracle; asserted against the SGR instead' },
   { area: 'Cursor', item: 'Block cursor, focused / unfocused outline', status: 'parity' },
   { area: 'Cursor', item: 'Blink (matched 530 ms period)', status: 'parity' },
-  // Tracked by the core (Screen.cursor_style) and already surfaced on the
-  // render state (render.zig sets cursor.visual_style). Needs one getter export
-  // alongside ghostty_render_state_get_cursor_visible.
-  { area: 'Cursor', item: 'DECSCUSR bar / underline shapes', status: 'gap', upstream: true, note: 'core tracks it; no getter exported yet' },
+  // ghostty_render_state_get_cursor_style, read off the same snapshot as the
+  // cursor position. Bar and underline draw as substituted glyphs the way the
+  // unfocused outline does, so a shaped cursor still costs one quad per cell.
+  { area: 'Cursor', item: 'DECSCUSR bar / underline shapes', status: 'parity' },
   { area: 'Input', item: 'Keyboard, control & named keys, app-cursor mode', status: 'parity' },
   { area: 'Input', item: 'IME / dead-key composition', status: 'parity', note: 'offscreen textarea path' },
   { area: 'Input', item: 'Per-pane backspace ^H / ^? preference', status: 'parity' },
@@ -96,9 +99,10 @@ export const PARITY: ParityItem[] = [
   { area: 'Mouse', item: 'Reporting 1000 / 1002 / 1003, SGR 1006', status: 'parity' },
   { area: 'Mouse', item: 'Focus reporting 1004, wheel as buttons', status: 'parity' },
   { area: 'Search', item: 'On-screen + scrollback, per-row scan', status: 'parity' },
-  // ghostty_terminal_is_row_wrapped answers this for the viewport only; the
-  // scrollback needs its own export. The data is there either way.
-  { area: 'Search', item: 'Matches across a wrapped line in scrollback', status: 'gap', upstream: true, note: 'is_row_wrapped is viewport-only; scrollback needs its own export' },
+  // ghostty_terminal_is_scrollback_row_wrapped closed this: search now joins a
+  // wrapped line into the one logical line it is before matching, and a hit
+  // spanning a wrap highlights on every row it covers while counting once.
+  { area: 'Search', item: 'Matches across a wrapped line in scrollback', status: 'parity' },
   { area: 'Events', item: 'Bell, title, OSC 133 activity, buffer change', status: 'parity', note: 'bell/OSC via a scan until the core exposes callbacks' },
   { area: 'Responses', item: 'DSR / cursor-position replies drained', status: 'parity' },
   // Was listed as a gap and is not one: writing ESC[c returns ESC[?62;22c, and

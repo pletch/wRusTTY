@@ -12,9 +12,10 @@ unreleased upstream, and — the load-bearing reason — lets us keep the **batc
 API replaces that with a per-cell row/cell iterator that measured **2.9x-4.1x**
 more expensive (`tools/parse-probes/iter.mjs`).
 
-The export surface is **byte-identical to the previous ghostty-web build: 79
-functions, same names**. `GhosttyEngine.ts` and `wasmBindings.ts` needed no
-changes at all.
+The rebase itself changed nothing on this side: it landed **byte-identical to
+the previous ghostty-web build at 79 exports, same names**, so `GhosttyEngine.ts`
+and `wasmBindings.ts` needed no changes. The two exports under "What we added on
+top" came afterwards, deliberately, and take it to 81.
 
 ## Building
 
@@ -31,7 +32,7 @@ zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 cp zig-out/bin/ghostty-vt.wasm ../src/lib/ghostty/vendor/ghostty-vt.wasm
 ```
 
-Verify with `npx vitest run` (399 tests; `gridSnapshot.test.ts` is the real gate —
+Verify with `npx vitest run` (406 tests; `gridSnapshot.test.ts` is the real gate —
 it feeds identical bytes through Ghostty and xterm.js and compares glyphs,
 colours, attributes and cursor per cell) and
 `node tools/parse-probes/probe.mjs src/lib/ghostty/vendor/ghostty-vt.wasm`.
@@ -41,7 +42,7 @@ colours, attributes and cursor per cell) and
 The terminal and render-state C API does not exist in any released
 `libghostty-vt`: the v1.3.1 tag ships only `result`, `allocator`, `osc`, `sgr`,
 `key`, `paste` and `wasm` headers — **51 exports, no terminal, no render state**.
-`src/terminal/c/terminal.zig` (+1106, a new file) is that whole API. Everything
+`src/terminal/c/terminal.zig` (+1150, a new file) is that whole API. Everything
 else is small: only ~30 lines touch Ghostty's own internals.
 
 Carried from `ghostty-web`, all three still unmerged upstream:
@@ -63,6 +64,30 @@ Carried from `ghostty-web`, all three still unmerged upstream:
   across page boundaries.
 
 Plus **#180**, merged upstream, in corrected form.
+
+## What we added on top
+
+Three parity gaps were marked "upstream, cannot be closed on this side of the
+ABI". That was true of `ghostty-web@0.4.0`, whose export surface we could not
+extend. It is not true now, and all three are closed here:
+
+- **`GhosttyCell.attrs2`** — overline and *which* underline (single, double,
+  curly, dotted, dashed). The core always carried these; our packing collapsed
+  every underline into one bit and never read overline. They ride in what was
+  the struct's padding byte, so a cell is still 16 bytes and nothing sized
+  against `CELL_BYTES` changed. `flags` keeps its "underlined at all" bit, so a
+  reader that ignores `attrs2` behaves exactly as before.
+- **`ghostty_terminal_is_scrollback_row_wrapped`** — the scrollback form of
+  `is_row_wrapped`, which was viewport-only. Search now joins a wrapped line
+  into the single logical line it is before matching, instead of missing any hit
+  that straddled the wrap.
+- **`ghostty_render_state_get_cursor_style`** — DECSCUSR. The core tracked the
+  shape and `render.zig` already put it on the render state; only the getter was
+  missing.
+
+That takes the surface from 79 exports to 81. A fourth gap, Primary Device
+Attributes, turned out never to have been one — `ESC[c` already replied
+`ESC[?62;22c`, on the old binary too.
 
 ## Fixes made during the rebase — read before upgrading again
 

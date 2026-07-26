@@ -32,6 +32,30 @@ export const CELL_BLINK = 1 << 6
 export const CELL_FAINT = 1 << 7
 
 /**
+ * Attributes that did not fit in the cell's `flags` byte, which is full.
+ *
+ * They live in what used to be the struct's padding, so the cell is still 16
+ * bytes and nothing sized against `CELL_BYTES` changed. `CELL_UNDERLINE` above
+ * still means "underlined at all" — this only says *which* underline.
+ */
+export const CELL2_UNDERLINE_MASK = 0x07
+export const CELL2_OVERLINE = 1 << 3
+
+/** Underline styles, matching `sgr.Attribute.Underline` in the core. */
+export const UNDERLINE_NONE = 0
+export const UNDERLINE_SINGLE = 1
+export const UNDERLINE_DOUBLE = 2
+export const UNDERLINE_CURLY = 3
+export const UNDERLINE_DOTTED = 4
+export const UNDERLINE_DASHED = 5
+
+/** Cursor shapes reported by `ghostty_render_state_get_cursor_style` (DECSCUSR). */
+export const CURSOR_STYLE_BLOCK = 0
+export const CURSOR_STYLE_BAR = 1
+export const CURSOR_STYLE_UNDERLINE = 2
+export const CURSOR_STYLE_BLOCK_HOLLOW = 3
+
+/**
  * DEC private modes we query. `ghostty_terminal_get_mode` takes an
  * `is_ansi` flag; both of these are private modes, so it is always false.
  */
@@ -87,6 +111,10 @@ export interface GhosttyExports {
   ghostty_terminal_has_mouse_tracking(term: number): number
   ghostty_terminal_get_mode(term: number, mode: number, isAnsi: number): number
   ghostty_terminal_is_row_wrapped(term: number, y: number): number
+  /** Same question for a scrollback row; offset 0 is the oldest. */
+  ghostty_terminal_is_scrollback_row_wrapped(term: number, offset: number): number
+  /** DECSCUSR shape as a CURSOR_STYLE_* value. */
+  ghostty_render_state_get_cursor_style(term: number): number
 
   // Scrollback
   ghostty_terminal_get_scrollback_length(term: number): number
@@ -231,6 +259,8 @@ export interface WasmCellData {
   hyperlinkId: number
   /** Extra codepoints beyond the first; 0 for an ordinary cell. */
   graphemeLen: number
+  /** Underline style and overline; see CELL2_*. */
+  attrs2: number
 }
 
 /** A zeroed cell, for use as a caller-owned scratch object with
@@ -245,6 +275,7 @@ export function emptyCell(): WasmCellData {
     width: 0,
     hyperlinkId: 0,
     graphemeLen: 0,
+    attrs2: 0,
   }
 }
 
@@ -270,6 +301,7 @@ export function parseCellInto(view: DataView, byteOffset: number, out: WasmCellD
   out.width = view.getUint8(byteOffset + 11)
   out.hyperlinkId = view.getUint16(byteOffset + 12, true)
   out.graphemeLen = view.getUint8(byteOffset + 14)
+  out.attrs2 = view.getUint8(byteOffset + 15)
   return out
 }
 
