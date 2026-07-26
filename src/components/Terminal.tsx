@@ -378,9 +378,17 @@ export function Terminal({
     // rather than the configured theme. Applying them here is also what gets
     // the palette into the Ghostty core, which resolves every cell's color
     // against it at construction.
+    //
+    // Every setting the engine takes has to be repeated here, not just added to
+    // the effect above: the effect only ever fires for *changes*, so anything
+    // missing from this list is silently absent on a new pane and correct on
+    // every existing one. That is exactly how the cursor preference shipped
+    // wrong — new panes came up as the engine's own default block instead of
+    // the configured shape.
     term.setTheme(settingsRef.current.themeName, settingsRef.current.backgroundOpacity)
     term.setFont(settingsRef.current.fontFamily, settingsRef.current.fontSize)
     term.setScrollback(settingsRef.current.scrollback)
+    term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
 
     const searchResultsListener = term.onSearchResult((result) => {
       if (disposed) return

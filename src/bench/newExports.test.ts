@@ -108,12 +108,12 @@ describe('ghostty_render_state_get_cursor_style', () => {
       return wasm.exports.ghostty_render_state_get_cursor_blinking(ptr) !== 0
     }
     for (const [seq, wantShape, wantBlink] of [
-      ['[1 q', CURSOR_STYLE_BLOCK, true],
-      ['[2 q', CURSOR_STYLE_BLOCK, false],
-      ['[3 q', CURSOR_STYLE_UNDERLINE, true],
-      ['[4 q', CURSOR_STYLE_UNDERLINE, false],
-      ['[5 q', CURSOR_STYLE_BAR, true],
-      ['[6 q', CURSOR_STYLE_BAR, false],
+      ['\x1b[1 q', CURSOR_STYLE_BLOCK, true],
+      ['\x1b[2 q', CURSOR_STYLE_BLOCK, false],
+      ['\x1b[3 q', CURSOR_STYLE_UNDERLINE, true],
+      ['\x1b[4 q', CURSOR_STYLE_UNDERLINE, false],
+      ['\x1b[5 q', CURSOR_STYLE_BAR, true],
+      ['\x1b[6 q', CURSOR_STYLE_BAR, false],
     ] as const) {
       write(ptr, seq)
       expect(shape(ptr), seq).toBe(wantShape)
