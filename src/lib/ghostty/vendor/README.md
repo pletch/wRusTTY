@@ -1,22 +1,15 @@
 # Vendored ghostty-vt.wasm
 
-This binary is **not** the one `ghostty-web` publishes. It's a local build of
-`ghostty-web`'s `main` branch (commit `1858a59`, matching the
-`ghostty-web@0.4.0-next.20.g1858a59` version pinned in `package.json`) with
-three upstream PRs merged on top, none of which had shipped in any release at
-build time:
+Built from the **Ghostty v1.3.1 release tag** plus our own
+`patches/ghostty-131-wasm-api.patch`. It is not `ghostty-web`'s binary and no
+longer tracks that project — see `patches/README.md` for why, for the build
+recipe, and for the rebase notes that matter next time this is upgraded.
 
-- [#142](https://github.com/coder/ghostty-web/pull/142) — zero-initialize WASM
-  page buffers (stale cell data / memory corruption after freeing a terminal)
-- [#176](https://github.com/coder/ghostty-web/pull/176) — ignore ESC k
-  (screen/tmux) title payloads instead of rendering them
-- [#177](https://github.com/coder/ghostty-web/pull/177) — stabilize WASM
-  viewport row reads across Ghostty page boundaries
-
-All three patch `patches/ghostty-wasm-api.patch`, which is applied to the
-`ghostty` core (Zig) before compiling to WASM — there's no way to pull them in
-via a package version bump. The WASM export surface is unchanged from stock
-`0.4.0-next.20.g1858a59` (79 exports, same names on both sides).
+`package.json` still depends on `ghostty-web` for **TypeScript types only**; we
+import none of its JavaScript, and never did. The engine talks to this binary
+directly through the 79 exports listed in `wasmBindings.ts`, which are unchanged
+from the previous ghostty-web-based build — the move to 1.3.1 needed no change to
+`GhosttyEngine.ts` or `wasmBindings.ts`.
 
 ## `scrollbackLimit` is a line count
 
@@ -32,34 +25,11 @@ cap off: a 100 MB flood retained ~1.15 M rows and grew the heap to ~2 GB before
 an allocation failed. Go through `scrollbackLinesFor` in `GhosttyEngine.ts`,
 which clamps to a range that cannot overflow; `scrollbackLimit.test.ts` pins it.
 
-An older revision of the WASM API did take a byte budget, so comments and
-snippets predating this build may say otherwise. The binary here is not at
-fault and needs no patch for it.
+Note `ghostty-web`'s own docs assert the opposite — that the field is in bytes
+(their PR #151). For the code we build, it is lines, and the measurement above is
+what settles it. Do not adopt their framing without re-measuring.
 
-## Rebuilding
-
-Requires Zig 0.15.2 and a Linux (or WSL) build environment — building this
-natively on Windows hits a Zig `ftruncate`/`FileTooBig` bug in the unicode
-table generator step.
-
-```sh
-git clone https://github.com/coder/ghostty-web.git
-cd ghostty-web
-git fetch origin pull/176/head:pr-176
-git fetch origin pull/177/head:pr-177
-git fetch origin pull/142/head:pr-142
-git checkout -b custom-build main
-git merge pr-176   # clean fast-forward
-git merge pr-177   # conflicts in lib/terminal.test.ts (test-only, both sides' helpers coexist)
-git merge pr-142   # clean
-git submodule update --init --recursive
-cd ghostty
-git apply ../patches/ghostty-wasm-api.patch
-zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-cp zig-out/bin/ghostty-vt.wasm ../../ghostty-vt.wasm   # -> this directory
-```
-
-### Why `ReleaseFast` and not `ReleaseSmall`
+## Why `ReleaseFast` and not `ReleaseSmall`
 
 `ReleaseSmall` was the original build mode and it costs ~12% of parse
 throughput: measured on the benchmark's own flood payload, 74.1 MB/s against
@@ -67,13 +37,19 @@ throughput: measured on the benchmark's own flood payload, 74.1 MB/s against
 is the wrong thing to optimise for here — this is a Tauri desktop app, so the
 binary is bundled on disk rather than fetched over a network.
 
-It is not free, though. The module is 3007 kB rather than 415 kB, and every
+It is not free, though. The module is ~3.3 MB rather than 415 kB, and every
 pane is its own WASM instance, so per-pane `compile+instantiate` goes from
 ~0.7 ms to ~1.5-3 ms. That cost disappears almost entirely if the compiled
 `WebAssembly.Module` is cached and shared across panes, leaving only a
 per-pane `WebAssembly.Instance` — measured at 0.087 ms to instantiate, and
 identical for both builds. `GhosttyEngine.initWasm` currently compiles per
 pane, so the win is still on the table.
+
+Most of that size is debug info, not code: the binary carries a name section and
+full DWARF (~2.3 MB of `.debug_*`), against ~830 kB of actual code. That is what
+makes `tools/parse-probes/` able to profile the shipping binary with real Zig
+symbol names, so it is deliberate — but stripping it is the first thing to try if
+the bundle size ever matters.
 
 Do not reach for `-Dcpu=generic+simd128`: it was measured at +0.5-2%, which is
 noise. Ghostty's real SIMD paths are C++ (Google Highway, simdutf, utfcpp) and
@@ -82,9 +58,3 @@ its own build config disables them for wasm outright —
 `src/build/Config.zig`. Forcing `-Dsimd=true` fails to compile those
 dependencies for `wasm32-freestanding`. Native SIMD throughput is not
 reachable from a `.wasm` at all; it needs native `libghostty` in the backend.
-
-## Reverting to stock
-
-Delete this directory, change the import in `GhosttyEngine.ts` back to
-`import ghosttyWasmUrl from 'ghostty-web/ghostty-vt.wasm?url'`, and once any of
-#142/#176/#177 lands in a release, bump `package.json` and do exactly that.

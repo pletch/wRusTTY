@@ -359,36 +359,62 @@ index 4266606..a238a6a 100644
  
          // On Wasm we need to export our allocator convenience functions.
          if (builtin.target.cpu.arch.isWasm()) {
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 6e39428..569d8cb 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -480,7 +480,7 @@ fn initPages(
+         // In runtime safety modes we have to memset because the Zig allocator
+         // interface will always memset to 0xAA for undefined. In non-safe modes
+         // we use a page allocator and the OS guarantees zeroed memory.
+-        if (comptime std.debug.runtime_safety) @memset(page_buf, 0);
++        if (comptime builtin.target.cpu.arch.isWasm() or std.debug.runtime_safety) @memset(page_buf, 0);
+ 
+         // Initialize the first set of pages to contain our viewport so that
+         // the top of the first page is always the active area.
+@@ -3387,7 +3387,7 @@ inline fn createPageExt(
+ 
+     // Required only with runtime safety because allocators initialize
+     // to undefined, 0xAA.
+-    if (comptime std.debug.runtime_safety) @memset(page_buf, 0);
++    if (comptime builtin.target.cpu.arch.isWasm() or std.debug.runtime_safety) @memset(page_buf, 0);
+ 
+     page.* = .{
+         .data = .initBuf(.init(page_buf), layout),
+diff --git a/src/terminal/Parser.zig b/src/terminal/Parser.zig
+index 88e7edf..b5c3896 100644
+--- a/src/terminal/Parser.zig
++++ b/src/terminal/Parser.zig
+@@ -27,6 +27,7 @@ pub const State = enum {
+     dcs_ignore,
+     osc_string,
+     sos_pm_apc_string,
++    screen_title_string,
+ };
+ 
+ /// Transition action is an action that can be taken during a state
 diff --git a/src/terminal/Screen.zig b/src/terminal/Screen.zig
-index ea8ca14..6e61a9b 100644
+index ea8ca14..2a47581 100644
 --- a/src/terminal/Screen.zig
 +++ b/src/terminal/Screen.zig
-@@ -871,15 +871,17 @@ pub fn cursorDownScroll(self: *Screen) !void {
+@@ -871,9 +871,14 @@ pub fn cursorDownScroll(self: *Screen) !void {
          // Our new row is always dirty
          self.cursorMarkDirty();
  
 -        // Clear the new row so it gets our bg color. We only do this
 -        // if we have a bg color at all.
 -        if (self.cursor.style.bg_color != .none) {
-+        // Always clear the new row cells: when pages.grow() extends an
-+        // existing page the new row can carry stale cells from previously
-+        // erased rows, which show through when the row is not fully
-+        // overwritten (bare CRLF with the default style).
++        // Always clear the new row, not only when a bg colour is set:
++        // pages.grow() can extend an existing page, leaving stale cells --
++        // and stale style ids -- in the row it hands back. clearCells
++        // releases those styles and fixes row.styled/grapheme/hyperlink
++        // itself, so unlike the upstream ghostty-web fix nothing here may
++        // reassign row.* afterwards: doing so clears those flags behind the
++        // style set and corrupts its refcounts.
 +        {
              const page: *Page = &self.cursor.page_pin.node.data;
--            self.clearCells(
--                page,
--                self.cursor.page_row,
--                page.getCells(self.cursor.page_row),
--            );
-+            const row = self.cursor.page_row;
-+            const cells_offset = row.cells;
-+            const dirty = row.dirty;
-+            self.clearCells(page, row, page.getCells(row));
-+            row.* = .{ .cells = cells_offset, .dirty = dirty };
-         }
-     }
- 
+             self.clearCells(
+                 page,
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
 index bc92597..d0ee49c 100644
 --- a/src/terminal/c/main.zig
@@ -458,10 +484,10 @@ index bc92597..d0ee49c 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 0000000..8b4f6a1
+index 0000000..a7efce0
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1119 @@
+@@ -0,0 +1,1106 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -1049,69 +1075,57 @@ index 0000000..8b4f6a1
 +) callconv(.c) c_int {
 +    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
 +    const rs = &wrapper.render_state;
-+    const t = &wrapper.terminal;
 +    const rows = rs.rows;
 +    const cols = rs.cols;
 +    const total: usize = @as(usize, rows) * cols;
 +
 +    if (buf_size < total) return -1;
 +
-+    // Read directly from terminal's active screen, bypassing RenderState cache.
-+    // This ensures we always get fresh data for ALL rows, not just dirty ones.
-+    const pages = &t.screens.active.pages;
++    const default_cell: GhosttyCell = .{
++        .codepoint = 0,
++        .fg_r = rs.colors.foreground.r,
++        .fg_g = rs.colors.foreground.g,
++        .fg_b = rs.colors.foreground.b,
++        .bg_r = rs.colors.background.r,
++        .bg_g = rs.colors.background.g,
++        .bg_b = rs.colors.background.b,
++        .flags = 0,
++        .width = 1,
++        .hyperlink_id = 0,
++    };
++
++    // Use the cached row data from RenderState, built during update(). This
++    // matches the native renderer and keeps rows coherent across page boundaries.
++    const row_data = rs.row_data.slice();
++    const row_pins = row_data.items(.pin);
++    const row_cells = row_data.items(.cells);
++    if (row_pins.len < rows or row_cells.len < rows) {
++        std.debug.assert(row_pins.len >= rows and row_cells.len >= rows);
++    }
 +
 +    var idx: usize = 0;
 +    for (0..rows) |y| {
-+        // Get the row from the active viewport
-+        const pin = pages.pin(.{ .active = .{ .y = @intCast(y) } }) orelse {
-+            // Row doesn't exist, fill with defaults
++        if (y >= row_pins.len or y >= row_cells.len or row_cells[y].len < cols) {
 +            for (0..cols) |_| {
-+                out[idx] = .{
-+                    .codepoint = 0,
-+                    .fg_r = rs.colors.foreground.r,
-+                    .fg_g = rs.colors.foreground.g,
-+                    .fg_b = rs.colors.foreground.b,
-+                    .bg_r = rs.colors.background.r,
-+                    .bg_g = rs.colors.background.g,
-+                    .bg_b = rs.colors.background.b,
-+                    .flags = 0,
-+                    .width = 1,
-+                    .hyperlink_id = 0,
-+                };
++                out[idx] = default_cell;
 +                idx += 1;
 +            }
 +            continue;
-+        };
++        }
 +
-+        const cells = pin.cells(.all);
-+        const page = pin.node.data;
++        const cells_slice = row_cells[y].slice();
++        const raw_cells = cells_slice.items(.raw);
++        const cached_graphemes = cells_slice.items(.grapheme);
++        const cached_styles = cells_slice.items(.style);
 +
 +        for (0..cols) |x| {
-+            if (x >= cells.len) {
-+                // Past end of row, fill with default
-+                out[idx] = .{
-+                    .codepoint = 0,
-+                    .fg_r = rs.colors.foreground.r,
-+                    .fg_g = rs.colors.foreground.g,
-+                    .fg_b = rs.colors.foreground.b,
-+                    .bg_r = rs.colors.background.r,
-+                    .bg_g = rs.colors.background.g,
-+                    .bg_b = rs.colors.background.b,
-+                    .flags = 0,
-+                    .width = 1,
-+                    .hyperlink_id = 0,
-+                };
-+                idx += 1;
-+                continue;
-+            }
++            const cell = &raw_cells[x];
 +
-+            const cell = &cells[x];
-+
-+            // Get style from page styles (cell has style_id)
-+            const sty: Style = if (cell.style_id > 0)
-+                page.styles.get(page.memory, cell.style_id).*
-+            else
-+                .{};
++            // Style data is cached only for cells that need non-default style data.
++            const sty: Style = switch (cell.content_tag) {
++                .bg_color_rgb, .bg_color_palette => .{},
++                else => if (cell.style_id > 0) cached_styles[x] else .{},
++            };
 +
 +            // Resolve colors
 +            const fg: color.RGB = switch (sty.fg_color) {
@@ -1134,7 +1148,7 @@ index 0000000..8b4f6a1
 +
 +            // Get grapheme length if cell has grapheme data
 +            const grapheme_len: u8 = if (cell.hasGrapheme())
-+                if (page.lookupGrapheme(cell)) |cps| @min(@as(u8, @intCast(cps.len)), 255) else 0
++                @min(@as(u8, @intCast(cached_graphemes[x].len)), 255)
 +            else
 +                0;
 +
@@ -1174,38 +1188,36 @@ index 0000000..8b4f6a1
 +) callconv(.c) c_int {
 +    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return -1));
 +    const rs = &wrapper.render_state;
-+    const t = &wrapper.terminal;
++    const rows: usize = @intCast(rs.rows);
 +    const cols: usize = @intCast(rs.cols);
 +
 +    if (row < 0 or col < 0) return -1;
-+    if (@as(usize, @intCast(row)) >= rs.rows) return -1;
-+    if (@as(usize, @intCast(col)) >= cols) return -1;
++    const y: usize = @intCast(row);
++    const x: usize = @intCast(col);
++    if (y >= rows or x >= cols) return -1;
 +    if (buf_size < 1) return -1;
 +
-+    // Get the pin for this row from the terminal's active screen
-+    const pages = &t.screens.active.pages;
-+    const pin = pages.pin(.{ .active = .{ .y = @intCast(row) } }) orelse return -1;
++    // Use the same cached row/cell data as renderStateGetViewport so the
++    // primary cell and extra grapheme codepoints come from the same row map.
++    const row_data = rs.row_data.slice();
++    const row_cells = row_data.items(.cells);
++    if (y >= row_cells.len or row_cells[y].len <= x) return -1;
 +
-+    const cells = pin.cells(.all);
-+    const page = pin.node.data;
-+    const x: usize = @intCast(col);
-+
-+    if (x >= cells.len) return -1;
-+
-+    const cell = &cells[x];
++    const cells_slice = row_cells[y].slice();
++    const raw_cells = cells_slice.items(.raw);
++    const cached_graphemes = cells_slice.items(.grapheme);
++    const cell = &raw_cells[x];
 +
 +    // First codepoint is always from the cell
 +    out[0] = cell.codepoint();
 +    var count: usize = 1;
 +
-+    // Add extra codepoints from grapheme map if present
++    // Add extra codepoints from the cached grapheme slice if present.
 +    if (cell.hasGrapheme()) {
-+        if (page.lookupGrapheme(cell)) |cps| {
-+            for (cps) |cp| {
-+                if (count >= buf_size) break;
-+                out[count] = cp;
-+                count += 1;
-+            }
++        for (cached_graphemes[x]) |cp| {
++            if (count >= buf_size) break;
++            out[count] = cp;
++            count += 1;
 +        }
 +    }
 +
@@ -1215,6 +1227,7 @@ index 0000000..8b4f6a1
 +// ============================================================================
 +// Terminal Modes (minimal set for compatibility)
 +// ============================================================================
++
 +
 +pub fn isAlternateScreen(ptr: ?*anyopaque) callconv(.c) bool {
 +    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return false));
@@ -1596,6 +1609,46 @@ index d3a1175..e4b6956 100644
      action: Action,
      options_unvalidated: []const u8,
  
+diff --git a/src/terminal/parse_table.zig b/src/terminal/parse_table.zig
+index 01bd569..66674d3 100644
+--- a/src/terminal/parse_table.zig
++++ b/src/terminal/parse_table.zig
+@@ -148,6 +148,10 @@ fn genTable() Table {
+         // => dcs_entry
+         single(&result, 0x50, source, .dcs_entry, .none);
+ 
++        // GNU screen/tmux title sequence: ESC k <text> ST/BEL
++        // Consume payload so it never reaches the visible grid.
++        single(&result, 0x6B, source, .screen_title_string, .none);
++
+         // => csi_entry
+         single(&result, 0x5B, source, .csi_entry, .none);
+ 
+@@ -324,6 +328,24 @@ fn genTable() Table {
+         range(&result, 0x3C, 0x3F, source, .csi_param, .collect);
+     }
+ 
++    // screen_title_string
++    {
++        const source = State.screen_title_string;
++
++        // events
++        single(&result, 0x19, source, source, .ignore);
++        range(&result, 0, 0x06, source, source, .ignore);
++        range(&result, 0x08, 0x17, source, source, .ignore);
++        range(&result, 0x1C, 0x1F, source, source, .ignore);
++        range(&result, 0x20, 0xFF, source, source, .ignore);
++        single(&result, 0x7F, source, source, .ignore);
++
++        // Accept BEL and the 8-bit ST terminator explicitly; ESC \\ exits
++        // through the existing anywhere ESC transition.
++        single(&result, 0x07, source, .ground, .none);
++        single(&result, 0x9C, source, .ground, .none);
++    }
++
+     // osc_string
+     {
+         const source = State.osc_string;
 diff --git a/src/terminal/render.zig b/src/terminal/render.zig
 index 2332866..dcfa15f 100644
 --- a/src/terminal/render.zig

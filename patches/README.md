@@ -1,91 +1,101 @@
-# ghostty-131-wasm-api.patch — **does not work, kept as a record**
+# `ghostty-131-wasm-api.patch`
 
-An attempt to move off `ghostty-web`'s fork by rebasing its WASM terminal API
-patch from Ghostty 1.2 onto the **v1.3.1 release tag**, so we could own the shim
-ourselves rather than depend on a project whose PR backlog has been unreviewed
-since roughly March.
+The WASM terminal API our engine talks to, rebased onto the **Ghostty v1.3.1
+release tag**. This is what builds `src/lib/ghostty/vendor/ghostty-vt.wasm`.
 
-**It compiles and it is ABI-identical, but it is not correct. Do not ship it.**
-The vendored binary in `src/lib/ghostty/vendor/` is still the 1.2-based build.
+We carry it ourselves rather than tracking `coder/ghostty-web`. That project has
+been bursty — a four-month gap from Feb 24 to Jun 26, then a short burst, with 27
+open PRs and the whole Feb-April backlog unmerged, including three fixes this
+build depends on. Owning the patch also pins us to a **released tag** instead of
+unreleased upstream, and — the load-bearing reason — lets us keep the **batched**
+`get_viewport`, one call for the whole viewport. Ghostty `main`'s newer render
+API replaces that with a per-cell row/cell iterator that measured **2.9x-4.1x**
+more expensive (`tools/parse-probes/iter.mjs`).
 
-## What worked
+The export surface is **byte-identical to the previous ghostty-web build: 79
+functions, same names**. `GhosttyEngine.ts` and `wasmBindings.ts` needed no
+changes at all.
 
-- v1.3.1 builds `lib-vt` for `wasm32-freestanding` with **Zig 0.15.2** — the
-  toolchain we already use. (Ghostty `main` needs 0.16.0; the 1.3.1 tag does
-  not.) The build step is `zig build lib-vt`, same as today.
-- The 1.2-era patch applies to v1.3.1 with only **two rejects**: `.gitignore`
-  and one `Screen.zig` hunk, the latter purely on context drift.
-- After the fixes below it compiles clean and exports **79 functions, byte
-  for byte the same set as the current vendored build** — so `GhosttyEngine.ts`
-  and `wasmBindings.ts` would need no changes at all.
-- Performance is close: render path at parity (88.4 vs 85.4 us per frame at
-  200x60), printable parse at parity, but **short SGR -4.4% and long SGR -8.9%**.
+## Building
 
-Crucially, owning the shim keeps the *batched* `get_viewport` — one call for the
-whole viewport — instead of `main`'s per-cell row/cell iterator, which measured
-2.9x-4.1x more expensive. That was the whole point of targeting 1.3.1.
-
-## The compile fixes, which are correct and worth keeping
-
-- `semantic_prompt.Command` gets `pub const C = void`. Its `options_unvalidated`
-  is a slice, so it cannot live in the extern C union `lib/union.zig` builds
-  over stream actions. This is exactly how ghostty `main` solves it. Upstream
-  flags the gap itself: *"Before shipping an ABI-compatible libghostty, verify
-  this."* Unpatched 1.3.1 only builds because Zig never forces that union's
-  construction.
-- OSC 133 collapses. 1.3.1 restructured it into `Command { action, options }`
-  with `readOption()`, and `Terminal.semanticPrompt()` now does the row marking
-  the patch hand-rolled — so five cases become one line.
-- Fallibility drifted **both ways**: `restoreCursor`, `horizontalTab` and
-  `horizontalTabBack` became infallible (drop `try`), while `scrollUp` became
-  fallible (add `try`).
-
-## Why it is broken
-
-`gridSnapshot.test.ts` — which feeds identical bytes through both engines — is
-what caught it. Two variants, both wrong:
-
-**With ghostty-web's `Screen.zig` stale-cell fix reapplied:** the core logs
-`error(screen): style addition failed after capacity increase` and 6 colour and
-attribute parity tests fail. Glyph, row and cursor parity still pass, so it is
-specifically style bookkeeping. The fix does:
-
-```zig
-row.* = .{ .cells = cells_offset, .dirty = dirty };
-```
-
-In 1.3.1 `Row` is a packed struct with `wrap`, `wrap_continuation`, `grapheme`,
-`styled`, `hyperlink`, `semantic_prompt` and `kitty_virtual_placeholder`
-alongside `cells` and `dirty`. That assignment resets every one of them —
-including `styled` — while the style set still holds references for the row,
-corrupting the ref-counted set.
-
-**Without it, on upstream `Screen.zig`:** worse. The vitest worker exits
-unexpectedly mid-suite; the module aborts rather than merely disagreeing.
-
-## What this means
-
-The **compile-level** drift from 1.2 to 1.3.1 is genuinely small — one hunk, one
-restructured subsystem, a handful of fallibility changes. The **semantic** drift
-is not. The shim carries assumptions about `Screen`, `Row` and the style set
-that no longer hold, and those assumptions do not announce themselves at the
-type level. An earlier estimate of "half a day" was wrong: this is a debugging
-job against 1,123 lines of someone else's code and an unfamiliar core, not a
-mechanical rebase.
-
-Owning the shim is still the right *direction* — the ABI-identical export
-surface and the preserved batched API prove the shape works. But it needs real
-Zig debugging of style and row lifetime, not a patch rebase.
-
-## Reproducing
+Requires **Zig 0.15.2** — the same toolchain as before. (Ghostty `main` requires
+0.16.0; the 1.3.1 tag does not, which is part of why the tag is the better
+target.) Linux or WSL; building natively on Windows hits a Zig
+`ftruncate`/`FileTooBig` bug in the unicode table generator.
 
 ```sh
 git clone --depth 1 --branch v1.3.1 https://github.com/ghostty-org/ghostty.git
 cd ghostty
-git apply --exclude=.gitignore ../patches/ghostty-131-wasm-api.patch
+git apply ../patches/ghostty-131-wasm-api.patch
 zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+cp zig-out/bin/ghostty-vt.wasm ../src/lib/ghostty/vendor/ghostty-vt.wasm
 ```
 
-The patch here **omits** the `Screen.zig` hunk (it is the variant that crashes;
-the other variant corrupts styles). Both licences are MIT, so carrying
-ghostty-web's work with attribution is fine.
+Verify with `npx vitest run` (399 tests; `gridSnapshot.test.ts` is the real gate —
+it feeds identical bytes through Ghostty and xterm.js and compares glyphs,
+colours, attributes and cursor per cell) and
+`node tools/parse-probes/probe.mjs src/lib/ghostty/vendor/ghostty-vt.wasm`.
+
+## What the patch contains
+
+The terminal and render-state C API does not exist in any released
+`libghostty-vt`: the v1.3.1 tag ships only `result`, `allocator`, `osc`, `sgr`,
+`key`, `paste` and `wasm` headers — **51 exports, no terminal, no render state**.
+`src/terminal/c/terminal.zig` (+1106, a new file) is that whole API. Everything
+else is small: only ~30 lines touch Ghostty's own internals.
+
+Carried from `ghostty-web`, all three still unmerged upstream:
+
+- **#142 zero-initialize WASM page buffers** (`PageList.zig`). **Do not drop
+  this.** The WASM allocator reuses freed memory without zeroing, and
+  `gridSnapshot.ts` shares one cached WASM instance across snapshots, so a new
+  terminal is handed recycled pages. Without it a terminal inherits the previous
+  one's cells *and their style ids*, which corrupts the ref-counted style set —
+  observed as leftover text from a previous test, `error(screen): style addition
+  failed after capacity increase`, and eventually a hard crash of the test
+  worker.
+- **#176 ignore `ESC k` payloads** (`Parser.zig`, `parse_table.zig`). Adds a
+  `screen_title_string` state. v1.3.1 does **not** handle this natively —
+  verified: without it, `ESC k SCREENTITLE ST` renders `SCREENTITLE` onto the
+  grid.
+- **#177 stabilize viewport row reads** (`c/terminal.zig`). Reads rows from
+  `RenderState.row_data` rather than walking pins, which keeps rows coherent
+  across page boundaries.
+
+Plus **#180**, merged upstream, in corrected form.
+
+## Fixes made during the rebase — read before upgrading again
+
+The 1.2-era patch applied to v1.3.1 with only two rejects, but several things
+needed real changes:
+
+- **`semantic_prompt.Command` gets `pub const C = void`.** Its
+  `options_unvalidated` is a slice, so it cannot live in the extern C union
+  `lib/union.zig` builds over stream actions. This is exactly how `main` solves
+  it. Unpatched 1.3.1 only compiles because Zig never forces that union's
+  construction; adding the terminal API forces it. Upstream flags the gap
+  themselves: *"Before shipping an ABI-compatible libghostty, verify this."*
+- **OSC 133 collapsed to one line.** 1.3.1 restructured it into
+  `Command { action, options }` with `readOption()`, and `Terminal.semanticPrompt()`
+  now does the row marking the old patch hand-rolled — five cases became one call.
+- **Fallibility drifted both ways.** `restoreCursor`, `horizontalTab` and
+  `horizontalTabBack` became infallible (drop `try`); `scrollUp` became fallible
+  (add `try`).
+- **#180's stale-cell fix had to be rewritten.** Upstream's version does
+  `row.* = .{ .cells = cells_offset, .dirty = dirty }` after clearing. In 1.3.1
+  `Row` is a packed struct that also carries `wrap`, `wrap_continuation`,
+  `grapheme`, `styled`, `hyperlink`, `semantic_prompt` and
+  `kitty_virtual_placeholder`, so that assignment clears `styled` *behind* the
+  style set while it still holds references. `clearCells` already releases each
+  cell's `style_id` and fixes those flags itself, so the correct fix is simply to
+  drop the `if (bg_color != .none)` guard and reassign nothing.
+
+## Known cost
+
+Parse throughput on 1.3.1 is slightly down against the old 1.2 build: printable
+and short SGR within a couple of percent, but **long (10-parameter) SGR about
+-10%** (106.5 -> ~94 MB/s), consistent across runs. The render path is at parity
+(86.3us vs 85.4us per frame at 200x60). Not investigated; it is upstream parser
+drift, not anything this patch does.
+
+Both projects are MIT, so carrying `ghostty-web`'s work with attribution is fine.
