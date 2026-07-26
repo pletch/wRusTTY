@@ -119,6 +119,10 @@ export class GhosttyEngine implements TerminalEngine {
    *  write is converted to bytes up front (see write). */
   private writeBuffer: Uint8Array[] = []
   private writeBufferBytes = 0
+  /** Whether the render loop may re-fit this engine to its container. Off while
+   *  a caller has pinned the grid on purpose — see the poll in the render loop
+   *  and `setAutoFit`. */
+  private autoFit = true
   private renderLoopId = 0
   private needsRedraw = true
   // The deferred re-fits below outlive a pane that's torn down while its WASM
@@ -850,7 +854,14 @@ export class GhosttyEngine implements TerminalEngine {
       if ((w !== this.lastSeenW || h !== this.lastSeenH) && w > 0 && h > 0) {
         this.lastSeenW = w
         this.lastSeenH = h
-        this.fit()
+        // Skipped when the grid was pinned deliberately. Pinning to a size
+        // larger than the container makes the canvas overflow, which relays out
+        // the page, which changes the container box — so this poll would
+        // measure the consequence of the pin and undo it on the next frame. A
+        // benchmark asking for 200x60 silently ran at 5x18 that way, and the
+        // resulting "geometry does not matter" reading was measured entirely
+        // below 2,000 cells while a real pane runs ~10,000.
+        if (this.autoFit) this.fit()
       }
       this.noteVisibility(w > 0 && h > 0)
     }
@@ -1138,6 +1149,21 @@ export class GhosttyEngine implements TerminalEngine {
     this.onBellHandlers.clear()
     this.oscHandlers.clear()
     this.oscPending = null
+  }
+
+  /**
+   * Whether the render loop is allowed to re-fit this engine to its container.
+   *
+   * A pane wants this on: the container is the truth and the grid should follow
+   * it. A benchmark pinning a grid wants it off, because a pinned size larger
+   * than the container is deliberate — the canvas is expected to overflow and
+   * the host to clip, and re-fitting would silently replace the size under
+   * measurement with whatever the resulting layout happened to produce.
+   *
+   * Explicit `fit()` calls are unaffected; this governs only the automatic poll.
+   */
+  setAutoFit(on: boolean): void {
+    this.autoFit = on
   }
 
   resize(cols: number, rows: number, force = false): void {

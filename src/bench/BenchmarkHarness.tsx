@@ -203,11 +203,17 @@ export function BenchmarkHarness() {
    *  than in an effect on `gridSize` so it always takes effect immediately
    *  before the measurement it belongs to, and so switching the selector
    *  between runs can't leave the engines mid-resize. */
-  async function applyGridSize() {
+  async function applyGridSize(): Promise<string> {
     const xterm = xtermRef.current
     const ghostty = ghosttyRef.current
-    if (!xterm || !ghostty) return
+    if (!xterm || !ghostty) return ''
     const size = GRID_SIZES.find((g) => g.id === gridSize)!
+    // Ghostty's render loop re-fits itself to its container whenever the box
+    // changes. A pinned grid bigger than the container makes the canvas
+    // overflow, which relays out the page, which changes the box — so the poll
+    // would undo the pin a few frames later. It did exactly that: a run asking
+    // for 200x60 measured 5x18 and reported it in the header nobody read.
+    ghostty.setAutoFit(size.cols === 0)
     for (const e of [xterm, ghostty]) {
       if (size.cols === 0) e.fit(true)
       else e.resize(size.cols, size.rows)
@@ -216,6 +222,15 @@ export function BenchmarkHarness() {
     // on the Ghostty side and reflows xterm's; letting a few frames pass keeps
     // that cost out of the first round's numbers.
     for (let i = 0; i < 4; i++) await nextFrame()
+
+    // Verified after the settle rather than assumed, because the failure above
+    // was silent and the whole point of pinning is to measure a known grid.
+    if (size.cols === 0) return ''
+    const wrong = [xterm, ghostty]
+      .map((e, i) => ({ name: i === 0 ? 'xterm' : 'ghostty', cols: e.cols, rows: e.rows }))
+      .filter((e) => e.cols !== size.cols || e.rows !== size.rows)
+    if (wrong.length === 0) return ''
+    return `grid pin failed: asked for ${size.label}, got ${wrong.map((e) => `${e.name} ${e.cols}×${e.rows}`).join(', ')}`
   }
 
   async function runList(list: Workload[]) {
@@ -223,8 +238,18 @@ export function BenchmarkHarness() {
     if (!ab || phase === 'running') return
     setPhase('running')
     setResults([])
+    setBootError('')
     setProgress('sizing grid…')
-    await applyGridSize()
+    const gridProblem = await applyGridSize()
+    if (gridProblem !== '') {
+      // Refused rather than reported in the header, which is where the last
+      // silent 5x18 run hid. A run at the wrong grid answers a question nobody
+      // asked and reads as if it answered the one they did.
+      setBootError(`${gridProblem}. Widen the window or pick a smaller grid.`)
+      setPhase('ready')
+      setProgress('')
+      return
+    }
     // The same recorder the live app uses, so the harness's Ghostty number and
     // a production flood are finally the same measurement rather than two that
     // were being compared on the assumption that they were. Only GhosttyEngine
@@ -438,7 +463,7 @@ export function BenchmarkHarness() {
 
       <div style={S.status}>
         {phase === 'booting' && <span>Booting engines… {progress}</span>}
-        {phase === 'unusable' && <span style={{ color: '#fca5a5' }}>⛔ {bootError}</span>}
+        {bootError !== '' && <span style={{ color: '#fca5a5' }}>⛔ {bootError}</span>}
         {phase === 'running' && <span style={{ color: '#fcd34d' }}>Running — {progress}</span>}
         {phase === 'ready' && results.length === 0 && <span style={{ opacity: 0.6 }}>Ready.</span>}
         {results.length > 0 && (
