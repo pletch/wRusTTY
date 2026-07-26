@@ -504,22 +504,36 @@ export async function report(): Promise<string> {
 }
 
 /** Exposed so a live session can be measured from devtools without a UI. */
+/**
+ * Arms both ends of the recorder together.
+ *
+ * Exported so the on-screen instrument and the devtools handle start recording
+ * the same way. They must: a report assembled from a frontend that was
+ * recording and a backend that was not is silently wrong about where the time
+ * went, and there is no way to tell from the output.
+ */
+export async function startRecording(): Promise<void> {
+  start()
+  writePhases.start()
+  try {
+    await resetBackendStats()
+  } catch {
+    /* no backend in a plain browser context */
+  }
+}
+
+export function stopRecording(): void {
+  stop()
+  writePhases.stop()
+}
+
 export function install(): void {
   ;(globalThis as Record<string, unknown>).__wrusttyDelivery = {
     start: async () => {
-      start()
-      writePhases.start()
-      try {
-        await resetBackendStats()
-      } catch {
-        /* no backend in a plain browser context */
-      }
+      await startRecording()
       return 'recording — reproduce the flood, then call __wrusttyDelivery.report()'
     },
-    stop: () => {
-      stop()
-      writePhases.stop()
-    },
+    stop: stopRecording,
     reset: () => {
       reset()
       writePhases.reset()

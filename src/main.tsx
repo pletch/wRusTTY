@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.tsx'
 import { install as installDeliveryStats } from './lib/deliveryStats'
 import { install as installPaneFlood } from './lib/paneFlood'
+import { install as installMeasureOverlay } from './lib/measureOverlay'
 
 // Puts `__wrusttyDelivery` on the global so the *real* PTY delivery path can be
 // measured from devtools in a live session — the half of a flood the benchmark
@@ -18,6 +19,14 @@ installDeliveryStats()
 // costs nothing; the generator it needs is imported on use, from the benchmark
 // chunk, so none of it ships in the app bundle.
 installPaneFlood()
+
+// The same two tools from the keyboard, rendering on screen. This is the one
+// that matters: reaching a recorder through the console means an inspector is
+// attached, and V8 runs WebAssembly in a debuggable tier while DevTools is
+// open — 2.75x slower on this build. Every production figure taken during the
+// Phase 7 investigation was wrong for exactly that reason. Ctrl+Alt+F floods
+// the visible pane; Ctrl+Alt+D arms and reports the real PTY path.
+installMeasureOverlay()
 
 // The Phase 7 benchmark harness runs in this exact WebView — same engines, same
 // WASM as production. It is reached either by loading with a `#bench` URL

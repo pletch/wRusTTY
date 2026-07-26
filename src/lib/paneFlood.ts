@@ -46,7 +46,25 @@ function macrotaskYield(): Promise<void> {
   })
 }
 
-async function run(mb = 100): Promise<string> {
+/**
+ * Above this, the run was almost certainly measured with an inspector attached.
+ *
+ * V8 compiles WebAssembly in a debuggable tier whenever DevTools is open —
+ * Liftoff with debug info, TurboFan off — because a breakpoint could be set at
+ * any moment. Measured on this build, in one page, changing nothing else: 11.14
+ * ms/MB with DevTools closed against 30.65 with it open, a 2.75x penalty, while
+ * the pure-JS pass over the same bytes moved 16%.
+ *
+ * That single fact invalidated every production measurement taken during this
+ * investigation, because the only way to reach the recorder was to type into
+ * the console — which guaranteed the inspector was attached. Days went into
+ * chasing the resulting "gap" through the workload, the grid, the scrollback,
+ * the transport, the backend and the page state. The threshold sits between the
+ * two observed modes so the report can say so itself.
+ */
+const DEBUG_TIER_MS_PER_MB = 20
+
+export async function run(mb = 100): Promise<string> {
   const engine = GhosttyEngine.activeEngine()
   if (!engine) return 'no live Ghostty pane to flood — open one first'
 
@@ -75,14 +93,46 @@ async function run(mb = 100): Promise<string> {
   const wallMs = performance.now() - t0
   writePhases.stop()
 
-  const text = [
-    `=== pane flood (no transport) ===`,
-    `${(buf.length / 1048576).toFixed(2)} MB into ${engine.cols}x${engine.rows} (${engine.cols * engine.rows} cells)`,
-    `wall ${(wallMs / 1000).toFixed(2)} s including the yields between deliveries`,
+  const s = writePhases.snapshot()
+  const text = formatFloodReport(
+    { bytes: buf.length, cols: engine.cols, rows: engine.rows, wallMs },
+    s.bytes > 0 ? s.totals.coreWrite / (s.bytes / 1048576) : 0,
     writePhases.formatReport(),
-  ].join('\n')
+  )
   console.log(text)
   return text
+}
+
+export interface FloodRunInfo {
+  bytes: number
+  cols: number
+  rows: number
+  wallMs: number
+}
+
+/**
+ * The report, with the run's own sanity check on top of it.
+ *
+ * Kept pure so the check is testable without a core, a canvas or a pane — the
+ * whole reason it exists is that the expensive failure was in the measuring,
+ * not in the thing measured.
+ */
+export function formatFloodReport(info: FloodRunInfo, msPerMb: number, phaseReport: string): string {
+  const lines = [
+    '=== pane flood (no transport) ===',
+    `${(info.bytes / 1048576).toFixed(2)} MB into ${info.cols}x${info.rows} (${info.cols * info.rows} cells)`,
+    `wall ${(info.wallMs / 1000).toFixed(2)} s including the yields between deliveries`,
+    `core ${msPerMb.toFixed(2)} ms/MB`,
+  ]
+  if (msPerMb > DEBUG_TIER_MS_PER_MB) {
+    lines.push(
+      `!! ${msPerMb.toFixed(1)} ms/MB is roughly 3x this build's normal parse rate, which means`,
+      `!! the WASM ran in V8's debuggable tier. Close DevTools completely and run again.`,
+      `!! Every figure below is inflated; the JS phases are not, so their shares are wrong too.`,
+    )
+  }
+  lines.push(phaseReport)
+  return lines.join('\n')
 }
 
 /** Exposed so a live pane can be flooded from devtools with no UI. */
