@@ -81,6 +81,63 @@ describe('deliveryStats', () => {
     expect(report).toContain('UPSTREAM-BOUND')
   })
 
+  /**
+   * The frontend can now wait on purpose — `writeScheduler` holds bytes back
+   * once a frame's write budget is spent. Between two deliveries that looks
+   * exactly like a producer with nothing to send, and the first report taken
+   * after the scheduler landed duly called it `idle (starved) … BLOCKED` and
+   * blamed the frontend for a delay it had chosen. Pacing must be named, and
+   * must not be judged.
+   */
+  describe('pacing versus starvation', () => {
+    const paced = {
+      ...base,
+      count: 100, bytes: 10e6, spanMs: 1000, bytesPerSec: 10e6, parseMs: 750, parseShare: 0.75,
+      activeSpanMs: 1000, activeBytes: 10e6, activeBytesPerSec: 10e6,
+      activeParseMs: 750, activeParseShare: 0.75,
+      totalIdleMs: 250, idleShare: 0.25, pacedMs: 220, starvedMs: 30,
+    }
+
+    it('names the deliberate share and what is left over', () => {
+      const report = ds.formatReport(paced, null)
+      expect(report).toContain('deliberate, not starvation')
+      expect(report).toContain('220 ms')
+      expect(report).toContain('30 ms')
+    })
+
+    it('says nothing about pacing when none happened', () => {
+      const report = ds.formatReport({ ...paced, pacedMs: 0, starvedMs: 250 }, null)
+      expect(report).not.toContain('deliberate, not starvation')
+    })
+
+    /**
+     * Pacing counted against the engine twice: it pushed the parse share under
+     * the ENGINE-BOUND threshold *and* the delivery rate under the backend's,
+     * so a frontend yielding to render read as one that could not keep up.
+     */
+    it('judges the verdict on working time, not on time spent waiting by choice', () => {
+      // 600 ms of parse is 60% of the 1000 ms window — under the threshold, so
+      // this would not read as engine-bound. But 220 ms of that window was
+      // self-imposed, and 600 of the 780 ms actually worked is 77%.
+      const report = ds.formatReport({ ...paced, activeParseMs: 600, activeParseShare: 0.6 }, null)
+      expect(report).toContain('ENGINE-BOUND')
+      expect(report).toContain('pacing excluded')
+    })
+
+    it('does not claim more pacing than there was idle to account for', () => {
+      ds.reset()
+      expect(ds.snapshot().pacedMs).toBe(0)
+      expect(ds.snapshot().starvedMs).toBe(0)
+    })
+
+    it('ignores paced time recorded while not recording', () => {
+      ds.stop()
+      ds.reset()
+      ds.recordPaced(500)
+      expect(ds.snapshot().pacedMs).toBe(0)
+    })
+  })
+
   it('reads IPC/FRONTEND-BOUND when the backend outran the frontend', () => {
     // Backend pushed 40 MB/s; the frontend only took delivery of 10 MB/s and
     // was not busy parsing — the bytes were stuck in between.
@@ -320,7 +377,7 @@ const base: ds.DeliverySnapshot = {
   minBytes: 0, medianBytes: 0, p95Bytes: 0, maxBytes: 0,
   medianParseMs: 0, p95ParseMs: 0, maxParseMs: 0, maxIdleMs: 0,
   maxFrameGapMs: 0, framesDuringMaxIdle: 0, maxFrameGapInIdleMs: 0,
-  totalIdleMs: 0, idleShare: 0, topGaps: [],
+  totalIdleMs: 0, idleShare: 0, pacedMs: 0, starvedMs: 0, topGaps: [],
   warmupMs: 0, activeSpanMs: 0, activeBytes: 0, activeBytesPerSec: 0,
   activeParseMs: 0, activeParseShare: 0,
 }

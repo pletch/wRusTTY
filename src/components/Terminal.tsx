@@ -669,11 +669,17 @@ export function Terminal({
     // with no chance to render between them, because IPC had a queue behind it.
     // An idle terminal is unaffected: a keystroke echo is one small delivery
     // into a full budget and still goes in synchronously. See lib/writeScheduler.
-    const scheduler = createWriteScheduler((bytes) =>
-      // Wrapped rather than called directly so the real delivery path can be
-      // measured in a live session — see lib/deliveryStats.ts. Off by default,
-      // and when off this is a branch and a call, no clock reads.
-      deliveryStats.record(bytes.length, () => term.write(bytes)),
+    const scheduler = createWriteScheduler(
+      (bytes) =>
+        // Wrapped rather than called directly so the real delivery path can be
+        // measured in a live session — see lib/deliveryStats.ts. Off by default,
+        // and when off this is a branch and a call, no clock reads.
+        deliveryStats.record(bytes.length, () => term.write(bytes)),
+      undefined,
+      undefined,
+      // Declared so the report can tell pacing from starvation; without it a
+      // deliberate yield reads as the frontend failing to keep up.
+      deliveryStats.recordPaced,
     )
     const onData = (bytes: Uint8Array) => {
       if (disposed) return

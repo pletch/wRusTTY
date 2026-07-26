@@ -67,10 +67,22 @@ export interface SchedulerHooks {
   clearTimer?: (id: number) => void
 }
 
+/**
+ * Creates the scheduler.
+ *
+ * `onPaced` is handed the length of each deliberate wait. Without it the
+ * delivery recorder cannot tell pacing from starvation: a gap between writes
+ * looks the same whether the producer had nothing to send or this scheduler
+ * was holding bytes back on purpose, and the report duly called the second one
+ * `idle (starved) … BLOCKED` and blamed the frontend for a delay it chose.
+ * Given how much of this investigation was lost to an instrument that read
+ * plausibly and meant something else, the scheduler declares its own effect.
+ */
 export function createWriteScheduler(
   write: (bytes: Uint8Array) => void,
   budgetMs: number = FRAME_BUDGET_MS,
   hooks: SchedulerHooks = {},
+  onPaced?: (ms: number) => void,
 ): WriteScheduler {
   const now = hooks.now ?? (() => performance.now())
   const requestFrame = hooks.requestFrame ?? ((cb) => requestAnimationFrame(cb))
@@ -108,9 +120,11 @@ export function createWriteScheduler(
 
   function waitForFrame(): void {
     if (disposed || frameId !== null || timerId !== null) return
+    const waitStartedAt = now()
     frameId = requestFrame(() => {
       frameId = null
       stopWaiting()
+      onPaced?.(now() - waitStartedAt)
       // A frame rendered, so the budget is honestly spent again.
       spent = 0
       pump()
@@ -118,6 +132,7 @@ export function createWriteScheduler(
     timerId = setTimer(() => {
       timerId = null
       stopWaiting()
+      onPaced?.(now() - waitStartedAt)
       // No frame arrived — nothing is being rendered, so there is no freeze to
       // protect against and the backlog should not be held back.
       spent = 0

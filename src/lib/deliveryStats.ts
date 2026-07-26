@@ -85,6 +85,19 @@ export interface DeliverySnapshot {
    *  shortfall is stalls at all, rather than steady per-delivery overhead. */
   totalIdleMs: number
   idleShare: number
+  /**
+   * Of `totalIdleMs`, how much the frontend spent waiting on purpose.
+   *
+   * `writeScheduler` holds bytes back once a frame's write budget is spent, so
+   * the window can render. Those waits sit between deliveries and are
+   * indistinguishable, from here, from a producer with nothing to send — which
+   * is how a deliberate pause came to be reported as `idle (starved) …
+   * BLOCKED` with the verdict blaming the frontend for a delay it chose. The
+   * scheduler reports its own waits so the two can be told apart.
+   */
+  pacedMs: number
+  /** Idle that was not self-imposed — the real wait on the producer. */
+  starvedMs: number
   /** The largest gaps, longest first. */
   topGaps: IdleGap[]
 }
@@ -131,6 +144,9 @@ let parseTotal = 0
 let starts: number[] = []
 let idles: number[] = []
 let frameTimes: number[] = []
+/** Time the write scheduler deliberately waited, so it is not read as
+ *  starvation. See recordPaced. */
+let pacedTotal = 0
 let frameLoopId: number | null = null
 
 /** Bounds memory if instrumentation is left on for a long session: a 100 MB
@@ -190,6 +206,18 @@ export function reset(): void {
   starts = []
   idles = []
   frameTimes = []
+  pacedTotal = 0
+}
+
+/**
+ * Records a wait the frontend imposed on itself — see `writeScheduler`.
+ *
+ * Without this the report cannot tell a scheduler holding bytes back from a
+ * producer with none to send, and calls both starvation.
+ */
+export function recordPaced(ms: number): void {
+  if (!enabled) return
+  pacedTotal += ms
 }
 
 /** Injects a frame series without a real rAF loop, so the correlation logic is
@@ -362,6 +390,11 @@ export function snapshot(): DeliverySnapshot {
     maxFrameGapInIdleMs: worst?.maxFrameGapMs ?? 0,
     totalIdleMs: idleTotal,
     idleShare: activeSpanMs > 0 ? idleTotal / activeSpanMs : 0,
+    // Capped at the idle actually observed: the scheduler's clock and this
+    // one are the same, but a wait that straddles the warm-up boundary would
+    // otherwise report more pacing than there was idle to account for.
+    pacedMs: Math.min(pacedTotal, idleTotal),
+    starvedMs: Math.max(0, idleTotal - pacedTotal),
     topGaps: gaps,
   }
 }
@@ -441,8 +474,19 @@ export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats
     `                       per delivery ${front.medianParseMs.toFixed(2)} median / ${front.p95ParseMs.toFixed(2)} p95 / ${front.maxParseMs.toFixed(2)} max ms`,
   )
   lines.push(
-    `idle (starved)         longest ${front.maxIdleMs.toFixed(1)} ms; total ${front.totalIdleMs.toFixed(0)} ms = ${(front.idleShare * 100).toFixed(1)}% of the active window`,
+    `idle (no bytes in)     longest ${front.maxIdleMs.toFixed(1)} ms; total ${front.totalIdleMs.toFixed(0)} ms = ${(front.idleShare * 100).toFixed(1)}% of the active window`,
   )
+  if (front.pacedMs > 0) {
+    // Split out rather than subtracted silently: the frontend choosing to wait
+    // and the producer having nothing to send are different findings that
+    // happen to look identical between two deliveries.
+    const pacedShare = front.activeSpanMs > 0 ? (front.pacedMs / front.activeSpanMs) * 100 : 0
+    const starvedShare = front.activeSpanMs > 0 ? (front.starvedMs / front.activeSpanMs) * 100 : 0
+    lines.push(
+      `                       of which ${front.pacedMs.toFixed(0)} ms (${pacedShare.toFixed(1)}%) was the write scheduler pacing to a frame — deliberate, not starvation`,
+      `                       leaving ${front.starvedMs.toFixed(0)} ms (${starvedShare.toFixed(1)}%) genuinely waiting on the producer`,
+    )
+  }
   // Located in both clock time and byte offset: a periodic pause and one
   // tripped at a fixed point in the stream look identical in a total.
   for (const g of front.topGaps) {
@@ -468,15 +512,27 @@ export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats
   // have it removed before the two rates can be compared at all.
   const backActiveMs = back ? back.spanMs - front.warmupMs : 0
   const backRate = back && backActiveMs > 0 ? back.bytes / (backActiveMs / 1000) : 0
+  // Pacing is removed from the window before the shares are judged. Left in, it
+  // counts against the engine twice: it lowers the parse share below the
+  // ENGINE-BOUND threshold and lowers the delivery rate below the backend's,
+  // so a frontend deliberately yielding to render reads as one that could not
+  // keep up. That is exactly what the first run after the scheduler landed
+  // reported, and it was wrong.
+  const workingMs = Math.max(1, front.activeSpanMs - front.pacedMs)
+  const workingParseShare = front.activeParseMs / workingMs
+  const workingBytesPerSec = front.activeBytes / (workingMs / 1000)
   let verdict: string
   if (front.count === 0) {
     verdict = 'no deliveries recorded — call start() before the run'
-  } else if (front.activeParseShare > 0.7) {
+  } else if (workingParseShare > 0.7) {
     verdict = 'ENGINE-BOUND — the frontend spent most of the drain inside the parser'
-  } else if (backRate > front.activeBytesPerSec * 1.25) {
+  } else if (backRate > workingBytesPerSec * 1.25) {
     verdict = 'IPC/FRONTEND-BOUND — the backend sent faster than the frontend took delivery'
   } else {
     verdict = 'UPSTREAM-BOUND — the frontend was mostly idle waiting on transport/coalescer'
+  }
+  if (front.pacedMs > 0) {
+    verdict += ` (judged on the ${workingMs.toFixed(0)} ms it was actually working, pacing excluded)`
   }
   lines.push(`verdict                ${verdict}`)
   return lines.join('\n')
