@@ -30,10 +30,15 @@ function repeatUnit(unit, targetBytes) {
   return out
 }
 
+const UNITS = {
+  cells: 'x'.repeat(80) + '\r\n',
+  short: '\x1b[0m',
+  long: `\x1b[${'0;'.repeat(9)}0m`,
+}
 const PROBES = {
-  cells: { label: 'printable (1 cell/byte)', buf: repeatUnit('x'.repeat(80) + '\r\n', PROBE_BYTES) },
-  short: { label: 'short SGR (0 cells)', buf: repeatUnit('\x1b[0m', PROBE_BYTES) },
-  long: { label: 'long SGR (0 cells)', buf: repeatUnit(`\x1b[${'0;'.repeat(9)}0m`, PROBE_BYTES) },
+  cells: { label: 'printable (1 cell/byte)', unit: UNITS.cells, buf: repeatUnit(UNITS.cells, PROBE_BYTES) },
+  short: { label: 'short SGR (0 cells)', unit: UNITS.short, buf: repeatUnit(UNITS.short, PROBE_BYTES) },
+  long: { label: 'long SGR (0 cells)', unit: UNITS.long, buf: repeatUnit(UNITS.long, PROBE_BYTES) },
 }
 
 const mod = new WebAssembly.Module(readFileSync(WASM))
@@ -71,13 +76,24 @@ function run(key, iters) {
   }
 
   for (let i = 0; i < 3; i++) write() // warm up TurboFan
-  const t0 = process.hrtime.bigint()
-  for (let i = 0; i < iters; i++) write()
-  const t1 = process.hrtime.bigint()
 
-  const secs = Number(t1 - t0) / 1e9
+  // Best of three, not a single pass. A single pass here once reported long
+  // SGR as ~10% slower on a new core and it was noise: the probes share one
+  // process, so whichever runs last inherits the heap the earlier ones grew.
+  // Repeating the same probe alone showed the two builds overlapping.
+  let secs = Infinity
+  for (let r = 0; r < 3; r++) {
+    const t0 = process.hrtime.bigint()
+    for (let i = 0; i < iters; i++) write()
+    const t1 = process.hrtime.bigint()
+    secs = Math.min(secs, Number(t1 - t0) / 1e9)
+  }
+
   const mb = (buf.length * iters) / (1024 * 1024)
-  const perAction = key === 'cells' ? null : (secs * 1e9) / (iters * Math.floor(buf.length / (key === 'short' ? 4 : 21)))
+  // Unit length, not a guess: `long` is 22 bytes, and hardcoding 21 here
+  // overstated its per-action cost by 5%.
+  const unitLen = enc.encode(PROBES[key].unit).length
+  const perAction = key === 'cells' ? null : (secs * 1e9) / (iters * Math.floor(buf.length / unitLen))
   console.log(
     `${label.padEnd(26)} ${(mb / secs).toFixed(1).padStart(7)} MB/s` +
       (perAction === null ? '' : `   ${perAction.toFixed(1)} ns/action`),
@@ -89,5 +105,7 @@ function run(key, iters) {
 
 console.log(`wasm: ${WASM}`)
 console.log(`iters: ${ITERS} x 2 MB\n`)
-for (const k of ONLY === 'all' ? Object.keys(PROBES) : [ONLY]) run(k, ITERS)
+// Comma-separated, because probe *order* turned out to matter: a build can
+// measure identically in isolation and 7% slower when something else ran first.
+for (const k of ONLY === 'all' ? Object.keys(PROBES) : ONLY.split(',')) run(k, ITERS)
 console.log(`\nlinear memory: ${(mem.buffer.byteLength / 1024 / 1024).toFixed(1)} MB`)

@@ -11,9 +11,9 @@
  * That is a change of role, not a demotion. As a user-selectable fallback it
  * was a second input path and a second bug surface behind a settings control
  * nobody could evaluate — "switch renderer" is not a choice a user has any
- * basis to make, and the four gaps it existed to escape are upstream ABI
- * limits (marked `upstream` below) that a user hitting them cannot recognise
- * as such. As an oracle it earns its keep on every test run: `gridSnapshot.
+ * basis to make, and the gaps it existed to escape are WASM-build limits
+ * (marked `upstream` below) that a user hitting them cannot recognise as such.
+ * As an oracle it earns its keep on every test run: `gridSnapshot.
  * test.ts` feeds the same bytes through both cores headlessly and asserts they
  * agree on glyphs, layout, cursor, per-cell colours and text attributes.
  *
@@ -40,9 +40,15 @@
  *   - 'better' : the Ghostty path does something the xterm path did not
  *   - 'gap'    : xterm does it and Ghostty does not yet
  *
- * A gap marked `upstream` is not a renderer bug — it needs a newer
- * `libghostty-vt` WASM build than the pinned `ghostty-web@0.4.0`, so it cannot
- * be closed on this side of the ABI.
+ * A gap marked `upstream` is not a renderer bug — it needs a change to the WASM
+ * build rather than to this side of the ABI.
+ *
+ * **That flag used to mean "we cannot close this", and no longer does.** It was
+ * written when the binary came from `ghostty-web@0.4.0`, whose export surface we
+ * had no way to extend. We now build our own from the Ghostty v1.3.1 tag (see
+ * `patches/`), so extending the ABI is a patch we own, not a wait on someone
+ * else. Every remaining gap below was re-checked against that build and is
+ * ours to close.
  */
 
 export type ParityStatus = 'parity' | 'better' | 'gap'
@@ -68,10 +74,18 @@ export const PARITY: ParityItem[] = [
   { area: 'Render', item: 'Grapheme clusters (combining marks, ZWJ emoji)', status: 'parity' },
   { area: 'Render', item: 'Text attrs: bold, italic, underline, strikethrough', status: 'parity' },
   { area: 'Render', item: 'Text attrs: inverse, faint, invisible, blink', status: 'parity' },
-  { area: 'Render', item: 'Overline, double / curly underline', status: 'gap', upstream: true, note: 'core does not surface these attrs yet' },
+  // The core has these: style.zig carries `overline: bool` and underline
+  // `.double`/`.curly`/`.dotted`/`.dashed`. Our own cell packing is what drops
+  // them — it collapses every underline style into one bit and never reads
+  // overline (see the flag block in c/terminal.zig). Widening GhosttyCell.flags
+  // closes it.
+  { area: 'Render', item: 'Overline, double / curly underline', status: 'gap', upstream: true, note: 'core has them; our cell packing collapses them' },
   { area: 'Cursor', item: 'Block cursor, focused / unfocused outline', status: 'parity' },
   { area: 'Cursor', item: 'Blink (matched 530 ms period)', status: 'parity' },
-  { area: 'Cursor', item: 'DECSCUSR bar / underline shapes', status: 'gap', upstream: true },
+  // Tracked by the core (Screen.cursor_style) and already surfaced on the
+  // render state (render.zig sets cursor.visual_style). Needs one getter export
+  // alongside ghostty_render_state_get_cursor_visible.
+  { area: 'Cursor', item: 'DECSCUSR bar / underline shapes', status: 'gap', upstream: true, note: 'core tracks it; no getter exported yet' },
   { area: 'Input', item: 'Keyboard, control & named keys, app-cursor mode', status: 'parity' },
   { area: 'Input', item: 'IME / dead-key composition', status: 'parity', note: 'offscreen textarea path' },
   { area: 'Input', item: 'Per-pane backspace ^H / ^? preference', status: 'parity' },
@@ -82,10 +96,16 @@ export const PARITY: ParityItem[] = [
   { area: 'Mouse', item: 'Reporting 1000 / 1002 / 1003, SGR 1006', status: 'parity' },
   { area: 'Mouse', item: 'Focus reporting 1004, wheel as buttons', status: 'parity' },
   { area: 'Search', item: 'On-screen + scrollback, per-row scan', status: 'parity' },
-  { area: 'Search', item: 'Matches across a wrapped line in scrollback', status: 'gap', upstream: true, note: 'is_row_wrapped unavailable for scrollback' },
+  // ghostty_terminal_is_row_wrapped answers this for the viewport only; the
+  // scrollback needs its own export. The data is there either way.
+  { area: 'Search', item: 'Matches across a wrapped line in scrollback', status: 'gap', upstream: true, note: 'is_row_wrapped is viewport-only; scrollback needs its own export' },
   { area: 'Events', item: 'Bell, title, OSC 133 activity, buffer change', status: 'parity', note: 'bell/OSC via a scan until the core exposes callbacks' },
   { area: 'Responses', item: 'DSR / cursor-position replies drained', status: 'parity' },
-  { area: 'Responses', item: 'Primary Device Attributes (ESC[c)', status: 'gap', upstream: true },
+  // Was listed as a gap and is not one: writing ESC[c returns ESC[?62;22c, and
+  // did on the old ghostty-web binary too, so this line was stale rather than
+  // newly fixed. handleDeviceAttributes in c/terminal.zig answers DA1 and the
+  // engine already drains responses at write time.
+  { area: 'Responses', item: 'Primary Device Attributes (ESC[c)', status: 'parity', note: 'verified: replies ESC[?62;22c' },
   { area: 'Multi-pane', item: 'WebGL context budget, context-loss recovery', status: 'parity', note: 'recovers in-engine; the second-renderer fallback is gone — see the header' },
   { area: 'Theming', item: 'Theme + opacity onto clear colour and blending', status: 'parity' },
 ]

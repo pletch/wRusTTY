@@ -90,12 +90,32 @@ needed real changes:
   cell's `style_id` and fixes those flags itself, so the correct fix is simply to
   drop the `if (bg_color != .none)` guard and reassign nothing.
 
-## Known cost
+## Performance against the old 1.2 build
 
-Parse throughput on 1.3.1 is slightly down against the old 1.2 build: printable
-and short SGR within a couple of percent, but **long (10-parameter) SGR about
--10%** (106.5 -> ~94 MB/s), consistent across runs. The render path is at parity
-(86.3us vs 85.4us per frame at 200x60). Not investigated; it is upstream parser
-drift, not anything this patch does.
+**At parity.** An earlier note here claimed long SGR was ~10% slower; that was a
+measurement artifact and is withdrawn. `probe.mjs` was timing a single pass with
+all three probes sharing one process, so whichever ran last inherited the heap
+the earlier ones grew. It now takes best-of-three and accepts an explicit probe
+order.
+
+Measured properly:
+
+| | 1.2 | 1.3.1 |
+| --- | --- | --- |
+| printable | 96.9 | 95.2 MB/s |
+| escape every 80 cells | 92.5 | 90.1 |
+| escape every 8 cells (TUI-ish) | 74.1 | **74.0** |
+| escape every 1 cell | 58.8 | 58.0 |
+| short SGR, isolated | 51.9 | 52.2 |
+| long SGR, isolated | ~104 | ~102 |
+| render, 200x60 | 85.4us | 86.3us |
+
+One oddity is recorded but not chased: long SGR measures ~7% slower on 1.3.1
+**only when the printable probe ran first** (104 -> 95), while 1.2 in the same
+sequence speeds up to 106. It is not the zero-init patch — a build with #142
+reverted shows the identical number — and printable itself is unaffected either
+way. No real workload has that shape. `tools/parse-probes/sgrdiff.mjs` sweeps
+parameter count, digit count and separator kind across two binaries if it ever
+needs revisiting.
 
 Both projects are MIT, so carrying `ghostty-web`'s work with attribution is fine.
