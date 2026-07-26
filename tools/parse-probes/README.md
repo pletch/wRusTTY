@@ -27,6 +27,8 @@ worth reading.
 | `diff2.mjs` | per-byte floor, and whether escapes damage the printable bulk path |
 | `diff3.mjs` | re-runs the suspect rows with an `env.log` counter (see below) |
 | `scan.mjs` | `scanOsc` in ms/MB per content shape |
+| `viewport.mjs` | cost of getting a frame's cells out, and the JS→WASM call floor |
+| `iter.mjs` | the same, driven through ghostty **main**'s row/cell iterator API |
 | `names.mjs` | function names from the name section, filtered |
 | `secs.mjs` | section sizes |
 
@@ -56,3 +58,38 @@ not be handled needs the same guard.
 
 Do not run these with DevTools attached to anything: an attached debugger drops
 V8 to Liftoff and costs ~2.75x, which is its own long story.
+
+## Building the comparison binary for `iter.mjs`
+
+`iter.mjs` needs a `ghostty-vt.wasm` built from **ghostty main**, not from the
+`ghostty-web` recipe in `src/lib/ghostty/vendor/README.md`. They are different
+builds with different toolchains:
+
+- our vendored binary: ghostty-web's fork, **Zig 0.15.2**, `zig build lib-vt`
+- main: **Zig 0.16.0** (`minimum_zig_version` in `build.zig.zon`), and the flag
+  is `-Demit-lib-vt`, not a `lib-vt` step
+
+```sh
+git clone --depth 1 --branch main https://github.com/ghostty-org/ghostty.git
+cd ghostty
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+# -> zig-out/bin/ghostty-vt.wasm   (187 exports, vs 79 in the vendored build)
+```
+
+No patch is needed for this — the 133-line patch `ghostty-web` carries on top of
+main only enables kitty graphics on `wasm32-freestanding`.
+
+Note the tag **v1.3.1 will not work**: `libghostty-vt` at that tag ships only
+`result`, `allocator`, `osc`, `sgr`, `key`, `paste` and `wasm` headers. There is
+no terminal API and no render state in a released version — `render.h`,
+`terminal.h` and `grid_ref.h` exist only on main.
+
+### Two ABI traps
+
+`GhosttyTerminalOptions` is passed by value in C but arrives as a **pointer**
+(`ghostty_terminal_new(i32, i32, i32)`); dump signatures from the binary rather
+than reading them off the header.
+
+`get(state, ROW_ITERATOR, out)` wants the **slot** holding the handle, not the
+handle — `render.zig` does `const it = out.* orelse ...` and populates what the
+slot points at. Passing the handle returns `GHOSTTY_INVALID_VALUE` (-2).
