@@ -310,10 +310,10 @@ index 0000000..c467102
 +
 +#endif /* GHOSTTY_VT_TERMINAL_H */
 diff --git a/src/lib_vt.zig b/src/lib_vt.zig
-index 4266606..2603843 100644
+index 4266606..162dd8a 100644
 --- a/src/lib_vt.zig
 +++ b/src/lib_vt.zig
-@@ -143,6 +143,48 @@ comptime {
+@@ -143,6 +143,50 @@ comptime {
          @export(&c.sgr_unknown_partial, .{ .name = "ghostty_sgr_unknown_partial" });
          @export(&c.sgr_attribute_tag, .{ .name = "ghostty_sgr_attribute_tag" });
          @export(&c.sgr_attribute_value, .{ .name = "ghostty_sgr_attribute_value" });
@@ -351,6 +351,8 @@ index 4266606..2603843 100644
 +        @export(&c.terminal_is_scrollback_row_wrapped, .{ .name = "ghostty_terminal_is_scrollback_row_wrapped" });
 +        @export(&c.render_state_get_cursor_style, .{ .name = "ghostty_render_state_get_cursor_style" });
 +        @export(&c.render_state_get_cursor_blinking, .{ .name = "ghostty_render_state_get_cursor_blinking" });
++        @export(&c.terminal_last_reset_seq, .{ .name = "ghostty_terminal_last_reset_seq" });
++        @export(&c.terminal_last_cursor_style_seq, .{ .name = "ghostty_terminal_last_cursor_style_seq" });
 +
 +        // Hyperlink API
 +        @export(&c.terminal_get_hyperlink_uri, .{ .name = "ghostty_terminal_get_hyperlink_uri" });
@@ -419,7 +421,7 @@ index ea8ca14..2a47581 100644
              self.clearCells(
                  page,
 diff --git a/src/terminal/c/main.zig b/src/terminal/c/main.zig
-index bc92597..0d7eafc 100644
+index bc92597..cb229ff 100644
 --- a/src/terminal/c/main.zig
 +++ b/src/terminal/c/main.zig
 @@ -4,6 +4,7 @@ pub const key_event = @import("key_event.zig");
@@ -430,7 +432,7 @@ index bc92597..0d7eafc 100644
  
  // The full C API, unexported.
  pub const osc_new = osc.new;
-@@ -52,6 +53,49 @@ pub const key_encoder_encode = key_encode.encode;
+@@ -52,6 +53,51 @@ pub const key_encoder_encode = key_encode.encode;
  
  pub const paste_is_safe = paste.is_safe;
  
@@ -468,6 +470,8 @@ index bc92597..0d7eafc 100644
 +pub const terminal_is_scrollback_row_wrapped = terminal.isScrollbackRowWrapped;
 +pub const render_state_get_cursor_style = terminal.renderStateGetCursorStyle;
 +pub const render_state_get_cursor_blinking = terminal.renderStateGetCursorBlinking;
++pub const terminal_last_reset_seq = terminal.lastResetSeq;
++pub const terminal_last_cursor_style_seq = terminal.lastCursorStyleSeq;
 +
 +// Hyperlink API
 +pub const terminal_get_hyperlink_uri = terminal.getHyperlinkUri;
@@ -480,7 +484,7 @@ index bc92597..0d7eafc 100644
  test {
      _ = color;
      _ = osc;
-@@ -59,6 +103,7 @@ test {
+@@ -59,6 +105,7 @@ test {
      _ = key_encode;
      _ = paste;
      _ = sgr;
@@ -490,10 +494,10 @@ index bc92597..0d7eafc 100644
      _ = @import("../../lib/allocator.zig");
 diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
 new file mode 100644
-index 0000000..cc96425
+index 0000000..174ea0c
 --- /dev/null
 +++ b/src/terminal/c/terminal.zig
-@@ -0,0 +1,1158 @@
+@@ -0,0 +1,1215 @@
 +//! C API wrapper for Terminal
 +//!
 +//! This provides a minimal, high-performance interface to Ghostty's Terminal
@@ -529,16 +533,51 @@ index 0000000..cc96425
 +
 +/// Response handler that processes VT sequences and queues responses.
 +/// This extends the readonly stream handler to also handle queries.
++/// Orders a full reset against the application setting the cursor.
++///
++/// RIS wipes the cursor style back to a steady block, discarding a cursor the
++/// host configured. The host wants to put it back — but only if the application
++/// did not then choose its own, and a TUI commonly does both, in that order,
++/// inside a single write. Comparing the two ticks answers "was the last word on
++/// the cursor a reset, or a deliberate choice?" without the host having to scan
++/// the byte stream for `ESC c`.
++const CursorSeq = struct {
++    tick: u32 = 0,
++    /// `tick` as of the last RIS, and as of the last DECSCUSR. Zero is never.
++    reset: u32 = 0,
++    style: u32 = 0,
++
++    fn bumpReset(self: *CursorSeq) void {
++        self.tick +%= 1;
++        self.reset = self.tick;
++    }
++
++    fn bumpStyle(self: *CursorSeq) void {
++        self.tick +%= 1;
++        self.style = self.tick;
++    }
++};
++
 +const ResponseHandler = struct {
 +    alloc: Allocator,
 +    terminal: *Terminal,
 +    response_buffer: *std.ArrayList(u8),
++    /// Behind a pointer because the stream is built from a *copy* of the
++    /// handler, so anything mutated through `self` alone never reaches the
++    /// wrapper.
++    cursor_seq: *CursorSeq,
 +
-+    pub fn init(alloc: Allocator, terminal: *Terminal, response_buffer: *std.ArrayList(u8)) ResponseHandler {
++    pub fn init(
++        alloc: Allocator,
++        terminal: *Terminal,
++        response_buffer: *std.ArrayList(u8),
++        cursor_seq: *CursorSeq,
++    ) ResponseHandler {
 +        return .{
 +            .alloc = alloc,
 +            .terminal = terminal,
 +            .response_buffer = response_buffer,
++            .cursor_seq = cursor_seq,
 +        };
 +    }
 +
@@ -595,6 +634,7 @@ index 0000000..cc96425
 +                };
 +                self.terminal.modes.set(.cursor_blinking, blink);
 +                self.terminal.screens.active.cursor.cursor_style = style;
++                self.cursor_seq.bumpStyle();
 +            },
 +            .erase_display_below => self.terminal.eraseDisplay(.below, value),
 +            .erase_display_above => self.terminal.eraseDisplay(.above, value),
@@ -660,7 +700,10 @@ index 0000000..cc96425
 +            },
 +            .active_status_display => self.terminal.status_display = value,
 +            .decaln => try self.terminal.decaln(),
-+            .full_reset => self.terminal.fullReset(),
++            .full_reset => {
++                self.terminal.fullReset();
++                self.cursor_seq.bumpReset();
++            },
 +            .start_hyperlink => try self.terminal.screens.active.startHyperlink(value.uri, value.id),
 +            .end_hyperlink => self.terminal.screens.active.endHyperlink(),
 +            // 1.3.1 folds OSC 133 into one action with its own dispatch, and
@@ -816,6 +859,8 @@ index 0000000..cc96425
 +    response_buffer: std.ArrayList(u8),
 +    /// Track alternate screen state to detect screen switches
 +    last_screen_is_alternate: bool = false,
++    /// See CursorSeq. Lives here so the handler can point at something stable.
++    cursor_seq: CursorSeq = .{},
 +};
 +
 +/// C-compatible cell structure (16 bytes)
@@ -936,7 +981,8 @@ index 0000000..cc96425
 +    wrapper.response_buffer = .{};
 +
 +    // Initialize handler with references to terminal and response buffer
-+    wrapper.handler = ResponseHandler.init(alloc, &wrapper.terminal, &wrapper.response_buffer);
++    wrapper.cursor_seq = .{};
++    wrapper.handler = ResponseHandler.init(alloc, &wrapper.terminal, &wrapper.response_buffer, &wrapper.cursor_seq);
 +
 +    // Initialize stream with the handler
 +    wrapper.stream = ResponseStream.init(wrapper.handler);
@@ -948,6 +994,7 @@ index 0000000..cc96425
 +        .stream = wrapper.stream,
 +        .render_state = RenderState.empty,
 +        .response_buffer = wrapper.response_buffer,
++        .cursor_seq = wrapper.cursor_seq,
 +    };
 +
 +    // NOTE: linefeed mode must be FALSE to match native terminal behavior
@@ -1384,6 +1431,20 @@ index 0000000..cc96425
 +        };
 +    }
 +    return @intCast(cols);
++}
++
++/// `tick` as of the last RIS. See CursorSeq: compare against
++/// `ghostty_terminal_last_cursor_style_seq` to tell a reset that discarded the
++/// configured cursor from an application that deliberately chose one.
++pub fn lastResetSeq(ptr: ?*anyopaque) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
++    return @intCast(wrapper.cursor_seq.reset);
++}
++
++/// `tick` as of the last DECSCUSR from the stream.
++pub fn lastCursorStyleSeq(ptr: ?*anyopaque) callconv(.c) c_int {
++    const wrapper: *const TerminalWrapper = @ptrCast(@alignCast(ptr orelse return 0));
++    return @intCast(wrapper.cursor_seq.style);
 +}
 +
 +/// Whether a scrollback row continues the row above it.

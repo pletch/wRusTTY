@@ -117,6 +117,14 @@ export interface GhosttyExports {
   ghostty_render_state_get_cursor_style(term: number): number
   /** Whether DECSCUSR asked for a blinking cursor (DEC mode 12). */
   ghostty_render_state_get_cursor_blinking(term: number): number
+  /**
+   * Ticks identifying the last RIS and the last DECSCUSR, so the two can be
+   * ordered. A reset discards the configured cursor; comparing these says
+   * whether the application then chose one of its own, which it commonly does
+   * immediately afterwards. Zero means the event has never happened.
+   */
+  ghostty_terminal_last_reset_seq(term: number): number
+  ghostty_terminal_last_cursor_style_seq(term: number): number
 
   // Scrollback
   ghostty_terminal_get_scrollback_length(term: number): number

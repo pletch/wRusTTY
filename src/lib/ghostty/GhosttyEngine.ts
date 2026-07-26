@@ -113,6 +113,32 @@ interface SearchMatch {
   segments: { row: number; from: number; to: number }[]
 }
 
+/**
+ * Whether a full reset has discarded the configured cursor and nothing has
+ * claimed it since.
+ *
+ * Split out from the engine because it is the whole of the decision and the
+ * rest is plumbing — and because the cases are combinations of two ticks,
+ * which is miserable to reach through a live core and a DOM.
+ *
+ * Deliberately holds no "already handled" state. Restoring writes DECSCUSR,
+ * which moves `styleAt` past `resetAt`, so the second condition below is what
+ * stops this firing again on every subsequent write. A separate handled-marker
+ * would be a second mechanism for the same thing, and dead the moment the first
+ * one works.
+ *
+ * @param resetAt core tick of the last RIS; 0 if there has never been one
+ * @param styleAt core tick of the last DECSCUSR; 0 if there has never been one
+ */
+export function shouldRestoreCursor(resetAt: number, styleAt: number): boolean {
+  // Never reset: nothing to put back.
+  if (resetAt === 0) return false
+  // Something set the cursor at or after the reset — an application choosing
+  // its own, which outranks a preference. Common: a TUI resets and then asks
+  // for the cursor it wants, both inside one write.
+  return styleAt <= resetAt
+}
+
 export class GhosttyEngine implements TerminalEngine {
   private container: HTMLElement | null = null
   private canvas: HTMLCanvasElement | null = null
@@ -1396,6 +1422,8 @@ export class GhosttyEngine implements TerminalEngine {
         this.parseSegment(bytes)
       }
 
+      this.restoreCursorAfterReset()
+
       // Drained here rather than on the frame: a reply is only correct for the
       // state that provoked it, and a cursor-position report that waits for the
       // next repaint can describe a cursor that has already moved on.
@@ -1651,15 +1679,41 @@ export class GhosttyEngine implements TerminalEngine {
    * application that sets its own shape simply overwrites this — which is the
    * precedence a preference should have.
    *
-   * Reapplied by the caller on a settings change. A full reset (RIS) puts the
-   * core back to a blinking block and this is not currently re-sent, so a
-   * program that resets the terminal drops the preference until the next
-   * settings change; worth fixing if it turns up in practice.
+   * Reapplied by the caller on a settings change, and by
+   * `restoreCursorAfterReset` when RIS discards it.
    */
   setCursorStyle(style: CursorStyleSetting, blink: boolean): void {
     this._cursorStyle = style
     this._cursorBlink = blink
     if (this.termPtr) this.write(cursorStyleSequence(style, blink))
+  }
+
+  /**
+   * Puts the configured cursor back after a full reset (RIS) discarded it.
+   *
+   * RIS returns the core to a steady block, which silently throws the
+   * preference away — `clear`, a crashed curses program, or anything that
+   * resets the terminal on exit. Detecting it by scanning the stream for
+   * `ESC c` would be guesswork (the bytes can split across writes, and appear
+   * inside payloads that are not sequences), so the core reports it instead.
+   *
+   * The ordering matters as much as the fact. A TUI commonly resets *and then*
+   * sets the cursor it wants, both inside one write, and reapplying blindly
+   * would overwrite the choice it just made. So this restores only when the
+   * reset is the more recent of the two — when nothing has spoken for the
+   * cursor since.
+   *
+   * Reapplying bumps the core's own DECSCUSR tick, which is what stops this
+   * from running again on the next write.
+   */
+  private restoreCursorAfterReset(): void {
+    if (!this.wasm || !this.termPtr) return
+    const resetAt = this.wasm.exports.ghostty_terminal_last_reset_seq(this.termPtr)
+    const styleAt = this.wasm.exports.ghostty_terminal_last_cursor_style_seq(this.termPtr)
+    if (!shouldRestoreCursor(resetAt, styleAt)) return
+    writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
+      cursorStyleSequence(this._cursorStyle, this._cursorBlink),
+    ))
   }
 
   setFont(fontFamily: string, fontSize: number): void {

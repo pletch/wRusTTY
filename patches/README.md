@@ -14,8 +14,8 @@ more expensive (`tools/parse-probes/iter.mjs`).
 
 The rebase itself changed nothing on this side: it landed **byte-identical to
 the previous ghostty-web build at 79 exports, same names**, so `GhosttyEngine.ts`
-and `wasmBindings.ts` needed no changes. The two exports under "What we added on
-top" came afterwards, deliberately, and take it to 81.
+and `wasmBindings.ts` needed no changes. The exports under "What we added on
+top" came afterwards, deliberately, and take it to 84.
 
 ## Building
 
@@ -32,7 +32,7 @@ zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 cp zig-out/bin/ghostty-vt.wasm ../src/lib/ghostty/vendor/ghostty-vt.wasm
 ```
 
-Verify with `npx vitest run` (406 tests; `gridSnapshot.test.ts` is the real gate —
+Verify with `npx vitest run` (421 tests; `gridSnapshot.test.ts` is the real gate —
 it feeds identical bytes through Ghostty and xterm.js and compares glyphs,
 colours, attributes and cursor per cell) and
 `node tools/parse-probes/probe.mjs src/lib/ghostty/vendor/ghostty-vt.wasm`.
@@ -88,8 +88,16 @@ extend. It is not true now, and all three are closed here:
   optional garnish: without it `ESC[1 q` and `ESC[2 q` render identically,
   because the pane blinks on its own 530 ms timer regardless. The core now says
   *whether* to blink and the timer only says *when*.
+- **`ghostty_terminal_last_reset_seq`** and
+  **`ghostty_terminal_last_cursor_style_seq`** — ticks that order a full reset
+  against the application setting the cursor. RIS returns the core to a steady
+  block, discarding a configured cursor, and the host wants to put it back — but
+  only if the application did not then choose its own, which a TUI commonly does
+  in the same write. Ordering it in the core avoids the host scanning the byte
+  stream for `ESC c`, which is guesswork: the bytes split across writes and
+  appear inside payloads that are not sequences.
 
-That takes the surface from 79 exports to 82. A fourth gap, Primary Device
+That takes the surface from 79 exports to 84. A fourth gap, Primary Device
 Attributes, turned out never to have been one — `ESC[c` already replied
 `ESC[?62;22c`, on the old binary too.
 

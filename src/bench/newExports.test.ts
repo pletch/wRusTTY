@@ -150,3 +150,67 @@ describe('ghostty_render_state_get_cursor_style', () => {
     expect(shape(ptr)).toBe(CURSOR_STYLE_BLOCK)
   })
 })
+
+/**
+ * Restoring the configured cursor after a full reset.
+ *
+ * RIS puts the core back to a steady block, discarding whatever the host had
+ * configured. Detecting that from the byte stream would be guesswork, so the
+ * core orders the two events instead and the host compares them.
+ */
+describe('reset / cursor-style ordering', () => {
+  const seqs = (ptr: number) => ({
+    reset: wasm.exports.ghostty_terminal_last_reset_seq(ptr),
+    style: wasm.exports.ghostty_terminal_last_cursor_style_seq(ptr),
+  })
+
+  it('starts with neither event recorded', () => {
+    expect(seqs(term(20, 3))).toEqual({ reset: 0, style: 0 })
+  })
+
+  it('puts the reset last when RIS discarded the cursor', () => {
+    const ptr = term(20, 3)
+    write(ptr, cursorStyleSequence('bar', true))
+    write(ptr, 'c')
+    const { reset, style } = seqs(ptr)
+    // Reset is the more recent, so nothing has spoken for the cursor since and
+    // the host should put its preference back.
+    expect(reset).toBeGreaterThan(style)
+    wasm.exports.ghostty_render_state_update(ptr)
+    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_BLOCK)
+    expect(wasm.exports.ghostty_render_state_get_cursor_blinking(ptr)).toBeFalsy()
+  })
+
+  it('puts the style last when the application chose one after resetting', () => {
+    // The case that makes blind reapplication wrong: a TUI resets and then sets
+    // the cursor it wants, both inside one write. Restoring the preference here
+    // would overwrite the choice it just made.
+    const ptr = term(20, 3)
+    write(ptr, 'c[3 q')
+    const { reset, style } = seqs(ptr)
+    expect(style).toBeGreaterThan(reset)
+    wasm.exports.ghostty_render_state_update(ptr)
+    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_UNDERLINE)
+  })
+
+  it('advances the tick on every reset, so a second one is distinguishable', () => {
+    // The host remembers which reset it has already handled; two resets that
+    // reported the same number would leave the second unrestored.
+    const ptr = term(20, 3)
+    write(ptr, 'c')
+    const first = seqs(ptr).reset
+    write(ptr, 'c')
+    expect(seqs(ptr).reset).toBeGreaterThan(first)
+  })
+
+  it('leaves the ordering alone for a soft reset, which keeps the cursor', () => {
+    // DECSTR does not touch the cursor style, so it must not look like a RIS.
+    const ptr = term(20, 3)
+    write(ptr, cursorStyleSequence('bar', true))
+    const before = seqs(ptr)
+    write(ptr, '[!p')
+    expect(seqs(ptr)).toEqual(before)
+    wasm.exports.ghostty_render_state_update(ptr)
+    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_BAR)
+  })
+})
