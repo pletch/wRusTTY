@@ -244,6 +244,19 @@ export class GhosttyEngine implements TerminalEngine {
     return { engines: GhosttyEngine.liveEngines.size, terminals, wasmBytes }
   }
 
+  /**
+   * The engine most recently on screen — the pane a devtools-driven flood
+   * should target. Ranked by the same `lastVisibleAt` the context budget uses,
+   * so "the one you are looking at" wins without the caller needing a handle.
+   */
+  static activeEngine(): GhosttyEngine | null {
+    let best: GhosttyEngine | null = null
+    for (const e of GhosttyEngine.liveEngines) {
+      if (!best || e.lastVisibleAt > best.lastVisibleAt) best = e
+    }
+    return best
+  }
+
   static formatDiagnostics(): string {
     const d = GhosttyEngine.diagnostics()
     return `page: ${d.engines} live engine(s), ${d.terminals} terminal(s), ${(d.wasmBytes / 1048576).toFixed(1)} MB WASM linear memory`

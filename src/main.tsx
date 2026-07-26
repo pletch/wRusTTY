@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { install as installDeliveryStats } from './lib/deliveryStats'
+import { install as installPaneFlood } from './lib/paneFlood'
 
 // Puts `__wrusttyDelivery` on the global so the *real* PTY delivery path can be
 // measured from devtools in a live session — the half of a flood the benchmark
@@ -10,6 +11,13 @@ import { install as installDeliveryStats } from './lib/deliveryStats'
 // webview. Installing only registers the handle; recording stays off until
 // `__wrusttyDelivery.start()` is called, so this costs nothing by default.
 installDeliveryStats()
+
+// `__wrusttyPaneFlood.run()` feeds a real pane from inside the page — no PTY,
+// no SSH, no IPC — which is the only way to measure a transport-free pane in an
+// app whose backend only speaks SSH, telnet and serial. Registering the handle
+// costs nothing; the generator it needs is imported on use, from the benchmark
+// chunk, so none of it ships in the app bundle.
+installPaneFlood()
 
 // The Phase 7 benchmark harness runs in this exact WebView — same engines, same
 // WASM as production. It is reached either by loading with a `#bench` URL

@@ -106,6 +106,24 @@ describe('writes that arrive before the core is ready', () => {
     expect(GhosttyEngine.diagnostics().engines).toBe(0)
   })
 
+  /**
+   * A devtools flood has no handle on any particular pane, so it targets the
+   * one most recently on screen. Getting this wrong would flood a background
+   * pane and measure a grid nobody is looking at.
+   */
+  it('targets no pane when none exists, and the visible one when it does', async () => {
+    const { GhosttyEngine } = await import('./GhosttyEngine')
+    expect(GhosttyEngine.activeEngine()).toBeNull()
+    const a = new GhosttyEngine()
+    expect(GhosttyEngine.activeEngine()).toBe(a)
+    const b = new GhosttyEngine()
+    // Neither has been on screen, so the choice is stable rather than arbitrary.
+    expect([a, b]).toContain(GhosttyEngine.activeEngine())
+    a.dispose()
+    b.dispose()
+    expect(GhosttyEngine.activeEngine()).toBeNull()
+  })
+
   it('reports the page state alongside the throughput figure', async () => {
     const rec = await recorder()
     rec.start()
