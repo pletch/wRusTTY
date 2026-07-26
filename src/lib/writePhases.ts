@@ -5,25 +5,43 @@
  * The delivery-path recorder (`deliveryStats`) times `engine.write` as one
  * span. That was enough to establish a local flood is engine-bound, and no
  * further: it left a 2.7x gap between what the same Ghostty WASM parses in the
- * benchmark harness (~88 MB/s) and what it manages in a live pane (~31 MB/s),
+ * benchmark harness (~88 MB/s) and what it manages in a live pane (~33 MB/s),
  * with no way to say which part of the write differed. This times the parts.
+ *
+ * The first split narrowed it to `writeBytes` (93%), ruling out the JS OSC
+ * scan, response draining and callbacks. The sub-phases go inside that call,
+ * since the cost proved invariant to content shape, grid geometry and
+ * scrollback — none of which the buffer handoff touches.
  *
  * Off by default and free when off — `time` calls straight through without
  * reading a clock — because these wrap the hottest path in the app.
  */
 
+/** Phases of `write`. These partition it, so they reconcile against the whole. */
 export const PHASES = ['scan', 'parse', 'drain', 'bufferChange', 'handlers'] as const
+/** Phases *within* `parse` (i.e. within `writeBytes`). Counted separately so
+ *  they subdivide `parse` rather than being added alongside it. */
+export const SUBPHASES = ['alloc', 'copy', 'coreWrite', 'free'] as const
+
 export type Phase = (typeof PHASES)[number]
+export type Subphase = (typeof SUBPHASES)[number]
+export type AnyPhase = Phase | Subphase
 
 /** What each phase covers, for the report — the names alone are too terse to
  *  act on, and the point of this module is telling someone where to look. */
-const PHASE_HELP: Record<Phase, string> = {
+const HELP: Record<AnyPhase, string> = {
   scan: 'scanOsc over every byte, in JS (only when an OSC/bell handler is registered)',
   parse: 'writeBytes into the WASM core — the parser itself',
   drain: 'readResponse loop, replies the core owes the host',
   bufferChange: 'asking the core whether the screen buffer flipped',
   handlers: 'onWriteParsed / OSC / bell callbacks',
+  alloc: 'ghostty_wasm_alloc_u8_array for the delivery',
+  copy: 'copying the bytes into WASM linear memory',
+  coreWrite: 'ghostty_terminal_write — the parse proper',
+  free: 'ghostty_wasm_free_u8_array',
 }
+
+const ALL: AnyPhase[] = [...PHASES, ...SUBPHASES]
 
 let enabled = false
 let totals = blank()
@@ -32,8 +50,11 @@ let writes = 0
 let bytes = 0
 let writeMs = 0
 
-function blank(): Record<Phase, number> {
-  return { scan: 0, parse: 0, drain: 0, bufferChange: 0, handlers: 0 }
+function blank(): Record<AnyPhase, number> {
+  return {
+    scan: 0, parse: 0, drain: 0, bufferChange: 0, handlers: 0,
+    alloc: 0, copy: 0, coreWrite: 0, free: 0,
+  }
 }
 
 export function start(): void {
@@ -60,11 +81,12 @@ export function isEnabled(): boolean {
 /**
  * Runs `fn` — always — attributing its duration to `phase` when recording.
  *
- * Phases nest in one place only: `parse` and `bufferChange` are called from
- * inside the scan-and-dispatch path, and are deliberately *not* wrapped by an
- * enclosing phase there, so each byte of work is counted once.
+ * Top-level phases partition `write`; sub-phases partition `parse`. Nothing
+ * else nests: `parse` and `bufferChange` are called from inside the
+ * scan-and-dispatch path and are deliberately *not* wrapped by an enclosing
+ * phase there, so each byte of work is counted once at each level.
  */
-export function time<T>(phase: Phase, fn: () => T): T {
+export function time<T>(phase: AnyPhase, fn: () => T): T {
   if (!enabled) return fn()
   const t0 = performance.now()
   try {
@@ -94,13 +116,17 @@ export interface PhaseSnapshot {
   /** Total time inside `write`, and the throughput that implies. */
   writeMs: number
   bytesPerSec: number
-  /** Per phase: total ms, share of `writeMs`, and how many times it ran. */
-  totals: Record<Phase, number>
-  shares: Record<Phase, number>
-  calls: Record<Phase, number>
-  /** Time inside `write` that no phase claimed. A large value means the cost
-   *  is somewhere these wrappers do not cover, which is itself a finding. */
+  /** Per phase and sub-phase: total ms and how many times it ran. */
+  totals: Record<AnyPhase, number>
+  calls: Record<AnyPhase, number>
+  /** Top-level phases as a share of `writeMs`; sub-phases as a share of
+   *  `parse`, which is what they subdivide. */
+  shares: Record<AnyPhase, number>
+  /** Time inside `write` that no top-level phase claimed, and time inside
+   *  `parse` that no sub-phase claimed. A large value means the cost is
+   *  somewhere these wrappers do not cover, which is itself a finding. */
   unattributedMs: number
+  parseUnattributedMs: number
 }
 
 export function snapshot(): PhaseSnapshot {
@@ -110,19 +136,30 @@ export function snapshot(): PhaseSnapshot {
     claimed += totals[p]
     shares[p] = writeMs > 0 ? totals[p] / writeMs : 0
   }
+  let subClaimed = 0
+  for (const p of SUBPHASES) {
+    subClaimed += totals[p]
+    shares[p] = totals.parse > 0 ? totals[p] / totals.parse : 0
+  }
   return {
     writes,
     bytes,
     writeMs,
     bytesPerSec: writeMs > 0 ? bytes / (writeMs / 1000) : 0,
     totals: { ...totals },
-    shares,
     calls: { ...calls },
+    shares,
     unattributedMs: Math.max(0, writeMs - claimed),
+    parseUnattributedMs: Math.max(0, totals.parse - subClaimed),
   }
 }
 
 const mbs = (n: number) => `${(n / 1048576).toFixed(1)} MB/s`
+
+function row(label: string, ms: number, share: number, calls: number | null, help: string, indent = ''): string {
+  const callText = calls === null ? '' : `${String(calls).padStart(7)} calls`
+  return `${indent}  ${label.padEnd(13 - indent.length)} ${ms.toFixed(0).padStart(6)} ms  ${(share * 100).toFixed(1).padStart(5)}%  ${callText}   ${help}`
+}
 
 export function formatReport(s: PhaseSnapshot = snapshot()): string {
   const lines: string[] = ['=== write phases ===']
@@ -136,12 +173,23 @@ export function formatReport(s: PhaseSnapshot = snapshot()): string {
   // Ordered by cost, because the first line is the one worth acting on.
   const ranked = [...PHASES].sort((a, b) => s.totals[b] - s.totals[a])
   for (const p of ranked) {
-    lines.push(
-      `  ${p.padEnd(13)} ${s.totals[p].toFixed(0).padStart(6)} ms  ${(s.shares[p] * 100).toFixed(1).padStart(5)}%  ${String(s.calls[p]).padStart(7)} calls   ${PHASE_HELP[p]}`,
-    )
+    lines.push(row(p, s.totals[p], s.shares[p], s.calls[p], HELP[p]))
+    // Sub-phases follow the phase they subdivide, as shares of it.
+    if (p === 'parse' && s.totals.parse > 0) {
+      const sub = [...SUBPHASES].sort((a, b) => s.totals[b] - s.totals[a])
+      for (const q of sub) {
+        lines.push(row(q, s.totals[q], s.shares[q], s.calls[q], HELP[q], '  '))
+      }
+      lines.push(
+        row('unattributed', s.parseUnattributedMs, s.totals.parse > 0 ? s.parseUnattributedMs / s.totals.parse : 0, null, 'inside writeBytes, outside the calls above', '  '),
+      )
+    }
   }
   lines.push(
-    `  ${'unattributed'.padEnd(13)} ${s.unattributedMs.toFixed(0).padStart(6)} ms  ${(s.writeMs > 0 ? (s.unattributedMs / s.writeMs) * 100 : 0).toFixed(1).padStart(5)}%`,
+    row('unattributed', s.unattributedMs, s.writeMs > 0 ? s.unattributedMs / s.writeMs : 0, null, 'inside write, outside the phases above'),
   )
   return lines.join('\n')
 }
+
+/** Every phase name, for callers that enumerate them. */
+export const ALL_PHASES: readonly AnyPhase[] = ALL

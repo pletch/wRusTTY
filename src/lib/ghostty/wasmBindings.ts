@@ -19,6 +19,8 @@
  *   - Cell bytes 12-13 are a hyperlink id, not color flags.
  */
 
+import * as phases from '../writePhases'
+
 /** Cell flags, matching GHOSTTY_CELL_* in the upstream header. */
 export const CELL_BOLD = 1 << 0
 export const CELL_ITALIC = 1 << 1
@@ -319,6 +321,28 @@ export function freeBuffer(wasm: GhosttyWasm, ptr: number, size: number): void {
  */
 export function writeBytes(wasm: GhosttyWasm, termPtr: number, data: Uint8Array): void {
   if (data.length === 0) return
+  // A null terminal accepts every byte and parses none: the core null-checks
+  // and returns, so the write "succeeds", the bytes vanish, and a benchmark
+  // reports the resulting nothing as a very fast parse. That is how the
+  // flood-stress rows came to claim 13,000 MB/s. Same rule as a failed
+  // allocation — refuse loudly rather than silently drop a write, because a
+  // dropped write desynchronises the parser from the stream regardless.
+  if (termPtr === 0) throw new Error('Ghostty write to a terminal that does not exist (termPtr is 0).')
+  // Sub-phases of the single most expensive thing the app does. The parse cost
+  // measured invariant to content shape, grid width and scrollback depth —
+  // none of which the buffer handoff touches — so the handoff has to be
+  // measured before the core can be blamed for it.
+  if (phases.isEnabled()) {
+    const bufPtr = phases.time('alloc', () => allocBufferOrThrow(wasm, data.length))
+    phases.time('copy', () =>
+      new Uint8Array(wasm.exports.memory.buffer, bufPtr, data.length).set(data),
+    )
+    phases.time('coreWrite', () =>
+      wasm.exports.ghostty_terminal_write(termPtr, bufPtr, data.length),
+    )
+    phases.time('free', () => freeBuffer(wasm, bufPtr, data.length))
+    return
+  }
   // Throws rather than returning on a failed allocation: silently dropping a
   // write desynchronises the parser's state machine from the byte stream for
   // the rest of the session, which is worse than stopping.

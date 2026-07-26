@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { XtermEngine } from './xtermEngine'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import { probeGpu, gpuVerdict, type GpuInfo } from './gpuProbe'
+import * as writePhases from '../lib/writePhases'
 import { WORKLOADS, capturedFlood, largeFlood, FLOOD_SIZES, COALESCE_THRESHOLD, type Workload } from './workloads'
 import {
   runWorkload,
@@ -100,6 +101,8 @@ export function BenchmarkHarness() {
   const [results, setResults] = useState<WorkloadResult[]>([])
   const [captured, setCaptured] = useState<Workload | null>(null)
   const [copied, setCopied] = useState(false)
+  const [phaseReport, setPhaseReport] = useState('')
+  const [saving, setSaving] = useState(false)
   const [frameMs, setFrameMs] = useState(0)
   // Off = feed floods the way the app does (coalescer-sized deliveries); the
   // realistic stall. On = one monolithic write; the raw-parser worst case.
@@ -187,6 +190,12 @@ export function BenchmarkHarness() {
     setResults([])
     setProgress('sizing grid…')
     await applyGridSize()
+    // The same recorder the live app uses, so the harness's Ghostty number and
+    // a production flood are finally the same measurement rather than two that
+    // were being compared on the assumption that they were. Only GhosttyEngine
+    // reports into it, so this is a Ghostty-only breakdown regardless of which
+    // engines run. xterm's figures are unaffected.
+    writePhases.start()
     const collected: WorkloadResult[] = []
     for (const w of list) {
       const r = await runWorkload(ab.a, ab.b, w, {
@@ -197,6 +206,8 @@ export function BenchmarkHarness() {
       collected.push(r)
       setResults([...collected])
     }
+    writePhases.stop()
+    setPhaseReport(writePhases.formatReport())
     setProgress('')
     setPhase('ready')
   }
@@ -216,7 +227,10 @@ export function BenchmarkHarness() {
     const gridMode = GRID_SIZES.find((g) => g.id === gridSize)!
     const gridNote = gridMode.cols === 0 ? 'fit to window (not reproducible across window sizes)' : `pinned ${gridMode.label}`
     const meta = `Run at DPR ${window.devicePixelRatio}, ${frameMs.toFixed(1)} ms/frame${hz}, grid ${abRef.current?.a.cols}×${abRef.current?.a.rows} (xterm) / ${abRef.current?.b.cols}×${abRef.current?.b.rows} (ghostty) — ${gridNote}, ${THROUGHPUT_ROUNDS} throughput / ${BLOCK_ROUNDS} flood-stress rounds. Throughput = pure parse; latency = input→present; flood stress = worst main-thread stall.`
-    const md = resultsToMarkdown(results, verdict.text, meta, frameMs)
+    // Appended rather than interleaved: it describes the Ghostty engine across
+    // the whole run, not any one workload row, and it is the figure to compare
+    // against a live session's `__wrusttyDelivery.report()`.
+    const md = `${resultsToMarkdown(results, verdict.text, meta, frameMs)}\n\n\`\`\`\n${phaseReport}\n\`\`\`\n`
     navigator.clipboard.writeText(md).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
@@ -230,6 +244,43 @@ export function BenchmarkHarness() {
     const a = document.createElement('a')
     a.href = url
     a.download = 'phase7-results.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  /**
+   * Writes the flood-stress payload to a file so a live pane can be fed the
+   * *exact* bytes this harness measures — `cat` it with `__wrusttyDelivery`
+   * recording and the two paths become byte-identical.
+   *
+   * Worth having as a button rather than a shell approximation: the generator
+   * is seeded and deterministic, so this is the only way to be certain the two
+   * measurements differ in environment and not in input. The harness flood is
+   * heavily escape-sequence laden (see floodLine) while a `yes` or `tr` flood
+   * is ~100% printable, which is a difference in cells written per byte that
+   * no shell one-liner reproduces by accident.
+   */
+  async function downloadFlood(mb: number) {
+    // Generating 100 MB is a second or two of synchronous work that freezes the
+    // webview, so the button has to repaint as busy *before* it starts —
+    // otherwise the click looks like it did nothing and gets pressed again.
+    setSaving(true)
+    await nextFrame()
+    await nextFrame()
+    try {
+      writeFloodFile(mb)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function writeFloodFile(mb: number) {
+    const built = largeFlood(mb).build(abRef.current?.b.cols ?? 80, abRef.current?.b.rows ?? 24)
+    const blob = new Blob([built.events[0] as BlobPart], { type: 'application/octet-stream' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `wrustty-flood-${mb}mb.bin`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -338,6 +389,16 @@ export function BenchmarkHarness() {
           <input type="checkbox" checked={monolithic} onChange={(e) => setMonolithic(e.target.checked)} />
           single write (worst case)
         </label>
+        {/* Lets a live pane be fed the identical bytes, so a harness figure and
+            a production one can be compared without the workload differing. */}
+        <button
+          style={{ ...S.smallBtn, opacity: saving ? 0.5 : 1 }}
+          disabled={saving}
+          onClick={() => downloadFlood(100)}
+          title="Save this harness's exact 100 MB flood payload. `cat` it in a real pane with __wrusttyDelivery recording to compare the same bytes through both paths — a shell flood is ~100% printable, this one is heavily escape-laden."
+        >
+          {saving ? 'Generating 100 MB…' : 'Save flood bytes'}
+        </button>
       </div>
 
       <div style={S.status}>
@@ -419,6 +480,13 @@ export function BenchmarkHarness() {
         </table>
       )}
 
+      {/* The Ghostty engine's own breakdown, from the same recorder a live
+          session uses — so the harness figure and a production flood can be
+          compared directly instead of assumed comparable. */}
+      {phaseReport !== '' && (
+        <pre style={S.phases}>{phaseReport}</pre>
+      )}
+
       <div style={S.engines}>
         <div>
           <div style={S.engineLabel}>xterm.js</div>
@@ -480,6 +548,11 @@ const S: Record<string, CSSProperties> = {
   rowTop: { borderTop: '1px solid #2a2d3a' },
   unit: { fontSize: 11, opacity: 0.5 },
   warn: { color: '#fca5a5' },
+  phases: {
+    fontSize: 11.5, lineHeight: 1.5, background: '#12141a', border: '1px solid #2a2d3a',
+    borderRadius: 6, padding: '10px 12px', marginBottom: 20, overflowX: 'auto',
+    color: '#cbd5e1', whiteSpace: 'pre',
+  },
   engines: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 },
   engineLabel: { fontSize: 12, opacity: 0.6, marginBottom: 6 },
   host: { width: '100%', height: 320, position: 'relative', background: '#000', borderRadius: 6, overflow: 'hidden' },
