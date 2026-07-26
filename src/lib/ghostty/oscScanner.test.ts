@@ -223,6 +223,49 @@ describe('scanOsc', () => {
     })
   })
 
+  /**
+   * The scan hunts ']' rather than ESC, so a bracket is now the byte that stops
+   * it — and ordinary output is full of brackets. These pin the rejection: a
+   * ']' only opens a sequence when an ESC sits immediately before it.
+   */
+  describe('brackets that are not OSC introducers', () => {
+    it('ignores brackets in ordinary text', () => {
+      const json = '{"a":["one","two"],"b":[1,2]}\n'.repeat(200)
+      const { log, pending } = replay([json])
+      expect(log.filter((l) => !l.startsWith('parse:'))).toEqual([])
+      expect(pending).toBeNull()
+      expect(parsedText(log)).toBe(json)
+    })
+
+    it('ignores a bracket at the very start of a chunk', () => {
+      // Offset 0 has nothing in front of it to inspect; reading scan[-1] must
+      // not be mistaken for an ESC.
+      const { log } = replay([']0;not-a-title\x07'])
+      expect(log.filter((l) => l.startsWith('osc:'))).toEqual([])
+      expect(log.filter((l) => l === 'bell')).toHaveLength(1)
+    })
+
+    it('ignores brackets interleaved with real escape sequences', () => {
+      const s = '\x1b[1;32m["ok"]\x1b[0m,\x1b]0;title\x07['.repeat(50)
+      const { log } = replay([s])
+      expect(log.filter((l) => l.startsWith('osc:'))).toHaveLength(50)
+      expect(log.every((l) => l !== 'bell')).toBe(true)
+      expect(parsedText(log)).toBe(s)
+    })
+
+    it('does not let a bracket inside a payload end the sequence', () => {
+      const { log } = replay(['\x1b]0;a]b]c\x07'])
+      expect(log).toContain('osc:0:a]b]c')
+    })
+
+    it('keeps a bell ahead of a later bracketed sequence in order', () => {
+      // Ordering is resolved against the ']' rather than the ESC before it, so
+      // a bell sitting between the two is the case that could invert.
+      const { log } = replay(['\x07x\x1b]0;t\x07'])
+      expect(log).toEqual(['parse:\x07', 'bell', 'parse:x\x1b]0;t\x07', 'osc:0:t'])
+    })
+  })
+
   describe('UTF-8 integrity', () => {
     it('decodes a multi-byte payload and preserves surrounding bytes', () => {
       const src = '世界 ✓\x1b]0;タイトル\x07more 世界'

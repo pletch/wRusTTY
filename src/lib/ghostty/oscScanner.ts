@@ -77,56 +77,60 @@ export function scanOsc(
   let i = 0
   let unterminatedAt = -1
 
-  // Jump between the only two bytes that can start anything, rather than
-  // stepping through every byte in JS.
+  // Jump between the bytes that can start something, rather than stepping
+  // through every byte in JS.
   //
-  // This is the whole cost of the scanner on a flood: it walks every delivered
-  // byte, and almost none of them are interesting. Measured on a 100 MB flood
-  // into a live pane it was 2.38 ms/MB against the parser's 11.85 — about 20%
-  // on top of the parse, paid only because the app registers OSC and bell
-  // handlers.
+  // The byte hunted for is ']', not ESC. An OSC can only open at `ESC ]`, so
+  // both find the same sequences — but they cost wildly different amounts on
+  // the traffic this app actually carries. Escape-dense output recurs an ESC
+  // every few bytes while never containing a ']' at all, so hunting the ESC
+  // meant an indexOf call per escape to reject it, and hunting the ']' means a
+  // single memchr that returns -1 for the whole buffer. That case is not a
+  // corner: a live pane measured 1.675 ms/MB against plain text's 0.431,
+  // because real SSH traffic is escape-dense.
+  //
+  // The trade is that ']'-dense content now costs a call per ']'. `anyEsc`
+  // bounds it — no ESC in the buffer means no OSC can open no matter how many
+  // brackets there are, so bracket-heavy plain text (JSON, source) skips the
+  // hunt outright and pays the same two passes it always did.
   //
   // The positions are cached rather than recomputed each step, which matters
-  // more than the jump itself: calling indexOf for both bytes at every escape
+  // more than the jump itself: calling indexOf for both bytes at every hit
   // would rescan to the end of the buffer for whichever one is absent, once per
-  // escape, turning escape-dense output quadratic. Recomputing only when the
-  // cursor passes a cached hit keeps each byte value to a single forward pass,
-  // and a value that never appears costs exactly one scan that returns -1.
-  let escAt = scan.indexOf(ESC)
+  // hit, turning dense output quadratic. Recomputing only when the cursor
+  // passes a cached hit keeps each byte value to a single forward pass, and a
+  // value that never appears costs exactly one scan that returns -1.
+  const anyEsc = scan.indexOf(ESC) >= 0
+  let oscAt = anyEsc ? scan.indexOf(OSC_INTRO) : -1
   let belAt = scan.indexOf(BEL)
 
   while (i < scan.length) {
-    if (escAt >= 0 && escAt < i) escAt = scan.indexOf(ESC, i)
+    if (oscAt >= 0 && oscAt < i) oscAt = scan.indexOf(OSC_INTRO, i)
     if (belAt >= 0 && belAt < i) belAt = scan.indexOf(BEL, i)
-    // Whichever comes first; -1 means that byte does not occur again at all.
-    const next =
-      escAt < 0 ? belAt : belAt < 0 ? escAt : escAt < belAt ? escAt : belAt
-    if (next < 0) break
-    i = next
+    if (oscAt < 0 && belAt < 0) break
 
-    const b = scan[i]
-    if (b === BEL) {
-      ;(events ??= []).push({ kind: 'bell', ident: 0, payload: '', segEnd: i + 1 - base })
-      i++
+    // A bell only counts if it comes first. Ordering is checked against the
+    // ']' rather than the ESC before it, which is safe because that byte is an
+    // ESC by definition and so cannot itself be the BEL: the two can never tie.
+    if (belAt >= 0 && (oscAt < 0 || belAt < oscAt)) {
+      ;(events ??= []).push({ kind: 'bell', ident: 0, payload: '', segEnd: belAt + 1 - base })
+      i = belAt + 1
       continue
     }
 
-    // ESC: only ESC ] opens an OSC. Everything else (CSI and friends) is the
-    // parser's business, not this scanner's.
-    if (i + 1 >= scan.length) {
-      unterminatedAt = i
-      break
-    }
-    if (scan[i + 1] !== OSC_INTRO) {
-      i++
+    // A ']' with no ESC in front of it is just a bracket. Step past it and
+    // resume; a ']' at offset 0 has nothing in front of it to check.
+    if (oscAt === 0 || scan[oscAt - 1] !== ESC) {
+      i = oscAt + 1
       continue
     }
+    const seqStart = oscAt - 1
 
     // Inside an OSC string, run to its terminator before interpreting anything.
     // A BEL in here is the terminator, never a bell — resuming the outer scan
     // inside an OSC we failed to recognise is what used to ring the bell for
     // every unrecognised OSC form.
-    const contentStart = i + 2
+    const contentStart = seqStart + 2
     let k = contentStart
     let contentEnd = -1
     let termEnd = -1
@@ -159,7 +163,7 @@ export function scanOsc(
       continue
     }
     if (termEnd < 0) {
-      unterminatedAt = i
+      unterminatedAt = seqStart
       break
     }
 
@@ -182,6 +186,15 @@ export function scanOsc(
     }
     // Recognised or not, the whole sequence is consumed.
     i = termEnd
+  }
+
+  // A chunk ending on a bare ESC may be the first half of an `ESC ]` split
+  // across deliveries. The loop hunts ']' and so never sees that ESC; carrying
+  // it is what keeps a title sequence recognisable when the coalescer happens
+  // to cut between its two opening bytes. It cannot already have been consumed:
+  // every sequence the loop consumes ends on BEL or '\', never on ESC.
+  if (unterminatedAt < 0 && scan.length > 0 && scan[scan.length - 1] === ESC) {
+    unterminatedAt = scan.length - 1
   }
 
   let nextPending: Uint8Array | null = null
