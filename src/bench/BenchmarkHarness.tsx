@@ -101,7 +101,8 @@ export function BenchmarkHarness() {
   const initedRef = useRef(false)
 
   const [gpu, setGpu] = useState<GpuInfo | null>(null)
-  const [phase, setPhase] = useState<'booting' | 'ready' | 'running'>('booting')
+  const [phase, setPhase] = useState<'booting' | 'ready' | 'running' | 'unusable'>('booting')
+  const [bootError, setBootError] = useState('')
   const [progress, setProgress] = useState('')
   const [results, setResults] = useState<WorkloadResult[]>([])
   const [captured, setCaptured] = useState<Workload | null>(null)
@@ -161,9 +162,25 @@ export function BenchmarkHarness() {
 
     let cancelled = false
     ;(async () => {
-      await awaitReady(a)
-      await awaitReady(b)
+      // The result is checked, and refusing to run is the whole point. An
+      // engine that never paints never loaded its core, and a Ghostty engine in
+      // that state silently *buffers* every write instead of parsing it — so
+      // the run completes, quickly, having measured nothing. Ignoring this
+      // boolean is how a parse figure roughly 3x too fast reached the findings.
+      const notReady = [
+        (await awaitReady(a)) ? '' : a.name,
+        (await awaitReady(b)) ? '' : b.name,
+      ].filter(Boolean)
       if (cancelled) return
+      if (notReady.length > 0) {
+        setBootError(
+          `${notReady.join(' and ')} never produced a frame. The core did not load, so any run now would ` +
+            'report bytes it never parsed. Reload the page; if it persists, check the WASM fetch.',
+        )
+        setPhase('unusable')
+        setProgress('')
+        return
+      }
       setProgress('warming up…')
       await warmup(a, b)
       if (cancelled) return
@@ -421,6 +438,7 @@ export function BenchmarkHarness() {
 
       <div style={S.status}>
         {phase === 'booting' && <span>Booting engines… {progress}</span>}
+        {phase === 'unusable' && <span style={{ color: '#fca5a5' }}>⛔ {bootError}</span>}
         {phase === 'running' && <span style={{ color: '#fcd34d' }}>Running — {progress}</span>}
         {phase === 'ready' && results.length === 0 && <span style={{ opacity: 0.6 }}>Ready.</span>}
         {results.length > 0 && (

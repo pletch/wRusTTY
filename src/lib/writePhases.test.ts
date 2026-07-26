@@ -132,6 +132,54 @@ describe('writePhases', () => {
     expect(report).toContain('80.0%')
   })
 
+  /**
+   * A buffered write enters no phase at all, so the throughput line divides
+   * bytes that arrived by time nobody spent parsing them. That is how a figure
+   * roughly 3x too fast reached the published findings, and the report has to
+   * say so before anyone reads the rate.
+   */
+  describe('bytes that were never parsed', () => {
+    it('stays silent when every byte reached the parser', () => {
+      let now = 0
+      vi.spyOn(performance, 'now').mockImplementation(() => now)
+      phases.start()
+      const started = phases.now()
+      phases.time('parse', () => { now += 10 })
+      phases.recordWrite(1048576, phases.now() - started)
+      expect(phases.snapshot().unparsedBytes).toBe(0)
+      expect(phases.formatReport()).not.toContain('INVALID')
+    })
+
+    it('disqualifies the run above the breakdown, not below it', () => {
+      let now = 0
+      vi.spyOn(performance, 'now').mockImplementation(() => now)
+      phases.start()
+      const started = phases.now()
+      phases.recordUnparsed(3 * 1048576)
+      phases.time('parse', () => { now += 10 })
+      phases.recordWrite(4 * 1048576, phases.now() - started)
+
+      const report = phases.formatReport()
+      expect(phases.snapshot().unparsedBytes).toBe(3 * 1048576)
+      expect(report).toContain('INVALID')
+      expect(report).toContain('75.0%')
+      // Ahead of the phase rows, so the rate is never read on its own.
+      expect(report.indexOf('INVALID')).toBeLessThan(report.indexOf('parse'))
+    })
+
+    it('records nothing when disabled', () => {
+      phases.recordUnparsed(1048576)
+      expect(phases.snapshot().unparsedBytes).toBe(0)
+    })
+
+    it('clears on start, so a good run cannot inherit a bad one\'s flag', () => {
+      phases.start()
+      phases.recordUnparsed(1048576)
+      phases.start()
+      expect(phases.snapshot().unparsedBytes).toBe(0)
+    })
+  })
+
   it('says so plainly when nothing was recorded', () => {
     expect(phases.formatReport()).toContain('call start()')
   })

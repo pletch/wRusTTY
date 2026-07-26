@@ -49,6 +49,7 @@ let calls = blank()
 let writes = 0
 let bytes = 0
 let writeMs = 0
+let unparsedBytes = 0
 
 function blank(): Record<AnyPhase, number> {
   return {
@@ -72,6 +73,7 @@ export function reset(): void {
   writes = 0
   bytes = 0
   writeMs = 0
+  unparsedBytes = 0
 }
 
 export function isEnabled(): boolean {
@@ -110,6 +112,21 @@ export function recordWrite(byteLength: number, ms: number): void {
   writeMs += ms
 }
 
+/**
+ * Bytes `write` accepted but never handed to the parser — buffered because the
+ * core had not loaded.
+ *
+ * Recorded because this module cannot otherwise tell the difference. It times
+ * phases, and a buffered write enters none of them: the throughput line divides
+ * bytes that arrived by time nobody spent, and reports the fastest parse ever
+ * seen. That is how a Ghostty figure roughly 3x too fast reached the published
+ * findings. Counting them makes the report say so instead.
+ */
+export function recordUnparsed(byteLength: number): void {
+  if (!enabled) return
+  unparsedBytes += byteLength
+}
+
 export interface PhaseSnapshot {
   writes: number
   bytes: number
@@ -127,6 +144,10 @@ export interface PhaseSnapshot {
    *  somewhere these wrappers do not cover, which is itself a finding. */
   unattributedMs: number
   parseUnattributedMs: number
+  /** Of `bytes`, how many were buffered rather than parsed. Anything above zero
+   *  invalidates `bytesPerSec`, which divides all of `bytes` by the time spent
+   *  parsing only some of them. */
+  unparsedBytes: number
 }
 
 export function snapshot(): PhaseSnapshot {
@@ -151,6 +172,7 @@ export function snapshot(): PhaseSnapshot {
     shares,
     unattributedMs: Math.max(0, writeMs - claimed),
     parseUnattributedMs: Math.max(0, totals.parse - subClaimed),
+    unparsedBytes,
   }
 }
 
@@ -170,6 +192,16 @@ export function formatReport(s: PhaseSnapshot = snapshot()): string {
   lines.push(
     `${s.writes} writes, ${(s.bytes / 1048576).toFixed(2)} MB, ${s.writeMs.toFixed(0)} ms inside write => ${mbs(s.bytesPerSec)}`,
   )
+  // Before the breakdown, not after: the throughput above is the number people
+  // read and quote, and if it is nonsense they have to learn that first.
+  if (s.unparsedBytes > 0) {
+    const share = s.bytes > 0 ? (s.unparsedBytes / s.bytes) * 100 : 100
+    lines.push(
+      `!! INVALID: ${(s.unparsedBytes / 1048576).toFixed(2)} MB (${share.toFixed(1)}%) was buffered, never parsed —`,
+      `!! the core was still loading. The rate above divides all the bytes by the time`,
+      `!! spent parsing only some of them, so it overstates by roughly ${(100 / Math.max(1, 100 - share)).toFixed(1)}x. Discard this run.`,
+    )
+  }
   // Ordered by cost, because the first line is the one worth acting on.
   const ranked = [...PHASES].sort((a, b) => s.totals[b] - s.totals[a])
   for (const p of ranked) {

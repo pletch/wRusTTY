@@ -90,6 +90,11 @@ const SCROLLBACK_BYTES_PER_CELL = 13
 const SCROLLBACK_MAX_BYTES = 64 * 1024 * 1024
 const SCROLLBACK_MIN_LINES = 100
 
+/** How much output may pile up waiting for the core to load before the engine
+ *  gives up and says so. See parseSegment — the unbounded version of this hid a
+ *  never-loading core behind a blank pane and a lying throughput figure. */
+const MAX_PREREADY_BYTES = 1024 * 1024
+
 export function scrollbackLinesFor(lines: number, cols: number): number {
   const maxLines = Math.floor(SCROLLBACK_MAX_BYTES / (Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL))
   return Math.min(Math.max(Math.floor(lines), SCROLLBACK_MIN_LINES), maxLines)
@@ -113,6 +118,7 @@ export class GhosttyEngine implements TerminalEngine {
   /** Writes that arrived before the core finished loading. Bytes only: every
    *  write is converted to bytes up front (see write). */
   private writeBuffer: Uint8Array[] = []
+  private writeBufferBytes = 0
   private renderLoopId = 0
   private needsRedraw = true
   // The deferred re-fits below outlive a pane that's torn down while its WASM
@@ -230,6 +236,7 @@ export class GhosttyEngine implements TerminalEngine {
         writeBytes(this.wasm, this.termPtr, data)
       }
       this.writeBuffer = []
+      this.writeBufferBytes = 0
       
       if (this.canvas) {
         this.setupRenderer()
@@ -1129,6 +1136,31 @@ export class GhosttyEngine implements TerminalEngine {
   private parseSegment(seg: Uint8Array): void {
     if (seg.length === 0) return
     if (!this.wasm) {
+      // The core is still loading, so hold the bytes for initWasm to replay.
+      //
+      // Bounded, and fatal past the bound, because the unbounded version failed
+      // silently and expensively. A core that never resolves leaves `wasm` null
+      // and `fatalError` null forever, so every write lands here: the pane stays
+      // blank, each write returns promptly having parsed nothing, and a copy of
+      // every byte is retained. A benchmark run in that state fed 300 MB into
+      // this array and reported the fastest parse ever recorded, because the
+      // instrument counted bytes handed to `write` and no phase timer was ever
+      // entered. Nothing logged, and it survived for weeks.
+      //
+      // A pane legitimately buffers only what arrives before the core is up —
+      // a shell banner, at most a burst — so a megabyte here already means the
+      // core is not coming, and saying so beats accumulating quietly.
+      phases.recordUnparsed(seg.length)
+      this.writeBufferBytes += seg.length
+      if (this.writeBufferBytes > MAX_PREREADY_BYTES) {
+        this.writeBuffer = []
+        this.writeBufferBytes = 0
+        this.failInit(
+          `Ghostty's WASM core never finished loading: ${(MAX_PREREADY_BYTES / 1048576).toFixed(0)} MB ` +
+            'of output arrived with no parser to take it. Nothing written to this terminal has been parsed.',
+        )
+        return
+      }
       this.writeBuffer.push(seg.slice())
       return
     }
