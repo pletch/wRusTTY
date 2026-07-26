@@ -137,6 +137,19 @@ export function BenchmarkHarness() {
       e.setScrollback(5000)
     }
 
+    // The app registers a bell handler, which routes every write through
+    // parseAndDispatch and its full-buffer scanOsc pass; without one the
+    // harness took the shorter parseSegment path and so was not measuring the
+    // code the app runs.
+    //
+    // It also buys a control. scanOsc is pure JS over the same bytes in the
+    // same write, so `scan` in the phase report measures this thread's plain
+    // JS speed alongside `coreWrite`'s WASM speed. Comparing scan ms/MB here
+    // against a live pane separates "the whole thread is slower there" from
+    // "the WASM specifically is slower there" — which nothing else has been
+    // able to do, since every workload property measured identical in both.
+    ghostty.onBell(() => {})
+
     xterm.mount(xtermHost.current!)
     ghostty.mount(ghosttyHost.current!)
     xterm.fit()
