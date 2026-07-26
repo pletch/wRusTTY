@@ -5,6 +5,7 @@ import { WebGLRenderer, measureCell } from './WebGLRenderer'
 import { scanOsc } from './oscScanner'
 import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
+import { cursorStyleSequence, type CursorStyleSetting } from '../settings'
 import {
   compileGhosttyWasm,
   instantiateGhosttyModule,
@@ -154,6 +155,9 @@ export class GhosttyEngine implements TerminalEngine {
   private _cols = 80
   private _rows = 24
   private _scrollback = 1000
+  /** The configured default cursor, resent to the core whenever one is built. */
+  private _cursorStyle: CursorStyleSetting = 'block'
+  private _cursorBlink = true
   private _themeName: string | null = null
   private _opacity = 1
   private _viewportOffset = 0
@@ -291,6 +295,16 @@ export class GhosttyEngine implements TerminalEngine {
       if (this.termPtr === 0) {
         this.failInit('Ghostty could not allocate a terminal.')
         return
+      }
+
+      // Before the buffered writes below, so a shape the connection itself sets
+      // in its first bytes wins over the preference rather than being undone by
+      // it. Skipped when it matches the core's own default, which saves a write
+      // on the overwhelmingly common setting.
+      if (this._cursorStyle !== 'block' || !this._cursorBlink) {
+        writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
+          cursorStyleSequence(this._cursorStyle, this._cursorBlink),
+        ))
       }
 
       // Flush buffered writes. Both branches have to stay synchronous: the
@@ -906,11 +920,17 @@ export class GhosttyEngine implements TerminalEngine {
       const cursorVisible = this.wasm.exports.ghostty_render_state_get_cursor_visible(this.termPtr) !== 0
       const cursorCol = this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr)
       const cursorRow = this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr)
+      // DECSCUSR carries blink as well as shape (1/3/5 blink, 2/4/6 are
+      // steady), and honouring only the shape made every steady variant blink
+      // anyway. The phase is still ours — the core says *whether* to blink, the
+      // timer says when — so a steady cursor is simply always on.
+      const cursorBlinks =
+        this.wasm.exports.ghostty_render_state_get_cursor_blinking(this.termPtr) !== 0
       this.renderer.cursor = cursorVisible
         ? {
             col: cursorCol,
             row: cursorRow,
-            on: this.cursorBlinkOn,
+            on: cursorBlinks ? this.cursorBlinkOn : true,
             focused: this.focused,
             // DECSCUSR. Read off the same snapshot as the position above, for
             // the same reason: a shape sampled either side of update() belongs
@@ -1617,6 +1637,25 @@ export class GhosttyEngine implements TerminalEngine {
     const [cr, cg, cb] = hexToRgb(theme.cursor)
     this.renderer.setCursorColor(cr, cg, cb)
   }
+  /**
+   * The cursor a pane shows until the remote application says otherwise.
+   *
+   * Written into the terminal as DECSCUSR rather than held beside it, so the
+   * core stays the single source of truth for what the cursor is and an
+   * application that sets its own shape simply overwrites this — which is the
+   * precedence a preference should have.
+   *
+   * Reapplied by the caller on a settings change. A full reset (RIS) puts the
+   * core back to a blinking block and this is not currently re-sent, so a
+   * program that resets the terminal drops the preference until the next
+   * settings change; worth fixing if it turns up in practice.
+   */
+  setCursorStyle(style: CursorStyleSetting, blink: boolean): void {
+    this._cursorStyle = style
+    this._cursorBlink = blink
+    if (this.termPtr) this.write(cursorStyleSequence(style, blink))
+  }
+
   setFont(fontFamily: string, fontSize: number): void {
     this.fontFamily = fontFamily
     this.fontSize = fontSize

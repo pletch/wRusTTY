@@ -97,6 +97,29 @@ describe('ghostty_render_state_get_cursor_style', () => {
     }
   })
 
+  it('reports blink separately, so steady and blinking variants differ', () => {
+    // The half of DECSCUSR that was ignored: honouring only the shape made
+    // ESC[1 q and ESC[2 q render identically, because the engine blinked on its
+    // own timer regardless.
+    const ptr = term(20, 3)
+    const blinking = () => {
+      wasm.exports.ghostty_render_state_update(ptr)
+      return wasm.exports.ghostty_render_state_get_cursor_blinking(ptr) !== 0
+    }
+    for (const [seq, wantShape, wantBlink] of [
+      ['[1 q', CURSOR_STYLE_BLOCK, true],
+      ['[2 q', CURSOR_STYLE_BLOCK, false],
+      ['[3 q', CURSOR_STYLE_UNDERLINE, true],
+      ['[4 q', CURSOR_STYLE_UNDERLINE, false],
+      ['[5 q', CURSOR_STYLE_BAR, true],
+      ['[6 q', CURSOR_STYLE_BAR, false],
+    ] as const) {
+      write(ptr, seq)
+      expect(shape(ptr), seq).toBe(wantShape)
+      expect(blinking(), seq).toBe(wantBlink)
+    }
+  })
+
   it('is read off the render state, so it follows an update rather than leading it', () => {
     // The shape has to belong to the same snapshot as the cursor position; if
     // it were sampled before update() it would describe the previous frame.

@@ -292,8 +292,15 @@ export function Terminal({
     term.setFont(settings.fontFamily, settings.fontSize)
     // term.options.fontFamily = settings.fontFamily
         term.setScrollback( settings.scrollback)
+    term.setCursorStyle(settings.cursorStyle, settings.cursorBlink)
     refitRef.current?.()
-  }, [settings.fontFamily, settings.fontSize, settings.scrollback])
+  }, [
+    settings.fontFamily,
+    settings.fontSize,
+    settings.scrollback,
+    settings.cursorStyle,
+    settings.cursorBlink,
+  ])
 
   // Only the focused pane's scrollbar is shown — a background pane's
   // scrollbar would otherwise be a distracting, non-interactive-feeling

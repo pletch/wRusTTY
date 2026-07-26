@@ -1,3 +1,4 @@
+import type { CursorStyleSetting } from '../lib/settings'
 /**
  * The xterm.js implementation of `TerminalEngine`. It lives under `src/bench/`
  * rather than `src/lib/` because it is no longer a renderer the app can be
@@ -184,6 +185,13 @@ export class XtermEngine implements TerminalEngine {
   setFont(fontFamily: string, fontSize: number) {
     this.term.options.fontFamily = fontFamily
     this.term.options.fontSize = fontSize
+  }
+
+  setCursorStyle(style: CursorStyleSetting, blink: boolean) {
+    // xterm has its own options for this rather than taking DECSCUSR from us,
+    // and its names line up one-for-one.
+    this.term.options.cursorStyle = style === 'bar' ? 'bar' : style === 'underline' ? 'underline' : 'block'
+    this.term.options.cursorBlink = blink
   }
 
   setScrollback(scrollback: number) {

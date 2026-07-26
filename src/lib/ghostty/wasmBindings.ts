@@ -115,6 +115,8 @@ export interface GhosttyExports {
   ghostty_terminal_is_scrollback_row_wrapped(term: number, offset: number): number
   /** DECSCUSR shape as a CURSOR_STYLE_* value. */
   ghostty_render_state_get_cursor_style(term: number): number
+  /** Whether DECSCUSR asked for a blinking cursor (DEC mode 12). */
+  ghostty_render_state_get_cursor_blinking(term: number): number
 
   // Scrollback
   ghostty_terminal_get_scrollback_length(term: number): number

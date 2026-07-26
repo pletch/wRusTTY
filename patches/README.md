@@ -81,11 +81,15 @@ extend. It is not true now, and all three are closed here:
   `is_row_wrapped`, which was viewport-only. Search now joins a wrapped line
   into the single logical line it is before matching, instead of missing any hit
   that straddled the wrap.
-- **`ghostty_render_state_get_cursor_style`** — DECSCUSR. The core tracked the
-  shape and `render.zig` already put it on the render state; only the getter was
-  missing.
+- **`ghostty_render_state_get_cursor_style`** and
+  **`ghostty_render_state_get_cursor_blinking`** — both halves of DECSCUSR. The
+  core tracked the shape and the blink (mode 12) and `render.zig` already put
+  both on the render state; only the getters were missing. The blink one is not
+  optional garnish: without it `ESC[1 q` and `ESC[2 q` render identically,
+  because the pane blinks on its own 530 ms timer regardless. The core now says
+  *whether* to blink and the timer only says *when*.
 
-That takes the surface from 79 exports to 81. A fourth gap, Primary Device
+That takes the surface from 79 exports to 82. A fourth gap, Primary Device
 Attributes, turned out never to have been one — `ESC[c` already replied
 `ESC[?62;22c`, on the old binary too.
 

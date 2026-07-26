@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadSettings, saveSettings } from './settings'
+import { loadSettings, saveSettings, cursorStyleSequence } from './settings'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
 const PREVIOUS_STORAGE_KEY = 'wr-shell.terminal-settings'
@@ -58,3 +58,23 @@ function loadSettingsDefaultsSnapshot() {
   localStorage.clear()
   return loadSettings()
 }
+
+describe('cursorStyleSequence', () => {
+  /**
+   * DECSCUSR pairs each shape with whether it blinks, so the two settings
+   * resolve to one sequence and getting the pairing wrong silently swaps
+   * "steady bar" for "blinking underline". The table is the test.
+   */
+  it('maps every shape and blink combination to its DECSCUSR value', () => {
+    expect(cursorStyleSequence('block', true)).toBe('[1 q')
+    expect(cursorStyleSequence('block', false)).toBe('[2 q')
+    expect(cursorStyleSequence('underline', true)).toBe('[3 q')
+    expect(cursorStyleSequence('underline', false)).toBe('[4 q')
+    expect(cursorStyleSequence('bar', true)).toBe('[5 q')
+    expect(cursorStyleSequence('bar', false)).toBe('[6 q')
+  })
+
+  it('falls back to a block rather than emitting a malformed sequence', () => {
+    expect(cursorStyleSequence('nonsense' as never, true)).toBe('[1 q')
+  })
+})

@@ -1,5 +1,24 @@
 import type { VibrancyMode } from './windowEffects'
 
+export type CursorStyleSetting = 'block' | 'bar' | 'underline'
+
+/**
+ * DECSCUSR values, which pair each shape with whether it blinks — there is no
+ * way to set one without the other, which is why the two settings resolve to a
+ * single sequence.
+ */
+const DECSCUSR: Record<CursorStyleSetting, { blink: number; steady: number }> = {
+  block: { blink: 1, steady: 2 },
+  underline: { blink: 3, steady: 4 },
+  bar: { blink: 5, steady: 6 },
+}
+
+/** The sequence that puts a terminal into the configured cursor. */
+export function cursorStyleSequence(style: CursorStyleSetting, blink: boolean): string {
+  const pair = DECSCUSR[style] ?? DECSCUSR.block
+  return `[${blink ? pair.blink : pair.steady} q`
+}
+
 export interface TerminalSettings {
   /** Selecting text immediately copies it to the clipboard. */
   copyOnSelect: boolean
@@ -49,6 +68,19 @@ export interface TerminalSettings {
    * than the number suggests. Memory scales with this times the number of
    * open panes, which is why it isn't simply set very high. */
   scrollback: number
+  /**
+   * Shape the cursor takes until the remote application says otherwise.
+   *
+   * Applied by writing DECSCUSR (`ESC[N q`) into the terminal, which is the
+   * mechanism the core already expects — so an application that sets its own
+   * shape correctly wins over this, the same way it does in any other terminal.
+   * It is a default, not an override.
+   */
+  cursorStyle: CursorStyleSetting
+  /** Whether that default cursor blinks. DECSCUSR encodes shape and blink in
+   *  one value, so this is written as part of the same sequence. An
+   *  application that sets DECSCUSR itself overrides both together. */
+  cursorBlink: boolean
   /** Ask before closing a tab, pane or the window while something is still
    * connected. On by default: closing is instant and irreversible, and the
    * session it drops may have taken a vault unlock and a jump host to
@@ -94,6 +126,8 @@ const defaults: TerminalSettings = {
   fontFamily: 'ui-monospace, Consolas, monospace',
   fontSize: 14,
   scrollback: 10000,
+  cursorStyle: 'block',
+  cursorBlink: true,
   confirmCloseWithConnection: true,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,

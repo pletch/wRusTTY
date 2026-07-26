@@ -12,7 +12,7 @@ import {
   X,
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
-import type { TerminalSettings } from '../lib/settings'
+import type { TerminalSettings, CursorStyleSetting } from '../lib/settings'
 import { PRESET_THEMES } from '../lib/theme'
 import { revealLogs } from '../lib/logging'
 import { toast } from '../lib/toast'
@@ -226,10 +226,39 @@ export function SettingsDialog({ settings, onChange }: Props) {
                             ))}
                           </select>
                         </label>
+                        <label className="flex items-center justify-between gap-3 text-white/85">
+                          <span>Cursor</span>
+                          <select
+                            className={selectClass}
+                            value={settings.cursorStyle}
+                            onChange={(e) =>
+                              onChange({
+                                ...settings,
+                                cursorStyle: e.target.value as CursorStyleSetting,
+                              })
+                            }
+                          >
+                            <option value="block">Block</option>
+                            <option value="bar">Bar</option>
+                            <option value="underline">Underline</option>
+                          </select>
+                        </label>
+                        <label className="flex items-center justify-between gap-3 text-white/85">
+                          <span>Blink cursor</span>
+                          <input
+                            type="checkbox"
+                            className="accent-sky-400"
+                            checked={settings.cursorBlink}
+                            onChange={(e) =>
+                              onChange({ ...settings, cursorBlink: e.target.checked })
+                            }
+                          />
+                        </label>
                         <p className="leading-relaxed text-white/30">
                           Font changes apply to open sessions immediately. Scrollback counts
                           wrapped rows rather than logical lines, and costs memory per open
-                          pane.
+                          pane. The cursor setting is a starting point — a program that picks
+                          its own cursor, as vim and many TUIs do, overrides it.
                         </p>
                       </div>
                       <Toggle

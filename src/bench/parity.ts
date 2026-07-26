@@ -85,10 +85,13 @@ export const PARITY: ParityItem[] = [
   { area: 'Render', item: 'Overline, double / curly underline', status: 'parity', note: 'underline style has no xterm oracle; asserted against the SGR instead' },
   { area: 'Cursor', item: 'Block cursor, focused / unfocused outline', status: 'parity' },
   { area: 'Cursor', item: 'Blink (matched 530 ms period)', status: 'parity' },
-  // ghostty_render_state_get_cursor_style, read off the same snapshot as the
-  // cursor position. Bar and underline draw as substituted glyphs the way the
-  // unfocused outline does, so a shaped cursor still costs one quad per cell.
-  { area: 'Cursor', item: 'DECSCUSR bar / underline shapes', status: 'parity' },
+  // ghostty_render_state_get_cursor_style plus _get_cursor_blinking, both read
+  // off the same snapshot as the cursor position. Bar and underline draw as
+  // substituted glyphs the way the unfocused outline does, so a shaped cursor
+  // still costs one quad per cell. Blink is the second half of DECSCUSR and was
+  // briefly missed: honouring only the shape left ESC[1 q and ESC[2 q
+  // identical, since the pane blinked on its own timer regardless.
+  { area: 'Cursor', item: 'DECSCUSR shapes, steady and blinking', status: 'parity' },
   { area: 'Input', item: 'Keyboard, control & named keys, app-cursor mode', status: 'parity' },
   { area: 'Input', item: 'IME / dead-key composition', status: 'parity', note: 'offscreen textarea path' },
   { area: 'Input', item: 'Per-pane backspace ^H / ^? preference', status: 'parity' },

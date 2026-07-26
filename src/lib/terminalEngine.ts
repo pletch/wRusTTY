@@ -1,3 +1,4 @@
+import type { CursorStyleSetting } from './settings'
 import type { IDisposable } from '@xterm/xterm'
 
 export interface SearchOptions {
@@ -47,6 +48,9 @@ export interface TerminalEngine {
   setTheme(themeName: string, opacity: number): void
   setFont(fontFamily: string, fontSize: number): void
   setScrollback(scrollback: number): void
+  /** Default cursor shape and blink, until the remote application overrides it
+   *  with its own DECSCUSR. */
+  setCursorStyle(style: CursorStyleSetting, blink: boolean): void
   
   rebuildWebglRenderer(): void
 
