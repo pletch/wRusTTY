@@ -21,6 +21,7 @@ import {
   CURSOR_STYLE_BAR,
   CURSOR_STYLE_UNDERLINE,
 } from '../lib/ghostty/wasmBindings'
+import { cursorStyleSequence } from '../lib/settings'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const WASM_PATH = join(here, '../lib/ghostty/vendor/ghostty-vt.wasm')
@@ -118,6 +119,25 @@ describe('ghostty_render_state_get_cursor_style', () => {
       expect(shape(ptr), seq).toBe(wantShape)
       expect(blinking(), seq).toBe(wantBlink)
     }
+  })
+
+  it('leaves a fresh terminal STEADY, which is why the preference is always written', () => {
+    // The assumption that broke the blinking cursor. A fresh terminal looks
+    // like a block, so it is tempting to read that as "blinking block, same as
+    // the default preference, no need to write anything" — but the core leaves
+    // DEC mode 12 off, so the shape matches and the blink does not. Skipping
+    // the write on that basis left mode 12 false while the preference said
+    // blink, and once the render loop started taking blink from the core the
+    // cursor stopped blinking entirely.
+    const ptr = term(20, 3)
+    wasm.exports.ghostty_render_state_update(ptr)
+    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_BLOCK)
+    expect(wasm.exports.ghostty_render_state_get_cursor_blinking(ptr)).toBeFalsy()
+
+    // ...and the default preference is not that, so it has real work to do.
+    write(ptr, cursorStyleSequence('block', true))
+    wasm.exports.ghostty_render_state_update(ptr)
+    expect(wasm.exports.ghostty_render_state_get_cursor_blinking(ptr)).toBeTruthy()
   })
 
   it('is read off the render state, so it follows an update rather than leading it', () => {

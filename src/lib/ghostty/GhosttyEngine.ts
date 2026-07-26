@@ -299,13 +299,19 @@ export class GhosttyEngine implements TerminalEngine {
 
       // Before the buffered writes below, so a shape the connection itself sets
       // in its first bytes wins over the preference rather than being undone by
-      // it. Skipped when it matches the core's own default, which saves a write
-      // on the overwhelmingly common setting.
-      if (this._cursorStyle !== 'block' || !this._cursorBlink) {
-        writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
-          cursorStyleSequence(this._cursorStyle, this._cursorBlink),
-        ))
-      }
+      // it.
+      //
+      // Written unconditionally. An earlier version skipped this when the
+      // preference matched what looked like the core's default, on the
+      // assumption that a fresh terminal is a blinking block. It is not: the
+      // core leaves DEC mode 12 off, so a fresh cursor is *steady*. Skipping
+      // therefore left mode 12 false while the preference said blink, and since
+      // the render loop now takes the blink from the core, the cursor stopped
+      // blinking at all. The write is one short sequence per pane; there is
+      // nothing here worth optimising.
+      writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
+        cursorStyleSequence(this._cursorStyle, this._cursorBlink),
+      ))
 
       // Flush buffered writes. Both branches have to stay synchronous: the
       // parser is a single state machine fed in byte order, so deferring one
