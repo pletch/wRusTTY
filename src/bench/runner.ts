@@ -141,6 +141,11 @@ function checkAbort(opts: RunOptions): void {
   if (reason != null) throw new RunAborted(reason)
 }
 
+/** Empty trials tolerated in one latency workload before the run is abandoned.
+ *  Small: an engine that is not painting does not recover on its own, and the
+ *  point is to stop while the fact is still legible rather than to survive it. */
+const MAX_EMPTY_TRIALS = 3
+
 const RESET_SEQ = '\x1bc' // RIS — full terminal reset between trials
 
 /**
@@ -537,8 +542,25 @@ async function runLatency(
       checkAbort(opts)
       const r = await measurePresent(engine, () => engine.write(ev), { timeoutMs: 2000 })
       if (r.timedOut) failed[engine.name]++
-      else if (r.paints === 0) empty[engine.name]++
-      else samples[engine.name].push(r.elapsed)
+      else if (r.paints === 0) {
+        empty[engine.name]++
+        // Ground truth, and the backstop for the visibility guard in the
+        // harness. That guard infers a paused renderer from geometry, which has
+        // now been wrong in both directions — it fired on the harness's own
+        // resize, and it missed the results tables pushing the hosts down the
+        // page. An empty trial is not an inference: the engine was asked to
+        // paint and did not. A handful can be a genuine no-op frame, so this
+        // tolerates a few and then stops rather than filling a table with a
+        // distribution sampled from whichever trials happened to render.
+        if (empty[engine.name] > MAX_EMPTY_TRIALS) {
+          throw new RunAborted(
+            `${engine.name} produced no paint on ${empty[engine.name]} trials of ${workload.label}. ` +
+              'Its renderer is not painting — most often because its host has left the viewport, which ' +
+              'stops xterm.js rendering entirely. Run aborted rather than reported from the trials that ' +
+              'did render.',
+          )
+        }
+      } else samples[engine.name].push(r.elapsed)
     }
     if (i % 25 === 0) opts.onProgress?.(`${workload.label}: event ${i + 1}/${n}`)
   }

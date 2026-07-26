@@ -534,6 +534,30 @@ export function BenchmarkHarness() {
         )}
       </div>
 
+      {/* Above the results, and sticky while a run is in flight.
+       *
+       * These used to render *below* the results tables, which is why runs kept
+       * aborting on a visibility check nobody could explain: each completed
+       * workload appends a table above the hosts and pushes them further down
+       * the page, so a seven-workload suite walks them out of the viewport on
+       * its own. xterm.js stops rendering when its host leaves the viewport and
+       * reports zero paints, which the latency loop counts as an empty trial —
+       * the exact failure that made the TUI row unusable at n=18 of 120.
+       *
+       * Sticky rather than merely reordered, so that scrolling down to read
+       * results mid-run cannot reintroduce it either. The engines are the
+       * instrument; they stay on screen. */}
+      <div style={{ ...S.engines, ...(phase === 'running' ? S.enginesPinned : null) }}>
+        <div>
+          <div style={S.engineLabel}>xterm.js</div>
+          <div ref={xtermHost} style={S.host} />
+        </div>
+        <div>
+          <div style={S.engineLabel}>Ghostty / WebGL</div>
+          <div ref={ghosttyHost} style={S.host} />
+        </div>
+      </div>
+
       {results.length > 0 && (
         <table style={S.table}>
           <thead>
@@ -608,17 +632,6 @@ export function BenchmarkHarness() {
         <pre style={S.phases}>{phaseReport}</pre>
       )}
 
-      <div style={S.engines}>
-        <div>
-          <div style={S.engineLabel}>xterm.js</div>
-          <div ref={xtermHost} style={S.host} />
-        </div>
-        <div>
-          <div style={S.engineLabel}>Ghostty / WebGL</div>
-          <div ref={ghosttyHost} style={S.host} />
-        </div>
-      </div>
-
       <section style={S.parity}>
         <h2 style={S.h2}>
           Feature parity vs xterm.js
@@ -675,6 +688,11 @@ const S: Record<string, CSSProperties> = {
     color: '#cbd5e1', whiteSpace: 'pre',
   },
   engines: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 },
+  // Applied only while running. The page background is repeated because a
+  // sticky element scrolls over the content beneath it and would otherwise be
+  // transparent to it; the top offset clears nothing in particular, it just
+  // keeps the labels off the very edge.
+  enginesPinned: { position: 'sticky', top: 0, zIndex: 5, background: '#0b0c10', paddingTop: 8, paddingBottom: 8 },
   engineLabel: { fontSize: 12, opacity: 0.6, marginBottom: 6 },
   host: { width: '100%', height: 320, position: 'relative', background: '#000', borderRadius: 6, overflow: 'hidden' },
   parity: { marginTop: 8 },
