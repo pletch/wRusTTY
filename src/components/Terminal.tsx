@@ -24,6 +24,7 @@ import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import * as deliveryStats from '../lib/deliveryStats'
+import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 
@@ -662,13 +663,22 @@ export function Terminal({
     // rather than as a base64 string on `onEvent` — no decode step needed.
     // Session logging happens Rust-side before these bytes are even sent,
     // so there's nothing to do here beyond rendering.
-    const onData = (bytes: Uint8Array) => {
-      if (disposed) return
-      setConnecting(false)
+    // Metered against the frame rather than written the instant IPC hands the
+    // bytes over. Writing inline froze the window for up to 106 ms during a
+    // flood — not one slow parse, but ~30 deliveries of 3.5 ms each running
+    // with no chance to render between them, because IPC had a queue behind it.
+    // An idle terminal is unaffected: a keystroke echo is one small delivery
+    // into a full budget and still goes in synchronously. See lib/writeScheduler.
+    const scheduler = createWriteScheduler((bytes) =>
       // Wrapped rather than called directly so the real delivery path can be
       // measured in a live session — see lib/deliveryStats.ts. Off by default,
       // and when off this is a branch and a call, no clock reads.
-      deliveryStats.record(bytes.length, () => term.write(bytes))
+      deliveryStats.record(bytes.length, () => term.write(bytes)),
+    )
+    const onData = (bytes: Uint8Array) => {
+      if (disposed) return
+      setConnecting(false)
+      scheduler.push(bytes)
     }
 
     // Readline/Readline-hex (serial only) buffer keystrokes locally and
@@ -938,6 +948,10 @@ export function Terminal({
 
     return () => {
       disposed = true
+      // Before the engine goes: the scheduler may be holding a queue and a
+      // pending frame callback, and draining either into a disposed terminal
+      // is a write to a freed core.
+      scheduler.dispose()
       window.removeEventListener('resize', onResize)
       unlistenFocus?.()
       refitRef.current = null
