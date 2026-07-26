@@ -63,15 +63,25 @@ export interface NamedHost {
  * The message a caller shows when the guard trips. Pure, so the wording is
  * testable without a DOM or an observer.
  */
-export function visibilityMessage(names: string[], during: boolean): string {
+export function visibilityMessage(names: string[], during: boolean, stillHidden: string[] = []): string {
   const who = names.join(' and ')
   const verb = names.length > 1 ? 'were' : 'was'
-  return during
-    ? `${who} scrolled out of view during the run. xterm stops rendering when its host leaves the viewport, ` +
-        'so the remaining trials would have measured nothing and been counted as empty. Run aborted — ' +
-        'keep both panes on screen for the whole run.'
-    : `${who} ${verb} not fully on screen. xterm does not render a host that has left the viewport, so a run ` +
-        'now would report empty trials instead of latencies. Scroll both panes into view.'
+  if (!during) {
+    return `${who} ${verb} not fully on screen. xterm does not render a host that has left the viewport, so a run ` +
+      'now would report empty trials instead of latencies. Scroll both panes into view.'
+  }
+  // Whether the host is still off screen is the one fact that separates "you
+  // scrolled" from "the harness perturbed its own layout". Reported, because
+  // the first version of this guard latched on the grid-pin resize and aborted
+  // every 200x60 run before a trial ran, with a message that blamed the user
+  // and gave them nothing to check.
+  const detail =
+    stillHidden.length > 0
+      ? `${stillHidden.join(' and ')} still off screen.`
+      : 'Both are back on screen now, so the loss was transient — if you did not scroll, this is a harness bug ' +
+        'rather than a scroll: note the grid size and what was on screen.'
+  return `${who} left the viewport during the run. xterm stops rendering when its host does, so the remaining ` +
+    `trials would have measured nothing and been counted as empty. Run aborted. ${detail}`
 }
 
 /**

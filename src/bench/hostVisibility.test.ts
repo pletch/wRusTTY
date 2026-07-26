@@ -115,6 +115,18 @@ describe('visibilityMessage', () => {
     expect(visibilityMessage(['xterm'], true)).toContain('Run aborted')
   })
 
+  it('distinguishes a host still off screen from one that came back', () => {
+    // The difference between "you scrolled" and "the harness moved its own
+    // layout". Getting this wrong once already cost every 200x60 run.
+    const still = visibilityMessage(['xterm', 'ghostty'], true, ['xterm'])
+    expect(still).toContain('xterm still off screen')
+    expect(still).not.toContain('harness bug')
+
+    const transient = visibilityMessage(['xterm', 'ghostty'], true, [])
+    expect(transient).toContain('transient')
+    expect(transient).toContain('harness bug')
+  })
+
   it('agrees with itself about number', () => {
     expect(visibilityMessage(['xterm'], false)).toContain('xterm was not')
     expect(visibilityMessage(['xterm', 'ghostty'], false)).toContain('xterm and ghostty were not')
