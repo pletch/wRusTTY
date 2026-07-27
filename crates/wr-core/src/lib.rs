@@ -1,4 +1,5 @@
-//! Shared session model, the protocol-agnostic `Connection` trait, and
+//! Shared session model, the protocol-agnostic `Connector`/`Session`
+//! traits, and
 //! event types used by every transport crate (`wr-ssh`, `wr-telnet`,
 //! `wr-serial`) and by `src-tauri`.
 

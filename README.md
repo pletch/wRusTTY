@@ -37,7 +37,7 @@ the everyday command; `tauri build` never enables it.
 
 - `src/` — React + TypeScript frontend
 - `src-tauri/` — Tauri app shell (thin glue: commands, window/state wiring)
-- `crates/wr-core` — session model, protocol-agnostic `Connection` trait
+- `crates/wr-core` — session model, protocol-agnostic `Connector`/`Session` traits
 - `crates/wr-ssh` — SSH transport (auth, kex, host keys, PTY, forwarding)
 - `crates/wr-telnet` — Telnet transport
 - `crates/wr-serial` — serial transport

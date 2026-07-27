@@ -46,7 +46,7 @@ wrustty/
     └── lib/              #   tauri bindings, keymap, themes
 ```
 
-Every transport implements one `Connection` trait in `wr-core`
+Every transport implements the `Connector`/`Session` pair in `wr-core`
 (connect / read stream / write / resize / disconnect / status events), so the
 frontend and tab manager are protocol-agnostic. Adding a protocol later (e.g.
 mosh, RDP) means adding a crate, not touching the UI.

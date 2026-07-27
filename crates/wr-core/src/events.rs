@@ -10,7 +10,7 @@ pub enum ConnectionStatus {
     Failed(String),
 }
 
-/// Pushed from a running `Connection` back to whatever is driving it.
+/// Pushed from a running `Session` back to whatever is driving it.
 #[derive(Debug, Clone)]
 pub enum ConnectionEvent {
     Data(Vec<u8>),
