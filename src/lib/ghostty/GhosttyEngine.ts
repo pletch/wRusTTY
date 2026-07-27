@@ -114,6 +114,40 @@ interface SearchMatch {
 }
 
 /**
+ * One buffer row, as `readRows` hands it over: the text of every column
+ * concatenated, plus where each column begins in it.
+ *
+ * `colStart` has `cols + 1` entries, so column `c` is always
+ * `text.slice(colStart[c], colStart[c + 1])` with no special case for the
+ * last column. A span can be longer than one character (a grapheme cluster)
+ * or empty (the trailing half of a wide character), which is exactly the
+ * information a plain `string` would have thrown away and a `string[]` per
+ * cell paid ~2M allocations to keep.
+ */
+interface RowText {
+  text: string
+  colStart: Int32Array
+}
+
+/** What column `c` shows. Empty for a wide character's trailing spacer. */
+function columnText(row: RowText, c: number): string {
+  if (c < 0 || c + 1 >= row.colStart.length) return ''
+  return row.text.slice(row.colStart[c], row.colStart[c + 1])
+}
+
+/**
+ * What counts as one word for double-click. Deliberately wider than
+ * alphanumerics: the things worth grabbing out of a terminal in one gesture
+ * are paths, flags, hostnames and URLs, and stopping at every `/` or `.`
+ * turns picking up a path into several drags.
+ *
+ * Hoisted to module scope so the literal isn't recompiled per call — V8
+ * handles the inline form well, but the word scan calls this once per column
+ * and a module-level constant is free.
+ */
+const WORD_RE = /[A-Za-z0-9_\-./:@~+=%?&#]/
+
+/**
  * Whether a full reset has discarded the configured cursor and nothing has
  * claimed it since.
  *
@@ -649,18 +683,29 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Per-column text for a range of absolute buffer rows — scrollback rows
-   * first, then the active screen, the same numbering the renderer draws from.
-   * A blank column comes back as a space and the trailing half of a wide
-   * character as an empty string, so `row.length` is always the column count
-   * and `row[c]` is what column `c` actually shows.
+   * Text for a range of absolute buffer rows — scrollback rows first, then the
+   * active screen, the same numbering the renderer draws from.
    *
    * Copy, word selection and search all need exactly this, and each had (or
    * would have had) its own partial version of the cell walk — including the
    * spacer and grapheme handling that made copied text wrong.
+   *
+   * This used to return `string[][]`, one JS string per cell. A full-scrollback
+   * search at 10,000 rows x 200 columns allocated ~2M short strings plus 10k
+   * arrays, and every caller then joined them straight back together — a GC
+   * event on the first keystroke of a search, sitting oddly next to the
+   * single-allocation buffer strategy in the rest of this function.
+   *
+   * A row is now its joined text plus an index of where each column starts in
+   * it. That's strictly more useful than a bare string: a column can hold more
+   * than one character (a grapheme cluster) or none at all (the trailing half
+   * of a wide character), so search still needs to map an offset back to a
+   * column, and `columnText` still answers "what does column `c` show".
+   * Nothing materialises a per-cell string unless it actually needs one, and
+   * the two bulk callers no longer need any.
    */
-  private readRows(fromAbs: number, toAbs: number): string[][] {
-    const out: string[][] = []
+  private readRows(fromAbs: number, toAbs: number): RowText[] {
+    const out: RowText[] = []
     if (!this.wasm || !this.termPtr) return out
     const wasm = this.wasm
     const wasmCols = wasm.exports.ghostty_render_state_get_cols(this.termPtr)
@@ -694,43 +739,75 @@ export class GhosttyEngine implements TerminalEngine {
     const gV = gPtr !== 0 ? new DataView(wasm.exports.memory.buffer, gPtr, gCap * 4) : null
 
     for (let abs = fromAbs; abs <= toAbs; abs++) {
-      const row: string[] = new Array(this._cols).fill(' ')
-      out.push(row)
-      if (abs < 0) continue
+      // `colStart` has one more entry than there are columns, so column `c`
+      // always spans `[colStart[c], colStart[c + 1])` with no special case for
+      // the last one.
+      const colStart = new Int32Array(this._cols + 1)
+      let text = ''
+      // A row that can't be read stays blank rather than absent, so absolute
+      // row numbering survives — callers index `out` by offset from `fromAbs`.
+      const blank = (): RowText => {
+        let s = ''
+        for (let c = 0; c < this._cols; c++) {
+          colStart[c] = c
+          s += ' '
+        }
+        colStart[this._cols] = this._cols
+        return { text: s, colStart }
+      }
+      if (abs < 0) {
+        out.push(blank())
+        continue
+      }
 
       let isScrollback = false
       let activeRow = 0
       if (abs < scrollbackCount) {
-        if (!lineV) continue
+        if (!lineV) {
+          out.push(blank())
+          continue
+        }
         wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, abs, linePtr, wasmCols)
         isScrollback = true
       } else {
         activeRow = abs - scrollbackCount
-        if (activeRow >= wasmRows) continue
+        if (activeRow >= wasmRows) {
+          out.push(blank())
+          continue
+        }
       }
 
       const view = isScrollback ? lineV! : viewV
-      for (let c = 0; c < this._cols && c < wasmCols; c++) {
+      let c = 0
+      for (; c < this._cols && c < wasmCols; c++) {
+        colStart[c] = text.length
         const offset = isScrollback ? c * CELL_BYTES : (activeRow * wasmCols + c) * CELL_BYTES
         parseCellInto(view, offset, cell)
         if (cell.width === 0) {
-          // Trailing half of a wide character: it has no text of its own.
-          row[c] = ''
-        } else if (cell.graphemeLen > 0 && gV) {
+          // Trailing half of a wide character: it has no text of its own, so
+          // its span is empty and the next column starts at the same offset.
+          continue
+        }
+        if (cell.graphemeLen > 0 && gV) {
           const n = isScrollback
             ? wasm.exports.ghostty_terminal_get_scrollback_grapheme(this.termPtr, abs, c, gPtr, gCap)
             : wasm.exports.ghostty_render_state_get_grapheme(this.termPtr, activeRow, c, gPtr, gCap)
           if (n > 0) {
-            let s = ''
-            for (let i = 0; i < n && i < gCap; i++) s += String.fromCodePoint(gV.getUint32(i * 4, true))
-            row[c] = s
-          } else {
-            row[c] = cell.codepoint > 0 ? String.fromCodePoint(cell.codepoint) : ' '
+            for (let i = 0; i < n && i < gCap; i++) text += String.fromCodePoint(gV.getUint32(i * 4, true))
+            continue
           }
-        } else {
-          row[c] = cell.codepoint > 0 ? String.fromCodePoint(cell.codepoint) : ' '
         }
+        text += cell.codepoint > 0 ? String.fromCodePoint(cell.codepoint) : ' '
       }
+      // Columns past what the core reports still exist as far as every caller
+      // is concerned — they're the blank right-hand edge — so they get a space
+      // each, exactly as the `.fill(' ')` this replaces gave them.
+      for (; c < this._cols; c++) {
+        colStart[c] = text.length
+        text += ' '
+      }
+      colStart[this._cols] = text.length
+      out.push({ text, colStart })
     }
 
     if (gPtr !== 0) wasm.exports.ghostty_wasm_free_u8_array(gPtr, gCap * 4)
@@ -739,32 +816,30 @@ export class GhosttyEngine implements TerminalEngine {
     return out
   }
 
-  /**
-   * What counts as one word for double-click. Deliberately wider than
-   * alphanumerics: the things worth grabbing out of a terminal in one gesture
-   * are paths, flags, hostnames and URLs, and stopping at every `/` or `.`
-   * turns picking up a path into several drags.
-   */
+  /** See `WORD_RE` for what a word is and why it's that wide. */
   private static isWordChar(s: string): boolean {
     if (s.length === 0) return false
     const c = s.codePointAt(0)!
     if (c > 127) return true // CJK, accented letters, and the like
-    return /[A-Za-z0-9_\-./:@~+=%?&#]/.test(s[0])
+    return WORD_RE.test(s[0])
   }
 
   private selectWordAt(pos: { x: number; y: number }) {
     if (!this.renderer) return
     const row = this.readRows(pos.y, pos.y)[0]
     if (!row) return
+    // Only the columns a word actually spans get materialised as strings —
+    // the scan stops at the first non-word character either side.
+    const at2 = (c: number) => columnText(row, c)
     // A wide character's spacer holds no text, so the head it belongs to is one
     // column back.
     let at = pos.x
-    if (row[at] === '' && at > 0) at--
-    if (!GhosttyEngine.isWordChar(row[at])) return
+    if (at2(at) === '' && at > 0) at--
+    if (!GhosttyEngine.isWordChar(at2(at))) return
     let from = at
-    while (from > 0 && GhosttyEngine.isWordChar(row[from - 1] || ' ')) from--
+    while (from > 0 && GhosttyEngine.isWordChar(at2(from - 1) || ' ')) from--
     let to = at
-    while (to < row.length - 1 && GhosttyEngine.isWordChar(row[to + 1] || ' ')) to++
+    while (to < this._cols - 1 && GhosttyEngine.isWordChar(at2(to + 1) || ' ')) to++
     this.applySelection({ x: from, y: pos.y }, { x: to, y: pos.y })
   }
 
@@ -1897,13 +1972,16 @@ export class GhosttyEngine implements TerminalEngine {
       const rowAt: number[] = []
       const colAt: number[] = []
       for (let r = i; r < end; r++) {
-        const cells = rows[r]
-        for (let c = 0; c < cells.length; c++) {
-          for (let k = 0; k < cells[c].length; k++) {
+        const row = rows[r]
+        // The row's text is already joined; the per-character maps come from
+        // the column index rather than from re-measuring per-cell strings.
+        text += row.text
+        const cs = row.colStart
+        for (let c = 0; c + 1 < cs.length; c++) {
+          for (let k = cs[c]; k < cs[c + 1]; k++) {
             rowAt.push(r)
             colAt.push(c)
           }
-          text += cells[c]
         }
       }
 
@@ -2025,7 +2103,13 @@ export class GhosttyEngine implements TerminalEngine {
       const abs = selStart.y + i
       const from = rectangular ? rectFrom : abs === selStart.y ? selStart.x : 0
       const to = rectangular ? rectTo : abs === selEnd.y ? selEnd.x : this._cols - 1
-      const text = rows[i].slice(from, to + 1).join('')
+      // One slice of the row's own text rather than a join of per-cell
+      // strings. `to + 1` is always a valid index into `colStart`, which has
+      // one entry more than there are columns.
+      const row = rows[i]
+      const lo = Math.max(0, Math.min(from, this._cols))
+      const hi = Math.max(lo, Math.min(to + 1, this._cols))
+      const text = row.text.slice(row.colStart[lo], row.colStart[hi])
       // Trailing blanks are the grid padding a row out, not content. The one
       // case worth keeping them is a line-wise selection whose last row ends
       // part-way along: there the run of spaces was dragged over deliberately.
