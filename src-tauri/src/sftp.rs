@@ -168,13 +168,56 @@ const INERT_EXTENSIONS: &[&str] = &[
     "jsx",
     "css",
     "scss",
-    "svg",
     "gitignore",
-    "dockerfile",
+    // `sshd.service`, `centos.repo`, `sources.list` — these three do reach the
+    // extension branch. `dockerfile` did not: the file is called `Dockerfile`,
+    // which has no dot and is already inert via the `None` branch, so the entry
+    // only ever matched `something.dockerfile`.
     "service",
     "repo",
     "list",
 ];
+
+// Deliberately *not* inert, though it is plain text and looks like it belongs:
+//
+// `svg`. On Windows the default `.svg` handler is a browser — Edge, out of the
+// box. SVG is XML that can carry `<script>`, and opening one from a `file://`
+// temp path executes it. It is a weaker primitive than `.hta` (browser sandbox,
+// opaque origin, no direct filesystem reach) but it is still script execution
+// from a file a remote host chose the contents of, which is the line this list
+// is drawn along. Everything remaining above is inert in every handler it
+// plausibly reaches. The cost is one extra click for someone editing an SVG
+// over SFTP.
+
+/// Windows filename classes that a POSIX-shaped `..`/separator check doesn't
+/// cover, and that a remote host chooses the name for.
+///
+/// Applied on every platform rather than under `cfg(windows)`. A name that is
+/// unsafe on the primary target isn't worth accepting on a dev machine either,
+/// and gating it would mean the tests below say nothing on a Linux CI runner.
+///
+/// - **Reserved device names.** `tempdir.join("NUL")` opens the null device,
+///   not a file. The write succeeds, the watcher watches nothing, and the
+///   re-upload has nothing to send — the user edits what they think is a remote
+///   file and loses the work silently. `NUL.txt` is still `NUL`, hence the
+///   comparison against the stem.
+/// - **Alternate data streams.** `notes.txt:payload` joins to a stream on
+///   `notes.txt` rather than a file of its own, and nothing in Explorer shows
+///   it. (The extension check reads `txt:payload` and prompts, so this is
+///   defence in depth rather than the only guard.)
+/// - **Trailing dots and spaces.** Stripped during path normalisation, so the
+///   path written isn't the name asked for.
+fn is_unsafe_windows_filename(basename: &str) -> bool {
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let stem = basename.split('.').next().unwrap_or("");
+    basename.contains(':')
+        || basename.ends_with(' ')
+        || basename.ends_with('.')
+        || RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+}
 
 /// Whether `basename` can go straight to the OS opener.
 ///
@@ -289,7 +332,7 @@ pub async fn sftp_edit_file(
     // a name containing a backslash (a path separator on Windows, where
     // this temp file eventually gets opened) — either could escape the
     // freshly created temp directory once joined onto it.
-    if basename == ".." || basename.contains('\\') {
+    if basename == ".." || basename.contains('\\') || is_unsafe_windows_filename(basename) {
         return Err(format!("unsafe remote filename: {basename}"));
     }
     // `session_id` is backend-generated (`ssh-{n}`) in practice, but it
@@ -458,7 +501,53 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
 
 #[cfg(test)]
 mod tests {
-    use super::is_inert_to_open;
+    use super::{is_inert_to_open, is_unsafe_windows_filename};
+
+    /// The device-name half is the one with teeth: without it a remote file
+    /// called `NUL` is written to the null device, and every later edit is
+    /// silently discarded while the user believes it is being uploaded.
+    #[test]
+    fn windows_hostile_filenames_are_rejected() {
+        for name in [
+            "NUL",
+            "nul",
+            "NUL.txt",
+            "con.log",
+            "COM1",
+            "lpt9.conf",
+            "AUX",
+            // A reserved stem stays reserved however many extensions follow
+            // it, which is why the comparison is against the first segment
+            // rather than the last.
+            "nul.d.ts",
+            "notes.txt:payload",
+            "report.txt ",
+            "report.txt.",
+        ] {
+            assert!(
+                is_unsafe_windows_filename(name),
+                "{name} should be refused before it reaches the filesystem"
+            );
+        }
+    }
+
+    /// The guard has to stay narrow — it runs on every SFTP edit, and a false
+    /// positive means a file the user simply cannot open.
+    #[test]
+    fn ordinary_filenames_are_left_alone() {
+        for name in [
+            "notes.txt",
+            "console.log",
+            "communication.md",
+            "auxiliary.conf",
+            "LPT.txt",
+            "COM10.txt",
+            ".bashrc",
+            "my report.txt",
+        ] {
+            assert!(!is_unsafe_windows_filename(name), "{name} should be allowed");
+        }
+    }
 
     #[test]
     fn text_and_source_files_open_directly() {
@@ -491,6 +580,9 @@ mod tests {
             "script.py",
             "installer.msi",
             "tool.exe",
+            // Plain text, but Edge is the default handler on Windows and SVG
+            // carries <script>.
+            "logo.svg",
         ] {
             assert!(
                 !is_inert_to_open(name),
