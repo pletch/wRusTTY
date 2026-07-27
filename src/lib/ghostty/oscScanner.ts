@@ -6,7 +6,14 @@
  * grammar and the cross-chunk bookkeeping can be tested without a WASM core or a
  * DOM. `GhosttyEngine.parseAndDispatch` is the only caller; it uses `segEnd` to
  * feed the parser in segments so each handler runs with everything before it
- * already parsed. Delete this once libghostty-vt exposes the callbacks.
+ * already parsed.
+ *
+ * This is not deletable by adding an export, which is the obvious assumption and
+ * the wrong one: Ghostty v1.3.1's OSC parser has no ident for **633**, which this
+ * app registers alongside 133, and dropping it would half-break shell integration
+ * for VS-Code-configured shells only. Scanning for 633 alone costs the same as
+ * scanning for everything, so this earns its keep until Ghostty's own parser
+ * learns the ident. See the OSC-scan findings in `bench/runner.ts`.
  *
  * Grammar recognised (7-bit forms only, which is what shells emit in practice):
  *

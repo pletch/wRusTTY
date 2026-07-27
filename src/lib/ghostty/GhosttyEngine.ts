@@ -1297,8 +1297,9 @@ export class GhosttyEngine implements TerminalEngine {
   // core doesn't surface yet (OSC dispatch and the bell). That cost is the
   // opposite of what this engine exists for, so it is skipped outright unless
   // something is actually listening — an un-integrated shell registers no OSC
-  // handlers and pays nothing. Delete this whole path once libghostty-vt
-  // exposes OSC 133 and bell callbacks.
+  // handlers and pays nothing. Not deletable by exporting the events the core
+  // already parses: OSC 633 has no ident in Ghostty's parser at all, so it would
+  // have to be taught one first — see the header of `oscScanner.ts`.
   /** Hands one run of bytes to the parser, or queues it if the core is still
    *  loading. Buffered slices are copied: they outlive the caller's chunk. */
   private parseSegment(seg: Uint8Array): void {
