@@ -353,18 +353,23 @@ pub async fn ssh_disconnect(
             .map_err(|e| e.to_string())?;
     }
 
-    let stale: Vec<String> = {
-        let forwards = state.forwards.lock().await;
-        forwards
+    // Unlike the SFTP equivalent this can't collapse to a single `retain`:
+    // `stop()` is async and can't run under the lock. So it removes the
+    // entries in one pass and stops them afterwards, rather than re-acquiring
+    // the lock once per forward as it used to.
+    let stale: Vec<_> = {
+        let mut forwards = state.forwards.lock().await;
+        let ids: Vec<String> = forwards
             .iter()
             .filter(|(_, (owner, _))| *owner == session_id)
             .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| forwards.remove(&id).map(|(_, handle)| handle))
             .collect()
     };
-    for forward_id in stale {
-        if let Some((_, handle)) = state.forwards.lock().await.remove(&forward_id) {
-            let _ = handle.stop().await;
-        }
+    for handle in stale {
+        let _ = handle.stop().await;
     }
 
     crate::sftp::stop_watching_session(&sftp_state, &session_id).await;

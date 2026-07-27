@@ -439,17 +439,17 @@ pub async fn sftp_stop_watching(
 /// Removes every edit watch tied to a session that just disconnected —
 /// called from `ssh::ssh_disconnect`.
 pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &str) {
-    let stale: Vec<String> = {
-        let edits = sftp_state.edits.lock().await;
-        edits
-            .iter()
-            .filter(|(_, e)| e.session_id == session_id)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
-    for edit_id in stale {
-        sftp_state.edits.lock().await.remove(&edit_id);
-    }
+    // One lock, one pass. This used to collect the stale ids under a first
+    // lock and then re-acquire it per id to remove them — but nothing in the
+    // removal is async, so there was never a reason to let go of the lock in
+    // between. The dropped `EditEntry`s stop their watcher threads and delete
+    // their temp dirs from `Drop`, synchronously and while the lock is still
+    // held; that was equally true of the per-id `remove` this replaces.
+    sftp_state
+        .edits
+        .lock()
+        .await
+        .retain(|_, e| e.session_id != session_id);
 }
 
 #[cfg(test)]

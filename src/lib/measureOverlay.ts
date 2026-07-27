@@ -23,7 +23,7 @@
  * might. It is also removed before a flood runs.
  */
 
-import { report as deliveryReport, startRecording, stopRecording } from './deliveryStats'
+import { report as deliveryReport, startRecording, stopRecording } from './deliveryReport'
 import { run as runPaneFlood } from './paneFlood'
 import { setInflightWindow } from './connection'
 

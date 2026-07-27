@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as ds from './deliveryStats'
+// `formatReport` lives in the reporting half — see deliveryReport.ts for
+// why the two are separate modules. The tests exercise both together
+// because the formatter's verdicts are the recorder's numbers.
+import { formatReport } from './deliveryReport'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
@@ -64,7 +68,7 @@ describe('deliveryStats', () => {
   })
 
   it('reads ENGINE-BOUND when the drain was spent inside the parser', () => {
-    const report = ds.formatReport(
+    const report = formatReport(
       { ...base, count: 100, bytes: 10e6, spanMs: 1000, bytesPerSec: 10e6, parseMs: 900, parseShare: 0.9,
         activeSpanMs: 1000, activeBytes: 10e6, activeBytesPerSec: 10e6, activeParseMs: 900, activeParseShare: 0.9 },
       { flushes: 100, bytes: 10e6, minBytes: 32768, maxBytes: 65536, spanMs: 1000, bytesPerSec: 10e6 },
@@ -73,7 +77,7 @@ describe('deliveryStats', () => {
   })
 
   it('reads UPSTREAM-BOUND when the frontend was mostly idle', () => {
-    const report = ds.formatReport(
+    const report = formatReport(
       { ...base, count: 100, bytes: 10e6, spanMs: 1000, bytesPerSec: 10e6, parseMs: 50, parseShare: 0.05,
         activeSpanMs: 1000, activeBytes: 10e6, activeBytesPerSec: 10e6, activeParseMs: 50, activeParseShare: 0.05 },
       { flushes: 100, bytes: 10e6, minBytes: 32768, maxBytes: 65536, spanMs: 1000, bytesPerSec: 10e6 },
@@ -99,14 +103,14 @@ describe('deliveryStats', () => {
     }
 
     it('names the deliberate share and what is left over', () => {
-      const report = ds.formatReport(paced, null)
+      const report = formatReport(paced, null)
       expect(report).toContain('deliberate, not starvation')
       expect(report).toContain('220 ms')
       expect(report).toContain('30 ms')
     })
 
     it('says nothing about pacing when none happened', () => {
-      const report = ds.formatReport({ ...paced, pacedMs: 0, starvedMs: 250 }, null)
+      const report = formatReport({ ...paced, pacedMs: 0, starvedMs: 250 }, null)
       expect(report).not.toContain('deliberate, not starvation')
     })
 
@@ -119,7 +123,7 @@ describe('deliveryStats', () => {
       // 600 ms of parse is 60% of the 1000 ms window — under the threshold, so
       // this would not read as engine-bound. But 220 ms of that window was
       // self-imposed, and 600 of the 780 ms actually worked is 77%.
-      const report = ds.formatReport({ ...paced, activeParseMs: 600, activeParseShare: 0.6 }, null)
+      const report = formatReport({ ...paced, activeParseMs: 600, activeParseShare: 0.6 }, null)
       expect(report).toContain('ENGINE-BOUND')
       expect(report).toContain('pacing excluded')
     })
@@ -141,7 +145,7 @@ describe('deliveryStats', () => {
   it('reads IPC/FRONTEND-BOUND when the backend outran the frontend', () => {
     // Backend pushed 40 MB/s; the frontend only took delivery of 10 MB/s and
     // was not busy parsing — the bytes were stuck in between.
-    const report = ds.formatReport(
+    const report = formatReport(
       { ...base, count: 100, bytes: 10e6, spanMs: 1000, bytesPerSec: 10e6, parseMs: 100, parseShare: 0.1,
         activeSpanMs: 1000, activeBytes: 10e6, activeBytesPerSec: 10e6, activeParseMs: 100, activeParseShare: 0.1 },
       { flushes: 100, bytes: 40e6, minBytes: 32768, maxBytes: 65536, spanMs: 1000, bytesPerSec: 40e6 },
@@ -183,7 +187,7 @@ describe('deliveryStats', () => {
       expect(s.maxIdleMs).toBeCloseTo(2400)
       expect(s.framesDuringMaxIdle).toBeGreaterThan(100)
       expect(s.maxFrameGapInIdleMs).toBeLessThan(33)
-      expect(ds.formatReport(s, null)).toContain('thread was FREE')
+      expect(formatReport(s, null)).toContain('thread was FREE')
     })
 
     it('reads a blocked thread when frames stopped for the gap', () => {
@@ -192,7 +196,7 @@ describe('deliveryStats', () => {
       expect(s.framesDuringMaxIdle).toBe(0)
       // The stall is visible as one enormous gap spanning the whole window.
       expect(s.maxFrameGapMs).toBeGreaterThan(2000)
-      expect(ds.formatReport(s, null)).toContain('MAIN THREAD BLOCKED')
+      expect(formatReport(s, null)).toContain('MAIN THREAD BLOCKED')
     })
   })
 
@@ -253,7 +257,7 @@ describe('deliveryStats', () => {
       now = 2502
       ds.record(1000, () => { now += 1 })          // gap of 1000
 
-      const report = ds.formatReport(ds.snapshot(), null)
+      const report = formatReport(ds.snapshot(), null)
       expect(report).toMatch(/1000\.0 ms @ .* \(BLOCKED\)/)
       expect(report).toMatch(/500\.0 ms @ .* \(free\)/)
     })
@@ -333,7 +337,7 @@ describe('deliveryStats', () => {
       // so assert the two shares differ and the verdict follows the active one.
       expect(s.activeParseShare).toBeGreaterThan(s.parseShare)
       expect(s.activeParseShare).toBeCloseTo(80 / 98, 2)
-      expect(ds.formatReport(s, { flushes: 11, bytes: 2621470, minBytes: 30,
+      expect(formatReport(s, { flushes: 11, bytes: 2621470, minBytes: 30,
         maxBytes: 262144, spanMs: 1099, bytesPerSec: 2385000 })).toContain('ENGINE-BOUND')
     })
 
@@ -356,11 +360,11 @@ describe('deliveryStats', () => {
   it('says the thread was not sampled when no frames were recorded', () => {
     ds.start()
     ds.record(1000, () => {})
-    expect(ds.formatReport(ds.snapshot(), null)).toContain('not sampled')
+    expect(formatReport(ds.snapshot(), null)).toContain('not sampled')
   })
 
   it('says so plainly when nothing was recorded', () => {
-    expect(ds.formatReport(base, null)).toContain('call start()')
+    expect(formatReport(base, null)).toContain('call start()')
   })
 
   it('start() clears anything left from a previous run', () => {

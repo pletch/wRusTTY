@@ -2,31 +2,42 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import { install as installDeliveryStats } from './lib/deliveryStats'
-import { install as installPaneFlood } from './lib/paneFlood'
-import { install as installMeasureOverlay } from './lib/measureOverlay'
 
-// Puts `__wrusttyDelivery` on the global so the *real* PTY delivery path can be
-// measured from devtools in a live session — the half of a flood the benchmark
-// harness cannot see, because the harness starts from a buffer already in the
-// webview. Installing only registers the handle; recording stays off until
-// `__wrusttyDelivery.start()` is called, so this costs nothing by default.
-installDeliveryStats()
-
-// `__wrusttyPaneFlood.run()` feeds a real pane from inside the page — no PTY,
-// no SSH, no IPC — which is the only way to measure a transport-free pane in an
-// app whose backend only speaks SSH, telnet and serial. Registering the handle
-// costs nothing; the generator it needs is imported on use, from the benchmark
-// chunk, so none of it ships in the app bundle.
-installPaneFlood()
-
-// The same two tools from the keyboard, rendering on screen. This is the one
-// that matters: reaching a recorder through the console means an inspector is
-// attached, and V8 runs WebAssembly in a debuggable tier while DevTools is
-// open — 2.75x slower on this build. Every production figure taken during the
-// Phase 7 investigation was wrong for exactly that reason. Ctrl+Alt+F floods
-// the visible pane; Ctrl+Alt+D arms and reports the real PTY path.
-installMeasureOverlay()
+// The measurement instruments, behind a build flag.
+//
+// What they are, and why they exist on screen rather than in the console:
+// reaching a recorder through devtools means an inspector is attached, and V8
+// runs WebAssembly in a debuggable tier while DevTools is open — 2.75x slower
+// on this build. Every production figure taken during the Phase 7
+// investigation was wrong for exactly that reason. So the ability to take a
+// measurement on a real, uninspected build has to be preserved.
+//
+// But that argues for *on screen*, not for *always shipped*. Unlike the
+// benchmark harness below these were statically imported, so ~1,000 lines of
+// instrumentation — and a hotkey that floods a live pane with synthetic data —
+// went into the entry chunk of every installer, reachable by nobody.
+//
+//   - `__wrusttyDelivery` measures the real PTY delivery path in a live
+//     session: the half of a flood the harness cannot see, because it starts
+//     from a buffer already in the webview.
+//   - `__wrusttyPaneFlood.run()` feeds a real pane from inside the page — no
+//     PTY, no SSH, no IPC — the only way to measure a transport-free pane in
+//     an app whose backend only speaks SSH, telnet and serial.
+//   - The overlay is the same two from the keyboard: Ctrl+Alt+F floods the
+//     visible pane, Ctrl+Alt+D arms and reports the real PTY path.
+//
+// Build with `VITE_WRUSTTY_INSTRUMENTS=1` to get them back — `npm run
+// build:instrumented` does exactly that. The recorder's hot-path half
+// (`deliveryStats.record`) is *not* gated and still ships: it's what
+// `Terminal.tsx` calls on every delivery, and it short-circuits on one boolean
+// before any clock read. Only the reporting and UI halves are behind this.
+if (import.meta.env.VITE_WRUSTTY_INSTRUMENTS) {
+  void Promise.all([
+    import('./lib/deliveryReport').then((m) => m.install()),
+    import('./lib/paneFlood').then((m) => m.install()),
+    import('./lib/measureOverlay').then((m) => m.install()),
+  ])
+}
 
 // The Phase 7 benchmark harness runs in this exact WebView — same engines, same
 // WASM as production. It is reached either by loading with a `#bench` URL
