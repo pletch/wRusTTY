@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_serial::SerialPort;
-use wr_core::{Connection, ConnectionEvent, ConnectionStatus};
+use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
 
 use crate::config::{translate_line_ending, SerialConfig};
 use crate::error::SerialError;
@@ -26,25 +26,32 @@ enum WriteCommand {
 /// uses, and matches what PuTTY sends.
 pub const DEFAULT_BREAK: Duration = Duration::from_millis(300);
 
-/// A live (or not-yet-connected) serial session. Unlike SSH/telnet, all I/O
-/// and control-line access (DTR/RTS) has to live in a single task: the
-/// underlying `SerialStream` can't be cloned (tokio-serial explicitly
-/// doesn't support it) and `tokio::io::split` would type-erase away the
-/// `SerialPort` trait methods DTR/RTS need — so reads, writes, and control
-/// requests are all multiplexed through one `select!` loop instead.
-pub struct SerialSession {
+/// Everything needed to open a serial port, before one is open.
+pub struct SerialConnector {
     config: SerialConfig,
+}
+
+impl SerialConnector {
+    pub fn new(config: SerialConfig) -> Self {
+        Self { config }
+    }
+}
+
+/// A live serial session. Unlike SSH/telnet, all I/O and control-line access
+/// (DTR/RTS) has to live in a single task: the underlying `SerialStream`
+/// can't be cloned (tokio-serial explicitly doesn't support it) and
+/// `tokio::io::split` would type-erase away the `SerialPort` trait methods
+/// DTR/RTS need — so reads, writes, and control requests are all multiplexed
+/// through one `select!` loop instead.
+pub struct SerialSession {
+    /// Kept for the line-ending translation `write` applies.
+    config: SerialConfig,
+    /// `Option` only so `disconnect` can drop the sender, which is what ends
+    /// the I/O task. Always `Some` on a freshly connected session.
     input_tx: Option<mpsc::Sender<WriteCommand>>,
 }
 
 impl SerialSession {
-    pub fn new(config: SerialConfig) -> Self {
-        Self {
-            config,
-            input_tx: None,
-        }
-    }
-
     pub async fn set_dtr(&self, level: bool) -> Result<(), SerialError> {
         let tx = self.input_tx.as_ref().ok_or(SerialError::NotConnected)?;
         tx.send(WriteCommand::Dtr(level))
@@ -74,16 +81,21 @@ impl SerialSession {
 }
 
 #[async_trait]
-impl Connection for SerialSession {
+impl Connector for SerialConnector {
+    type Session = SerialSession;
     type Error = SerialError;
 
-    async fn connect(&mut self, events: mpsc::Sender<ConnectionEvent>) -> Result<(), SerialError> {
+    async fn connect(
+        self,
+        events: mpsc::Sender<ConnectionEvent>,
+    ) -> Result<SerialSession, SerialError> {
         let _ = events
             .send(ConnectionEvent::Status(ConnectionStatus::Connecting))
             .await;
+        let port_name = self.config.port_name.clone();
         let result = self.connect_inner(&events);
         match &result {
-            Ok(()) => {
+            Ok(_) => {
                 let _ = events
                     .send(ConnectionEvent::Status(ConnectionStatus::Connected))
                     .await;
@@ -94,11 +106,16 @@ impl Connection for SerialSession {
                         e.to_string(),
                     )))
                     .await;
-                tracing::warn!(port = %self.config.port_name, error = %e, "serial connect failed");
+                tracing::warn!(port = %port_name, error = %e, "serial connect failed");
             }
         }
         result
     }
+}
+
+#[async_trait]
+impl Session for SerialSession {
+    type Error = SerialError;
 
     async fn write(&mut self, data: &[u8]) -> Result<(), SerialError> {
         let translated = translate_line_ending(data, self.config.line_ending);
@@ -119,8 +136,11 @@ impl Connection for SerialSession {
     }
 }
 
-impl SerialSession {
-    fn connect_inner(&mut self, events: &mpsc::Sender<ConnectionEvent>) -> Result<(), SerialError> {
+impl SerialConnector {
+    fn connect_inner(
+        self,
+        events: &mpsc::Sender<ConnectionEvent>,
+    ) -> Result<SerialSession, SerialError> {
         let builder = tokio_serial::new(self.config.port_name.clone(), self.config.baud_rate)
             .data_bits(self.config.data_bits.into())
             .parity(self.config.parity.into())
@@ -206,7 +226,9 @@ impl SerialSession {
                 .await;
         });
 
-        self.input_tx = Some(tx);
-        Ok(())
+        Ok(SerialSession {
+            config: self.config,
+            input_tx: Some(tx),
+        })
     }
 }

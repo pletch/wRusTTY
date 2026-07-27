@@ -81,6 +81,7 @@ pub async fn sftp_list_dir(
     let sftp = session
         .lock()
         .await
+        .ready()?
         .get_or_open_sftp()
         .await
         .map_err(|e| e.to_string())?;
@@ -99,6 +100,7 @@ pub async fn sftp_canonicalize(
     let sftp = session
         .lock()
         .await
+        .ready()?
         .get_or_open_sftp()
         .await
         .map_err(|e| e.to_string())?;
@@ -266,6 +268,7 @@ pub async fn sftp_edit_file(
     let sftp = session
         .lock()
         .await
+        .ready()?
         .get_or_open_sftp()
         .await
         .map_err(|e| e.to_string())?;
@@ -352,6 +355,7 @@ pub async fn sftp_edit_file(
                     let sftp = session
                         .lock()
                         .await
+                        .ready()?
                         .get_or_open_sftp()
                         .await
                         .map_err(|e| e.to_string())?;

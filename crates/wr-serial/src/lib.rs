@@ -10,4 +10,4 @@ mod session;
 pub use config::{DataBits, FlowControl, LineEnding, Parity, SerialConfig, StopBits};
 pub use error::SerialError;
 pub use ports::{list_ports, PortInfo};
-pub use session::{SerialSession, DEFAULT_BREAK};
+pub use session::{SerialConnector, SerialSession, DEFAULT_BREAK};

@@ -14,13 +14,13 @@ use tauri::{AppHandle, Manager, State};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 use wr_ssh::{
     AuthMethod, ForwardHandle, ForwardSpec, HostKeyPrompt, HostKeyStatus, HostKeyVerifier,
-    SshConfig, SshSession,
+    SshConfig, SshConnector, SshSession,
 };
 use wr_vault::VaultSecret;
 
 use crate::connection_status::status_label;
 use crate::profiles;
-use crate::session_registry::SessionRegistry;
+use crate::session_registry::{SessionRegistry, Slot};
 use crate::vault::VaultState;
 
 #[derive(Clone, Serialize)]
@@ -55,7 +55,7 @@ pub enum SshEvent {
 /// every transport's, and pushing them down would have made the generic
 /// registry carry fields two of its three users don't have.
 pub struct SshState {
-    sessions: SessionRegistry<SshSession>,
+    sessions: SessionRegistry<SshConnector>,
     pending_host_key: TokioMutex<HashMap<String, oneshot::Sender<bool>>>,
     /// Keyed by forward id; each entry also remembers its owning session id
     /// so `ssh_disconnect` can stop every forward that session opened.
@@ -286,16 +286,15 @@ async fn start_connection(
         channel: channel.clone(),
     });
 
-    let session =
-        SshSession::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
-    let session = Arc::new(TokioMutex::new(session));
+    let connector =
+        SshConnector::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
 
     state
         .sessions
         .spawn_connect(
             app,
             session_id.clone(),
-            session,
+            connector,
             channel,
             data_channel,
             |status| SshEvent::Status {
@@ -382,6 +381,7 @@ pub async fn ssh_add_forward(
     let forward = session
         .lock()
         .await
+        .ready()?
         .add_forward(spec)
         .await
         .map_err(|e| e.to_string())?;
@@ -426,6 +426,6 @@ pub async fn ssh_respond_host_key(
 pub(crate) async fn lookup(
     state: &State<'_, SshState>,
     session_id: &str,
-) -> Result<Arc<TokioMutex<SshSession>>, String> {
+) -> Result<Arc<TokioMutex<Slot<SshSession>>>, String> {
     state.sessions.lookup(session_id).await
 }

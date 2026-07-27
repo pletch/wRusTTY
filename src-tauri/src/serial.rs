@@ -4,17 +4,14 @@
 //!
 //! The session map, id counter and write/resize/disconnect bodies live in
 //! `session_registry.rs`. The line-control commands below don't go through it:
-//! they aren't part of `wr_core::Connection` and nothing generic could say
+//! they aren't part of `wr_core::Session` and nothing generic could say
 //! anything useful about them, so they look the session up and call it
 //! directly.
-
-use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
-use tokio::sync::Mutex as TokioMutex;
-use wr_serial::{PortInfo, SerialConfig, SerialSession};
+use wr_serial::{PortInfo, SerialConfig, SerialConnector};
 
 use crate::connection_status::status_label;
 use crate::session_registry::SessionRegistry;
@@ -32,7 +29,7 @@ pub enum SerialEvent {
 }
 
 pub struct SerialState {
-    sessions: SessionRegistry<SerialSession>,
+    sessions: SessionRegistry<SerialConnector>,
 }
 
 impl Default for SerialState {
@@ -57,13 +54,12 @@ pub async fn serial_connect(
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
     let session_id = state.sessions.next_session_id();
-    let session = Arc::new(TokioMutex::new(SerialSession::new(config)));
     state
         .sessions
         .spawn_connect(
             app,
             session_id.clone(),
-            session,
+            SerialConnector::new(config),
             channel,
             data_channel,
             |status| SerialEvent::Status {
@@ -89,9 +85,12 @@ pub async fn serial_set_dtr(
     level: bool,
     state: State<'_, SerialState>,
 ) -> Result<(), String> {
-    let session = state.sessions.lookup(&session_id).await?;
-    let session = session.lock().await;
-    session.set_dtr(level).await.map_err(|e| e.to_string())
+    let slot = state.sessions.lookup(&session_id).await?;
+    let slot = slot.lock().await;
+    slot.ready()?
+        .set_dtr(level)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -100,9 +99,12 @@ pub async fn serial_set_rts(
     level: bool,
     state: State<'_, SerialState>,
 ) -> Result<(), String> {
-    let session = state.sessions.lookup(&session_id).await?;
-    let session = session.lock().await;
-    session.set_rts(level).await.map_err(|e| e.to_string())
+    let slot = state.sessions.lookup(&session_id).await?;
+    let slot = slot.lock().await;
+    slot.ready()?
+        .set_rts(level)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Asserts a break condition — the out-of-band attention signal a serial
@@ -118,9 +120,9 @@ pub async fn serial_send_break(
     let duration = duration_ms
         .map(std::time::Duration::from_millis)
         .unwrap_or(wr_serial::DEFAULT_BREAK);
-    let session = state.sessions.lookup(&session_id).await?;
-    let session = session.lock().await;
-    session
+    let slot = state.sessions.lookup(&session_id).await?;
+    let slot = slot.lock().await;
+    slot.ready()?
         .send_break(duration)
         .await
         .map_err(|e| e.to_string())

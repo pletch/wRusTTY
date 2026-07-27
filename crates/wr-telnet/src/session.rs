@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use wr_core::{Connection, ConnectionEvent, ConnectionStatus};
+use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
 
 use crate::config::TelnetConfig;
 use crate::error::TelnetError;
@@ -14,33 +14,48 @@ use crate::protocol::{self, Parser};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
-pub struct TelnetSession {
+/// Everything needed to open a telnet session, before one exists.
+pub struct TelnetConnector {
     config: TelnetConfig,
-    input_tx: Option<mpsc::Sender<Vec<u8>>>,
     last_size: Arc<Mutex<(u16, u16)>>,
 }
 
-impl TelnetSession {
+impl TelnetConnector {
     pub fn new(config: TelnetConfig) -> Self {
         Self {
             config,
-            input_tx: None,
             last_size: Arc::new(Mutex::new(DEFAULT_SIZE)),
         }
     }
 }
 
+/// A connected telnet session: the write channel, plus the last size so a
+/// late NAWS negotiation can be answered with the current one.
+pub struct TelnetSession {
+    /// `Option` only so `disconnect` can drop the sender, which is what ends
+    /// the write task. It is always `Some` on a freshly connected session —
+    /// "not connected yet" is no longer a state this type can be in.
+    input_tx: Option<mpsc::Sender<Vec<u8>>>,
+    last_size: Arc<Mutex<(u16, u16)>>,
+}
+
 #[async_trait]
-impl Connection for TelnetSession {
+impl Connector for TelnetConnector {
+    type Session = TelnetSession;
     type Error = TelnetError;
 
-    async fn connect(&mut self, events: mpsc::Sender<ConnectionEvent>) -> Result<(), TelnetError> {
+    async fn connect(
+        self,
+        events: mpsc::Sender<ConnectionEvent>,
+    ) -> Result<TelnetSession, TelnetError> {
         let _ = events
             .send(ConnectionEvent::Status(ConnectionStatus::Connecting))
             .await;
+        let host = self.config.host.clone();
+        let port = self.config.port;
         let result = self.connect_inner(&events).await;
         match &result {
-            Ok(()) => {
+            Ok(_) => {
                 let _ = events
                     .send(ConnectionEvent::Status(ConnectionStatus::Connected))
                     .await;
@@ -51,11 +66,16 @@ impl Connection for TelnetSession {
                         e.to_string(),
                     )))
                     .await;
-                tracing::warn!(host = %self.config.host, port = self.config.port, error = %e, "telnet connect failed");
+                tracing::warn!(%host, port, error = %e, "telnet connect failed");
             }
         }
         result
     }
+}
+
+#[async_trait]
+impl Session for TelnetSession {
+    type Error = TelnetError;
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TelnetError> {
         let tx = self.input_tx.as_ref().ok_or(TelnetError::NotConnected)?;
@@ -80,11 +100,11 @@ impl Connection for TelnetSession {
     }
 }
 
-impl TelnetSession {
+impl TelnetConnector {
     async fn connect_inner(
-        &mut self,
+        self,
         events: &mpsc::Sender<ConnectionEvent>,
-    ) -> Result<(), TelnetError> {
+    ) -> Result<TelnetSession, TelnetError> {
         let addr = (self.config.host.as_str(), self.config.port);
         let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
             .await
@@ -160,7 +180,9 @@ impl TelnetSession {
                 .await;
         });
 
-        self.input_tx = Some(input_tx);
-        Ok(())
+        Ok(TelnetSession {
+            input_tx: Some(input_tx),
+            last_size: self.last_size,
+        })
     }
 }

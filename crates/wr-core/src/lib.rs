@@ -6,6 +6,6 @@ mod connection;
 mod events;
 mod session;
 
-pub use connection::Connection;
+pub use connection::{Connector, Session};
 pub use events::{ConnectionEvent, ConnectionStatus};
 pub use session::{Protocol, SessionId};

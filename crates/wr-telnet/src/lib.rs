@@ -9,4 +9,4 @@ mod session;
 
 pub use config::{TelnetConfig, DEFAULT_TERM_TYPE};
 pub use error::TelnetError;
-pub use session::TelnetSession;
+pub use session::{TelnetConnector, TelnetSession};

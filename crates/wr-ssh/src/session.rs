@@ -10,7 +10,7 @@ use russh::keys::{decode_secret_key, PrivateKey};
 use russh::{client, ChannelMsg, Disconnect};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
-use wr_core::{Connection, ConnectionEvent, ConnectionStatus};
+use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
 
 use crate::config::{AuthMethod, SshConfig};
 use crate::error::SshError;
@@ -23,14 +23,28 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 const KEEPALIVE_MAX: usize = 3;
 
-/// A live (or not-yet-connected) SSH session: transport, auth, PTY channel.
-/// Implements `wr_core::Connection` so the tab/session layer can drive it
-/// without knowing it's SSH specifically.
-pub struct SshSession {
+/// Everything needed to open an SSH session, before one exists.
+///
+/// Separate from `SshSession` because the handshake here is the longest of
+/// any transport — TCP connect, KEX, auth, and a host-key prompt that blocks
+/// on a human reading a fingerprint. Driving it against a value nothing else
+/// can reach is what keeps a resize or a keystroke from queueing behind it.
+/// See `wr_core::Connector`.
+pub struct SshConnector {
     config: SshConfig,
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
+    remote_forwards: forward::RemoteForwardRegistry,
+    initial_cols: u16,
+    initial_rows: u16,
+}
+
+/// A live SSH session: the authenticated transport, its PTY channel, and the
+/// two channels feeding it.
+pub struct SshSession {
     handle: Option<Arc<client::Handle<ClientHandler>>>,
+    /// `Option` only so `disconnect` can drop them, which is what ends the
+    /// pump tasks. Always `Some` on a freshly connected session.
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     resize_tx: Option<mpsc::Sender<(u16, u16)>>,
     remote_forwards: forward::RemoteForwardRegistry,
@@ -38,11 +52,9 @@ pub struct SshSession {
     // a `OnceCell` keeps this on a shared `&self`, matching `add_forward`'s
     // shape, rather than requiring `&mut self` everywhere SFTP is touched.
     sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
-    initial_cols: u16,
-    initial_rows: u16,
 }
 
-impl SshSession {
+impl SshConnector {
     pub fn new(
         config: SshConfig,
         known_hosts_path: impl Into<PathBuf>,
@@ -55,18 +67,16 @@ impl SshSession {
             config,
             known_hosts: Arc::new(Mutex::new(known_hosts)),
             verifier,
-            handle: None,
-            input_tx: None,
-            resize_tx: None,
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
-            sftp: tokio::sync::OnceCell::new(),
             initial_cols,
             initial_rows,
         })
     }
+}
 
+impl SshSession {
     /// Starts a local, remote, or dynamic (SOCKS5) port forward on the
-    /// active connection. Must be called after `connect()` has succeeded.
+    /// active connection.
     pub async fn add_forward(&self, spec: ForwardSpec) -> Result<ForwardHandle, SshError> {
         let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
         forward::start(handle, self.remote_forwards.clone(), spec).await
@@ -92,10 +102,11 @@ impl SshSession {
 }
 
 #[async_trait]
-impl Connection for SshSession {
+impl Connector for SshConnector {
+    type Session = SshSession;
     type Error = SshError;
 
-    async fn connect(&mut self, events: mpsc::Sender<ConnectionEvent>) -> Result<(), SshError> {
+    async fn connect(self, events: mpsc::Sender<ConnectionEvent>) -> Result<SshSession, SshError> {
         let _ = events
             .send(ConnectionEvent::Status(ConnectionStatus::Connecting))
             .await;
@@ -106,7 +117,7 @@ impl Connection for SshSession {
         let result = self.connect_inner(&events).await;
 
         match &result {
-            Ok(()) => {
+            Ok(_) => {
                 let _ = events
                     .send(ConnectionEvent::Status(ConnectionStatus::Connected))
                     .await;
@@ -123,6 +134,11 @@ impl Connection for SshSession {
 
         result
     }
+}
+
+#[async_trait]
+impl Session for SshSession {
+    type Error = SshError;
 
     async fn write(&mut self, data: &[u8]) -> Result<(), SshError> {
         let tx = self.input_tx.as_ref().ok_or(SshError::NotConnected)?;
@@ -153,11 +169,11 @@ impl Connection for SshSession {
     }
 }
 
-impl SshSession {
+impl SshConnector {
     async fn connect_inner(
-        &mut self,
+        self,
         events: &mpsc::Sender<ConnectionEvent>,
-    ) -> Result<(), SshError> {
+    ) -> Result<SshSession, SshError> {
         let handle = match &self.config.jump {
             None => {
                 connect_direct(
@@ -223,7 +239,15 @@ impl SshSession {
         // starts cannot reach it.
         let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
         channel
-            .request_pty(false, self.config.term_type(), self.initial_cols as u32, self.initial_rows as u32, 0, 0, &[])
+            .request_pty(
+                false,
+                self.config.term_type(),
+                self.initial_cols as u32,
+                self.initial_rows as u32,
+                0,
+                0,
+                &[],
+            )
             .await?;
         channel.request_shell(true).await?;
 
@@ -275,10 +299,13 @@ impl SshSession {
             }
         });
 
-        self.handle = Some(Arc::new(handle));
-        self.input_tx = Some(input_tx);
-        self.resize_tx = Some(resize_tx);
-        Ok(())
+        Ok(SshSession {
+            handle: Some(Arc::new(handle)),
+            input_tx: Some(input_tx),
+            resize_tx: Some(resize_tx),
+            remote_forwards: self.remote_forwards,
+            sftp: tokio::sync::OnceCell::new(),
+        })
     }
 }
 

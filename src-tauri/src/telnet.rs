@@ -6,13 +6,10 @@
 //! `#[tauri::command]` entry points, which have to be concrete functions for
 //! `generate_handler!`.
 
-use std::sync::Arc;
-
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
-use tokio::sync::Mutex as TokioMutex;
-use wr_telnet::{TelnetConfig, TelnetSession};
+use wr_telnet::{TelnetConfig, TelnetConnector};
 
 use crate::connection_status::status_label;
 use crate::session_registry::SessionRegistry;
@@ -30,7 +27,7 @@ pub enum TelnetEvent {
 }
 
 pub struct TelnetState {
-    sessions: SessionRegistry<TelnetSession>,
+    sessions: SessionRegistry<TelnetConnector>,
 }
 
 impl Default for TelnetState {
@@ -50,13 +47,12 @@ pub async fn telnet_connect(
     state: State<'_, TelnetState>,
 ) -> Result<String, String> {
     let session_id = state.sessions.next_session_id();
-    let session = Arc::new(TokioMutex::new(TelnetSession::new(config)));
     state
         .sessions
         .spawn_connect(
             app,
             session_id.clone(),
-            session,
+            TelnetConnector::new(config),
             channel,
             data_channel,
             |status| TelnetEvent::Status {

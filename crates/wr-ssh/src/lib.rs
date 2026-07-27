@@ -15,4 +15,4 @@ pub use error::SshError;
 pub use forward::{is_loopback_bind_host, ForwardHandle, ForwardSpec};
 pub use handler::{HostKeyPrompt, HostKeyVerifier, RejectAll};
 pub use known_hosts::{HostKeyStatus, KnownHostsStore};
-pub use session::{expand_tilde, parse_private_key, SshSession};
+pub use session::{expand_tilde, parse_private_key, SshConnector, SshSession};
