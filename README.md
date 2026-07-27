@@ -23,9 +23,15 @@ Xcode Command Line Tools per the [Tauri prerequisites guide](https://v2.tauri.ap
 
 ```sh
 npm install
-npm run tauri dev    # run the desktop app
+npm run tauri:dev     # run the desktop app, with devtools
+npm run tauri dev     # same, without devtools
 npm run dev           # frontend only, in a browser
 ```
+
+Devtools are a cargo feature (`devtools`) rather than always-on, so release
+installers ship a webview that can't be inspected — the process holds
+decrypted vault secrets and renders untrusted remote output. `tauri:dev` is
+the everyday command; `tauri build` never enables it.
 
 ### Workspace layout
 
@@ -37,6 +43,7 @@ npm run dev           # frontend only, in a browser
 - `crates/wr-serial` — serial transport
 - `crates/wr-vault` — encrypted credential vault
 - `crates/wr-sftp` — SFTP/SCP (Phase 6)
+- `crates/wr-fs` — atomic file replacement, shared by every on-disk store
 
 ### Security model notes
 

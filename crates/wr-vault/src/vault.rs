@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -16,31 +15,13 @@ use crate::wrapper::{self, StoredWrapper, WrapperKind, WrapperMeta, WrapperParam
 
 const FORMAT_VERSION: u32 = 2;
 
-/// Writes `contents` to `path` via a temp file in the same directory
-/// (so the final rename is atomic on the same volume) plus an fsync before
-/// the rename — a crash or power loss mid-write can otherwise leave a
-/// truncated or empty vault file, silently destroying every stored
-/// credential. Also sets owner-only permissions on Unix (the file holds
-/// every saved credential); on Windows the per-user %APPDATA% ACL already
-/// covers this.
-///
-/// This is also what makes the v1 → v2 migration safe: the old file stays
-/// intact and openable right up until the single rename that replaces it.
-fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.write_all(contents)?;
-    tmp.as_file().sync_all()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    tmp.persist(path)?;
-    Ok(())
-}
+/// Temp-file-plus-rename write, owner-only on Unix. A crash or power loss
+/// mid-write could otherwise leave a truncated or empty vault file, silently
+/// destroying every stored credential; this is also what makes the v1 → v2
+/// migration safe, since the old file stays intact and openable right up
+/// until the single rename that replaces it. See `wr_fs` for the full
+/// reasoning.
+use wr_fs::write_atomic as atomic_write;
 
 // Matches the `argon2` crate's own `Params::default()` exactly (verified
 // directly against its source) — the parameters every v1 vault file
@@ -303,14 +284,25 @@ impl Vault {
         // The DEK already authenticated against its wrapper's AEAD tag, so a
         // failure here is genuine damage to the entries blob and must not be
         // reported as a wrong password.
-        let plaintext = crypto::decrypt(dek.as_bytes(), &nonce, &ciphertext, crypto::ENTRIES_AAD)
-            .ok_or_else(|| {
-            VaultError::Corrupt(
-                "the unlock key was correct but the entries could not be decrypted — \
-                 the vault file is damaged"
-                    .into(),
-            )
-        })?;
+        // `Zeroizing` because this buffer is every credential in the vault, in
+        // the clear, as JSON. `VaultSecret` and `Dek` are `ZeroizeOnDrop`, so
+        // this intermediate was the one copy of the same bytes that would have
+        // been released back to the allocator intact.
+        //
+        // `serde_json`'s own internal scratch buffers are still unaddressed
+        // and can't be from here; that's a limitation of parsing secrets with
+        // serde at all, and closing this doesn't pretend otherwise.
+        let plaintext = zeroize::Zeroizing::new(
+            crypto::decrypt(dek.as_bytes(), &nonce, &ciphertext, crypto::ENTRIES_AAD).ok_or_else(
+                || {
+                    VaultError::Corrupt(
+                        "the unlock key was correct but the entries could not be decrypted — \
+                         the vault file is damaged"
+                            .into(),
+                    )
+                },
+            )?,
+        );
         let entries: HashMap<String, VaultSecret> =
             serde_json::from_slice(&plaintext).map_err(|e| VaultError::Corrupt(e.to_string()))?;
 
@@ -330,8 +322,12 @@ impl Vault {
     ) -> Result<HashMap<String, VaultSecret>, VaultError> {
         let nonce = decode_b64("nonce", &file.nonce)?;
         let ciphertext = decode_b64("ciphertext", &file.ciphertext)?;
-        let plaintext = crypto::decrypt(legacy_kek.as_bytes(), &nonce, &ciphertext, b"")
-            .ok_or(VaultError::WrongPassword)?;
+        // Same reasoning as `open_v2` — this is the v1 file's entire credential
+        // set in the clear.
+        let plaintext = zeroize::Zeroizing::new(
+            crypto::decrypt(legacy_kek.as_bytes(), &nonce, &ciphertext, b"")
+                .ok_or(VaultError::WrongPassword)?,
+        );
         serde_json::from_slice(&plaintext).map_err(|e| VaultError::Corrupt(e.to_string()))
     }
 
@@ -496,8 +492,12 @@ impl Vault {
     }
 
     fn persist(&self) -> Result<(), VaultError> {
-        let plaintext =
-            serde_json::to_vec(&self.entries).map_err(|e| VaultError::Corrupt(e.to_string()))?;
+        // The decrypt side of this round-trip is `Zeroizing` for the same
+        // reason: serialised entries are every credential in the clear, and
+        // this buffer outlives the encrypt call that consumes it.
+        let plaintext = zeroize::Zeroizing::new(
+            serde_json::to_vec(&self.entries).map_err(|e| VaultError::Corrupt(e.to_string()))?,
+        );
         let (nonce, ciphertext) =
             crypto::encrypt(self.dek.as_bytes(), &plaintext, crypto::ENTRIES_AAD)?;
 

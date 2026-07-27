@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { save, open } from '@tauri-apps/plugin-dialog'
 import { Lock, Unlock, Download, Upload, Fingerprint, Trash2 } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
@@ -148,19 +147,24 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
+  // Saved session profiles reference vault entries by id, and workspaces
+  // reference session profiles by id — each is meaningless without the
+  // others, so the export bundles all three. A plain `.wrv` (vault-only)
+  // export from an older build isn't importable here anymore, hence the
+  // distinct extension. The file dialog itself now runs Rust-side (the
+  // backend won't accept a path from this process), so there's no `save()`
+  // or `open()` call here; both helpers resolve `false` on cancel.
   async function doExport() {
-    const dest = await save({
-      defaultPath: 'wrustty-export.wrb',
-      // Saved session profiles reference vault entries by id, and
-      // workspaces reference session profiles by id — each is meaningless
-      // without the others, so the export bundles all three. A plain `.wrv`
-      // (vault-only) export from an older build isn't importable here
-      // anymore, hence the distinct extension.
-      filters: [{ name: 'wRusTTY export bundle', extensions: ['wrb'] }],
-    })
-    if (!dest) return
+    // Stated before the dialog, not after: only the credentials are
+    // encrypted in the bundle. Hostnames, usernames, ports, key paths and
+    // jump topology travel as readable JSON, and "vault export" doesn't
+    // suggest that on its own.
+    const ok = window.confirm(
+      'The export protects your saved credentials with the vault\'s master password. Session details — hostnames, usernames, ports, key file paths — are stored in the file as plain text. Keep it somewhere you would keep that list. Continue?',
+    )
+    if (!ok) return
     try {
-      await vault.exportVault(dest)
+      if (!(await vault.exportVault())) return
       toast.success('Vault, saved sessions, and workspaces exported')
     } catch (err) {
       setError(String(err))
@@ -168,17 +172,12 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   }
 
   async function doImport() {
-    const src = await open({
-      multiple: false,
-      filters: [{ name: 'wRusTTY export bundle', extensions: ['wrb'] }],
-    })
-    if (!src || Array.isArray(src)) return
     const ok = window.confirm(
       'Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file\'s master password to unlock it. Continue?',
     )
     if (!ok) return
     try {
-      await vault.importVault(src)
+      if (!(await vault.importVault())) return
       onStatusChange()
       toast.info(
         'Vault, saved sessions, and workspaces imported — unlock the vault with its master password',

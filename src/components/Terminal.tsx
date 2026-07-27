@@ -407,12 +407,13 @@ export function Terminal({
     term.mount(container)
     term.fit()
 
-    // Custom scrollbar overlay — xterm.js's own scrollbar widget explicitly
-    // doesn't support arrow buttons (its bundled source throws if
-    // `verticalHasArrows` is ever set), so this rebuilds one that does,
-    // styled to match native Windows console scrollbars. See the
-    // .term-scrollbar-* rules in index.css, which also hide xterm's own
-    // scrollbar entirely so the two don't overlap.
+    // Custom scrollbar overlay. It originated as a replacement for
+    // xterm.js's own scrollbar widget, which explicitly doesn't support
+    // arrow buttons (its bundled source throws if `verticalHasArrows` is
+    // ever set) — the engine has changed since, but a scrollbar styled to
+    // match native Windows console scrollbars is still what's wanted. See
+    // the .term-scrollbar-* rules in index.css, which also hide any
+    // engine-drawn scrollbar so the two don't overlap.
     // z-index (not just position) is what actually matters here: without an
     // explicit value, this element doesn't establish its own CSS stacking
     // context, so the scrollbar's z-index below "escapes" it and competes
@@ -873,14 +874,14 @@ export function Terminal({
 
     const dataListener = term.onData((data) => {
       if (lineEditor) {
-        // Not translated: the line editor is local and matches on xterm's own
-        // ^? for its own editing. What it eventually sends is a finished
+        // Not translated: the line editor is local and matches on the
+        // engine's own ^? for its own editing. What it eventually sends is a finished
         // line, which never contains a backspace anyway.
         lineEditor.handleData(data)
         return
       }
       // Applied here rather than via a key handler so it covers every route
-      // xterm takes to produce the byte, and only on what actually goes out
+      // the engine takes to produce the byte, and only on what actually goes out
       // on the wire. Null means the session never expressed a preference,
       // which is ^? — what modern Unix expects.
       const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
@@ -951,7 +952,7 @@ export function Terminal({
       // when a pane is dragged between tabs, since that detaches and
       // reattaches its DOM node elsewhere (React portal retargeting), and
       // detaching/reattaching a WebGL canvas can silently clear its actual
-      // drawing buffer even though the JS-level context survives. xterm's
+      // drawing buffer even though the JS-level context survives. The
       // renderer still believes already-painted rows are valid and only
       // repaints cells that changed, so old (cleared) content stays blank
       // while newly written rows still render correctly — clearTextureAtlas
@@ -1022,7 +1023,7 @@ export function Terminal({
     // resizing — e.g. the status footer appearing/disappearing as a
     // connection's status changes reflows the flex layout above it. A
     // plain 'resize' listener on window misses that entirely, leaving
-    // xterm's row count stale and its rendering overlapping whatever
+    // the engine's row count stale and its rendering overlapping whatever
     // ends up occupying the space it no longer actually has.
     const resizeObserver = new ResizeObserver(onResize)
     resizeObserver.observe(container)
@@ -1111,7 +1112,7 @@ export function Terminal({
     <div
       className="relative h-full w-full px-1.5 pt-3"
       // Painted here, from the exact same findTheme() call that configures
-      // xterm's own theme a few lines up, rather than duplicated in a
+      // the engine's own theme a few lines up, rather than duplicated in a
       // separate wrapper — one source of truth means this padding can
       // never drift out of sync with whatever the terminal itself paints,
       // which a previous attempt at this (matching color one level up, in

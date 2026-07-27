@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
  * pane id, and portaled into whichever "slot" div currently represents its
  * position (see Pane.tsx). Dragging a connection between tabs/splits only
  * ever changes which slot its portal points at — the Terminal component
- * itself, and the session/xterm instance it owns, never unmounts, so the
+ * itself, and the session/engine instance it owns, never unmounts, so the
  * live connection survives the move untouched.
  *
  * `liveLeafIds` is every pane id currently holding a connection — the same

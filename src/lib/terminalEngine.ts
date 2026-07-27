@@ -1,5 +1,16 @@
 import type { CursorStyleSetting } from './settings'
-import type { IDisposable } from '@xterm/xterm'
+
+/**
+ * Structurally identical to xterm's `IDisposable`, declared here rather than
+ * imported so the app's engine interface doesn't depend on the xterm package
+ * at all — xterm exists in this repo only as the benchmark harness's
+ * comparison engine, and this type was its last thread into `src/lib`.
+ * xterm's own disposables still satisfy it, which is what `xtermEngine.ts`
+ * relies on.
+ */
+export interface IDisposable {
+  dispose(): void
+}
 
 export interface SearchOptions {
   caseSensitive?: boolean
@@ -67,7 +78,8 @@ export interface TerminalEngine {
    * Report that the engine failed to start and will never draw anything.
    * Optional — only engines with asynchronous startup that can fail
    * (Ghostty, whose core is a WASM module fetched and compiled at
-   * construction) implement it; xterm is ready the moment it is constructed.
+   * construction) implement it; a synchronously-constructed engine has no
+   * such failure mode and omits it.
    * Callers must treat its absence as "cannot fail this way", not as "cannot
    * fail".
    */

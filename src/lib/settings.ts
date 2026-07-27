@@ -56,14 +56,15 @@ export interface TerminalSettings {
    * merging them would have meant retiring `bellMarksTab`'s storage key and
    * silently resetting anyone who had turned it off. */
   bellSound: boolean
-  /** Font stack passed to xterm. Anything CSS accepts; the default is the
-   * platform's UI monospace with Consolas behind it. Only fixed-width fonts
-   * make sense — xterm measures one glyph and assumes the rest match, so a
-   * proportional font renders with visibly wrong column alignment. */
+  /** Font stack passed to the terminal engine. Anything CSS accepts; the
+   * default is the platform's UI monospace with Consolas behind it. Only
+   * fixed-width fonts make sense — the engine measures one glyph and assumes
+   * the rest match, so a proportional font renders with visibly wrong column
+   * alignment. */
   fontFamily: string
   /** Terminal font size in px. */
   fontSize: number
-  /** Rows of scrollback xterm retains per pane. Counted in *wrapped* rows,
+  /** Rows of scrollback the engine retains per pane. Counted in *wrapped* rows,
    * not logical lines, so verbose output with long lines fills it faster
    * than the number suggests. Memory scales with this times the number of
    * open panes, which is why it isn't simply set very high. */

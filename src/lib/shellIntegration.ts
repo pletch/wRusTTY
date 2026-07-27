@@ -24,7 +24,7 @@
  * Code emit it for free. See docs/SHELL_INTEGRATION.md for the snippets.
  *
  * Deliberately a plain class rather than anything React-aware — it's driven
- * from an xterm OSC handler sitting on the hot path of the output stream.
+ * from an engine OSC handler sitting on the hot path of the output stream.
  */
 
 export interface CommandActivity {
@@ -145,8 +145,8 @@ export class CommandTracker {
 
   /**
    * Feed the payload of an OSC 133 / OSC 633 sequence — everything after the
-   * identifier and its semicolon, which is what xterm's registerOscHandler
-   * hands over (`"D;0"` for `OSC 133 ; D ; 0 ST`).
+   * identifier and its semicolon, which is what the engine's
+   * `registerOscHandler` hands over (`"D;0"` for `OSC 133 ; D ; 0 ST`).
    *
    * Always returns true: this app owns 133 and 633, and consuming them keeps
    * them from being treated as anything else.

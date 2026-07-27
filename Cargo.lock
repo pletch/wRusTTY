@@ -6963,6 +6963,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wr-fs"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "wr-serial"
 version = "0.2.0"
 dependencies = [
@@ -6999,6 +7006,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wr-core",
+ "wr-fs",
  "wr-sftp",
  "zeroize",
 ]
@@ -7031,6 +7039,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "wr-fs",
  "zeroize",
 ]
 
@@ -7066,6 +7075,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-future 0.3.2",
  "wr-core",
+ "wr-fs",
  "wr-serial",
  "wr-sftp",
  "wr-ssh",

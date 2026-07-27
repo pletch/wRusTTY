@@ -726,10 +726,62 @@ struct ExportBundle {
 
 const EXPORT_FORMAT: &str = "wr-shell-export-v1";
 
+/// Runs the file dialog here rather than taking a path from the webview.
+///
+/// These two commands used to accept a `dest_path`/`src_path` `String`. The
+/// frontend did source them from the dialog plugin, but the Rust side is the
+/// enforcement point and wasn't checking: anything that could reach `invoke`
+/// could write the bundle to an arbitrary location, or point the import at a
+/// planted file — and import *replaces* the live vault and clears the
+/// OS-unlock KEK, so a hostile one is a denial-of-credentials at minimum.
+/// A path that only ever exists on this side can't be forged into one.
+///
+/// The callback form rather than `blocking_pick_file`: these are async
+/// commands, and the blocking variants are documented as unsafe to call from
+/// a thread that may be the one running the event loop.
+async fn pick_bundle_path(app: &AppHandle, saving: bool) -> Option<std::path::PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let builder = app
+        .dialog()
+        .file()
+        .add_filter("wRusTTY export bundle", &["wrb"]);
+    if saving {
+        builder
+            .set_file_name("wrustty-export.wrb")
+            .save_file(|path| {
+                let _ = tx.send(path);
+            });
+    } else {
+        builder.pick_file(|path| {
+            let _ = tx.send(path);
+        });
+    }
+
+    // A dropped sender means the dialog went away without reporting — treated
+    // the same as a cancel, which is the only safe reading of "no path".
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
 /// Doesn't require the vault to be unlocked in this process — the vault
 /// half of the bundle is copied across still encrypted.
+///
+/// Note that only that half is. `sessions` and `workspaces` ride in the
+/// bundle as plaintext JSON: hostnames, usernames, ports, key paths and jump
+/// topology are all readable in a text editor. That's deliberate — encrypting
+/// them under the DEK would require the vault to be unlocked to export at
+/// all, and being able to take a backup of a locked vault is worth more than
+/// hiding a hostname — but it is not what a file called a "vault export"
+/// implies, so the UI says so at the point of export rather than leaving the
+/// user to assume.
+///
+/// Returns `false` if the user dismissed the file dialog.
 #[tauri::command]
-pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), String> {
+pub async fn vault_export(app: AppHandle) -> Result<bool, String> {
+    let Some(dest_path) = pick_bundle_path(&app, true).await else {
+        return Ok(false);
+    };
     let vault_contents = std::fs::read_to_string(vault_path(&app)?).map_err(|e| e.to_string())?;
     let vault: serde_json::Value =
         serde_json::from_str(&vault_contents).map_err(|e| e.to_string())?;
@@ -745,7 +797,8 @@ pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), Strin
     // Atomic like every other store here: the destination is often an
     // existing bundle being refreshed, and a crash part-way through must not
     // consume the previous backup to produce a truncated replacement.
-    crate::atomic_file::write_json_atomic(std::path::Path::new(&dest_path), &bundle)
+    crate::atomic_file::write_json_atomic(&dest_path, &bundle)?;
+    Ok(true)
 }
 
 /// Importing replaces the vault file, the session profile list, and the
@@ -762,13 +815,19 @@ pub async fn vault_export(app: AppHandle, dest_path: String) -> Result<(), Strin
 /// that would mean staging all three and renaming them together, which isn't
 /// something a filesystem offers — and the recovery is to re-run the import,
 /// since the bundle is still sitting there.
+///
+/// Returns `false` if the user dismissed the file dialog. Nothing is torn
+/// down before a file is chosen — an abandoned import must not have re-locked
+/// the vault the user was already using.
 #[tauri::command]
 pub async fn vault_import(
     app: AppHandle,
-    src_path: String,
     state: State<'_, VaultState>,
     workspace_state: State<'_, crate::workspaces::WorkspaceState>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let Some(src_path) = pick_bundle_path(&app, false).await else {
+        return Ok(false);
+    };
     *state.vault.lock().await = None;
     forget_os_unlock_kek()?;
     let contents = std::fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
@@ -788,5 +847,5 @@ pub async fn vault_import(
 
     crate::workspaces::replace_all(&app, &workspace_state, &bundle.workspaces).await?;
 
-    Ok(())
+    Ok(true)
 }

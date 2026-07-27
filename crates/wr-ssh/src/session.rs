@@ -207,7 +207,7 @@ impl SshSession {
 
         let channel = handle.channel_open_session().await?;
         // Advertise 24-bit colour. The terminal has always rendered it —
-        // xterm.js handles `ESC[38;2;R;G;Bm` directly — but remote programs
+        // the engine handles `ESC[38;2;R;G;Bm` directly — but remote programs
         // won't *emit* it unless something says the terminal can: vim,
         // neovim, tmux, bat and friends all key off `COLORTERM`, and `TERM`
         // alone can't express it (`xterm-256color` says 256 and means it).

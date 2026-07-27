@@ -24,7 +24,9 @@ pub struct SshConfig {
 }
 
 /// What we claim to be when no session overrides it. 256-colour xterm is what
-/// every modern terminal advertises and what xterm.js actually implements.
+/// every modern terminal advertises, and what this app's engine implements.
+/// (The `xterm-` prefix is a terminfo name, not a statement about which
+/// engine renders it — that's Ghostty.)
 pub const DEFAULT_TERM_TYPE: &str = "xterm-256color";
 
 impl SshConfig {

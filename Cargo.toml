@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "crates/wr-core", "crates/wr-ssh", "crates/wr-telnet", "crates/wr-serial", "crates/wr-vault", "crates/wr-sftp"]
+members = ["src-tauri", "crates/wr-core", "crates/wr-fs", "crates/wr-ssh", "crates/wr-telnet", "crates/wr-serial", "crates/wr-vault", "crates/wr-sftp"]
 
 [workspace.package]
 version = "0.2.0"
@@ -8,6 +8,26 @@ edition = "2021"
 authors = ["pletch"]
 license = "MIT"
 repository = ""
+
+# Cargo's defaults for `release` are tuned for build time, not for the
+# artifact: `lto = false`, `codegen-units = 16`, and debug symbols retained.
+# For a shipped desktop app none of those trades are the right way round.
+#
+# `lto = true` matters more here than it usually would, because the hot path
+# crosses crate boundaries on every delivered byte (`wr-ssh` -> `wr-core` ->
+# `src-tauri::coalesce`); without cross-crate inlining those calls stay real
+# calls. `opt-level = "s"` rather than `3` because nothing in this app is
+# compute-bound in Rust — the parse cost lives in WASM on the frontend — so
+# the extra code size that `3` buys back in unrolling has nothing to speed up.
+#
+# `panic = "abort"` is deliberately NOT set: wry drives webview callbacks
+# across an FFI boundary, and unwinding is part of how that layer expects to
+# fail. The size it would save isn't worth taking that on.
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

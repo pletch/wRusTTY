@@ -252,15 +252,19 @@ export async function snapshotViaXterm(input: SnapshotInput): Promise<GridSnapsh
       // Walked with the same wide-character stride the ghostty side uses, so
       // the arrays stay index-aligned with `translateToString`'s output —
       // which likewise emits one character for a wide glyph's two cells.
-      let x = 0
-      while (line && x < cols) {
-        const cell = line.getCell(x, scratch)
-        if (!cell) break
-        fg.push(xtermColor(cell.isFgDefault(), cell.isFgPalette(), cell.getFgColor(), DEFAULT_FG))
-        bg.push(xtermColor(cell.isBgDefault(), cell.isBgPalette(), cell.getBgColor(), DEFAULT_BG))
-        flags.push(xtermFlags(cell))
-        attrs2.push(xtermAttrs2(cell))
-        x += cell.getWidth() === 2 ? 2 : 1
+      // The `line` null-check is a guard, not a loop condition — hoisted out
+      // so the `while` tests only what the body actually advances.
+      if (line) {
+        let x = 0
+        while (x < cols) {
+          const cell = line.getCell(x, scratch)
+          if (!cell) break
+          fg.push(xtermColor(cell.isFgDefault(), cell.isFgPalette(), cell.getFgColor(), DEFAULT_FG))
+          bg.push(xtermColor(cell.isBgDefault(), cell.isBgPalette(), cell.getBgColor(), DEFAULT_BG))
+          flags.push(xtermFlags(cell))
+          attrs2.push(xtermAttrs2(cell))
+          x += cell.getWidth() === 2 ? 2 : 1
+        }
       }
       outRows.push(trimRow(text, fg, bg, flags))
       outFg.push(fg)

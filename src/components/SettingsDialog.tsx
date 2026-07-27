@@ -37,8 +37,8 @@ type SectionId = (typeof SECTIONS)[number]['id']
 const selectClass =
   'rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
-/** Offered as a list rather than a free-text box. xterm measures one glyph
- * and assumes the rest match, so a proportional font renders with visibly
+/** Offered as a list rather than a free-text box. The engine measures one
+ * glyph and assumes the rest match, so a proportional font renders with visibly
  * wrong column alignment — and a typo'd family name silently falls through
  * to whatever the fallback is, which looks like the setting doing nothing.
  * Each entry ends in a generic fallback so a machine missing the named font

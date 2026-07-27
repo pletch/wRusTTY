@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 wr-core = { path = "../wr-core" }
+wr-fs = { path = "../wr-fs" }
 wr-sftp = { path = "../wr-sftp" }
 russh = "0.62"
 async-trait = "0.1"
@@ -16,10 +17,11 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 dirs = "6"
-tempfile = "3"
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+# Only for tests now: the atomic write that used to need it lives in wr-fs.
+tempfile = "3"
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
 # Only for the config round-trip tests: session profiles are persisted as
 # JSON by the app, so the serde shape of `SshConfig`/`AuthMethod` is a

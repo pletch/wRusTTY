@@ -105,6 +105,121 @@ pub async fn sftp_canonicalize(
     sftp.canonicalize(&path).await.map_err(|e| e.to_string())
 }
 
+/// Extensions handed to the OS opener without asking first.
+///
+/// The path-traversal check further down guards the *filename*; this guards
+/// what happens once the file is opened, which is the larger risk. Opening
+/// dispatches to the OS default handler by extension, and on Windows a
+/// remote `.hta`, `.lnk`, `.scr`, `.js`, `.wsf`, `.ps1` or `.bat` runs on
+/// double-click. The user did click a file in the Files panel, so this is not
+/// a silent RCE — but "I opened a file to read it" and "I ran a program a
+/// remote host gave me" should not be the same gesture, and the panel gives
+/// no indication that they are.
+///
+/// So: inert-on-every-platform opens directly, everything else asks. Note the
+/// omissions — `.js` and `.py` are text a user plausibly wants to edit over
+/// SFTP, but both have an *executing* default handler on Windows (Windows
+/// Script Host and the `py` launcher), which is precisely the case this
+/// exists to catch. An extra click on those is the cost of the list meaning
+/// something.
+const INERT_EXTENSIONS: &[&str] = &[
+    "txt",
+    "md",
+    "markdown",
+    "rst",
+    "log",
+    "text",
+    "conf",
+    "cfg",
+    "ini",
+    "yaml",
+    "yml",
+    "toml",
+    "json",
+    "xml",
+    "csv",
+    "tsv",
+    "properties",
+    "env",
+    "diff",
+    "patch",
+    "sql",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "c",
+    "h",
+    "cc",
+    "cpp",
+    "hpp",
+    "rs",
+    "go",
+    "java",
+    "kt",
+    "rb",
+    "php",
+    "pl",
+    "lua",
+    "ts",
+    "tsx",
+    "jsx",
+    "css",
+    "scss",
+    "svg",
+    "gitignore",
+    "dockerfile",
+    "service",
+    "repo",
+    "list",
+];
+
+/// Whether `basename` can go straight to the OS opener.
+///
+/// The comparison is on the *last* extension only, which is the one the OS
+/// dispatches on — so `notes.txt.exe` is correctly treated as an `exe`, not
+/// as a text file. A name with no extension at all is inert: there's no
+/// handler to dispatch to, and the OS falls back to an "open with" chooser.
+fn is_inert_to_open(basename: &str) -> bool {
+    match basename.rsplit_once('.') {
+        None => true,
+        Some((stem, ext)) => {
+            // A leading-dot name like `.bashrc` is a stem, not an extension.
+            if stem.is_empty() {
+                return true;
+            }
+            let ext = ext.to_ascii_lowercase();
+            INERT_EXTENSIONS.contains(&ext.as_str())
+        }
+    }
+}
+
+/// Asks before opening something whose handler might execute it. Same shape
+/// as a browser's download warning, and defaults to not opening: a dismissed
+/// or failed dialog reads as "no".
+async fn confirm_risky_open(app: &AppHandle, basename: &str) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(format!(
+            "\"{basename}\" is a type of file that can run code when it is opened, \
+             and it came from the remote host.\n\n\
+             Only open it if you trust that host. Open anyway?"
+        ))
+        .title("Open remote file?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Open".into(),
+            "Cancel".into(),
+        ))
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+
+    rx.await.unwrap_or(false)
+}
+
 /// Downloads a remote file to a local temp copy, opens it in the OS's
 /// default application for that file type, and watches it for changes —
 /// re-uploading over SFTP on every save. Returns an edit id that identifies
@@ -130,6 +245,16 @@ pub async fn sftp_edit_file(
             let local_path = entry.local_path.clone();
             let id = id.clone();
             drop(edits);
+            // Re-asked on every open, not just the first. The warning is
+            // about the act of opening, and a watch that's already running
+            // isn't evidence the user meant to open it again.
+            let basename = local_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !is_inert_to_open(&basename) && !confirm_risky_open(&app, &basename).await {
+                return Ok(id);
+            }
             app.opener()
                 .open_path(local_path.to_string_lossy(), None::<&str>)
                 .map_err(|e| e.to_string())?;
@@ -164,16 +289,33 @@ pub async fn sftp_edit_file(
     if basename == ".." || basename.contains('\\') {
         return Err(format!("unsafe remote filename: {basename}"));
     }
+    // `session_id` is backend-generated (`ssh-{n}`) in practice, but it
+    // arrives here from the webview and lands in a filesystem path, so it
+    // gets filtered rather than trusted. Anything outside `[A-Za-z0-9._-]`
+    // is dropped instead of rejected: the prefix is cosmetic — it exists to
+    // make a stray temp directory identifiable — and failing an edit over it
+    // would be a worse trade than an odd-looking directory name.
+    let id_slug: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .take(32)
+        .collect();
     let temp_dir = tempfile::Builder::new()
-        .prefix(&format!("wrustty-sftp-{session_id}-"))
+        .prefix(&format!("wrustty-sftp-{id_slug}-"))
         .tempdir()
         .map_err(|e| e.to_string())?;
     let local_path = temp_dir.path().join(basename);
     std::fs::write(&local_path, &bytes).map_err(|e| e.to_string())?;
 
-    app.opener()
-        .open_path(local_path.to_string_lossy(), None::<&str>)
-        .map_err(|e| e.to_string())?;
+    // Downloaded and watched either way — declining only means the file
+    // isn't handed to the OS opener. The user can still reach it from the
+    // panel, and the watcher below is what makes an external edit round-trip.
+    let open_it = is_inert_to_open(basename) || confirm_risky_open(&app, basename).await;
+    if open_it {
+        app.opener()
+            .open_path(local_path.to_string_lossy(), None::<&str>)
+            .map_err(|e| e.to_string())?;
+    }
 
     let edit_id = sftp_state.next_edit_id();
     let watch_path = local_path.clone();
@@ -307,5 +449,57 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
     };
     for edit_id in stale {
         sftp_state.edits.lock().await.remove(&edit_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_inert_to_open;
+
+    #[test]
+    fn text_and_source_files_open_directly() {
+        for name in [
+            "notes.txt",
+            "nginx.conf",
+            "Config.YAML",
+            "main.rs",
+            "deploy.sh",
+            "README",
+            ".bashrc",
+            "app.tsx",
+        ] {
+            assert!(is_inert_to_open(name), "{name} should open without asking");
+        }
+    }
+
+    /// The point of the list. `.js` and `.py` are here deliberately: both are
+    /// editable text, and both execute on double-click on Windows.
+    #[test]
+    fn executable_handlers_are_confirmed_first() {
+        for name in [
+            "payload.hta",
+            "shortcut.lnk",
+            "setup.scr",
+            "run.bat",
+            "run.cmd",
+            "task.ps1",
+            "dropper.js",
+            "script.py",
+            "installer.msi",
+            "tool.exe",
+        ] {
+            assert!(
+                !is_inert_to_open(name),
+                "{name} should require confirmation"
+            );
+        }
+    }
+
+    /// The OS dispatches on the last extension, so a double extension must
+    /// not be read as the harmless-looking first one.
+    #[test]
+    fn double_extension_is_judged_by_the_last_one() {
+        assert!(!is_inert_to_open("invoice.txt.exe"));
+        assert!(is_inert_to_open("archive.tar.md"));
     }
 }

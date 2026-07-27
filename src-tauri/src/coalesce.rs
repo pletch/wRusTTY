@@ -3,8 +3,9 @@
 //! read (one `ChannelMsg::Data`) pays its own full base64-encode +
 //! JSON-serialize + IPC round trip — under a firehose (`cat` a large file,
 //! `tail -f` a busy log, a verbose build) that's a storm of tiny messages
-//! each paying the full per-message tax. `xterm.js` already coalesces on
-//! the render side (`term.write`), so the win is entirely here, in the
+//! each paying the full per-message tax. The engine already coalesces on the
+//! render side (writes are queued and drained against the frame clock — see
+//! `src/lib/writeScheduler.ts`), so the win is entirely here, in the
 //! forwarder. Shared by the ssh/telnet/serial Tauri command layers, which
 //! otherwise differ only in their own `XxxEvent` type.
 //!
@@ -117,8 +118,9 @@ pub struct DeliveryStats {
     pub flushes: u64,
     pub bytes: u64,
     /// Smallest and largest single flush. `min` is usually a partial tail or an
-    /// interval-tick flush; `max` shows how far past the 32 KB threshold a
-    /// delivery actually runs.
+    /// interval-tick flush; `max` shows how far past `FLUSH_SIZE_THRESHOLD` a
+    /// delivery actually runs. (Named rather than restated: this said "the
+    /// 32 KB threshold" long after the constant had moved to 256 KB.)
     pub min_bytes: u64,
     pub max_bytes: u64,
     /// Wall time from the first flush to the most recent, in milliseconds.

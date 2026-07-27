@@ -21,6 +21,15 @@
     "jsx": "react-jsx",
 
     /* Linting */
+    // This codebase was already written as if strict were on — `string | null`
+    // unions, optional engine methods, `useRef<T | null>` — but nothing was
+    // checking any of it. The discipline was there and the compiler wasn't.
+    //
+    // `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` are the
+    // natural next two and are deliberately not enabled yet: turning them on
+    // in the same pass would have buried the real nullability findings under
+    // mechanical index assertions.
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,

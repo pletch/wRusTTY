@@ -84,10 +84,15 @@ export function hasCredential(sessionId: string) {
   return invoke<boolean>('vault_has_credential', { sessionId })
 }
 
-export function exportVault(destPath: string) {
-  return invoke<void>('vault_export', { destPath })
+/** The file dialog runs Rust-side, so the destination path never originates
+ * in this process — see `vault_export`'s doc comment. Resolves `false` if the
+ * user dismissed the dialog. */
+export function exportVault() {
+  return invoke<boolean>('vault_export')
 }
 
-export function importVault(srcPath: string) {
-  return invoke<void>('vault_import', { srcPath })
+/** As `exportVault`: the path is chosen Rust-side. Resolves `false` if the
+ * user dismissed the dialog, in which case nothing was replaced. */
+export function importVault() {
+  return invoke<boolean>('vault_import')
 }

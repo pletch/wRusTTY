@@ -157,17 +157,25 @@ pub async fn session_log_start(
     let dir = logs_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}-{}.log", sanitize(&label), timestamp()));
-    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-    // Session logs can contain anything typed or displayed in the
-    // terminal — restrict to the owner, same as the vault and known_hosts
-    // files. No-op on Windows, where the per-user %APPDATA% ACL already
-    // covers this.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-    }
+    // Session logs can contain anything typed or displayed in the terminal —
+    // restrict to the owner, same as the vault and known_hosts files. No-op
+    // on Windows, where the per-user %APPDATA% ACL already covers this.
+    //
+    // The mode goes on the open rather than on the created file: `create`
+    // then `set_permissions` leaves a window, however brief, in which the
+    // transcript exists at the default umask and another local user can open
+    // it. Once they hold the descriptor, tightening the mode afterwards
+    // doesn't take it back.
+    let file = {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        opts.open(&path).map_err(|e| e.to_string())?
+    };
     let sink = LogSink {
         file,
         filter: plain_text.then(LogFilter::default),

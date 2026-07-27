@@ -1,7 +1,7 @@
 
 
 /** A minimal local line editor for serial's "Readline"/"Readline (hex)"
- * input modes — xterm.js has no line-editing of its own, so keystrokes are
+ * input modes — the terminal engine has no line-editing of its own, so keystrokes are
  * normally sent to the wire one at a time as they're typed. This buffers
  * them locally instead (with basic editing and history, similar to a
  * shell's own readline) and only calls `onSubmit` once with the completed

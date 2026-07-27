@@ -1,7 +1,26 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["react", "typescript", "oxc"],
+  // Two hand-picked rules made `npm run lint` look like coverage without
+  // being any: it passed because almost nothing was switched on. The Rust
+  // side runs `clippy --workspace --all-targets -- -D warnings`, which is
+  // the right bar, and these categories are the frontend's nearest
+  // equivalent — `correctness` is genuine-bug territory and fails the build;
+  // `suspicious` is advisory because it has more opinions than certainties.
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
   "rules": {
+    // Wrong for this project rather than merely noisy: `tsconfig.app.json`
+    // sets `"jsx": "react-jsx"`, so JSX compiles to `jsx()` calls from the
+    // automatic runtime and never references a `React` binding. Every one of
+    // its 642 hits was a false positive.
+    "react/react-in-jsx-scope": "off",
+    // `_cols`/`_rows` and friends are the deliberate convention for a
+    // private field with a public accessor of the same name. Purely
+    // stylistic, and it disagrees with a choice already made.
+    "eslint/no-underscore-dangle": "off",
     "react/rules-of-hooks": "error",
     "react/only-export-components": ["warn", { "allowConstantExport": true }]
   }

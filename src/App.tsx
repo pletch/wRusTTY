@@ -84,7 +84,7 @@ function refit() {
   // browser has actually flushed layout for the newly-visible container" —
   // WebView2/Chromium schedules its layout/paint pipeline differently than
   // WebKitGTK, so the synthetic resize could fire before the container's
-  // real size was settled, leaving xterm's fit computed against a
+  // real size was settled, leaving the engine's fit computed against a
   // transitional size (visible as the cursor rendering a few columns off
   // right after a tab switch, self-correcting on the next full redraw).
   // Double rAF reliably waits for a completed paint first.
@@ -126,9 +126,6 @@ type Modal =
   | { kind: 'workspacePrompt'; workspace: Workspace; originTabId: string | null }
 
 function App() {
-  // Temporary switch for Phase 2 go/no-go milestone test
-
-
   // tabs/activeTabId used to be two separately-updated useState hooks; see
   // state/tabs.ts for why moving the tree surgery (split/close/pop/attach)
   // into one reducer both fixes a class of cross-hook staleness and makes
@@ -885,7 +882,7 @@ function App() {
   shortcutsRef.current = { newTab, closeTab, stepTab, openPalette, activeTabId }
 
   useEffect(() => {
-    // Capture phase so these fire before xterm's own keydown handler can
+    // Capture phase so these fire before the engine's own keydown handler can
     // treat them as shell input (e.g. Ctrl+W deletes a word in most
     // shells, so tab shortcuts intentionally avoid plain Ctrl combos).
     function onKeyDown(e: KeyboardEvent) {
