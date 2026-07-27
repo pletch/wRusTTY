@@ -28,6 +28,11 @@ export interface SerialConfig {
 export interface PortInfo {
   name: string
   friendlyName: string | null
+  /** The adapter's stable identity, when it is a USB one. `null` for a PCI
+   * card or on-board port, which don't move and so need no identity beyond
+   * their name. Captured when the user picks a port, because a COM number
+   * alone stops identifying anything once the adapter is replugged. */
+  usb: { vid: number; pid: number; serialNumber: string | null } | null
 }
 
 export function defaultSerialConfig(): SerialConfig {

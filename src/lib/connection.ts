@@ -8,6 +8,11 @@ export type ConnectionSource =
   | { protocol: 'sshProfile'; profileId: string }
   | { protocol: 'telnet'; config: TelnetConfig }
   | { protocol: 'serial'; config: SerialConfig }
+  /** A saved serial session. The COM port is resolved backend-side from the
+   * adapter's USB identity at connect time, so this deliberately carries no
+   * port name — the one stored when the session was saved may well belong to
+   * a different device now. */
+  | { protocol: 'serialProfile'; profileId: string }
 
 export type ConnEvent =
   | { type: 'status'; status: string }
@@ -69,12 +74,41 @@ export function connect(
       const config = { ...rest, localEcho: inputMode === 'LocalEcho' }
       return invoke<string>('serial_connect', { config, channel, dataChannel })
     }
+    case 'serialProfile':
+      // No config sent: the backend resolves the adapter's USB identity to
+      // whatever COM number it holds right now, which is the entire reason a
+      // serial session can be saved at all.
+      return invoke<string>('serial_connect_profile', {
+        profileId: source.profileId,
+        channel,
+        dataChannel,
+      })
+  }
+}
+
+/** Which transport's command family a source belongs to.
+ *
+ * The `*Profile` variants differ from their plain counterparts only in how the
+ * connection is *established* — once a session id exists, it is an ordinary
+ * session of that transport. Centralised because this was three separate
+ * ternaries defaulting to `ssh_*`, which meant every new source variant
+ * silently routed its writes and disconnects to the SSH commands until someone
+ * noticed. */
+function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'serial' {
+  switch (source.protocol) {
+    case 'telnet':
+      return 'telnet'
+    case 'serial':
+    case 'serialProfile':
+      return 'serial'
+    case 'ssh':
+    case 'sshProfile':
+      return 'ssh'
   }
 }
 
 export function write(source: ConnectionSource, sessionId: string, data: Uint8Array) {
-  const command = source.protocol === 'telnet' ? 'telnet_write' : source.protocol === 'serial' ? 'serial_write' : 'ssh_write'
-  return invoke<void>(command, { sessionId, data: Array.from(data) })
+  return invoke<void>(`${transportOf(source)}_write`, { sessionId, data: Array.from(data) })
 }
 
 /**
@@ -112,19 +146,13 @@ export function setInflightWindow(bytes: number) {
 
 /** No-op for serial — it has no concept of terminal size to negotiate. */
 export function resize(source: ConnectionSource, sessionId: string, cols: number, rows: number) {
-  if (source.protocol === 'serial') return Promise.resolve()
-  const command = source.protocol === 'telnet' ? 'telnet_resize' : 'ssh_resize'
-  return invoke<void>(command, { sessionId, cols, rows })
+  const transport = transportOf(source)
+  if (transport === 'serial') return Promise.resolve()
+  return invoke<void>(`${transport}_resize`, { sessionId, cols, rows })
 }
 
 export function disconnect(source: ConnectionSource, sessionId: string) {
-  const command =
-    source.protocol === 'telnet'
-      ? 'telnet_disconnect'
-      : source.protocol === 'serial'
-        ? 'serial_disconnect'
-        : 'ssh_disconnect'
-  return invoke<void>(command, { sessionId })
+  return invoke<void>(`${transportOf(source)}_disconnect`, { sessionId })
 }
 
 export function respondHostKey(requestId: string, accept: boolean) {
@@ -141,5 +169,10 @@ export function sourceLabel(source: ConnectionSource): string {
       return `${source.config.host}:${source.config.port}`
     case 'serial':
       return source.config.portName
+    // The port isn't known here — it's resolved backend-side at connect
+    // time — so the id is all this has. App's status bar resolves it to the
+    // profile's own label, the same way it does for sshProfile.
+    case 'serialProfile':
+      return source.profileId
   }
 }

@@ -3,6 +3,7 @@ import { X, ArrowLeftRight, Square } from 'lucide-react'
 import * as forward from '../lib/forward'
 import type { ForwardSpec } from '../lib/forward'
 import { toast } from '../lib/toast'
+import { useConfirm } from './confirmContext'
 
 interface ActiveForward {
   id: string
@@ -29,6 +30,7 @@ function describe(spec: ForwardSpec): string {
 }
 
 export function ForwardPanel({ sessionId, onClose }: Props) {
+  const confirm = useConfirm()
   const [active, setActive] = useState<ActiveForward[]>([])
   const [type, setType] = useState<ForwardSpec['type']>('local')
   const [bindHost, setBindHost] = useState('127.0.0.1')
@@ -69,11 +71,23 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
       return await forward.addForward(sessionId, spec)
     } catch (err) {
       if (String(err) !== forward.NON_LOOPBACK_BIND_ERROR) throw err
-      const ok = window.confirm(
-        `${spec.bindHost} isn't a loopback address — this exposes the forward to your network` +
-          (spec.type === 'dynamic' ? ' as an unauthenticated proxy' : '') +
-          '. Continue?',
-      )
+      // Spelled out rather than summarised: this is the one prompt in the app
+      // where the consequence isn't obvious from the action. "Bind to 0.0.0.0"
+      // does not read as "stand up an open proxy", and for a dynamic forward
+      // that is exactly what it does — anyone who can reach this machine's
+      // port gets to make connections from the SSH server, authenticated as
+      // this session.
+      const ok = await confirm({
+        title: 'Expose this forward to your network?',
+        body:
+          `${spec.bindHost} isn't a loopback address, so anything that can reach this ` +
+          `machine on port ${spec.bindPort} can use the forward — not just programs ` +
+          `running here. ` +
+          (spec.type === 'dynamic'
+            ? 'For a dynamic forward that is an unauthenticated SOCKS proxy onto every host your SSH server can reach.'
+            : `Connections will arrive at ${spec.targetHost}:${spec.targetPort} as though they came from the SSH server.`),
+        confirmLabel: 'Expose it',
+      })
       if (!ok) return null
       return await forward.addForward(sessionId, spec, true)
     }

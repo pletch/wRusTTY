@@ -40,6 +40,7 @@ const protocolIcons = {
   sshProfile: TerminalIcon,
   telnet: Radio,
   serial: Cable,
+  serialProfile: Cable,
 }
 
 /** Separation between segments in the tab strip's pane map, in px. */

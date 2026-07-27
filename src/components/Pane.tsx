@@ -41,6 +41,8 @@ interface Props {
   onSelectSession: (paneId: string, profile: SessionProfile) => void
   onEditSession: (paneId: string, profile: SessionProfile) => void
   onDeleteSession: (profile: SessionProfile) => void
+  /** Sessions were added by the PuTTY import — the owner re-reads the list. */
+  onSessionsImported?: () => void
   onUnlockAndSelectSession: (paneId: string, profile: SessionProfile, password: string) => Promise<void>
   osUnlockAvailable: boolean
   onUnlockWithOsAndSelectSession: (paneId: string, profile: SessionProfile) => Promise<void>
@@ -102,6 +104,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onSelectSession,
     onEditSession,
     onDeleteSession,
+  onSessionsImported,
     onUnlockAndSelectSession,
     osUnlockAvailable,
     onUnlockWithOsAndSelectSession,
@@ -236,6 +239,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             onSelectSession={(profile) => onSelectSession(node.id, profile)}
             onEditSession={(profile) => onEditSession(node.id, profile)}
             onDeleteSession={onDeleteSession}
+            onSessionsImported={onSessionsImported}
             onUnlockAndSelectSession={(profile, password) =>
               onUnlockAndSelectSession(node.id, profile, password)
             }

@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { ConfirmProvider } from './components/ConfirmProvider'
 
 // The measurement instruments, behind a build flag.
 //
@@ -44,7 +45,11 @@ const root = createRoot(document.getElementById('root')!)
 function renderApp() {
   root.render(
     <StrictMode>
-      <App />
+      {/* Outside App so a prompt raised from anywhere inside it — including
+          a pane's own context menu — renders above the whole window. */}
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
     </StrictMode>,
   )
 }

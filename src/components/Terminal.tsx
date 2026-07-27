@@ -22,12 +22,14 @@ import * as sessionLog from '../lib/logging'
 import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
+import { useConfirm } from './confirmContext'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 import { parseOsc52 } from '../lib/osc52'
+import * as broadcast from '../lib/broadcast'
 
 /** Matches .term-scrollbar-inner's width in index.css. */
 const SCROLLBAR_WIDTH = 8
@@ -73,6 +75,13 @@ interface Props {
   active?: boolean
   /** This pane's id, so a targeted searchRequest can address exactly it. */
   paneId: string
+  /** The broadcast group this pane belongs to — its tab. Panes register under
+   * it so input typed anywhere in the tab can be fanned out to all of them. */
+  broadcastGroupId: string
+  /** Whether this pane's tab is currently in broadcast mode. When it is, what
+   * is typed here goes to every connected pane in the tab rather than only
+   * this one. */
+  broadcasting?: boolean
   /** Set by App's toolbar search button. When it targets this pane's id with
    * a nonce not seen before, the search box opens (the box is per-Terminal
    * local state, so this is how an App-level control reaches into it). */
@@ -121,6 +130,8 @@ export function Terminal({
   logging,
   active,
   paneId,
+  broadcastGroupId,
+  broadcasting,
   searchRequest,
   onStatus,
   onSessionId,
@@ -173,6 +184,20 @@ export function Terminal({
   // which must not re-run (and tear down the session) when this changes.
   const backspaceRef = useRef(backspaceSendsCtrlH)
   backspaceRef.current = backspaceSendsCtrlH
+
+  // Same reason again: the paste guard is raised from a DOM listener installed
+  // by the connection effect, which must not re-run when the provider's
+  // identity changes.
+  const confirm = useConfirm()
+  const confirmRef = useRef(confirm)
+  confirmRef.current = confirm
+
+  // Read by the `onData` handler installed inside the connection effect, which
+  // must not re-run when the tab toggles broadcast or the pane changes tab.
+  const broadcastingRef = useRef(broadcasting)
+  broadcastingRef.current = broadcasting
+  const broadcastGroupRef = useRef(broadcastGroupId)
+  broadcastGroupRef.current = broadcastGroupId
 
   const loggingRef = useRef(logging)
   loggingRef.current = logging
@@ -240,6 +265,31 @@ export function Terminal({
 
   const onBellRef = useRef(onBell)
   onBellRef.current = onBell
+
+  // Registers this pane as a broadcast target for its tab.
+  //
+  // Its own effect rather than part of the connect effect because the two have
+  // different lifetimes: dragging a pane to another tab changes the group and
+  // must re-register, but must emphatically *not* re-run the connect effect,
+  // which would tear the session down to move it. The writer reads `source`
+  // and the session id through refs, so it stays correct across a reconnect
+  // without this effect having to re-run for that either.
+  //
+  // Registration is unconditional — a pane joins its group whether or not
+  // broadcast is on — because the mode is a property of the tab, decided at
+  // send time by whoever is typing, not of the panes receiving.
+  const sourceRef = useRef(source)
+  sourceRef.current = source
+  useEffect(() => {
+    return broadcast.join(paneId, broadcastGroupId, (data) => {
+      const id = sessionIdRef.current
+      // A pane still connecting, or one whose session has gone, is silently
+      // skipped: a broadcast is a convenience, and failing the whole send
+      // because one pane of eight isn't up yet would be worse than the
+      // partial delivery the user can see on screen.
+      if (id) conn.write(sourceRef.current, id, data).catch(() => {})
+    })
+  }, [paneId, broadcastGroupId])
 
   const activeRef = useRef(active)
   activeRef.current = active
@@ -846,16 +896,16 @@ export function Terminal({
         setTimeout(() => {
           if (termRef.current) {
             termRef.current.fit(true)
-            const { cols, rows } = termRef.current
-            conn.resize(source, id, cols, rows).catch(() => {})
+            const { cols: fittedCols, rows: fittedRows } = termRef.current
+            conn.resize(source, id, fittedCols, fittedRows).catch(() => {})
           }
         }, 100)
       
         sessionId = id
         sessionIdRef.current = id
         onSessionIdRef.current?.(id)
-        const { cols, rows } = term
-        conn.resize(source, id, cols, rows).catch(() => {})
+        const { cols: initialCols, rows: initialRows } = term
+        conn.resize(source, id, initialCols, initialRows).catch(() => {})
         // So you can start typing immediately instead of having to click
         // into the pane first — this is the point a new connection is
         // actually usable.
@@ -885,7 +935,22 @@ export function Terminal({
       // on the wire. Null means the session never expressed a preference,
       // which is ^? — what modern Unix expects.
       const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
-      if (sessionId) conn.write(source, sessionId, new TextEncoder().encode(out))
+      const bytes = new TextEncoder().encode(out)
+      // The fan-out point. Broadcast replaces this pane's own write rather
+      // than adding to it — the group includes this pane, so writing here as
+      // well would send everything twice to whichever pane was typed into.
+      //
+      // The backspace translation above is applied first and travels with the
+      // bytes, which is the wrong-in-principle-but-right-in-practice choice:
+      // it is a per-pane setting, and a group could in theory mix ^H and ^?
+      // hosts. Re-deriving it per target would mean fanning out the *string*
+      // and translating per pane, which is more machinery than a case nobody
+      // has hit is worth. Noted here rather than silently.
+      if (broadcastingRef.current) {
+        broadcast.send(broadcastGroupRef.current, bytes)
+        return
+      }
+      if (sessionId) conn.write(source, sessionId, bytes)
     })
 
     const selectionListener = term.onSelectionChange(() => {
@@ -901,11 +966,17 @@ export function Terminal({
         .then((text) => {
           if (!text) return
           const lines = countLines(text)
-          if (lines > 1) {
-            const ok = window.confirm(`Paste ${lines} lines into the terminal?`)
-            if (!ok) return
+          if (lines === 1) {
+            term.paste(text)
+            return
           }
-          term.paste(text)
+          void confirmRef.current({
+            title: `Paste ${lines} lines?`,
+            body: 'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.',
+            confirmLabel: 'Paste',
+          }).then((ok) => {
+            if (ok) term.paste(text)
+          })
         })
         .catch(() => {})
     }
@@ -1005,13 +1076,13 @@ export function Terminal({
           // also drop a stray gray selection where you clicked to refocus)
           // swallows input; clear it before handing focus back.
           window.getSelection()?.removeAllRanges()
-          const term = termRef.current
+          const refocusTarget = termRef.current
           // Window deactivation can sever the input element's IME/input context
           // in WebView2 so a plain focus() leaves printable input dead (only
           // Enter/arrows work). resetInputContext rebuilds it; fall back to
           // focus() for engines that don't need it.
-          if (term?.resetInputContext) term.resetInputContext()
-          else term?.focus()
+          if (refocusTarget?.resetInputContext) refocusTarget.resetInputContext()
+          else refocusTarget?.focus()
         })
       })
       .then((un) => {
@@ -1119,6 +1190,15 @@ export function Terminal({
       // App.tsx) did the moment a non-default theme was actually tested.
       style={{ background: backgroundWithOpacity(findTheme(settings.themeName), settings.backgroundOpacity) }}
     >
+      {/* Deliberately loud, and on every pane in the group rather than only
+          the focused one: the failure mode this guards against is typing a
+          `reload` into what you believed was one switch. A ring around the
+          whole pane is visible in peripheral vision in a way a toolbar badge
+          is not, and it is the only state in the app that changes what a
+          keystroke does. */}
+      {broadcasting && (
+        <div className="pointer-events-none absolute inset-0 z-30 rounded-sm ring-2 ring-inset ring-amber-400/70" />
+      )}
       <div ref={containerRef} className="relative h-full w-full" />
       {connecting && (
         <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">

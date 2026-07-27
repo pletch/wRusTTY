@@ -36,27 +36,8 @@ isn't a fixed colour.
 
 ## Settings not yet exposed
 
-Raised while reorganising settings into a dialog; the first is the biggest.
+Raised while reorganising settings into a dialog.
 
-- **Native OS notifications.** Command-completion notifications are in-app
-  toasts only — no notification plugin in `Cargo.toml` or `package.json`.
-  That partly undercuts the feature: its purpose is long commands in a tab
-  you aren't watching, but alt-tab away and the toast comes and goes unseen.
-  Needs `tauri-plugin-notification`, a capability permission, and Windows
-  toast registration that differs between a dev build and an installed one —
-  a dependency and packaging decision, not just code.
-- **Cursor style and blink.** `cursorBlink: true` is hardcoded
-  (`Terminal.tsx:332`) with no block/bar/underline choice. Not blocked by the
-  WebGL renderer, despite the several past cursor bugs that were: addon-webgl
-  0.19.0 has explicit draw branches for bar, underline, outline and block, and
-  this app already relies on one of them via `cursorInactiveStyle: 'outline'`.
-  Those bugs (9b73ada, e846da6, 19d78c4) were all cursor *position* — stale
-  texture atlas across a resize, fits against a zero-sized container. Cheap to
-  add: plain `term.options.*` assignments alongside the font effect, and
-  unlike font they don't change cell metrics, so no re-fit or PTY resize.
-- **SSH keepalive interval.** Hardcoded at `crates/wr-ssh/src/session.rs:291`.
-  The classic knob behind "my session keeps dropping" on aggressive NAT and
-  firewall timeouts.
 - **Logging: auto-start per session, and a configurable path.** Logging is
   manual and writes to a fixed location.
 - **Custom theme colours.** Presets only, no import of an existing scheme.

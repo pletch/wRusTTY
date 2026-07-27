@@ -1,8 +1,10 @@
-import { useReducer } from 'react'
+import { useReducer, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
-import type { SessionProfile } from '../lib/profiles'
+import type { SessionProfile, SerialProfile } from '../lib/profiles'
+import { serialProfileFrom } from '../lib/profiles'
+import type { PortInfo } from '../lib/serial'
 import type { Workspace } from '../lib/workspaces'
 import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
@@ -22,8 +24,9 @@ import type { Protocol } from '../state/connectDraft'
 export interface ConnectDialogInitial {
   id?: string
   /** Opens the form on this protocol's tab — a saved telnet session must not
-   * land on the SSH form with its host prefilled and its port wrong. */
-  protocol?: 'ssh' | 'telnet'
+   * land on the SSH form with its host prefilled and its port wrong, and a
+   * saved serial one must not land on either. */
+  protocol?: 'ssh' | 'telnet' | 'serial'
   label?: string
   host?: string
   port?: number
@@ -35,6 +38,10 @@ export interface ConnectDialogInitial {
   jumpProfileId?: string | null
   termType?: string | null
   backspaceSendsCtrlH?: boolean | null
+  /** Seconds between SSH keepalives — null/absent means the 60s default. */
+  keepaliveSeconds?: number | null
+  /** Serial only — the stored line settings and adapter identity. */
+  serial?: SerialProfile | null
 }
 
 // Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
@@ -87,6 +94,8 @@ interface Props {
    * a session's saved details rather than just reuse them. */
   onEditSession?: (profile: SessionProfile) => void
   onDeleteSession?: (profile: SessionProfile) => void
+  /** Sessions were added by the PuTTY import — the owner re-reads the list. */
+  onSessionsImported?: () => void
   /** A session with a stored credential picked while the vault is locked
    * prompts for the master password inline instead of just falling back to
    * the manual form — this unlocks the vault and then behaves like
@@ -117,12 +126,20 @@ export function ConnectDialog({
   onSelectSession,
   onEditSession,
   onDeleteSession,
+  onSessionsImported,
   onUnlockAndSelectSession,
   osUnlockAvailable,
   onUnlockWithOsAndSelectSession,
   onReorderSessions,
 }: Props) {
   const [draft, dispatch] = useReducer(connectDraftReducer, initial, initialConnectDraft)
+  // Kept out of the draft reducer: this isn't a field the user edits, it's the
+  // identity of whichever port they picked, read from the live port list at
+  // the moment they picked it. Seeded from the profile being edited so
+  // re-saving without touching the port dropdown doesn't discard it.
+  const [serialUsb, setSerialUsb] = useState<PortInfo['usb']>(
+    initial?.serial?.identity.usb ?? null,
+  )
   const {
     protocol,
     host,
@@ -140,6 +157,7 @@ export function ConnectDialog({
     folder,
     isNewFolder,
     jumpProfileId,
+    keepalive,
     serialConfig,
     logSession,
     saveProfile,
@@ -163,6 +181,7 @@ export function ConnectDialog({
   const setLabel = (v: string) => dispatch({ type: 'fieldSet', field: 'label', value: v })
   const setFolder = (v: string) => dispatch({ type: 'fieldSet', field: 'folder', value: v })
   const setJumpProfileId = (v: string) => dispatch({ type: 'fieldSet', field: 'jumpProfileId', value: v })
+  const setKeepalive = (v: string) => dispatch({ type: 'fieldSet', field: 'keepalive', value: v })
   const setSerialConfig = (v: typeof serialConfig) => dispatch({ type: 'fieldSet', field: 'serialConfig', value: v })
   const setLogSession = (v: boolean) => dispatch({ type: 'fieldSet', field: 'logSession', value: v })
   const setSaveProfile = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveProfile', value: v })
@@ -297,6 +316,10 @@ export function ConnectDialog({
             ? Boolean(keyPath) || vaultedInitially
             : authType !== 'Agent' && (willSaveCredential || Boolean(initial?.hasCredential)),
           jumpProfileId: jumpProfileId || null,
+          // '' means "use the default", which is null rather than 0 — 0 is
+          // the distinct, deliberate "turn keepalives off".
+          keepaliveSeconds: keepalive === '' ? null : Number(keepalive),
+          serial: null,
         })
 
         if (willSaveCredential && onSaveCredential) {
@@ -323,6 +346,7 @@ export function ConnectDialog({
               // silently dropped on every manual connection — it only ever
               // took effect via the saved-profile path.
               term_type: termType.trim() || null,
+              keepalive_seconds: keepalive === '' ? null : Number(keepalive),
             },
             jumpProfileId: jumpProfileId || null,
           },
@@ -349,6 +373,9 @@ export function ConnectDialog({
           jumpProfileId: null,
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
+          // Telnet has no keepalive of its own.
+          keepaliveSeconds: null,
+          serial: null,
         })
       }
       onConnect(
@@ -360,6 +387,37 @@ export function ConnectDialog({
         paneOptions,
       )
     } else {
+      // Like telnet, no credential half — serial has no auth at all, so
+      // saving is purely "remember this adapter and its line settings".
+      if (saveProfile && onSaveProfile) {
+        const profileId = initial?.id ?? crypto.randomUUID()
+        await onSaveProfile({
+          id: profileId,
+          label: label.trim() || serialConfig.portName,
+          folder: folder.trim() || null,
+          // Unused for serial; carries the port name so anything reading
+          // `host` generically shows something meaningful.
+          host: serialConfig.portName,
+          port: 0,
+          protocol: 'serial',
+          username: '',
+          authType: '',
+          keyPath: null,
+          hasCredential: false,
+          jumpProfileId: null,
+          termType: null,
+          backspaceSendsCtrlH: backspace === 'ctrlh',
+          // No idle timeout on a wire.
+          keepaliveSeconds: null,
+          serial: serialProfileFrom(serialConfig, serialUsb),
+        })
+        // Connect through the profile so this very first connection resolves
+        // the adapter the same way every later one will — if the identity is
+        // wrong, it fails now, while the user is still looking at the form,
+        // rather than the next time they open the session.
+        onConnect({ protocol: 'serialProfile', profileId }, logSession, paneOptions)
+        return
+      }
       onConnect({ protocol: 'serial', config: serialConfig }, logSession, paneOptions)
     }
   }
@@ -381,6 +439,7 @@ export function ConnectDialog({
       onUnlockWithOsAndSelectSession={onUnlockWithOsAndSelectSession}
       onReorderSessions={onReorderSessions}
       vaultUnlocked={vaultUnlocked}
+      onSessionsImported={onSessionsImported}
     >
       {/* Scrolls in its own right now that the card is capped — without
           this a form taller than the cap would be clipped by the card's
@@ -408,7 +467,11 @@ export function ConnectDialog({
         </div>
 
         {protocol === 'serial' ? (
-          <SerialFields config={serialConfig} onChange={setSerialConfig} />
+          <SerialFields
+            config={serialConfig}
+            onChange={setSerialConfig}
+            onIdentityChange={setSerialUsb}
+          />
         ) : (
           <>
             <div className="flex gap-2">
@@ -613,6 +676,26 @@ export function ConnectDialog({
           </>
         )}
 
+        {/* SSH only — telnet has no keepalive of its own, and serial has no
+            idle timeout to survive. Per-session rather than a global setting:
+            the firewall dropping the connection is on the path to one host,
+            so the box behind a corporate NAT needs this and the one on the
+            LAN doesn't. PuTTY puts it in Connection → "Seconds between
+            keepalives", which is where a migrating user will look. */}
+        {protocol === 'ssh' && (
+          <label className="block space-y-1">
+            <span className="text-xs text-white/40">Keepalive (seconds)</span>
+            <input
+              className={`${inputClass} w-full`}
+              inputMode="numeric"
+              placeholder="60 (default) — 0 to disable"
+              value={keepalive}
+              onChange={(e) => setKeepalive(e.target.value.replace(/[^0-9]/g, ''))}
+              title="How often to send a keepalive so an idle connection isn't dropped by a firewall or NAT. Blank uses 60 seconds; 0 turns keepalives off."
+            />
+          </label>
+        )}
+
         {/* Applies to every protocol: this is the local terminal choosing
             which byte to emit, not anything negotiated with the far end. */}
         <label className="block space-y-1">
@@ -631,7 +714,11 @@ export function ConnectDialog({
           </select>
         </label>
 
-        {protocol !== 'serial' && onSaveProfile && (
+        {/* Serial is saveable now. It wasn't, because a COM number stops
+            meaning anything once the adapter moves socket — but the profile
+            records the adapter's USB VID/PID/serial instead, and resolves a
+            live COM number at connect time. */}
+        {onSaveProfile && (
           <div className="space-y-2 border-t border-white/10 pt-2.5">
             <label className="flex items-center gap-2 text-xs text-white/70">
               <input
@@ -643,6 +730,16 @@ export function ConnectDialog({
               <Save size={12} className="text-white/40" />
               Save as session
             </label>
+            {protocol === 'serial' && saveProfile && !serialUsb && (
+              // Worth saying before the save rather than after a failed
+              // connect weeks later: without an identity this profile is only
+              // as good as PuTTY's was.
+              <p className="text-xs text-amber-300/80">
+                This port reports no USB identity, so the session will look for{' '}
+                {serialConfig.portName || 'it'} by name and won&apos;t follow the adapter to a
+                different socket.
+              </p>
+            )}
             {saveProfile && (
               <>
                 <input

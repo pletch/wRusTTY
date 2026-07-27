@@ -70,6 +70,79 @@ pub async fn serial_connect(
     Ok(session_id)
 }
 
+/// Connects a saved serial profile, resolving its adapter to whatever COM
+/// number it holds right now.
+///
+/// The resolution is the point of the whole thing: the profile stores the
+/// adapter's USB identity, not a COM number, so "the switch in rack 3" keeps
+/// working after the cable is moved to a different socket or the machine is
+/// rebooted. See `wr_serial::resolve` for the matching rules.
+#[tauri::command]
+pub async fn serial_connect_profile(
+    app: AppHandle,
+    profile_id: String,
+    channel: Channel<SerialEvent>,
+    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    state: State<'_, SerialState>,
+) -> Result<String, String> {
+    let profile = crate::profiles::get_profile(&app, &profile_id)?;
+    let serial = profile
+        .serial
+        .ok_or_else(|| format!("session profile {profile_id} is not a serial session"))?;
+
+    let available = wr_serial::list_ports().map_err(|e| e.to_string())?;
+    let port_name = match wr_serial::resolve(&serial.identity, &available) {
+        wr_serial::Resolved::Port(name) => name,
+        // Worded for the person holding the cable. "No such port COM4" would
+        // send them looking for the wrong thing — the port number is exactly
+        // what stopped being meaningful.
+        wr_serial::Resolved::NotFound => {
+            return Err(format!(
+                "{} isn't connected — plug the adapter in, or edit the session to pick a different one",
+                describe_identity(&serial.identity)
+            ))
+        }
+        // Never guessed. Picking one of several identical adapters means a
+        // console session on the wrong device, which is worse than an error.
+        wr_serial::Resolved::Ambiguous(candidates) => {
+            return Err(format!(
+                "several identical adapters match this session ({}) — edit it to pick one",
+                candidates.join(", ")
+            ))
+        }
+    };
+
+    let session_id = state.sessions.next_session_id();
+    state
+        .sessions
+        .spawn_connect(
+            app,
+            session_id.clone(),
+            SerialConnector::new(serial.to_config(port_name)),
+            channel,
+            data_channel,
+            |status| SerialEvent::Status {
+                status: status_label(status),
+            },
+        )
+        .await;
+    Ok(session_id)
+}
+
+/// Names an adapter the way its owner thinks of it, for an error message.
+fn describe_identity(identity: &wr_serial::PortIdentity) -> String {
+    match &identity.usb {
+        Some(usb) => match &usb.serial_number {
+            Some(serial) => format!("the adapter with serial {serial}"),
+            None => format!(
+                "the USB adapter {:04x}:{:04x} last seen on {}",
+                usb.vid, usb.pid, identity.port_name
+            ),
+        },
+        None => identity.port_name.clone(),
+    }
+}
+
 #[tauri::command]
 pub async fn serial_write(
     session_id: String,

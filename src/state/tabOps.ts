@@ -41,6 +41,12 @@ export function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
     jumpProfileId: profile.jumpProfileId,
     termType: profile.termType,
     backspaceSendsCtrlH: profile.backspaceSendsCtrlH,
+    keepaliveSeconds: profile.keepaliveSeconds,
+    // Carried whole so editing a saved serial session opens the form on its
+    // stored line settings *and* keeps the adapter identity — re-saving
+    // without touching the port dropdown must not silently downgrade the
+    // profile to name-only matching.
+    serial: profile.serial,
   }
 }
 

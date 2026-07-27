@@ -105,15 +105,43 @@ Manager.
 and how the panes are split — under a name, and reopen it later. Opening one
 adds its tabs alongside whatever is already open rather than replacing them.
 Panes that can't be reconnected without a secret typed at connect time are
-skipped, as are serial connections: a COM number is only meaningful until an
-adapter moves to a different socket, so serial stays ad-hoc.
+skipped.
 
-**Saved sessions** cover SSH and telnet. They share one list, grouped by
-whatever folders you create rather than by protocol — folders are the
+**Saved sessions** cover SSH, telnet and serial. They share one list, grouped
+by whatever folders you create rather than by protocol — folders are the
 organisation you chose and mean something; the transport is an attribute of
 one entry, shown as a per-item icon. The same device reachable both ways ends
-up adjacent, which is where you want it. Serial connections aren't saveable
-yet.
+up adjacent, which is where you want it.
+
+A saved serial session records the adapter's USB identity — vendor id, product
+id and serial number — rather than its COM number, and resolves a live port at
+connect time. A COM number is a property of the socket the adapter is plugged
+into, not of the adapter, so it stops meaning anything the moment the cable
+moves; the USB identity doesn't. "COM4" becomes "the FTDI cable with serial
+A50285BI", which survives a replug, a reboot and a different socket. Adapters
+that report no serial number (many CH340 and CP2102 clones) are matched on
+vendor and product id instead, and if several identical ones are attached the
+session says so rather than guessing — opening a console on the wrong switch
+is worse than an error. A non-USB port, such as a PCI serial card, is still
+matched by name, which is correct: it doesn't move.
+
+**Importing from PuTTY.** If PuTTY's saved sessions are present on the machine,
+the connect screen offers to import them —
+`HKCU\Software\SimonTatham\PuTTY\Sessions`, read-only, PuTTY's own keys left
+untouched. SSH, telnet and serial sessions come across; `raw` and `rlogin` are
+skipped rather than silently imported as something they aren't. The import is
+additive: a session already saved here with the same name and host is left
+exactly as it is, so running it twice is harmless. Imported sessions land in an
+"Imported from PuTTY" folder. Passwords are not imported, because PuTTY doesn't
+store them — an SSH session with a key file comes across as key auth, and
+anything else as agent auth, which is what a PuTTY user running Pageant already
+has.
+
+**Broadcast input** sends what you type to every pane in a tab at once —
+SuperPuTTY's "send commands to all sessions", for when the same command has to
+go to a rack of switches. It is per-tab, toggled from the toolbar, and every
+pane in the group is ringed in amber while it is on: a mode that changes what
+a keystroke does needs to be visible without looking for it.
 
 ### Compatibility notes
 

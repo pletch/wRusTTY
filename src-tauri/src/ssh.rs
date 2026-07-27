@@ -221,6 +221,7 @@ async fn build_ssh_config(
         auth,
         jump: None,
         term_type: profile.term_type.clone(),
+        keepalive_seconds: profile.keepalive_seconds,
     })
 }
 

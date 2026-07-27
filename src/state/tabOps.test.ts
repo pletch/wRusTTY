@@ -33,6 +33,8 @@ function profile(overrides: Partial<SessionProfile> = {}): SessionProfile {
     username: 'u',
     authType: 'agent',
     keyPath: null,
+    serial: null,
+    keepaliveSeconds: null,
     hasCredential: false,
     jumpProfileId: null,
     termType: null,

@@ -16,6 +16,7 @@
     "clipboard-manager:allow-write-text",
     "dialog:allow-open",
     "opener:allow-open-path",
-    "log:default"
+    "log:default",
+    "notification:default"
   ]
 }

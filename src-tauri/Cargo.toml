@@ -45,7 +45,7 @@ wr-serial = { path = "../crates/wr-serial" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3" }
+tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
@@ -63,6 +63,7 @@ tauri-plugin-window-state = "2.4.1"
 # every platform (its own platform-specific bits are internally cfg-gated),
 # though only the Windows path is wired up here.
 window-vibrancy = "0.6"
+tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(windows)'.dependencies]
 # Pinned to match whatever version wr-ssh's russh/pageant dependency
@@ -93,6 +94,10 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_RemoteDesktop",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Shell",
+  # Reading HKCU\Software\SimonTatham\PuTTY\Sessions for the migration
+  # importer in putty_import.rs. Read-only — nothing here ever writes to the
+  # registry, and PuTTY's own keys are left exactly as found.
+  "Win32_System_Registry",
 ] }
 # IUserConsentVerifierInterop::RequestVerificationForWindowAsync's generic
 # return type is `T: windows_core::Interface`, which we satisfy with

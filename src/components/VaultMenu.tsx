@@ -3,6 +3,7 @@ import { Lock, Unlock, Download, Upload, Fingerprint, Trash2 } from 'lucide-reac
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 import { toast } from '../lib/toast'
+import { useConfirm } from './confirmContext'
 
 interface Props {
   status: VaultStatus
@@ -17,6 +18,7 @@ const secondaryButton =
   'flex w-full items-center gap-1.5 rounded py-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white/90'
 
 export function VaultMenu({ status, onStatusChange }: Props) {
+  const confirm = useConfirm()
   const [open_, setOpen] = useState(false)
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -133,9 +135,11 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   }
 
   async function doDelete() {
-    const ok = window.confirm(
-      'Permanently delete the vault? Every credential stored in it will be lost — this cannot be undone. Saved sessions themselves are kept, just without their stored credentials.',
-    )
+    const ok = await confirm({
+      title: 'Delete the vault?',
+      body: 'Every credential stored in it will be lost — this cannot be undone. Saved sessions themselves are kept, just without their stored credentials.',
+      confirmLabel: 'Delete vault',
+    })
     if (!ok) return
     try {
       await vault.deleteVault()
@@ -159,9 +163,11 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     // encrypted in the bundle. Hostnames, usernames, ports, key paths and
     // jump topology travel as readable JSON, and "vault export" doesn't
     // suggest that on its own.
-    const ok = window.confirm(
-      'The export protects your saved credentials with the vault\'s master password. Session details — hostnames, usernames, ports, key file paths — are stored in the file as plain text. Keep it somewhere you would keep that list. Continue?',
-    )
+    const ok = await confirm({
+      title: 'Export vault and sessions',
+      body: "The export protects your saved credentials with the vault's master password. Session details — hostnames, usernames, ports, key file paths — are stored in the file as plain text. Keep it somewhere you would keep that list.",
+      confirmLabel: 'Export',
+    })
     if (!ok) return
     try {
       if (!(await vault.exportVault())) return
@@ -172,9 +178,11 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   }
 
   async function doImport() {
-    const ok = window.confirm(
-      'Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file\'s master password to unlock it. Continue?',
-    )
+    const ok = await confirm({
+      title: 'Replace vault and sessions?',
+      body: "Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file's master password to unlock it.",
+      confirmLabel: 'Import and replace',
+    })
     if (!ok) return
     try {
       if (!(await vault.importVault())) return

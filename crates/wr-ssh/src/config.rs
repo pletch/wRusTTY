@@ -21,6 +21,20 @@ pub struct SshConfig {
     /// user.
     #[serde(default)]
     pub term_type: Option<String>,
+    /// Seconds between keepalive messages, or `None` for
+    /// [`DEFAULT_KEEPALIVE_INTERVAL`].
+    ///
+    /// The classic knob behind "my session keeps dropping". Corporate
+    /// firewalls and NAT devices commonly drop an idle TCP flow after 5–10
+    /// minutes with no notification to either end, so a connection that looks
+    /// fine is dead the next time you touch it. PuTTY exposes this prominently
+    /// (Connection → *Seconds between keepalives*), so it's also something a
+    /// migrating user goes looking for.
+    ///
+    /// `0` disables keepalives, matching PuTTY's own meaning for the value —
+    /// worth having, since a few devices respond badly to them.
+    #[serde(default)]
+    pub keepalive_seconds: Option<u64>,
 }
 
 /// What we claim to be when no session overrides it. 256-colour xterm is what
@@ -29,9 +43,29 @@ pub struct SshConfig {
 /// engine renders it — that's Ghostty.)
 pub const DEFAULT_TERM_TYPE: &str = "xterm-256color";
 
+/// Sixty seconds is comfortably inside the idle timeout of every NAT and
+/// firewall that commonly causes the problem, and is cheap: one message per
+/// minute per session.
+pub const DEFAULT_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Missed keepalives before the connection is considered dead. Three at the
+/// default interval means a dead link is noticed within about three minutes.
+pub const KEEPALIVE_MAX: usize = 3;
+
 impl SshConfig {
     pub fn term_type(&self) -> &str {
         self.term_type.as_deref().unwrap_or(DEFAULT_TERM_TYPE)
+    }
+
+    /// The keepalive interval to hand to russh: `None` here means "don't send
+    /// keepalives at all", which is what both an explicit `0` and russh's own
+    /// `keepalive_interval: None` mean.
+    pub fn keepalive_interval(&self) -> Option<std::time::Duration> {
+        match self.keepalive_seconds {
+            None => Some(DEFAULT_KEEPALIVE_INTERVAL),
+            Some(0) => None,
+            Some(secs) => Some(std::time::Duration::from_secs(secs)),
+        }
     }
 }
 
@@ -42,6 +76,39 @@ mod tests {
     #[test]
     fn term_type_falls_back_to_the_default() {
         assert_eq!(SshConfig::default().term_type(), DEFAULT_TERM_TYPE);
+    }
+
+    /// Every profile saved before this setting existed has no value, and must
+    /// keep the keepalives it has always had.
+    #[test]
+    fn an_unset_keepalive_uses_the_default_interval() {
+        assert_eq!(
+            SshConfig::default().keepalive_interval(),
+            Some(DEFAULT_KEEPALIVE_INTERVAL)
+        );
+    }
+
+    /// PuTTY's meaning for 0, and worth having: a few devices respond badly to
+    /// keepalives, and "off" has to be expressible.
+    #[test]
+    fn zero_disables_keepalives_entirely() {
+        let config = SshConfig {
+            keepalive_seconds: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(config.keepalive_interval(), None);
+    }
+
+    #[test]
+    fn an_explicit_interval_is_used_verbatim() {
+        let config = SshConfig {
+            keepalive_seconds: Some(15),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.keepalive_interval(),
+            Some(std::time::Duration::from_secs(15))
+        );
     }
 
     #[test]
@@ -88,6 +155,7 @@ impl Default for SshConfig {
             },
             jump: None,
             term_type: None,
+            keepalive_seconds: None,
         }
     }
 }

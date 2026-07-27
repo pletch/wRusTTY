@@ -5,6 +5,7 @@ import type { Workspace } from '../lib/workspaces'
 import type { Tab } from '../types'
 import { allLeaves } from '../lib/paneTree'
 import { toast } from '../lib/toast'
+import { useConfirm } from './confirmContext'
 
 interface Props {
   /** Live tabs, captured when the user saves. */
@@ -24,6 +25,7 @@ const secondaryButton =
   'flex w-full items-center gap-1.5 rounded py-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white/90'
 
 export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
+  const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
@@ -57,9 +59,11 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
    * — including from the save form, where the collision may well be a
    * surprise rather than the intent. */
   function confirmReplace(w: Workspace) {
-    return window.confirm(
-      `Replace "${w.name}" with the current ${arrangement}? Its saved arrangement is discarded.`,
-    )
+    return confirm({
+      title: `Replace "${w.name}"?`,
+      body: `It will be replaced with the current ${arrangement}. Its saved arrangement is discarded.`,
+      confirmLabel: 'Replace',
+    })
   }
 
   async function persist(id: string, workspaceName: string, replacing: boolean) {
@@ -80,7 +84,7 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
     e.preventDefault()
     if (nothingToSave) return
     if (collision) {
-      if (!confirmReplace(collision)) return
+      if (!(await confirmReplace(collision))) return
       await persist(collision.id, collision.name, true)
       return
     }
@@ -90,7 +94,7 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
   /** Re-capture over an existing workspace, keeping its id and name. Without
    * this the only way to update one was to delete it and save again. */
   async function doReplace(w: Workspace) {
-    if (nothingToSave || !confirmReplace(w)) return
+    if (nothingToSave || !(await confirmReplace(w))) return
     await persist(w.id, w.name, true)
   }
 

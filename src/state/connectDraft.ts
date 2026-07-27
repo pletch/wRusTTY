@@ -1,4 +1,5 @@
 import { defaultSerialConfig } from '../lib/serial'
+import { serialConfigFrom } from '../lib/profiles'
 import type { SerialConfig } from '../lib/serial'
 import type { ConnectDialogInitial } from '../components/ConnectDialog'
 
@@ -60,6 +61,10 @@ export function isInitiallyVaulted(initial: ConnectDialogInitial | undefined): b
  * reducer cases (and therefore tests) instead of scattered useEffects. */
 export interface ConnectDraft {
   protocol: Protocol
+  /** Seconds between SSH keepalives, as typed: '' means "use the default",
+   * '0' means off. Kept as a string like `port` is, so the field can be
+   * cleared while being edited without snapping to a number. */
+  keepalive: string
   host: string
   port: string
   username: string
@@ -106,7 +111,12 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     folder: initial?.folder ?? '',
     isNewFolder: false,
     jumpProfileId: initial?.jumpProfileId ?? '',
-    serialConfig: defaultSerialConfig(),
+    keepalive: initial?.keepaliveSeconds == null ? '' : String(initial.keepaliveSeconds),
+    // A saved serial session opens on its own stored line settings, same as a
+    // saved SSH one opens on its host and user. `portName` here is the port
+    // the adapter was last seen on — informational, since the actual port is
+    // resolved from the USB identity at connect time.
+    serialConfig: initial?.serial ? serialConfigFrom(initial.serial) : defaultSerialConfig(),
     // Ad-hoc "log this whole session from the start" — an alternative to the
     // toolbar toggle (which can only arm logging after a session is already
     // connected, so it can't catch the login banner/MOTD).

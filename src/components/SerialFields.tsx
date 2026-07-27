@@ -10,9 +10,16 @@ const selectClass = inputClass
 interface Props {
   config: SerialConfig
   onChange: (config: SerialConfig) => void
+  /** The picked port's USB identity, or null for a non-USB port.
+   *
+   * Reported separately from `config` because it isn't a *setting* — it's what
+   * makes a saved serial session findable again after the adapter moves
+   * socket, and it can only be read here, while the port list and the COM name
+   * still refer to the same device. */
+  onIdentityChange?: (usb: serial.PortInfo['usb']) => void
 }
 
-export function SerialFields({ config, onChange }: Props) {
+export function SerialFields({ config, onChange, onIdentityChange }: Props) {
   const [ports, setPorts] = useState<serial.PortInfo[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -39,7 +46,10 @@ export function SerialFields({ config, onChange }: Props) {
         <select
           className={`${selectClass} min-w-0 flex-1`}
           value={config.portName}
-          onChange={(e) => set('portName', e.target.value)}
+          onChange={(e) => {
+            set('portName', e.target.value)
+            onIdentityChange?.(ports.find((p) => p.name === e.target.value)?.usb ?? null)
+          }}
           required
         >
           <option value="" disabled>

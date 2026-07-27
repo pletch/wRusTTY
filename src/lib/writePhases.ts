@@ -202,8 +202,8 @@ export function snapshot(): PhaseSnapshot {
 
 const mbs = (n: number) => `${(n / 1048576).toFixed(1)} MB/s`
 
-function row(label: string, ms: number, share: number, calls: number | null, help: string, indent = ''): string {
-  const callText = calls === null ? '' : `${String(calls).padStart(7)} calls`
+function row(label: string, ms: number, share: number, callCount: number | null, help: string, indent = ''): string {
+  const callText = callCount === null ? '' : `${String(callCount).padStart(7)} calls`
   return `${indent}  ${label.padEnd(13 - indent.length)} ${ms.toFixed(0).padStart(6)} ms  ${(share * 100).toFixed(1).padStart(5)}%  ${callText}   ${help}`
 }
 

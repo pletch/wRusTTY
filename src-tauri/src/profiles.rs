@@ -21,11 +21,11 @@ pub struct SessionProfile {
     pub folder: Option<String>,
     pub host: String,
     pub port: u16,
-    /// `"ssh"` or `"telnet"`. A discriminator rather than a tagged enum per
-    /// protocol: the two share everything that matters here (label, folder,
-    /// host, port, terminal behaviour) and differ only in whether the auth
-    /// fields below mean anything, so splitting the type would duplicate far
-    /// more than it separated.
+    /// `"ssh"`, `"telnet"` or `"serial"`. A discriminator rather than a tagged
+    /// enum per protocol: they share everything that matters here (label,
+    /// folder, terminal behaviour) and differ only in which of the fields
+    /// below mean anything, so splitting the type would duplicate far more
+    /// than it separated.
     #[serde(default = "default_protocol")]
     pub protocol: String,
     /// SSH only — empty for telnet, which has no user concept of its own.
@@ -55,6 +55,68 @@ pub struct SessionProfile {
     /// the session profile.
     #[serde(rename = "backspaceSendsCtrlH", default)]
     pub backspace_sends_ctrl_h: Option<bool>,
+    /// SSH only — seconds between keepalives, `None` for the default and `0`
+    /// to disable. Per-profile rather than global because the timeout that
+    /// makes it necessary belongs to the network path to one host, not to this
+    /// machine: the box behind the aggressive corporate NAT needs it, the one
+    /// on the LAN doesn't. See `wr_ssh::SshConfig::keepalive_seconds`.
+    #[serde(rename = "keepaliveSeconds", default)]
+    pub keepalive_seconds: Option<u64>,
+    /// Serial only — `None` for SSH and telnet, which use `host`/`port`.
+    ///
+    /// Serial used to be ad-hoc precisely because a COM number stops being
+    /// meaningful the moment an adapter moves socket. `SerialProfile` stores
+    /// the adapter's USB identity alongside the line settings, and the port is
+    /// resolved from that at connect time — so the thing being saved is "the
+    /// FTDI cable with serial A50285BI", which survives a replug, rather than
+    /// "COM4", which doesn't.
+    #[serde(default)]
+    pub serial: Option<SerialProfile>,
+}
+
+/// A saved serial session: which adapter, and how to talk to it.
+///
+/// Line settings are stored flat rather than as a `wr_serial::SerialConfig` so
+/// that `sessions.json` doesn't gain a `portName` that contradicts the resolved
+/// one — the port is derived from `identity` at connect time and belongs
+/// nowhere else.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialProfile {
+    /// How to find the adapter again. See `wr_serial::resolve`.
+    pub identity: wr_serial::PortIdentity,
+    pub baud_rate: u32,
+    pub data_bits: wr_serial::DataBits,
+    pub parity: wr_serial::Parity,
+    pub stop_bits: wr_serial::StopBits,
+    pub flow_control: wr_serial::FlowControl,
+    pub local_echo: bool,
+    pub line_ending: wr_serial::LineEnding,
+    /// The frontend's input mode (`Normal`, `LocalEcho`, `Readline`,
+    /// `ReadlineHex`). Opaque here and never interpreted — only `LocalEcho`
+    /// has any backend-visible effect, and that already arrives as
+    /// `local_echo`. Stored so it travels with the profile, exactly as
+    /// `backspace_sends_ctrl_h` does; without it a session saved in readline
+    /// mode would come back in normal mode.
+    #[serde(default)]
+    pub input_mode: Option<String>,
+}
+
+impl SerialProfile {
+    /// Builds the connect-time config, with `port_name` filled in from
+    /// whichever port the identity resolved to just now.
+    pub fn to_config(&self, port_name: String) -> wr_serial::SerialConfig {
+        wr_serial::SerialConfig {
+            port_name,
+            baud_rate: self.baud_rate,
+            data_bits: self.data_bits,
+            parity: self.parity,
+            stop_bits: self.stop_bits,
+            flow_control: self.flow_control,
+            local_echo: self.local_echo,
+            line_ending: self.line_ending,
+        }
+    }
 }
 
 #[derive(Default)]

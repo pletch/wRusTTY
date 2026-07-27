@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -22,11 +22,13 @@ import {
   SplitSquareHorizontal,
   SplitSquareVertical,
   ScrollText,
+  Radio,
   ArrowLeftRight,
   Folder,
   Search,
 } from 'lucide-react'
 import { toast } from './lib/toast'
+import { notifyInBackground, flashWindow } from './lib/notify'
 import * as profiles from './lib/profiles'
 import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
@@ -176,6 +178,23 @@ function App() {
   // would open search in background tabs too. The nonce lets a repeat click on
   // the same pane re-fire.
   const [searchRequest, setSearchRequest] = useState<{ nonce: number; paneId: string } | null>(null)
+
+  // Tabs currently broadcasting input to all their panes — SuperPuTTY's "send
+  // commands to all sessions", which is the main thing keeping people on it.
+  //
+  // Per-tab rather than global: a tab is already the unit users group related
+  // hosts into, and a global mode would mean a keystroke reaching panes in
+  // tabs they can't see. Deliberately *not* persisted into workspaces either —
+  // it changes what typing does, so it should not come back silently on
+  // restore hours later.
+  const [broadcastTabs, setBroadcastTabs] = useState<Set<string>>(new Set())
+  const toggleBroadcast = useCallback((tabId: string) => {
+    setBroadcastTabs((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(tabId)) next.add(tabId)
+      return next
+    })
+  }, [])
 
   // The single pane you are actually looking at: the focused pane of the
   // active tab. Everything else is out of view as far as the marker is
@@ -490,6 +509,14 @@ function App() {
       }
     }
     dispatchTabs({ type: 'tabClosed', tabId: id })
+    // Tab ids are never reused, but leaving the entry behind would mean a
+    // growing set of dead ids, so it goes with the tab.
+    setBroadcastTabs((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
     // Closing the active tab can reveal its neighbour, which was hidden (and
     // so sized 0x0) until now — handled by the layoutSignature-keyed refit
     // effect below rather than a call here, same as every other tree change.
@@ -756,6 +783,18 @@ function App() {
       }
     }
 
+    // Serial has no credential either, but unlike telnet it *does* need a
+    // backend round trip: the profile stores the adapter's USB identity, and
+    // only the Rust side can turn that into whichever COM number the adapter
+    // holds right now. Hence a `serialProfile` source rather than a config
+    // built from stored fields.
+    if (profile.protocol === 'serial') {
+      return {
+        source: { protocol: 'serialProfile' as const, profileId: profile.id },
+        initial: profileToInitial(profile),
+      }
+    }
+
     const canConnectDirect =
       profile.authType === 'agent' ||
       (vaultStatus === 'unlocked' &&
@@ -952,6 +991,16 @@ function App() {
         const framing = `${dataBitsDigit(c.dataBits)}${c.parity[0]}${c.stopBits === 'Two' ? 2 : 1}`
         return { protocol: 'SERIAL', target: `${c.portName} · ${c.baudRate} ${framing}` }
       }
+      case 'serialProfile': {
+        const p = sessions.find((s) => s.id === src.profileId)?.serial
+        if (!p) return { protocol: 'SERIAL', target: src.profileId }
+        const framing = `${dataBitsDigit(p.dataBits)}${p.parity[0]}${p.stopBits === 'Two' ? 2 : 1}`
+        // The adapter, not the COM number: the port is resolved at connect
+        // time and may not be the one stored, so showing the stored name here
+        // would be showing something that isn't true.
+        const adapter = p.identity.usb?.serialNumber ?? p.identity.portName
+        return { protocol: 'SERIAL', target: `${adapter} · ${p.baudRate} ${framing}` }
+      }
     }
   })()
   const activePaneIndex = activePaneId
@@ -1025,6 +1074,27 @@ function App() {
                 }
               >
                 <Search size={15} strokeWidth={2} />
+              </button>
+            )}
+            {/* Only offered on a tab with more than one pane: on a single
+                pane "broadcast" and "type normally" are the same thing, and a
+                mode that appears to do nothing is how a user learns to leave
+                it on. */}
+            {activeTab && allLeaves(activeTab.root).length > 1 && (
+              <button
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                  broadcastTabs.has(activeTab.id)
+                    ? 'bg-amber-400/20 text-amber-300 hover:text-amber-200'
+                    : 'text-white/50 hover:text-white/90'
+                }`}
+                title={
+                  broadcastTabs.has(activeTab.id)
+                    ? `Broadcasting to all ${allLeaves(activeTab.root).length} panes in this tab — click to stop`
+                    : 'Send input to every pane in this tab'
+                }
+                onClick={() => toggleBroadcast(activeTab.id)}
+              >
+                <Radio size={15} strokeWidth={2} />
               </button>
             )}
             {activeLeaf?.source && (
@@ -1147,6 +1217,10 @@ function App() {
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}
+                // The importer wrote straight to sessions.json rather than
+                // going through App's own save path, so the in-memory list
+                // has to be re-read rather than patched.
+                onSessionsImported={() => setProfilesVersion((v) => v + 1)}
                 onUnlockAndSelectSession={(paneId, profile, password) =>
                   unlockAndRun(password, { kind: 'connectProfile', tabId: tab.id, paneId, profile })
                 }
@@ -1198,6 +1272,8 @@ function App() {
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}
                   paneId={leaf.id}
+                  broadcastGroupId={tab.id}
+                  broadcasting={broadcastTabs.has(tab.id)}
                   searchRequest={searchRequest}
                   onStatus={(s) => {
                     // The connectedAt coupling (stamp once per connected run,
@@ -1254,8 +1330,21 @@ function App() {
                     }
                     if (tabInView) return
                     const message = describeCommandResult(result, tab.title)
-                    if (result.exitCode) toast.error(message)
-                    else toast.success(message)
+                    if (document.hasFocus()) {
+                      // The window is up, just on a different tab — an in-app
+                      // toast is exactly right here, and a native one would be
+                      // redundant with something already on screen.
+                      if (result.exitCode) toast.error(message)
+                      else toast.success(message)
+                      return
+                    }
+                    // The window isn't in front, which is the case the whole
+                    // feature exists for and the one a toast cannot serve: it
+                    // would appear and expire entirely unseen.
+                    void notifyInBackground(
+                      result.exitCode ? 'Command failed' : 'Command finished',
+                      message,
+                    )
                   }}
                   onBell={() => {
                     // Sound fires for every bell, including one from the pane
@@ -1270,6 +1359,13 @@ function App() {
                     // marker.
                     if (leaf.id === focusedPaneId && document.hasFocus()) return
                     dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
+                    // A bell is the oldest "I want your attention" signal
+                    // there is, and it works with no shell-side setup at all —
+                    // so it earns the taskbar flash when the window is away.
+                    // No notification for it, though: a bell carries no
+                    // message, and a toast reading "bell" says nothing the
+                    // flashing button doesn't.
+                    if (!document.hasFocus()) void flashWindow()
                   }}
                   onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
                   onReconnect={() => reconnectPane(tab.id, leaf.id)}

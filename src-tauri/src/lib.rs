@@ -1,10 +1,12 @@
 mod atomic_file;
+mod attention;
 mod coalesce;
 mod connection_status;
 #[cfg(target_os = "windows")]
 mod hello;
 mod logging;
 mod profiles;
+mod putty_import;
 mod serial;
 mod session_lock;
 mod session_registry;
@@ -33,6 +35,9 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Native toasts for a command that finished while you were elsewhere.
+        // See attention.rs for why the taskbar flash exists alongside it.
+        .plugin(tauri_plugin_notification::init())
         // Persists window size/position/maximized-state to disk on close and
         // restores it on the next launch — registered before the window
         // itself is built (from tauri.conf.json, as part of .run() below),
@@ -67,6 +72,7 @@ pub fn run() {
             serial::serial_list_ports,
             serial::serial_connect,
             serial::serial_write,
+            serial::serial_connect_profile,
             serial::serial_set_dtr,
             serial::serial_set_rts,
             serial::serial_send_break,
@@ -75,6 +81,8 @@ pub fn run() {
             profiles::save_session,
             profiles::delete_session,
             profiles::reorder_sessions,
+            putty_import::putty_sessions_available,
+            putty_import::putty_import_sessions,
             workspaces::list_workspaces,
             workspaces::save_workspace,
             workspaces::delete_workspace,
@@ -102,6 +110,7 @@ pub fn run() {
             coalesce::reset_delivery_stats,
             coalesce::ack_delivery,
             coalesce::set_inflight_window,
+            attention::flash_window,
         ])
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());

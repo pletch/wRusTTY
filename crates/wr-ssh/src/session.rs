@@ -20,8 +20,6 @@ use crate::known_hosts::KnownHostsStore;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
-const KEEPALIVE_MAX: usize = 3;
 
 /// Everything needed to open an SSH session, before one exists.
 ///
@@ -321,8 +319,8 @@ async fn connect_direct(
     remote_forwards: forward::RemoteForwardRegistry,
 ) -> Result<client::Handle<ClientHandler>, SshError> {
     let ssh_config = Arc::new(client::Config {
-        keepalive_interval: Some(KEEPALIVE_INTERVAL),
-        keepalive_max: KEEPALIVE_MAX,
+        keepalive_interval: config.keepalive_interval(),
+        keepalive_max: crate::config::KEEPALIVE_MAX,
         ..Default::default()
     });
 
@@ -357,8 +355,8 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let ssh_config = Arc::new(client::Config {
-        keepalive_interval: Some(KEEPALIVE_INTERVAL),
-        keepalive_max: KEEPALIVE_MAX,
+        keepalive_interval: config.keepalive_interval(),
+        keepalive_max: crate::config::KEEPALIVE_MAX,
         ..Default::default()
     });
 

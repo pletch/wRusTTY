@@ -18,4 +18,9 @@ export interface SshConfig {
    * `xterm-256color`, which is right almost everywhere; `vt100` is the usual
    * override for network and embedded gear that renders badly otherwise. */
   term_type?: string | null
+  /** Seconds between SSH keepalives. Null/omitted uses the 60s default; 0
+   * disables them (PuTTY's own meaning for the value). The knob behind "my
+   * session keeps dropping" — corporate firewalls and NAT commonly drop an
+   * idle flow after 5-10 minutes with no notice to either end. */
+  keepalive_seconds?: number | null
 }
