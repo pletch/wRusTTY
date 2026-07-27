@@ -39,26 +39,9 @@ if (import.meta.env.VITE_WRUSTTY_INSTRUMENTS) {
   ])
 }
 
-// The Phase 7 benchmark harness runs in this exact WebView — same engines, same
-// WASM as production. It is reached either by loading with a `#bench` URL
-// fragment, or at any time with the Ctrl+Alt+B shortcut below (the desktop
-// window has no address bar to type a fragment into). It is dynamically
-// imported so it splits into its own chunk and never ships in the app bundle.
 const root = createRoot(document.getElementById('root')!)
 
-function showBench() {
-  import('./bench/BenchmarkHarness.tsx').then(({ BenchmarkHarness }) => {
-    // Rendered outside StrictMode so its engines mount once rather than twice —
-    // the double-mount is harmless for the app but would race two async WASM
-    // loads in the harness. Replacing the tree tears down any live app sessions,
-    // which is expected: this is a deliberate switch into benchmark mode.
-    root.render(<BenchmarkHarness />)
-  })
-}
-
-if (window.location.hash === '#bench') {
-  showBench()
-} else {
+function renderApp() {
   root.render(
     <StrictMode>
       <App />
@@ -66,12 +49,52 @@ if (window.location.hash === '#bench') {
   )
 }
 
-// Ctrl+Alt+B from anywhere in the app opens the harness — no reload, no
-// devtools. Left registered in all builds; it costs nothing until pressed and
-// the harness chunk only loads on demand.
-window.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.altKey && (e.key === 'b' || e.key === 'B')) {
-    e.preventDefault()
-    showBench()
+// The Phase 7 benchmark harness, behind its own build flag.
+//
+// It runs in this exact WebView — same engines, same WASM as production —
+// which is what makes its numbers worth anything. Reached by loading with a
+// `#bench` URL fragment, or at any time with Ctrl+Alt+B (the desktop window
+// has no address bar to type a fragment into).
+//
+// Being dynamically imported kept it out of the *app chunk*, so it never cost
+// anything at startup — but the chunk was still emitted into `dist/`, which
+// means it shipped inside every installer: 564 kB of JS plus 4 kB of CSS,
+// carrying all four xterm packages, reachable in a release build by anyone who
+// pressed Ctrl+Alt+B. Code-splitting answers "does this slow the app down";
+// it does not answer "is this in the shipped artifact".
+//
+// Gating the whole block — the import, the hash check and the hotkey — makes
+// the branch dead in a release build, so rollup emits no chunk at all. The
+// hotkey has to be inside the gate too: left registered, it would reach for a
+// chunk that no longer exists.
+//
+// `npm run dev` and `npm run tauri:dev` set the flag, so nothing changes while
+// developing. `npm run build:instrumented` sets it too — that is the
+// measurement build, and if you are measuring you want both the harness and
+// the on-screen instruments above.
+if (import.meta.env.VITE_WRUSTTY_BENCH) {
+  const showBench = () => {
+    void import('./bench/BenchmarkHarness.tsx').then(({ BenchmarkHarness }) => {
+      // Rendered outside StrictMode so its engines mount once rather than twice —
+      // the double-mount is harmless for the app but would race two async WASM
+      // loads in the harness. Replacing the tree tears down any live app sessions,
+      // which is expected: this is a deliberate switch into benchmark mode.
+      root.render(<BenchmarkHarness />)
+    })
   }
-})
+
+  if (window.location.hash === '#bench') {
+    showBench()
+  } else {
+    renderApp()
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.altKey && (e.key === 'b' || e.key === 'B')) {
+      e.preventDefault()
+      showBench()
+    }
+  })
+} else {
+  renderApp()
+}

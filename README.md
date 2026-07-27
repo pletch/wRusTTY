@@ -33,6 +33,15 @@ installers ship a webview that can't be inspected — the process holds
 decrypted vault secrets and renders untrusted remote output. `tauri:dev` is
 the everyday command; `tauri build` never enables it.
 
+The development tooling is gated the same way, by Vite mode rather than cargo
+feature. A release build (`npm run build`, and so `npm run tauri build`)
+contains neither the benchmark harness nor the measurement instruments —
+their `import.meta.env` branches are dead, so no chunk is emitted for them at
+all, and `dist/` is three files. Both are on for `npm run dev` and
+`npm run tauri:dev`, and `npm run build:instrumented` gives you a real
+optimised build that still carries them, for taking figures that must not be
+distorted by an attached inspector.
+
 ### Workspace layout
 
 - `src/` — React + TypeScript frontend
