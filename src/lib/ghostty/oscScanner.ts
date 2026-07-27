@@ -25,9 +25,27 @@ const SEMICOLON = 0x3b
 const ZERO = 0x30
 const NINE = 0x39
 
-/** An unterminated sequence this long is not going to terminate. Dropped rather
- *  than allowed to grow without bound. */
-export const OSC_PENDING_MAX = 4096
+/**
+ * An unterminated sequence this long is not going to terminate. Dropped rather
+ * than allowed to grow without bound.
+ *
+ * Sized for OSC 52, which is the one sequence here whose payload is user data
+ * rather than a label: a clipboard write carries base64 of everything being
+ * copied, and arrives split across as many deliveries as the socket and the
+ * coalescer choose. At the old 4 KB this silently dropped any copy past ~3 KB of
+ * text that happened to straddle a chunk boundary — which is most of them, since
+ * a payload that large always does. It leaves headroom over
+ * `osc52.OSC52_MAX_BASE64` for the sequence's own framing and any wrapping a
+ * chunked sender adds, so a payload that size bound accepts survives being split
+ * as well as it does arriving whole.
+ *
+ * Not larger, because a carried-over buffer is prepended to every subsequent
+ * chunk until the sequence terminates: cost is (pending size × chunks it spans),
+ * so the cap is what stops a never-terminated sequence from turning each
+ * delivery into a multi-megabyte copy. A megabyte keeps that in the tens of
+ * milliseconds across a whole copy, even against 4 KB deliveries.
+ */
+export const OSC_PENDING_MAX = 1024 * 1024
 
 export interface OscScanEvent {
   kind: 'osc' | 'bell'

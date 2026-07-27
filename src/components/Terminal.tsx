@@ -27,6 +27,7 @@ import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
+import { parseOsc52 } from '../lib/osc52'
 
 /** Matches .term-scrollbar-inner's width in index.css. */
 const SCROLLBAR_WIDTH = 8
@@ -642,6 +643,22 @@ export function Terminal({
     })
     const oscListeners = [133, 633].map((ident) =>
       term.registerOscHandler(ident, (data) => tracker.handleOsc(data)),
+    )
+    // OSC 52 is the only copy path a program on the far end of a session has:
+    // it cannot reach this machine's clipboard, and while it is grabbing the
+    // mouse for its own UI the user cannot drag out a selection either. Reads
+    // are parsed and dropped — answering one would hand whatever the user last
+    // copied (a password, a token) to the remote end unasked.
+    oscListeners.push(
+      term.registerOscHandler(52, (data) => {
+        const req = parseOsc52(data)
+        if (req.kind === 'write') {
+          writeText(req.text).catch((e) => {
+            logError(`OSC 52 clipboard write failed: ${e}`)
+          })
+        }
+        return true
+      }),
     )
     // Entering the alternate screen mid-command means a full-screen program
     // took over (vim, top, less). Recorded on the run so the completion it
