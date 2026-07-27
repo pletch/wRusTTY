@@ -11,6 +11,18 @@ use crate::config::TelnetConfig;
 use crate::error::TelnetError;
 use crate::protocol::{self, Parser};
 
+/// Sends a protocol reply (option negotiation, terminal type, NAWS) back up
+/// the write channel, if the session still exists.
+///
+/// Returns false when it does not — either the session was disconnected, or
+/// the write task is gone. Both mean the read loop should stop.
+async fn send_reply(tx: &mpsc::WeakSender<Vec<u8>>, bytes: Vec<u8>) -> bool {
+    match tx.upgrade() {
+        Some(tx) => tx.send(bytes).await.is_ok(),
+        None => false,
+    }
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
@@ -93,8 +105,14 @@ impl Session for TelnetSession {
     }
 
     async fn disconnect(&mut self) -> Result<(), TelnetError> {
-        // Dropping the sender ends the write task; the read task ends on
-        // its own once the socket's read half returns EOF/error.
+        // Dropping the sender closes the channel, which ends the write task,
+        // which drops its `OwnedWriteHalf` — and tokio shuts the write side of
+        // the socket down on that drop, so the peer sees EOF. The read task
+        // then ends on its own once its half returns EOF/error.
+        //
+        // This only works because the read task's reply sender is weak; see
+        // `connect_inner`. With a strong clone the channel outlived this and
+        // the connection was never closed at all.
         self.input_tx = None;
         Ok(())
     }
@@ -134,7 +152,21 @@ impl TelnetConnector {
 
         let output_events = events.clone();
         let last_size = self.last_size.clone();
-        let reply_tx = input_tx.clone();
+        // A *weak* sender, deliberately.
+        //
+        // This was `input_tx.clone()`, which meant the read task kept the
+        // channel alive: `disconnect` dropped the session's sender, but the
+        // clone here held the last strong reference, so `input_rx.recv()`
+        // never returned `None`, the write task never ended, its
+        // `OwnedWriteHalf` was never dropped, and no FIN was ever sent. The
+        // TCP connection stayed ESTABLISHED until the process exited — one
+        // leaked socket per closed telnet tab, and a half-open connection the
+        // server had no reason to clean up either.
+        //
+        // A `WeakSender` can still send while the session holds its strong
+        // one, which is the whole of what the reply path needs, and stops
+        // counting the moment the session lets go.
+        let reply_tx = input_tx.downgrade();
         // Resolved here rather than inside the loop: the reply task outlives
         // this borrow of `self`, and the answer can't change mid-session
         // anyway (a server may ask more than once, but our answer is fixed).
@@ -158,19 +190,19 @@ impl TelnetConnector {
                 {
                     break;
                 }
-                if !out.replies.is_empty() && reply_tx.send(out.replies).await.is_err() {
+                if !out.replies.is_empty() && !send_reply(&reply_tx, out.replies).await {
                     break;
                 }
                 if out.terminal_type_requested {
                     let bytes = protocol::encode_terminal_type(&term_type);
-                    if reply_tx.send(bytes).await.is_err() {
+                    if !send_reply(&reply_tx, bytes).await {
                         break;
                     }
                 }
                 if out.naws_accepted {
                     let (cols, rows) = *last_size.lock().await;
                     let bytes = protocol::encode_naws(cols, rows);
-                    if reply_tx.send(bytes).await.is_err() {
+                    if !send_reply(&reply_tx, bytes).await {
                         break;
                     }
                 }
@@ -184,5 +216,121 @@ impl TelnetConnector {
             input_tx: Some(input_tx),
             last_size: self.last_size,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    /// A listener that hands back the accepted socket, so a test can ask what
+    /// the peer actually observed rather than what we hoped it did.
+    async fn listener() -> (TcpListener, u16) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        (l, port)
+    }
+
+    fn config(port: u16) -> TelnetConfig {
+        TelnetConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            ..Default::default()
+        }
+    }
+
+    /// The regression this exists for.
+    ///
+    /// `disconnect` drops the session's sender, which must close the channel,
+    /// which ends the write task, which drops its `OwnedWriteHalf` and shuts
+    /// the write side of the socket down. The peer sees EOF.
+    ///
+    /// It did not, for a while: the read task held `input_tx.clone()`, so the
+    /// channel never closed and the connection stayed ESTABLISHED until the
+    /// process exited — one leaked socket per closed telnet tab. A smoke test
+    /// caught it because two sockets closed at once on quit when only one
+    /// session was open.
+    #[tokio::test]
+    async fn disconnect_closes_the_connection() {
+        let (l, port) = listener().await;
+        let accepted = tokio::spawn(async move { l.accept().await.unwrap().0 });
+
+        let (tx, _rx) = mpsc::channel(64);
+        let mut session = TelnetConnector::new(config(port))
+            .connect(tx)
+            .await
+            .unwrap();
+        let mut peer = accepted.await.unwrap();
+
+        session.disconnect().await.unwrap();
+
+        // Read to EOF. Whatever negotiation bytes are in flight are drained
+        // first; what matters is that the read *terminates* rather than
+        // blocking forever on a connection nobody closed.
+        let mut sink = Vec::new();
+        let eof = tokio::time::timeout(Duration::from_secs(5), peer.read_to_end(&mut sink)).await;
+
+        assert!(
+            eof.is_ok(),
+            "peer never saw EOF — the write half was not shut down, so the \
+             connection leaked (this is exactly the bug)"
+        );
+        eof.unwrap().expect("read_to_end failed");
+    }
+
+    /// The other half of the same property: while the session is alive, the
+    /// connection must stay open. A fix that closed it eagerly would pass the
+    /// test above and break the app.
+    #[tokio::test]
+    async fn the_connection_stays_open_while_the_session_lives() {
+        let (l, port) = listener().await;
+        let accepted = tokio::spawn(async move { l.accept().await.unwrap().0 });
+
+        let (tx, _rx) = mpsc::channel(64);
+        let _session = TelnetConnector::new(config(port))
+            .connect(tx)
+            .await
+            .unwrap();
+        let mut peer = accepted.await.unwrap();
+
+        let mut buf = [0u8; 64];
+        let read = tokio::time::timeout(Duration::from_millis(300), peer.read(&mut buf)).await;
+        match read {
+            // Timed out waiting for more: the connection is open and idle.
+            Err(_) => {}
+            // Negotiation bytes are fine; a zero-length read is EOF and is not.
+            Ok(Ok(n)) => assert!(n > 0, "connection closed while the session was still alive"),
+            Ok(Err(e)) => panic!("connection errored while the session was alive: {e}"),
+        }
+    }
+
+    /// Replies still reach the wire through the weak sender — the negotiation
+    /// path must keep working, or the fix has traded a leak for a mute client.
+    #[tokio::test]
+    async fn negotiation_replies_still_reach_the_peer() {
+        let (l, port) = listener().await;
+        let accepted = tokio::spawn(async move { l.accept().await.unwrap().0 });
+
+        let (tx, _rx) = mpsc::channel(64);
+        let session = TelnetConnector::new(config(port))
+            .connect(tx)
+            .await
+            .unwrap();
+        let mut peer = accepted.await.unwrap();
+
+        // Ask for the terminal type; the read task answers through `send_reply`.
+        peer.write_all(&[protocol::IAC, protocol::DO, protocol::OPT_TERMINAL_TYPE])
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 256];
+        let n = tokio::time::timeout(Duration::from_secs(5), peer.read(&mut buf))
+            .await
+            .expect("no reply within 5s — the weak sender failed to upgrade")
+            .unwrap();
+
+        assert!(n > 0, "peer got EOF instead of a negotiation reply");
+        drop(session);
     }
 }
