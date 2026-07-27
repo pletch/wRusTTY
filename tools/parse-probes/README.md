@@ -6,10 +6,12 @@ dev tools, not app code, which is why they live here rather than under `src/`.
 
 Two things make this possible and are worth not breaking:
 
-- The vendored `ghostty-vt.wasm` has a **name section and full DWARF**, so V8
-  attributes ticks to real Zig symbols. (It is also why the binary is 3007 kB:
-  code is only 485 kB, the rest is debug info. The stock npm build has it
-  stripped.)
+- The vendored `ghostty-vt.wasm` keeps its **name section**, so V8 attributes
+  ticks to real Zig symbols — all 444 of them. (The stock npm build strips it.
+  The DWARF that used to sit alongside it is gone as of
+  `tools/strip-wasm-debug.mjs`: it was 2,556 kB of the binary's 3,299 kB and
+  nothing here read it, which took the file to 742 kB against 538 kB of code.
+  Do not put it back to make these tools work — they never used it.)
 - The WASM imports exactly one function, `env.log`, so it instantiates headless
   with a stub.
 

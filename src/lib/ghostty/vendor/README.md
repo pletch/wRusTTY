@@ -37,19 +37,39 @@ throughput: measured on the benchmark's own flood payload, 74.1 MB/s against
 is the wrong thing to optimise for here — this is a Tauri desktop app, so the
 binary is bundled on disk rather than fetched over a network.
 
-It is not free, though. The module is ~3.3 MB rather than 415 kB, and every
-pane is its own WASM instance, so per-pane `compile+instantiate` goes from
-~0.7 ms to ~1.5-3 ms. That cost disappears almost entirely if the compiled
-`WebAssembly.Module` is cached and shared across panes, leaving only a
-per-pane `WebAssembly.Instance` — measured at 0.087 ms to instantiate, and
-identical for both builds. `GhosttyEngine.initWasm` currently compiles per
-pane, so the win is still on the table.
+It is not free, though. Every pane is its own WASM instance, so per-pane
+`compile+instantiate` goes from ~0.7 ms to ~1.5-3 ms. That cost disappears
+almost entirely once the compiled `WebAssembly.Module` is cached and shared
+across panes, leaving only a per-pane `WebAssembly.Instance` — measured at
+0.087 ms to instantiate, and identical for both builds. `compileGhosttyWasm`
+does exactly that: it memoises the compile in a module-level promise and evicts
+it on failure, so a pane that fails to start doesn't poison every later one.
+`moduleCache.test.ts` pins both halves — one shared module, never a shared
+instance.
 
-Most of that size is debug info, not code: the binary carries a name section and
-full DWARF (~2.3 MB of `.debug_*`), against ~830 kB of actual code. That is what
-makes `tools/parse-probes/` able to profile the shipping binary with real Zig
-symbol names, so it is deliberate — but stripping it is the first thing to try if
-the bundle size ever matters.
+## The binary is stripped of DWARF, but keeps its name section
+
+As built, the module is 3,299 kB, of which **2,556 kB (77.5%) is `.debug_*`**
+against 538 kB of actual code. `tools/strip-wasm-debug.mjs` removes the DWARF
+sections and keeps everything else, taking it to **742 kB**:
+
+```sh
+node tools/strip-wasm-debug.mjs ghostty-vt.wasm ghostty-vt.stripped.wasm
+```
+
+The checked-in binary is the stripped one; run this as part of the vendoring
+step whenever the binary is rebuilt.
+
+Nothing is lost by it. V8 attributes profiler ticks to real Zig symbols from the
+**name section**, which is kept — `tools/parse-probes/names.mjs` reads that
+section and no other, and still resolves all 444 functions after the strip.
+`ReleaseFast` code is untouched, so parse throughput is unaffected and the
+argument above for not using `ReleaseSmall` still stands. What DWARF actually
+buys is source-level stepping in DevTools via the C/C++ debugging extension —
+a dev-machine concern, and not one worth 2.5 MB in every installer. If it is
+ever wanted, vendor both binaries and select on
+`import.meta.env.VITE_WRUSTTY_INSTRUMENTS`, the same dual-artifact pattern the
+JS instrumentation already uses.
 
 Do not reach for `-Dcpu=generic+simd128`: it was measured at +0.5-2%, which is
 noise. Ghostty's real SIMD paths are C++ (Google Highway, simdutf, utfcpp) and
