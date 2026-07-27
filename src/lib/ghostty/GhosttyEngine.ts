@@ -1093,8 +1093,29 @@ export class GhosttyEngine implements TerminalEngine {
       }
       // Shift extends the existing selection from its anchor rather than
       // starting a new one — the same gesture every text surface uses.
-      if (e.shiftKey && this.renderer?.selection && this.selectionAnchor) {
+      //
+      // Only while the program is leaving the mouse alone, though. Under mouse
+      // reporting, shift is already spoken for: it is what takes this drag off
+      // the program and gives it to the terminal (see the top of this handler),
+      // so it cannot also carry "extend" — and reading it that way meant that
+      // once any selection existed, every later shift-drag was anchored to that
+      // first selection's start instead of to where the button went down. There
+      // was no gesture left that could begin a new selection, which is what made
+      // selecting under a full-screen program feel like it had stopped working.
+      // Losing extend-by-shift-click there is the right trade: a fresh drag is
+      // the gesture that has to work.
+      if (e.shiftKey && !this.mouseTracking() && this.renderer?.selection && this.selectionAnchor) {
         this.isSelecting = true
+        // The drag handler tracks from `selectionStart`, so extending has to set
+        // it too — to the anchor, since that is the end this gesture holds fixed.
+        // Left null (which is what a double-click leaves behind) the extend was a
+        // click and nothing more: the pointer could be dragged anywhere and the
+        // selection would not follow, and drag-autoscroll never armed.
+        this.selectionStart = this.selectionAnchor
+        // Same reason: the drag handler rebuilds the selection from the field,
+        // not from what was set here, so a shift-alt extend would drop back to a
+        // linewise selection the moment the pointer moved.
+        this.selectionRectangular = e.altKey
         this.renderer.selection = {
           start: this.selectionAnchor,
           end: this.getCoords(e),
