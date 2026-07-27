@@ -1,5 +1,6 @@
 import type { TerminalEngine, SearchOptions, SearchResult } from '../terminalEngine'
-import type { SearchHighlight } from './WebGLRenderer'
+import { SearchController } from './SearchController'
+import { columnText, type RowText } from './rowText'
 import type { IDisposable } from '@xterm/xterm'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
 import { scanOsc } from './oscScanner'
@@ -99,40 +100,6 @@ const MAX_PREREADY_BYTES = 1024 * 1024
 export function scrollbackLinesFor(lines: number, cols: number): number {
   const maxLines = Math.floor(SCROLLBACK_MAX_BYTES / (Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL))
   return Math.min(Math.max(Math.floor(lines), SCROLLBACK_MIN_LINES), maxLines)
-}
-
-/**
- * One search hit. `row`/`from`/`to` are its head, which is all a match that
- * does not wrap ever needs; `segments` is every row it covers, so a hit across
- * a wrapped line highlights on each of them while still counting once.
- */
-interface SearchMatch {
-  row: number
-  from: number
-  to: number
-  segments: { row: number; from: number; to: number }[]
-}
-
-/**
- * One buffer row, as `readRows` hands it over: the text of every column
- * concatenated, plus where each column begins in it.
- *
- * `colStart` has `cols + 1` entries, so column `c` is always
- * `text.slice(colStart[c], colStart[c + 1])` with no special case for the
- * last column. A span can be longer than one character (a grapheme cluster)
- * or empty (the trailing half of a wide character), which is exactly the
- * information a plain `string` would have thrown away and a `string[]` per
- * cell paid ~2M allocations to keep.
- */
-interface RowText {
-  text: string
-  colStart: Int32Array
-}
-
-/** What column `c` shows. Empty for a wide character's trailing spacer. */
-function columnText(row: RowText, c: number): string {
-  if (c < 0 || c + 1 >= row.colStart.length) return ''
-  return row.text.slice(row.colStart[c], row.colStart[c + 1])
 }
 
 /**
@@ -267,10 +234,10 @@ export class GhosttyEngine implements TerminalEngine {
   private onInitErrorHandlers = new Set<(message: string) => void>()
 
   private onSearchResultHandlers = new Set<(result: SearchResult) => void>()
-  private searchMatches: SearchMatch[] = []
-  private searchIndex = -1
-  private searchSignature = ''
-  private searchGen = -1
+  /** Find-in-scrollback and its four fields of cache state, which only ever
+   *  talked to each other. Assigned in the constructor because its host object
+   *  closes over `this`. */
+  private readonly searchController: SearchController
   /** Bumped whenever the buffer changes, so a cached search knows it is stale. */
   private bufferGen = 0
 
@@ -286,6 +253,25 @@ export class GhosttyEngine implements TerminalEngine {
   private lastScrollbackCount = 0
 
   constructor() {
+    // Narrow by design: reads of buffer state, plus requests to move or
+    // repaint the view. Searching is not allowed to do anything else.
+    // All arrow functions, so `this` needs no aliasing and the three reads
+    // below stay live rather than being snapshotted here.
+    this.searchController = new SearchController({
+      readRows: (from, to) => this.readRows(from, to),
+      readWrapFlags: (total) => this.readWrapFlags(total),
+      scrollbackLength: () => this.scrollbackLength,
+      bufferGen: () => this.bufferGen,
+      viewportY: () => this.viewportY,
+      setHighlights: (byRow) => {
+        if (this.renderer) this.renderer.searchHighlights = byRow
+        this.needsRedraw = true
+      },
+      revealRow: (row) => this.revealRow(row),
+      emit: (result) => {
+        for (const h of this.onSearchResultHandlers) h(result)
+      },
+    })
     GhosttyEngine.liveEngines.add(this)
     // Registered here rather than at module scope so importing the engine has
     // no side effect: if something constructed one, there is state worth
@@ -1859,63 +1845,7 @@ export class GhosttyEngine implements TerminalEngine {
    * way it is on screen.
    */
   search(query: string, options?: SearchOptions): void {
-    if (!query) {
-      this.clearSearchDecorations()
-      return
-    }
-
-    const flags = `g${options?.caseSensitive ? '' : 'i'}`
-    const pattern = options?.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const signature = `${pattern} ${flags}`
-
-    // A throwing regex is the user halfway through typing one, not an error
-    // worth clearing the view for.
-    let re: RegExp
-    try {
-      re = new RegExp(pattern, flags)
-    } catch {
-      this.searchMatches = []
-      this.searchIndex = -1
-      this.applySearchHighlights()
-      for (const h of this.onSearchResultHandlers) h({ index: -1, count: 0 })
-      return
-    }
-
-    // Rebuilt only when the query or the buffer moved. Incremental search fires
-    // on every keystroke, and re-reading ten thousand rows per keystroke is the
-    // difference between usable and not.
-    if (signature !== this.searchSignature || this.searchGen !== this.bufferGen) {
-      this.searchSignature = signature
-      this.searchGen = this.bufferGen
-      this.searchMatches = this.findMatches(re)
-      this.searchIndex = -1
-    }
-
-    const count = this.searchMatches.length
-    if (count === 0) {
-      this.searchIndex = -1
-      this.applySearchHighlights()
-      for (const h of this.onSearchResultHandlers) h({ index: -1, count: 0 })
-      return
-    }
-
-    if (this.searchIndex < 0) {
-      // Opening on a fresh query starts from what is on screen rather than from
-      // the top of a scrollback the user may be nowhere near.
-      const firstVisible = this.viewportY
-      const at = this.searchMatches.findIndex((m) => m.row >= firstVisible)
-      this.searchIndex = at === -1 ? count - 1 : at
-    } else if (!options?.incremental) {
-      this.searchIndex = options?.back
-        ? (this.searchIndex - 1 + count) % count
-        : (this.searchIndex + 1) % count
-    } else if (this.searchIndex >= count) {
-      this.searchIndex = 0
-    }
-
-    this.revealRow(this.searchMatches[this.searchIndex].row)
-    this.applySearchHighlights()
-    for (const h of this.onSearchResultHandlers) h({ index: this.searchIndex, count })
+    this.searchController.search(query, options)
   }
 
   /**
@@ -1953,68 +1883,6 @@ export class GhosttyEngine implements TerminalEngine {
    * — so each carries the segments it covers, while navigation treats it as the
    * single hit it is.
    */
-  private findMatches(re: RegExp): SearchMatch[] {
-    const total = this.scrollbackLength
-    const rows = this.readRows(0, total - 1)
-    const wrapped = this.readWrapFlags(rows.length)
-    const out: SearchMatch[] = []
-
-    let i = 0
-    while (i < rows.length) {
-      // This row plus every continuation of it.
-      let end = i + 1
-      while (end < rows.length && wrapped[end]) end++
-
-      // A column can hold more than one character (a grapheme cluster), so the
-      // offset a match reports is not a column. These map back, and now also
-      // say which row the offset landed on.
-      let text = ''
-      const rowAt: number[] = []
-      const colAt: number[] = []
-      for (let r = i; r < end; r++) {
-        const row = rows[r]
-        // The row's text is already joined; the per-character maps come from
-        // the column index rather than from re-measuring per-cell strings.
-        text += row.text
-        const cs = row.colStart
-        for (let c = 0; c + 1 < cs.length; c++) {
-          for (let k = cs[c]; k < cs[c + 1]; k++) {
-            rowAt.push(r)
-            colAt.push(c)
-          }
-        }
-      }
-
-      re.lastIndex = 0
-      let m: RegExpExecArray | null
-      while ((m = re.exec(text)) !== null) {
-        if (m[0].length === 0) {
-          // A pattern that can match nothing would otherwise spin here.
-          re.lastIndex++
-          continue
-        }
-        const from = m.index
-        const to = Math.min(m.index + m[0].length - 1, rowAt.length - 1)
-        if (rowAt[from] === undefined || rowAt[to] === undefined) continue
-
-        const segments: { row: number; from: number; to: number }[] = []
-        let k = from
-        while (k <= to) {
-          const row = rowAt[k]
-          let j = k
-          while (j + 1 <= to && rowAt[j + 1] === row) j++
-          segments.push({ row, from: colAt[k], to: colAt[j] })
-          k = j + 1
-        }
-        // The head doubles as the match's own position, so reveal and ordering
-        // keep working on matches that never wrap.
-        out.push({ ...segments[0], segments })
-      }
-      i = end
-    }
-    return out
-  }
-
   /** Scrolls the viewport the least amount that brings `row` into view. */
   private revealRow(row: number) {
     const top = this.viewportY
@@ -2026,34 +1894,9 @@ export class GhosttyEngine implements TerminalEngine {
     this.scrollToLine(target)
   }
 
-  private applySearchHighlights() {
-    if (!this.renderer) return
-    if (this.searchMatches.length === 0) {
-      this.renderer.searchHighlights = null
-    } else {
-      const byRow = new Map<number, SearchHighlight[]>()
-      for (let i = 0; i < this.searchMatches.length; i++) {
-        // Every row the match covers, not just its head: a match across a wrap
-        // is one hit but two or more highlights.
-        for (const seg of this.searchMatches[i].segments) {
-          let list = byRow.get(seg.row)
-          if (!list) byRow.set(seg.row, (list = []))
-          list.push({ from: seg.from, to: seg.to, active: i === this.searchIndex })
-        }
-      }
-      this.renderer.searchHighlights = byRow
-    }
-    this.needsRedraw = true
-  }
-
   clearSearchDecorations(): void {
-    this.searchMatches = []
-    this.searchIndex = -1
-    this.searchSignature = ''
-    if (this.renderer) this.renderer.searchHighlights = null
-    this.needsRedraw = true
+    this.searchController.clear()
   }
-
 
   onResize(handler: (size: { cols: number; rows: number }) => void): IDisposable {
     this.onResizeHandlers.add(handler)
