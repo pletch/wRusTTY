@@ -1,7 +1,14 @@
-import type { TerminalEngine, SearchOptions, SearchResult } from '../terminalEngine'
+import type {
+  IDisposable,
+  SearchOptions,
+  SearchResult,
+  TerminalEngine,
+} from '../terminalEngine'
 import { SearchController } from './SearchController'
-import { columnText, type RowText } from './rowText'
-import type { IDisposable } from '@xterm/xterm'
+import { MouseReporter } from './MouseReporter'
+import { SelectionController } from './SelectionController'
+import { ContextManager } from './ContextManager'
+import type { RowText } from './rowText'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
 import { scanOsc } from './oscScanner'
 import * as phases from '../writePhases'
@@ -17,9 +24,6 @@ import {
   emptyCell,
   MODE_APP_CURSOR_KEYS,
   MODE_BRACKETED_PASTE,
-  MODE_MOUSE_BUTTON_EVENT,
-  MODE_MOUSE_ANY_EVENT,
-  MODE_MOUSE_SGR,
   MODE_FOCUS_REPORTING,
   allocBufferOrThrow,
   GhosttyOutOfMemoryError,
@@ -35,24 +39,6 @@ import ghosttyWasmUrl from './vendor/ghostty-vt.wasm?url'
 
 /** xterm's blink period, so the two engines don't visibly differ. */
 const CURSOR_BLINK_MS = 530
-
-/**
- * How many panes may hold a GL context at once.
- *
- * Browsers cap live WebGL contexts at around sixteen, so the ceiling is real,
- * but it is only worth doing anything about once it is close. Below this, every
- * pane keeps its context and switching tabs never rebuilds anything — which is
- * the common case and should cost nothing. Above it, the least recently seen
- * panes give theirs up.
- */
-const CONTEXT_BUDGET = 8
-
-/** Rate-limits the shared pass below; it runs once per interval, not per pane. */
-const RECONCILE_INTERVAL_MS = 100
-
-/** Autoscroll cadence while a selection is dragged past the edge of a pane. */
-const DRAG_SCROLL_INTERVAL_MS = 50
-const DRAG_SCROLL_MAX_LINES = 8
 
 /**
  * `scrollbackLimit` in the core's config is a **line count**, and the value has
@@ -101,18 +87,6 @@ export function scrollbackLinesFor(lines: number, cols: number): number {
   const maxLines = Math.floor(SCROLLBACK_MAX_BYTES / (Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL))
   return Math.min(Math.max(Math.floor(lines), SCROLLBACK_MIN_LINES), maxLines)
 }
-
-/**
- * What counts as one word for double-click. Deliberately wider than
- * alphanumerics: the things worth grabbing out of a terminal in one gesture
- * are paths, flags, hostnames and URLs, and stopping at every `/` or `.`
- * turns picking up a path into several drags.
- *
- * Hoisted to module scope so the literal isn't recompiled per call — V8
- * handles the inline form well, but the word scan calls this once per column
- * and a module-level constant is free.
- */
-const WORD_RE = /[A-Za-z0-9_\-./:@~+=%?&#]/
 
 /**
  * Whether a full reset has discarded the configured cursor and nothing has
@@ -198,14 +172,9 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private onRenderHandlers = new Set<() => void>()
   
-  private isSelecting = false
-  private selectionStart: {x: number, y: number} | null = null
-  /** Where the current selection was begun, so shift-click can extend from it. */
-  private selectionAnchor: {x: number, y: number} | null = null
-  private selectionRectangular = false
-  private dragScrollTimer: ReturnType<typeof setInterval> | null = null
-  private dragScrollLines = 0
-  private dragScrollAt: { clientX: number; clientY: number } | null = null
+  /** Mouse selection: drag state, word/line picking, autoscroll, and turning
+   *  a selection into text. Assigned in the constructor. */
+  private readonly selection: SelectionController
   private onSelectionChangeHandlers = new Set<() => void>()
   /** Bytes of an OSC that began in an earlier chunk and has not terminated.
    *  Already parsed; retained only to match the pattern across the boundary. */
@@ -246,9 +215,10 @@ export class GhosttyEngine implements TerminalEngine {
   private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
   private focused = false
 
-  private mouseButtonDown: number | null = null
-  private lastMouseCol = -1
-  private lastMouseRow = -1
+  /** Mouse reporting: which button is held, the last reported cell, and the
+   *  report encoding. Assigned in the constructor — its host closes over
+   *  `this`. */
+  private readonly mouse: MouseReporter
   /** Scrollback depth as of the last frame, for keeping a scrolled view still. */
   private lastScrollbackCount = 0
 
@@ -257,6 +227,30 @@ export class GhosttyEngine implements TerminalEngine {
     // repaint the view. Searching is not allowed to do anything else.
     // All arrow functions, so `this` needs no aliasing and the three reads
     // below stay live rather than being snapshotted here.
+    this.mouse = new MouseReporter({
+      tracking: () => this.mouseTracking(),
+      mode: (mode) => this.mouseMode(mode),
+      coords: (e) => this.viewportCoords(e),
+      send: (seq) => {
+        for (const h of this.onDataHandlers) h(seq)
+      },
+    })
+    this.selection = new SelectionController({
+      readRows: (from, to) => this.readRows(from, to),
+      coords: (e) => this.getCoords(e),
+      canvas: () => this.canvas,
+      hasRenderer: () => !!this.renderer,
+      setSelection: (sel) => {
+        if (this.renderer) this.renderer.selection = sel
+        this.needsRedraw = true
+      },
+      getSelection: () => this.renderer?.selection ?? null,
+      scrollLines: (amount) => this.scrollLines(amount),
+      emitChange: () => {
+        for (const h of this.onSelectionChangeHandlers) h()
+      },
+      cols: () => this._cols,
+    })
     this.searchController = new SearchController({
       readRows: (from, to) => this.readRows(from, to),
       readWrapFlags: (total) => this.readWrapFlags(total),
@@ -272,7 +266,7 @@ export class GhosttyEngine implements TerminalEngine {
         for (const h of this.onSearchResultHandlers) h(result)
       },
     })
-    GhosttyEngine.liveEngines.add(this)
+    GhosttyEngine.contexts.add(this)
     // Registered here rather than at module scope so importing the engine has
     // no side effect: if something constructed one, there is state worth
     // reporting. Idempotent — every engine re-registers the same function.
@@ -299,11 +293,11 @@ export class GhosttyEngine implements TerminalEngine {
   static diagnostics(): { engines: number; terminals: number; wasmBytes: number } {
     let wasmBytes = 0
     let terminals = 0
-    for (const e of GhosttyEngine.liveEngines) {
+    for (const e of GhosttyEngine.contexts.all()) {
       if (e.wasm) wasmBytes += e.wasm.exports.memory.buffer.byteLength
       if (e.termPtr !== 0) terminals++
     }
-    return { engines: GhosttyEngine.liveEngines.size, terminals, wasmBytes }
+    return { engines: GhosttyEngine.contexts.size, terminals, wasmBytes }
   }
 
   /**
@@ -313,8 +307,10 @@ export class GhosttyEngine implements TerminalEngine {
    */
   static activeEngine(): GhosttyEngine | null {
     let best: GhosttyEngine | null = null
-    for (const e of GhosttyEngine.liveEngines) {
-      if (!best || e.lastVisibleAt > best.lastVisibleAt) best = e
+    for (const e of GhosttyEngine.contexts.all()) {
+      if (!best || GhosttyEngine.contexts.lastVisibleAt(e) > GhosttyEngine.contexts.lastVisibleAt(best)) {
+        best = e
+      }
     }
     return best
   }
@@ -477,12 +473,9 @@ export class GhosttyEngine implements TerminalEngine {
   private pollCounter = 0
   private restoreRequested = false
 
-  /** Every mounted pane, so the context budget can be shared across them. */
-  private static readonly liveEngines = new Set<GhosttyEngine>()
-  private static lastReconcileAt = 0
-  private visible = false
-  /** Ranks panes for the budget; a pane on screen now keeps bumping this. */
-  private lastVisibleAt = 0
+  /** Every mounted pane, so the context budget can be shared across them.
+   *  See `ContextManager` for why panes give contexts up at all. */
+  private static readonly contexts = new ContextManager<GhosttyEngine>()
 
   private getCoords(e: MouseEvent): {x: number, y: number} {
     if (!this.canvas || !this.renderer) return {x: 0, y: 0}
@@ -506,64 +499,20 @@ export class GhosttyEngine implements TerminalEngine {
     this.restoreRequested = false
   }
 
-  /** Records what this pane can see, then lets the shared pass decide. */
-  private noteVisibility(visible: boolean) {
-    this.visible = visible
-    if (visible) this.lastVisibleAt = performance.now()
-    GhosttyEngine.reconcileContexts()
-  }
 
-  /**
-   * Decides which panes hold a GL context.
-   *
-   * Browsers cap live WebGL contexts — around sixteen in Chromium — and past
-   * that they take them from whoever they like, quite possibly the pane being
-   * looked at. Every tab here stays mounted and merely hidden, so panes
-   * accumulate whether or not they are on screen.
-   *
-   * Below the budget nothing is given up at all: a handful of tabs is the
-   * normal case, and making it rebuild a context on every tab switch buys
-   * nothing but a flash. Only once there are more panes than the budget do the
-   * least recently seen ones hand theirs back, and a pane that is on screen
-   * never does — a visible pane going dark is the thing this exists to prevent.
-   *
-   * Ordering by when a pane was last visible rather than by whether it is
-   * visible right now is also what makes this stable: a pane measures zero for
-   * the first frames after mount and while a split is dragged, and a recency
-   * ranking rides straight over that where a strict hidden/visible rule would
-   * tear the context down and build it back.
-   */
-  private static reconcileContexts() {
-    const now = performance.now()
-    if (now - GhosttyEngine.lastReconcileAt < RECONCILE_INTERVAL_MS) return
-    GhosttyEngine.lastReconcileAt = now
-
-    const engines = [...GhosttyEngine.liveEngines]
-    if (engines.length > CONTEXT_BUDGET) {
-      engines.sort((a, b) => b.lastVisibleAt - a.lastVisibleAt)
-    }
-    for (let i = 0; i < engines.length; i++) {
-      const e = engines[i]
-      if (engines.length <= CONTEXT_BUDGET || i < CONTEXT_BUDGET || e.visible) {
-        e.ensureContext()
-      } else {
-        e.dropContext()
-      }
-    }
-  }
 
   /**
    * Reclaims a context. Also covers one the browser took by itself: whatever
    * the reason a pane that should have a context doesn't, asking for it back is
    * the answer.
    */
-  private ensureContext() {
+  ensureContext(): void {
     if (!this.renderer || !this.renderer.isContextLost || this.restoreRequested) return
     this.restoreRequested = true
     this.renderer.restoreContext()
   }
 
-  private dropContext() {
+  dropContext(): void {
     if (!this.renderer || this.renderer.isContextLost) return
     this.restoreRequested = false
     this.renderer.releaseContext()
@@ -618,8 +567,8 @@ export class GhosttyEngine implements TerminalEngine {
     // a stuck "still held" keeps reporting drags on the next hover, and a stuck
     // "still selecting" leaves the pane in a selection that swallows clicks and
     // typing until something else clears it — the wedge after a native prompt.
-    this.mouseButtonDown = null
-    this.isSelecting = false
+    this.mouse.forgetButton()
+    this.selection.cancel()
     this.reportFocus(false)
   }
 
@@ -802,102 +751,6 @@ export class GhosttyEngine implements TerminalEngine {
     return out
   }
 
-  /** See `WORD_RE` for what a word is and why it's that wide. */
-  private static isWordChar(s: string): boolean {
-    if (s.length === 0) return false
-    const c = s.codePointAt(0)!
-    if (c > 127) return true // CJK, accented letters, and the like
-    return WORD_RE.test(s[0])
-  }
-
-  private selectWordAt(pos: { x: number; y: number }) {
-    if (!this.renderer) return
-    const row = this.readRows(pos.y, pos.y)[0]
-    if (!row) return
-    // Only the columns a word actually spans get materialised as strings —
-    // the scan stops at the first non-word character either side.
-    const at2 = (c: number) => columnText(row, c)
-    // A wide character's spacer holds no text, so the head it belongs to is one
-    // column back.
-    let at = pos.x
-    if (at2(at) === '' && at > 0) at--
-    if (!GhosttyEngine.isWordChar(at2(at))) return
-    let from = at
-    while (from > 0 && GhosttyEngine.isWordChar(at2(from - 1) || ' ')) from--
-    let to = at
-    while (to < this._cols - 1 && GhosttyEngine.isWordChar(at2(to + 1) || ' ')) to++
-    this.applySelection({ x: from, y: pos.y }, { x: to, y: pos.y })
-  }
-
-  private selectLineAt(pos: { x: number; y: number }) {
-    this.applySelection({ x: 0, y: pos.y }, { x: this._cols - 1, y: pos.y })
-  }
-
-  /**
-   * Drives scrolling while a selection is dragged past the top or bottom of the
-   * pane. Without it a selection can only ever cover what was already on
-   * screen, since there is no way to reach the rest — the drag has nowhere left
-   * to go once the pointer leaves the canvas.
-   *
-   * The pointer stops moving once it is outside, so the scrolling cannot be
-   * driven by mousemove; it runs on a timer for as long as the pointer stays
-   * out, and the selection end is recomputed from the last known position each
-   * tick so the highlight follows the rows coming into view.
-   */
-  private updateDragScroll(e: MouseEvent) {
-    if (!this.canvas) return
-    const rect = this.canvas.getBoundingClientRect()
-    const above = rect.top - e.clientY
-    const below = e.clientY - rect.bottom
-    const out = above > 0 ? -above : below > 0 ? below : 0
-    if (out === 0) {
-      this.stopDragScroll()
-      return
-    }
-    // Further out scrolls faster, which is what makes reaching for something a
-    // long way back feel like one gesture rather than a wait.
-    this.dragScrollLines = Math.sign(out) * Math.min(DRAG_SCROLL_MAX_LINES, 1 + Math.floor(Math.abs(out) / 24))
-    this.dragScrollAt = { clientX: e.clientX, clientY: e.clientY }
-    if (this.dragScrollTimer === null) {
-      this.dragScrollTimer = setInterval(this.stepDragScroll, DRAG_SCROLL_INTERVAL_MS)
-    }
-  }
-
-  private stepDragScroll = () => {
-    if (!this.isSelecting || !this.selectionStart || !this.renderer || !this.dragScrollAt) {
-      this.stopDragScroll()
-      return
-    }
-    // Negative is upward: scrollLines takes the direction the *content* moves.
-    this.scrollLines(-this.dragScrollLines)
-    this.renderer.selection = {
-      start: this.selectionStart,
-      end: this.getCoords(this.dragScrollAt as MouseEvent),
-      rectangular: this.selectionRectangular,
-    }
-    this.needsRedraw = true
-  }
-
-  private stopDragScroll() {
-    if (this.dragScrollTimer === null) return
-    clearInterval(this.dragScrollTimer)
-    this.dragScrollTimer = null
-    this.dragScrollAt = null
-  }
-
-  private applySelection(start: { x: number; y: number }, end: { x: number; y: number }) {
-    if (!this.renderer) return
-    this.renderer.selection = { start, end }
-    // Left dangling, a later drag would extend from wherever the last one began.
-    this.selectionStart = null
-    // A shift-click after picking a word extends from that word's start.
-    this.selectionAnchor = start
-    this.selectionRectangular = false
-    this.isSelecting = false
-    this.needsRedraw = true
-    for (const h of this.onSelectionChangeHandlers) h()
-  }
-
   /** Is the program on the far end asking to be told about the mouse at all? */
   private mouseTracking(): boolean {
     return !!this.wasm && this.wasm.exports.ghostty_terminal_has_mouse_tracking(this.termPtr) !== 0
@@ -920,43 +773,10 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  /**
-   * Encodes one mouse report and sends it as input. SGR (1006) is preferred
-   * whenever the program enabled it, because the original encoding packs each
-   * coordinate into a single byte biased by 32 and so cannot describe a column
-   * past 223 — which any full-width pane on a modern display now exceeds.
-   */
-  private sendMouse(button: number, col: number, row: number, e: MouseEvent, release: boolean) {
-    let b = button
-    if (e.shiftKey) b += 4
-    if (e.altKey) b += 8
-    if (e.ctrlKey) b += 16
-
-    let seq: string
-    if (this.mouseMode(MODE_MOUSE_SGR)) {
-      seq = `\x1b[<${b};${col};${row}${release ? 'm' : 'M'}`
-    } else {
-      if (col > 223 || row > 223) return
-      // The legacy form has no way to say *which* button came up, so a release
-      // is always reported as button 3.
-      const legacy = release ? 3 + (b & ~3) : b
-      seq = `\x1b[M${String.fromCharCode(32 + legacy)}${String.fromCharCode(32 + col)}${String.fromCharCode(32 + row)}`
-    }
-    for (const h of this.onDataHandlers) h(seq)
-  }
-
   private onMouseUp = (e: MouseEvent) => {
-    if (this.mouseButtonDown !== null) {
-      const button = this.mouseButtonDown
-      this.mouseButtonDown = null
-      if (this.mouseTracking()) {
-        const p = this.viewportCoords(e)
-        this.sendMouse(button, p.col, p.row, e, true)
-      }
-    }
-    if (this.isSelecting) {
-      this.isSelecting = false
-      this.stopDragScroll()
+    this.mouse.reportRelease(e)
+    if (this.selection.isSelecting()) {
+      this.selection.cancel()
       for (const h of this.onSelectionChangeHandlers) h()
     }
   }
@@ -995,7 +815,7 @@ export class GhosttyEngine implements TerminalEngine {
         // below 2,000 cells while a real pane runs ~10,000.
         if (this.autoFit) this.fit()
       }
-      this.noteVisibility(w > 0 && h > 0)
+      GhosttyEngine.contexts.noteVisibility(this, w > 0 && h > 0)
     }
 
     // A pane with no context has nowhere to draw, and the snapshot work below
@@ -1094,10 +914,9 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.addEventListener('wheel', (e) => {
       // A program that asked for mouse reporting gets the wheel as buttons 4/5,
       // which is how less and htop page without a scrollback of their own.
-      if (this.mouseTracking() && !e.shiftKey) {
+      if (this.mouse.tracking() && !e.shiftKey) {
         e.preventDefault()
-        const p = this.viewportCoords(e)
-        this.sendMouse(e.deltaY < 0 ? 64 : 65, p.col, p.row, e, false)
+        this.mouse.reportWheel(e, e.deltaY < 0)
         return
       }
       // There is no scrollback to move through on the alternate screen, so the
@@ -1124,12 +943,10 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.addEventListener('mousedown', (e) => {
       // Holding shift is the long-standing way to reach the terminal's own
       // selection while a full-screen program is grabbing the mouse.
-      if (this.mouseTracking() && !e.shiftKey) {
+      if (this.mouse.tracking() && !e.shiftKey) {
         e.preventDefault()
         this.inputHandler?.focus()
-        const p = this.viewportCoords(e)
-        this.mouseButtonDown = e.button
-        this.sendMouse(e.button, p.col, p.row, e, false)
+        this.mouse.reportPress(e)
         return
       }
       // Keep the keyboard on the input element. A plain mousedown on the
@@ -1145,11 +962,11 @@ export class GhosttyEngine implements TerminalEngine {
       // `detail` counts clicks in a run, which is how the platform already
       // decides what a double-click is — no timing to reimplement here.
       if (e.detail === 2) {
-        this.selectWordAt(this.getCoords(e))
+        this.selection.selectWordAt(this.getCoords(e))
         return
       }
       if (e.detail >= 3) {
-        this.selectLineAt(this.getCoords(e))
+        this.selection.selectLineAt(this.getCoords(e))
         return
       }
       // Shift extends the existing selection from its anchor rather than
@@ -1165,92 +982,30 @@ export class GhosttyEngine implements TerminalEngine {
       // selecting under a full-screen program feel like it had stopped working.
       // Losing extend-by-shift-click there is the right trade: a fresh drag is
       // the gesture that has to work.
-      if (e.shiftKey && !this.mouseTracking() && this.renderer?.selection && this.selectionAnchor) {
-        this.isSelecting = true
-        // The drag handler tracks from `selectionStart`, so extending has to set
-        // it too — to the anchor, since that is the end this gesture holds fixed.
-        // Left null (which is what a double-click leaves behind) the extend was a
-        // click and nothing more: the pointer could be dragged anywhere and the
-        // selection would not follow, and drag-autoscroll never armed.
-        this.selectionStart = this.selectionAnchor
-        // Same reason: the drag handler rebuilds the selection from the field,
-        // not from what was set here, so a shift-alt extend would drop back to a
-        // linewise selection the moment the pointer moved.
-        this.selectionRectangular = e.altKey
-        this.renderer.selection = {
-          start: this.selectionAnchor,
-          end: this.getCoords(e),
-          rectangular: e.altKey,
-        }
-        this.needsRedraw = true
-        for (const h of this.onSelectionChangeHandlers) h()
+      if (e.shiftKey && !this.mouse.tracking() && this.renderer?.selection && this.selection.hasAnchor()) {
+        this.selection.extendFromAnchor(e)
         return
       }
-      this.isSelecting = true
-      this.selectionStart = this.getCoords(e)
-      this.selectionAnchor = this.selectionStart
-      // Alt is the usual modifier for a column selection — pulling one field
-      // out of tabular output without the rest of each line.
-      this.selectionRectangular = e.altKey
-      if (this.renderer) {
-        this.renderer.selection = null
-        this.needsRedraw = true
-        for (const h of this.onSelectionChangeHandlers) h()
-      }
+      this.selection.begin(e)
     })
 
     this.canvas.addEventListener('mousemove', (e) => {
       // A shift-drag is the user talking to the terminal, not to the program,
       // so a selection in progress suppresses reporting entirely.
-      if (this.mouseTracking() && !this.isSelecting) {
-        // 1002 reports motion only while a button is held; 1003 reports all of
-        // it. Reporting unconditionally would flood the PTY from idle mousing.
-        const dragging = this.mouseButtonDown !== null
-        const wanted = dragging
-          ? this.mouseMode(MODE_MOUSE_BUTTON_EVENT) || this.mouseMode(MODE_MOUSE_ANY_EVENT)
-          : this.mouseMode(MODE_MOUSE_ANY_EVENT)
-        if (!wanted) return
-        const p = this.viewportCoords(e)
-        // Only cell-to-cell moves are worth a report; pixel-level motion inside
-        // one cell would send a burst of identical sequences.
-        if (p.col === this.lastMouseCol && p.row === this.lastMouseRow) return
-        this.lastMouseCol = p.col
-        this.lastMouseRow = p.row
-        // +32 marks the report as motion rather than a fresh press.
-        this.sendMouse((this.mouseButtonDown ?? 3) + 32, p.col, p.row, e, false)
+      if (this.mouse.tracking() && !this.selection.isSelecting()) {
+        this.mouse.reportMotion(e)
         return
       }
-      if (this.isSelecting && this.renderer && this.selectionStart) {
-        // A button released outside the window never delivers mouseup here, and
-        // a selection left believing it is still being dragged keeps the
-        // autoscroll timer running — the pane scrolls on its own and cannot be
-        // stopped. `buttons` is the live state rather than an event history, so
-        // it catches exactly that.
-        if (e.buttons === 0) {
-          this.onMouseUp(e)
-          return
-        }
-        // A pointer that has not left the starting cell is a click, not a drag.
-        // Rendering start==end as a selection is what left a one-cell grey block
-        // behind after clicking — most visibly on the click that reactivates the
-        // window, where the pointer is still moving into the app as it lands.
-        const end = this.getCoords(e)
-        const moved = end.x !== this.selectionStart.x || end.y !== this.selectionStart.y
-        if (!moved) {
-          if (this.renderer.selection) {
-            this.renderer.selection = null
-            this.needsRedraw = true
-          }
-        } else {
-          this.renderer.selection = {
-            start: this.selectionStart,
-            end,
-            rectangular: this.selectionRectangular,
-          }
-          this.needsRedraw = true
-        }
-        this.updateDragScroll(e)
+      // A button released outside the window never delivers mouseup here, and
+      // a selection left believing it is still being dragged keeps the
+      // autoscroll timer running — the pane scrolls on its own and cannot be
+      // stopped. `buttons` is the live state rather than an event history, so
+      // it catches exactly that.
+      if (this.selection.isSelecting() && e.buttons === 0) {
+        this.onMouseUp(e)
+        return
       }
+      this.selection.drag(e)
     })
 
     this.inputHandler = new GhosttyInputHandler(this.container, (data) => {
@@ -1280,7 +1035,7 @@ export class GhosttyEngine implements TerminalEngine {
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
     window.removeEventListener('mouseup', this.onMouseUp)
-    this.stopDragScroll()
+    this.selection.dispose()
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)
       this.cursorBlinkTimer = null
@@ -1295,11 +1050,7 @@ export class GhosttyEngine implements TerminalEngine {
 
   dispose(): void {
     this.disposed = true
-    GhosttyEngine.liveEngines.delete(this)
-    // Closing a pane frees a context, which may put someone else back under
-    // the budget — without this they would wait for their own next poll.
-    GhosttyEngine.lastReconcileAt = 0
-    GhosttyEngine.reconcileContexts()
+    GhosttyEngine.contexts.remove(this)
     this.unmount()
     // Every pane is its own WASM instance; leaving this unfreed leaked the
     // core's page memory for the terminal's whole scrollback budget on every
@@ -1919,62 +1670,19 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   clearSelection(): void {
+    // Guarded here rather than in the controller: "there was nothing to
+    // clear" must not fire a change notification.
     if (!this.renderer || !this.renderer.selection) return
-    this.renderer.selection = null
-    this.selectionStart = null
-    this.selectionAnchor = null
-    this.needsRedraw = true
-    for (const h of this.onSelectionChangeHandlers) h()
+    this.selection.reset()
   }
   getSelection(): string {
     if (!this.renderer || !this.renderer.selection || !this.wasm) return ''
-
-    let selStart = this.renderer.selection.start
-    let selEnd = this.renderer.selection.end
-    if (selStart.x === selEnd.x && selStart.y === selEnd.y) return ''
-    if (selStart.y > selEnd.y || (selStart.y === selEnd.y && selStart.x > selEnd.x)) {
-      const temp = selStart; selStart = selEnd; selEnd = temp
-    }
-
-    const rectangular = this.renderer.selection.rectangular === true
-    const rectFrom = Math.min(selStart.x, selEnd.x)
-    const rectTo = Math.max(selStart.x, selEnd.x)
-
-    const rows = this.readRows(selStart.y, selEnd.y)
-    const parts: string[] = []
-    for (let i = 0; i < rows.length; i++) {
-      const abs = selStart.y + i
-      const from = rectangular ? rectFrom : abs === selStart.y ? selStart.x : 0
-      const to = rectangular ? rectTo : abs === selEnd.y ? selEnd.x : this._cols - 1
-      // One slice of the row's own text rather than a join of per-cell
-      // strings. `to + 1` is always a valid index into `colStart`, which has
-      // one entry more than there are columns.
-      const row = rows[i]
-      const lo = Math.max(0, Math.min(from, this._cols))
-      const hi = Math.max(lo, Math.min(to + 1, this._cols))
-      const text = row.text.slice(row.colStart[lo], row.colStart[hi])
-      // Trailing blanks are the grid padding a row out, not content. The one
-      // case worth keeping them is a line-wise selection whose last row ends
-      // part-way along: there the run of spaces was dragged over deliberately.
-      // A selection reaching the final column did not choose that padding —
-      // triple-click is exactly that, and keeping it pasted a command followed
-      // by a screenful of spaces. A column selection never keeps them either;
-      // every one of its rows ends at the same arbitrary column.
-      const endsMidRow = abs === selEnd.y && selEnd.x < this._cols - 1
-      const keepTrailing = !rectangular && endsMidRow
-      parts.push(keepTrailing ? text : text.replace(/\s+$/, ''))
-    }
-    return parts.join('\n')
+    return this.selection.text()
   }
 
   selectAll(): void {
     if (!this.renderer || !this.wasm) return
     const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
-    this.renderer.selection = {
-      start: { x: 0, y: 0 },
-      end: { x: this._cols - 1, y: scrollbackCount + this._rows - 1 },
-    }
-    this.needsRedraw = true
-    for (const h of this.onSelectionChangeHandlers) h()
+    this.selection.selectAll(scrollbackCount + this._rows)
   }
 }

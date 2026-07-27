@@ -31,7 +31,7 @@ interface Internals {
   termPtr: number
   renderer: unknown
   _cols: number
-  selectWordAt(pos: { x: number; y: number }): void
+  selection: { selectWordAt(pos: { x: number; y: number }): void }
   needsRedraw: boolean
 }
 
@@ -178,13 +178,13 @@ describe('readRows, through its three callers', () => {
    *  pointer — that's the reason the word class is as wide as it is. */
   it('selects a path as one word', async () => {
     const { engine, inner } = await engineWith('run /usr/local/bin/tool now')
-    inner.selectWordAt({ x: 6, y: 0 })
+    inner.selection.selectWordAt({ x: 6, y: 0 })
     expect(engine.getSelection()).toBe('/usr/local/bin/tool')
   })
 
   it('stops a word at a space on both sides', async () => {
     const { engine, inner } = await engineWith('alpha beta gamma')
-    inner.selectWordAt({ x: 7, y: 0 })
+    inner.selection.selectWordAt({ x: 7, y: 0 })
     expect(engine.getSelection()).toBe('beta')
   })
 
@@ -203,7 +203,7 @@ describe('readRows, through its three callers', () => {
   it('resolves a click on a wide character spacer to its head', async () => {
     const { engine, inner } = await engineWith('ab你cd')
     // Column 3 is the trailing half of 你 (columns 2-3).
-    inner.selectWordAt({ x: 3, y: 0 })
+    inner.selection.selectWordAt({ x: 3, y: 0 })
     expect(engine.getSelection()).toBe('ab你')
   })
 })

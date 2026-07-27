@@ -24,8 +24,10 @@ const CELL = { width: 10, height: 20 }
 
 interface Internals {
   renderer: unknown
-  selectionStart: { x: number; y: number } | null
-  selectionAnchor: { x: number; y: number } | null
+  /** Drag state moved into `SelectionController`; reached through the engine
+   *  because what these tests pin is what the handlers leave behind for each
+   *  other, which is exactly that controller's fields. */
+  selection: { start: { x: number; y: number } | null; anchor: { x: number; y: number } | null }
   mouseTracking(): boolean
 }
 
@@ -155,7 +157,7 @@ describe('extending a selection by shift-click', () => {
     // clears `selectionStart` — so this is the case where the extend had nothing
     // to track from at all.
     down(4, 0, { detail: 3 })
-    expect(inner.selectionStart).toBeNull()
+    expect(inner.selection.start).toBeNull()
 
     down(30, 0, { shiftKey: true })
     move(34, 0, { shiftKey: true })
