@@ -265,7 +265,7 @@ export function SettingsDialog({ settings, onChange }: Props) {
                         checked={settings.copyOnSelect}
                         onChange={(v) => onChange({ ...settings, copyOnSelect: v })}
                         label="Copy on select"
-                        hint="Selecting text in the terminal copies it automatically."
+                        hint="Selecting text in the terminal copies it automatically. Ctrl+Shift+C copies the selection either way."
                       />
                       <Toggle
                         checked={settings.rightClickPaste}

@@ -911,7 +911,21 @@ export function Terminal({
     container.addEventListener('contextmenu', onContextMenu)
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
+      // Ctrl+Shift+C is what every terminal binds copy to, precisely because
+      // plain Ctrl+C has to stay available as SIGINT. Until now the only copy in
+      // the app was copy-on-select, so turning that setting off left no way to
+      // copy at all. Runs on capture so the pane's input element never sees it —
+      // though Ctrl+Shift+C maps to no sequence anyway, so nothing reaches the
+      // wire either way.
+      if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
+        const text = term.getSelection()
+        // With no selection there is nothing to copy, and consuming the key
+        // would only mask whatever else might want it.
+        if (!text) return
+        e.preventDefault()
+        e.stopPropagation()
+        writeText(text).catch(() => {})
+      } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
         setSearchOpen((v) => !v)
       } else if (e.key === 'Escape') {
