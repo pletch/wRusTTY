@@ -47,6 +47,16 @@ use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
 /// the new PTY. Failing those fast would have been a visible regression: the
 /// resize one especially, since a pane resized while its host-key prompt was
 /// on screen would have kept the size it had when the connection started.
+/// How much pre-connect input is held before the rest is refused.
+///
+/// The queue exists for keystrokes typed at a pane that is still handshaking,
+/// which is a human typing for at most a few seconds — 64 KB is orders of
+/// magnitude past any plausible amount of that. What it guards against is a
+/// paste into a pane whose host-key prompt has been sitting unanswered for ten
+/// minutes: without a cap that accumulates without limit and is then replayed
+/// into the shell all at once.
+const MAX_PENDING_INPUT: usize = 64 * 1024;
+
 pub enum Slot<S> {
     Connecting {
         /// Keystrokes typed before the session existed, in order.
@@ -67,6 +77,40 @@ impl<S> Slot<S> {
             Slot::Connecting { .. } => Err("session is still connecting".to_string()),
         }
     }
+}
+
+/// Publishes a freshly connected session into its slot, unless the id has been
+/// disconnected while the handshake was running — in which case the session is
+/// closed cleanly and whatever was queued for it is discarded.
+///
+/// The map lock is held across the membership check *and* the replay, which is
+/// the whole point: a `disconnect` arriving mid-publish must either win
+/// outright (this sees the id gone) or wait and then tear down a fully
+/// published session. Landing between the two is exactly the bug this exists to
+/// prevent — the queued input would go to a host the user had already
+/// cancelled, and if what was typed was a password meant for the next prompt,
+/// it would go to a host they had just declined to trust.
+///
+/// The replay's transport calls run under that lock, so a `write` arriving
+/// concurrently waits for them. That is the ordering we want anyway: bytes
+/// typed during the replay belong after the bytes being replayed.
+async fn publish_if_wanted<S: Session>(
+    sessions: &SlotMap<S>,
+    session_id: &str,
+    slot: &SharedSlot<S>,
+    session: S,
+) {
+    let map = sessions.lock().await;
+    if map.contains_key(session_id) {
+        publish(slot, session).await;
+        return;
+    }
+    drop(map);
+    // Cancelled. Close it properly rather than letting `Drop` do it — for SSH
+    // that is the difference between an `SSH_MSG_DISCONNECT` and the server
+    // seeing the connection evaporate.
+    let mut session = session;
+    let _ = session.disconnect().await;
 }
 
 /// Drains whatever arrived during the handshake into the new session, then
@@ -157,6 +201,16 @@ impl<C: Connector> SessionRegistry<C> {
         let mut slot = slot.lock().await;
         match &mut *slot {
             Slot::Connecting { input, .. } => {
+                // Refused rather than truncated: replaying the first 64 KB of
+                // a paste and dropping the tail would send the remote a
+                // half-finished command, which is worse than sending nothing.
+                if input.len() + data.len() > MAX_PENDING_INPUT {
+                    return Err(
+                        "too much input queued while connecting — wait for the connection \
+                         to finish, then send it again"
+                            .to_string(),
+                    );
+                }
                 input.extend_from_slice(data);
                 Ok(())
             }
@@ -184,8 +238,9 @@ impl<C: Connector> SessionRegistry<C> {
     /// leaving a half-dead session in the map would let the frontend keep
     /// writing to it.
     ///
-    /// Disconnecting one that never finished connecting is a no-op here — the
-    /// connect task sees the id has gone and drops the session it built.
+    /// Disconnecting one that never finished connecting removes the id, which
+    /// is what the connect task checks before publishing: it finds the id gone
+    /// and closes the session it built instead of handing it the queued input.
     pub async fn disconnect(&self, session_id: &str) -> Result<(), String> {
         let slot = self.sessions.lock().await.remove(session_id);
         if let Some(slot) = slot {
@@ -252,7 +307,7 @@ impl<C: Connector> SessionRegistry<C> {
             // handshake can take as long as a human takes to read a
             // fingerprint without blocking a keystroke or a resize.
             match connector.connect(tx).await {
-                Ok(session) => publish(&slot, session).await,
+                Ok(session) => publish_if_wanted(&sessions, &session_id, &slot, session).await,
                 Err(_) => {
                     // The status event carrying the reason has already gone to
                     // the frontend from inside `connect`.
@@ -281,6 +336,8 @@ mod tests {
     struct FakeSession {
         writes: Vec<Vec<u8>>,
         sizes: Vec<(u16, u16)>,
+        /// Set by `disconnect`, so a test can tell a clean close from a `Drop`.
+        disconnected: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[derive(Debug)]
@@ -309,6 +366,7 @@ mod tests {
         }
 
         async fn disconnect(&mut self) -> Result<(), NeverFails> {
+            self.disconnected.store(true, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -411,6 +469,128 @@ mod tests {
         let session = published(&slot).await;
         assert!(session.writes.is_empty());
         assert!(session.sizes.is_empty());
+    }
+
+    /// Only exists so `SessionRegistry`'s own methods — which are generic over
+    /// `Connector`, not `Session` — can be exercised without a transport.
+    /// `connect` is never called: every test here registers a slot directly.
+    struct FakeConnector;
+
+    #[async_trait]
+    impl Connector for FakeConnector {
+        type Session = FakeSession;
+        type Error = NeverFails;
+
+        async fn connect(
+            self,
+            _events: tokio::sync::mpsc::Sender<ConnectionEvent>,
+        ) -> Result<FakeSession, NeverFails> {
+            unreachable!("tests register slots directly rather than handshaking")
+        }
+    }
+
+    /// A registry holding one id that is still connecting.
+    async fn registry_with_connecting_slot(session_id: &str) -> SessionRegistry<FakeConnector> {
+        let registry = SessionRegistry::<FakeConnector>::new("fake");
+        registry
+            .sessions
+            .lock()
+            .await
+            .insert(session_id.to_string(), connecting());
+        registry
+    }
+
+    /// A paste into a pane whose host-key prompt has been sitting unanswered
+    /// must not accumulate without limit.
+    #[tokio::test]
+    async fn the_pre_connect_queue_is_capped() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+
+        // Well under the cap: held, as the whole queue-and-replay design
+        // intends.
+        assert!(registry.write("fake-0", &vec![b'x'; 1024]).await.is_ok());
+
+        // Past it: refused, and refused whole — a truncated paste would send
+        // the remote half a command.
+        let huge = vec![b'x'; MAX_PENDING_INPUT];
+        assert!(registry.write("fake-0", &huge).await.is_err());
+
+        // The refusal doesn't discard what was legitimately queued before it.
+        let slot = registry.lookup("fake-0").await.unwrap();
+        let queued = match &*slot.lock().await {
+            Slot::Connecting { input, .. } => input.len(),
+            Slot::Ready(_) => panic!("should still be connecting"),
+        };
+        assert_eq!(queued, 1024);
+    }
+
+    /// The cap is on the queue, not on the session: once connected, a large
+    /// paste goes straight to the transport and is none of the registry's
+    /// business.
+    #[tokio::test]
+    async fn the_cap_does_not_apply_once_connected() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        publish(&slot, FakeSession::default()).await;
+
+        assert!(registry
+            .write("fake-0", &vec![b'x'; MAX_PENDING_INPUT * 2])
+            .await
+            .is_ok());
+    }
+
+    fn registered(session_id: &str, slot: &SharedSlot<FakeSession>) -> SlotMap<FakeSession> {
+        let mut map = HashMap::new();
+        map.insert(session_id.to_string(), slot.clone());
+        Arc::new(TokioMutex::new(map))
+    }
+
+    /// The point of the whole membership check: a pane closed while its
+    /// host-key prompt was up must not have what was typed into it sent to the
+    /// host once the handshake finishes. If those bytes were a password meant
+    /// for the *next* prompt, they would land on a host the user just declined.
+    #[tokio::test]
+    async fn a_cancelled_connection_never_receives_its_queued_input() {
+        let slot = connecting();
+        let sessions = registered("ssh-0", &slot);
+        enqueue(&slot, b"hunter2\n").await;
+        enqueue_size(&slot, 120, 40).await;
+
+        // The user closes the pane while the handshake is still running.
+        sessions.lock().await.remove("ssh-0");
+
+        let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = FakeSession {
+            disconnected: disconnected.clone(),
+            ..Default::default()
+        };
+        publish_if_wanted(&sessions, "ssh-0", &slot, session).await;
+
+        // Nothing was published into the orphaned slot...
+        assert!(
+            slot.lock().await.ready().is_err(),
+            "a cancelled slot must stay Connecting, not receive the session"
+        );
+        // ...and the session was closed cleanly rather than dropped.
+        assert!(
+            disconnected.load(Ordering::Relaxed),
+            "expected a clean disconnect, not a bare Drop"
+        );
+    }
+
+    /// The ordinary path still has to work: an id that is still registered gets
+    /// its session, and its queued input.
+    #[tokio::test]
+    async fn a_live_connection_still_publishes_and_replays() {
+        let slot = connecting();
+        let sessions = registered("ssh-0", &slot);
+        enqueue(&slot, b"whoami\n").await;
+
+        publish_if_wanted(&sessions, "ssh-0", &slot, FakeSession::default()).await;
+
+        let session = published(&slot).await;
+        assert_eq!(session.writes, vec![b"whoami\n".to_vec()]);
+        assert!(!session.disconnected.load(Ordering::Relaxed));
     }
 
     /// Asking a still-connecting slot for its session is an error, not a

@@ -56,7 +56,12 @@ pub enum SshEvent {
 /// registry carry fields two of its three users don't have.
 pub struct SshState {
     sessions: SessionRegistry<SshConnector>,
-    pending_host_key: TokioMutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// Keyed by request id; each entry also remembers the session whose
+    /// handshake is parked on it, so closing a pane can answer its own
+    /// outstanding prompt. Without that owner, an unanswered prompt leaks its
+    /// entry here and parks the verifier on `rx.await` for the life of the
+    /// process — the connect task can't be cancelled while it's blocked there.
+    pending_host_key: TokioMutex<HashMap<String, (String, oneshot::Sender<bool>)>>,
     /// Keyed by forward id; each entry also remembers its owning session id
     /// so `ssh_disconnect` can stop every forward that session opened.
     forwards: TokioMutex<HashMap<String, (String, ForwardHandle)>>,
@@ -80,6 +85,9 @@ impl Default for SshState {
 struct TauriHostKeyVerifier {
     app: AppHandle,
     channel: Channel<SshEvent>,
+    /// The session this prompt belongs to. Known at `start_connection` time,
+    /// carried here so `ssh_disconnect` can find and answer the prompt.
+    session_id: String,
 }
 
 #[async_trait]
@@ -92,7 +100,7 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
             .pending_host_key
             .lock()
             .await
-            .insert(request_id.clone(), tx);
+            .insert(request_id.clone(), (self.session_id.clone(), tx));
 
         let (status, stored_fingerprint) = match prompt.status {
             HostKeyStatus::Unknown => ("unknown", None),
@@ -284,6 +292,7 @@ async fn start_connection(
     let verifier = Arc::new(TauriHostKeyVerifier {
         app: app.clone(),
         channel: channel.clone(),
+        session_id: session_id.clone(),
     });
 
     let connector =
@@ -331,6 +340,28 @@ pub async fn ssh_disconnect(
     state: State<'_, SshState>,
     sftp_state: State<'_, crate::sftp::SftpState>,
 ) -> Result<(), String> {
+    // Before the registry entry goes, answer any host-key prompt this session
+    // is parked on — closing a pane instead of answering its prompt is the
+    // normal way a user declines an unknown host, and the verifier is blocked
+    // on `rx.await` until someone resolves it. `false` is the same answer the
+    // Cancel button gives, so the handshake fails and never builds a session.
+    // Done first so the connect task is already unwinding by the time the id
+    // disappears.
+    let cancelled: Vec<_> = {
+        let mut pending = state.pending_host_key.lock().await;
+        let ids: Vec<String> = pending
+            .iter()
+            .filter(|(_, (owner, _))| *owner == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| pending.remove(&id).map(|(_, tx)| tx))
+            .collect()
+    };
+    for tx in cancelled {
+        let _ = tx.send(false);
+    }
+
     state.sessions.disconnect(&session_id).await?;
 
     // Unlike the SFTP equivalent this can't collapse to a single `retain`:
@@ -412,7 +443,7 @@ pub async fn ssh_respond_host_key(
     accept: bool,
     state: State<'_, SshState>,
 ) -> Result<(), String> {
-    if let Some(tx) = state.pending_host_key.lock().await.remove(&request_id) {
+    if let Some((_, tx)) = state.pending_host_key.lock().await.remove(&request_id) {
         let _ = tx.send(accept);
     }
     Ok(())
