@@ -12,7 +12,6 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
-use wr_core::{Connection, ConnectionEvent};
 use wr_ssh::{
     AuthMethod, ForwardHandle, ForwardSpec, HostKeyPrompt, HostKeyStatus, HostKeyVerifier,
     SshConfig, SshSession,
@@ -21,6 +20,7 @@ use wr_vault::VaultSecret;
 
 use crate::connection_status::status_label;
 use crate::profiles;
+use crate::session_registry::SessionRegistry;
 use crate::vault::VaultState;
 
 #[derive(Clone, Serialize)]
@@ -50,14 +50,31 @@ pub enum SshEvent {
     },
 }
 
-#[derive(Default)]
+/// SSH keeps its two extra maps *alongside* the shared registry rather than
+/// inside it: a host-key prompt and a set of port forwards are SSH's, not
+/// every transport's, and pushing them down would have made the generic
+/// registry carry fields two of its three users don't have.
 pub struct SshState {
-    sessions: TokioMutex<HashMap<String, Arc<TokioMutex<SshSession>>>>,
+    sessions: SessionRegistry<SshSession>,
     pending_host_key: TokioMutex<HashMap<String, oneshot::Sender<bool>>>,
     /// Keyed by forward id; each entry also remembers its owning session id
     /// so `ssh_disconnect` can stop every forward that session opened.
     forwards: TokioMutex<HashMap<String, (String, ForwardHandle)>>,
+    /// Request and forward ids only. Session ids come from the registry's own
+    /// counter now, so these three no longer share one — they never needed to,
+    /// since the prefix is what makes an id unique.
     next_id: AtomicU64,
+}
+
+impl Default for SshState {
+    fn default() -> Self {
+        Self {
+            sessions: SessionRegistry::new("ssh"),
+            pending_host_key: TokioMutex::default(),
+            forwards: TokioMutex::default(),
+            next_id: AtomicU64::new(0),
+        }
+    }
 }
 
 struct TauriHostKeyVerifier {
@@ -108,10 +125,6 @@ impl SshState {
         format!("req-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn next_session_id(&self) -> String {
-        format!("ssh-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
-    }
-
     fn next_forward_id(&self) -> String {
         format!("fwd-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
     }
@@ -124,6 +137,11 @@ fn known_hosts_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+// The argument list is the IPC contract: `#[tauri::command]` deserialises
+// each parameter by name from the invoke payload, so grouping them into a
+// struct to satisfy the lint would change the shape the frontend has to send
+// rather than simplify anything. Allowed here specifically, not workspace-wide.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -150,6 +168,11 @@ pub async fn ssh_connect(
 /// Connects using a saved session profile's vault-stored credential,
 /// resolved entirely here — the frontend only ever sends a profile id, and
 /// the decrypted secret never crosses back into the webview.
+// The argument list is the IPC contract: `#[tauri::command]` deserialises
+// each parameter by name from the invoke payload, so grouping them into a
+// struct to satisfy the lint would change the shape the frontend has to send
+// rather than simplify anything. Allowed here specifically, not workspace-wide.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_connect_profile(
     app: AppHandle,
@@ -256,60 +279,30 @@ async fn start_connection(
     rows: u16,
     state: &State<'_, SshState>,
 ) -> Result<String, String> {
-    let session_id = state.next_session_id();
+    let session_id = state.sessions.next_session_id();
     let known_hosts = known_hosts_path(&app)?;
     let verifier = Arc::new(TauriHostKeyVerifier {
         app: app.clone(),
         channel: channel.clone(),
     });
 
-    let session = SshSession::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
+    let session =
+        SshSession::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
     let session = Arc::new(TokioMutex::new(session));
 
     state
         .sessions
-        .lock()
-        .await
-        .insert(session_id.clone(), session.clone());
-
-    let cleanup_session_id = session_id.clone();
-
-    tokio::spawn(async move {
-        let (tx, rx) = tokio::sync::mpsc::channel::<ConnectionEvent>(
-            crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
-        );
-
-        let log_app = app.clone();
-        let log_session_id = cleanup_session_id.clone();
-        let forward = tokio::spawn(crate::coalesce::forward_coalesced(
-            cleanup_session_id.clone(),
-            rx,
+        .spawn_connect(
+            app,
+            session_id.clone(),
+            session,
             channel,
             data_channel,
             |status| SshEvent::Status {
                 status: status_label(status),
             },
-            move |bytes| {
-                crate::logging::write(
-                    &log_app.state::<crate::logging::LoggingState>(),
-                    &log_session_id,
-                    bytes,
-                )
-            },
-        ));
-
-        let connect_result = session.lock().await.connect(tx).await;
-        if connect_result.is_err() {
-            let ssh_state = app.state::<SshState>();
-            ssh_state.sessions.lock().await.remove(&cleanup_session_id);
-        }
-
-        // Once connect() returns, the session's own output-pump task keeps
-        // running independently (spawned inside wr_ssh); this task's only
-        // job was driving the handshake and forwarding events, so let the
-        // forwarder finish draining whatever's left in the channel.
-        drop(forward);
-    });
+        )
+        .await;
 
     Ok(session_id)
 }
@@ -320,9 +313,7 @@ pub async fn ssh_write(
     data: Vec<u8>,
     state: State<'_, SshState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
-    let mut session = session.lock().await;
-    session.write(&data).await.map_err(|e| e.to_string())
+    state.sessions.write(&session_id, &data).await
 }
 
 #[tauri::command]
@@ -332,9 +323,7 @@ pub async fn ssh_resize(
     rows: u16,
     state: State<'_, SshState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
-    let mut session = session.lock().await;
-    session.resize(cols, rows).await.map_err(|e| e.to_string())
+    state.sessions.resize(&session_id, cols, rows).await
 }
 
 #[tauri::command]
@@ -343,15 +332,7 @@ pub async fn ssh_disconnect(
     state: State<'_, SshState>,
     sftp_state: State<'_, crate::sftp::SftpState>,
 ) -> Result<(), String> {
-    let session = state.sessions.lock().await.remove(&session_id);
-    if let Some(session) = session {
-        session
-            .lock()
-            .await
-            .disconnect()
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    state.sessions.disconnect(&session_id).await?;
 
     // Unlike the SFTP equivalent this can't collapse to a single `retain`:
     // `stop()` is async and can't run under the lock. So it removes the
@@ -439,15 +420,12 @@ pub async fn ssh_respond_host_key(
 
 /// `pub(crate)` so the `sftp` module can look up the SSH session an SFTP
 /// operation piggybacks on, without exposing `SshState`'s session map itself.
+/// Kept as a free function because `sftp.rs` reaches for a live SSH session
+/// to open its subsystem channel on, and shouldn't have to know that the
+/// registry is where sessions live.
 pub(crate) async fn lookup(
     state: &State<'_, SshState>,
     session_id: &str,
 ) -> Result<Arc<TokioMutex<SshSession>>, String> {
-    state
-        .sessions
-        .lock()
-        .await
-        .get(session_id)
-        .cloned()
-        .ok_or_else(|| format!("no such session: {session_id}"))
+    state.sessions.lookup(session_id).await
 }

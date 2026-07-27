@@ -7,6 +7,7 @@ mod logging;
 mod profiles;
 mod serial;
 mod session_lock;
+mod session_registry;
 mod sftp;
 mod ssh;
 mod telnet;

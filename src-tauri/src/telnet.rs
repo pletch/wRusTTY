@@ -1,18 +1,21 @@
 //! Tauri command layer for Telnet sessions — same push-`Channel` shape as
 //! `ssh.rs`, minus the host-key prompt machinery telnet has no equivalent of.
+//!
+//! Everything that isn't telnet-specific lives in `session_registry.rs`; what
+//! remains here is the event enum (telnet's own `Channel<E>` type) and the
+//! `#[tauri::command]` entry points, which have to be concrete functions for
+//! `generate_handler!`.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex as TokioMutex;
-use wr_core::{Connection, ConnectionEvent};
 use wr_telnet::{TelnetConfig, TelnetSession};
 
 use crate::connection_status::status_label;
+use crate::session_registry::SessionRegistry;
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -26,15 +29,15 @@ pub enum TelnetEvent {
     Status { status: String },
 }
 
-#[derive(Default)]
 pub struct TelnetState {
-    sessions: TokioMutex<HashMap<String, Arc<TokioMutex<TelnetSession>>>>,
-    next_id: AtomicU64,
+    sessions: SessionRegistry<TelnetSession>,
 }
 
-impl TelnetState {
-    fn next_session_id(&self) -> String {
-        format!("telnet-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+impl Default for TelnetState {
+    fn default() -> Self {
+        Self {
+            sessions: SessionRegistry::new("telnet"),
+        }
     }
 }
 
@@ -46,54 +49,21 @@ pub async fn telnet_connect(
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, TelnetState>,
 ) -> Result<String, String> {
-    let session_id = state.next_session_id();
+    let session_id = state.sessions.next_session_id();
     let session = Arc::new(TokioMutex::new(TelnetSession::new(config)));
-
     state
         .sessions
-        .lock()
-        .await
-        .insert(session_id.clone(), session.clone());
-
-    let cleanup_session_id = session_id.clone();
-
-    tokio::spawn(async move {
-        let (tx, rx) = tokio::sync::mpsc::channel::<ConnectionEvent>(
-            crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
-        );
-
-        let log_app = app.clone();
-        let log_session_id = cleanup_session_id.clone();
-        let forward = tokio::spawn(crate::coalesce::forward_coalesced(
-            cleanup_session_id.clone(),
-            rx,
+        .spawn_connect(
+            app,
+            session_id.clone(),
+            session,
             channel,
             data_channel,
             |status| TelnetEvent::Status {
                 status: status_label(status),
             },
-            move |bytes| {
-                crate::logging::write(
-                    &log_app.state::<crate::logging::LoggingState>(),
-                    &log_session_id,
-                    bytes,
-                )
-            },
-        ));
-
-        let connect_result = session.lock().await.connect(tx).await;
-        if connect_result.is_err() {
-            let telnet_state = app.state::<TelnetState>();
-            telnet_state
-                .sessions
-                .lock()
-                .await
-                .remove(&cleanup_session_id);
-        }
-
-        drop(forward);
-    });
-
+        )
+        .await;
     Ok(session_id)
 }
 
@@ -103,9 +73,7 @@ pub async fn telnet_write(
     data: Vec<u8>,
     state: State<'_, TelnetState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
-    let mut session = session.lock().await;
-    session.write(&data).await.map_err(|e| e.to_string())
+    state.sessions.write(&session_id, &data).await
 }
 
 #[tauri::command]
@@ -115,9 +83,7 @@ pub async fn telnet_resize(
     rows: u16,
     state: State<'_, TelnetState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
-    let mut session = session.lock().await;
-    session.resize(cols, rows).await.map_err(|e| e.to_string())
+    state.sessions.resize(&session_id, cols, rows).await
 }
 
 #[tauri::command]
@@ -125,27 +91,5 @@ pub async fn telnet_disconnect(
     session_id: String,
     state: State<'_, TelnetState>,
 ) -> Result<(), String> {
-    let session = state.sessions.lock().await.remove(&session_id);
-    if let Some(session) = session {
-        session
-            .lock()
-            .await
-            .disconnect()
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-async fn lookup(
-    state: &State<'_, TelnetState>,
-    session_id: &str,
-) -> Result<Arc<TokioMutex<TelnetSession>>, String> {
-    state
-        .sessions
-        .lock()
-        .await
-        .get(session_id)
-        .cloned()
-        .ok_or_else(|| format!("no such session: {session_id}"))
+    state.sessions.disconnect(&session_id).await
 }

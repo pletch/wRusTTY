@@ -1,19 +1,23 @@
 //! Tauri command layer for serial sessions — same push-`Channel` shape as
 //! `ssh.rs`/`telnet.rs`, plus port enumeration and line control (DTR, RTS,
 //! break), which have no equivalent in the other transports.
+//!
+//! The session map, id counter and write/resize/disconnect bodies live in
+//! `session_registry.rs`. The line-control commands below don't go through it:
+//! they aren't part of `wr_core::Connection` and nothing generic could say
+//! anything useful about them, so they look the session up and call it
+//! directly.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tokio::sync::Mutex as TokioMutex;
-use wr_core::{Connection, ConnectionEvent};
 use wr_serial::{PortInfo, SerialConfig, SerialSession};
 
 use crate::connection_status::status_label;
+use crate::session_registry::SessionRegistry;
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -27,15 +31,15 @@ pub enum SerialEvent {
     Status { status: String },
 }
 
-#[derive(Default)]
 pub struct SerialState {
-    sessions: TokioMutex<HashMap<String, Arc<TokioMutex<SerialSession>>>>,
-    next_id: AtomicU64,
+    sessions: SessionRegistry<SerialSession>,
 }
 
-impl SerialState {
-    fn next_session_id(&self) -> String {
-        format!("serial-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+impl Default for SerialState {
+    fn default() -> Self {
+        Self {
+            sessions: SessionRegistry::new("serial"),
+        }
     }
 }
 
@@ -52,54 +56,21 @@ pub async fn serial_connect(
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
-    let session_id = state.next_session_id();
+    let session_id = state.sessions.next_session_id();
     let session = Arc::new(TokioMutex::new(SerialSession::new(config)));
-
     state
         .sessions
-        .lock()
-        .await
-        .insert(session_id.clone(), session.clone());
-
-    let cleanup_session_id = session_id.clone();
-
-    tokio::spawn(async move {
-        let (tx, rx) = tokio::sync::mpsc::channel::<ConnectionEvent>(
-            crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
-        );
-
-        let log_app = app.clone();
-        let log_session_id = cleanup_session_id.clone();
-        let forward = tokio::spawn(crate::coalesce::forward_coalesced(
-            cleanup_session_id.clone(),
-            rx,
+        .spawn_connect(
+            app,
+            session_id.clone(),
+            session,
             channel,
             data_channel,
             |status| SerialEvent::Status {
                 status: status_label(status),
             },
-            move |bytes| {
-                crate::logging::write(
-                    &log_app.state::<crate::logging::LoggingState>(),
-                    &log_session_id,
-                    bytes,
-                )
-            },
-        ));
-
-        let connect_result = session.lock().await.connect(tx).await;
-        if connect_result.is_err() {
-            let serial_state = app.state::<SerialState>();
-            serial_state
-                .sessions
-                .lock()
-                .await
-                .remove(&cleanup_session_id);
-        }
-
-        drop(forward);
-    });
-
+        )
+        .await;
     Ok(session_id)
 }
 
@@ -109,9 +80,7 @@ pub async fn serial_write(
     data: Vec<u8>,
     state: State<'_, SerialState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
-    let mut session = session.lock().await;
-    session.write(&data).await.map_err(|e| e.to_string())
+    state.sessions.write(&session_id, &data).await
 }
 
 #[tauri::command]
@@ -120,7 +89,7 @@ pub async fn serial_set_dtr(
     level: bool,
     state: State<'_, SerialState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
+    let session = state.sessions.lookup(&session_id).await?;
     let session = session.lock().await;
     session.set_dtr(level).await.map_err(|e| e.to_string())
 }
@@ -131,7 +100,7 @@ pub async fn serial_set_rts(
     level: bool,
     state: State<'_, SerialState>,
 ) -> Result<(), String> {
-    let session = lookup(&state, &session_id).await?;
+    let session = state.sessions.lookup(&session_id).await?;
     let session = session.lock().await;
     session.set_rts(level).await.map_err(|e| e.to_string())
 }
@@ -149,7 +118,7 @@ pub async fn serial_send_break(
     let duration = duration_ms
         .map(std::time::Duration::from_millis)
         .unwrap_or(wr_serial::DEFAULT_BREAK);
-    let session = lookup(&state, &session_id).await?;
+    let session = state.sessions.lookup(&session_id).await?;
     let session = session.lock().await;
     session
         .send_break(duration)
@@ -162,27 +131,5 @@ pub async fn serial_disconnect(
     session_id: String,
     state: State<'_, SerialState>,
 ) -> Result<(), String> {
-    let session = state.sessions.lock().await.remove(&session_id);
-    if let Some(session) = session {
-        session
-            .lock()
-            .await
-            .disconnect()
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-async fn lookup(
-    state: &State<'_, SerialState>,
-    session_id: &str,
-) -> Result<Arc<TokioMutex<SerialSession>>, String> {
-    state
-        .sessions
-        .lock()
-        .await
-        .get(session_id)
-        .cloned()
-        .ok_or_else(|| format!("no such session: {session_id}"))
+    state.sessions.disconnect(&session_id).await
 }
