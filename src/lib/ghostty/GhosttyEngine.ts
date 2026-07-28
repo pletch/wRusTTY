@@ -126,6 +126,11 @@ export class GhosttyEngine implements TerminalEngine {
   private fontSize = 14
   
   private onDataHandlers = new Set<(data: string) => void>()
+  /** Fired from the two sites a human is behind — key input and paste — and
+   *  nowhere else. Kept as a separate set rather than a flag threaded through
+   *  `onData` so the distinction is made where the data originates, by the
+   *  code that knows what it is, instead of being guessed at downstream. */
+  private onInputHandlers = new Set<(data: string) => void>()
   private onResizeHandlers = new Set<(size: { cols: number; rows: number }) => void>()
   private inputHandler: GhosttyInputHandler | null = null
   
@@ -1017,6 +1022,9 @@ export class GhosttyEngine implements TerminalEngine {
       for (const handler of this.onDataHandlers) {
         handler(str)
       }
+      for (const handler of this.onInputHandlers) {
+        handler(str)
+      }
     }, () => {
       return this.wasm
         ? this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_APP_CURSOR_KEYS, 0) !== 0
@@ -1060,6 +1068,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.termPtr = 0
     }
     this.onDataHandlers.clear()
+    this.onInputHandlers.clear()
     this.onResizeHandlers.clear()
     this.onScrollHandlers.clear()
     this.onWriteParsedHandlers.clear()
@@ -1319,11 +1328,19 @@ export class GhosttyEngine implements TerminalEngine {
     for (const handler of this.onDataHandlers) {
       handler(payload)
     }
+    for (const handler of this.onInputHandlers) {
+      handler(payload)
+    }
   }
 
   onData(handler: (data: string) => void): IDisposable {
     this.onDataHandlers.add(handler)
     return { dispose: () => this.onDataHandlers.delete(handler) }
+  }
+
+  onInput(handler: (data: string) => void): IDisposable {
+    this.onInputHandlers.add(handler)
+    return { dispose: () => this.onInputHandlers.delete(handler) }
   }
 
   onWriteParsed(cb: () => void): IDisposable {

@@ -101,6 +101,26 @@ function refit() {
  * Ten seconds is roughly "long enough that you went and did something else". */
 const COMMAND_NOTIFY_THRESHOLD_MS = 10_000
 
+/** The same event, for a notification the OS renders — which on Windows means
+ * the lock screen, by default, for a machine the user has walked away from.
+ *
+ * Deliberately drops `result.command`: under OSC 633 that is the whole command
+ * line, arguments included, and the native branch fires precisely when nobody
+ * is at the screen to see it appear. `session_lock.rs` exists to auto-lock the
+ * vault for the person who walks up to an unattended machine; putting a remote
+ * command line on that machine's lock screen routes around the same reasoning.
+ *
+ * The session label stays, because a notification whose job is to bring you
+ * back to the window has to say which pane to come back to. The detail is one
+ * alt-tab away, in the in-app toast path, which only fires with the window up. */
+function describeCommandResultBriefly(result: CommandResult, tabTitle: string): string {
+  const took = formatCommandDuration(result.durationMs)
+  if (result.exitCode === null || result.exitCode === 0) {
+    return `Finished in ${took} — ${tabTitle}`
+  }
+  return `Exited ${result.exitCode} after ${took} — ${tabTitle}`
+}
+
 function describeCommandResult(result: CommandResult, tabTitle: string): string {
   // Falls back to a generic noun under plain OSC 133, which has no field for
   // the command line — only VS Code's OSC 633 superset reports it.
@@ -846,11 +866,12 @@ function App() {
   function deleteSessionProfile(profile: SessionProfile) {
     // Deleting the profile doesn't touch the vault on its own — without
     // this, a profile with hasCredential would leave its actual credential
-    // orphaned in the vault forever, keyed by an id nothing references
-    // anymore. Best-effort: the profile itself is still gone either way,
-    // even if the vault happens to be locked right now and can't be
-    // reached (nothing else currently offers a way to remove a single
-    // orphaned entry, but it's harmless sitting unused).
+    // orphaned in the vault, keyed by an id nothing references anymore.
+    // Best-effort: the profile itself is still gone either way, even if the
+    // vault happens to be locked right now and can't be reached. The backend
+    // sweeps whatever this misses on the next unlock (see
+    // `prune_orphaned_credentials`), which is the only place it *can* be
+    // done — a locked vault can't have an entry removed from it at all.
     if (profile.hasCredential) {
       vault.deleteCredential(profile.id).catch(() => {})
     }
@@ -1341,21 +1362,25 @@ function App() {
                       dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                     }
                     if (tabInView) return
-                    const message = describeCommandResult(result, tab.title)
                     if (document.hasFocus()) {
                       // The window is up, just on a different tab — an in-app
                       // toast is exactly right here, and a native one would be
-                      // redundant with something already on screen.
+                      // redundant with something already on screen. It gets
+                      // the full description, command line included: the user
+                      // is demonstrably at the machine.
+                      const message = describeCommandResult(result, tab.title)
                       if (result.exitCode) toast.error(message)
                       else toast.success(message)
                       return
                     }
                     // The window isn't in front, which is the case the whole
                     // feature exists for and the one a toast cannot serve: it
-                    // would appear and expire entirely unseen.
+                    // would appear and expire entirely unseen. Deliberately
+                    // the shorter description — see
+                    // `describeCommandResultBriefly`.
                     void notifyInBackground(
                       result.exitCode ? 'Command failed' : 'Command finished',
-                      message,
+                      describeCommandResultBriefly(result, tab.title),
                     )
                   }}
                   onBell={() => {

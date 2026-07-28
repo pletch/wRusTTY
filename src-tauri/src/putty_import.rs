@@ -340,21 +340,34 @@ pub fn import_sessions(app: &AppHandle) -> Result<ImportSummary, String> {
     Ok(summary)
 }
 
-/// An id not already in use.
+/// An id not already in use, and one that will never be minted again.
 ///
 /// Profile ids are UUIDs when the frontend makes them, but nothing requires
-/// that — they are opaque strings compared for equality. Counting past the
-/// existing `putty-` ids avoids taking a UUID dependency for the one place in
-/// the backend that needs to mint an id, and keeps an imported profile
-/// identifiable as such in `sessions.json`.
+/// that — they are opaque strings compared for equality. The `putty-` prefix
+/// keeps an imported profile identifiable as such in `sessions.json`; the
+/// random suffix is what makes it safe.
+///
+/// This counted (`putty-0`, `putty-1`, …) and picked the first free number,
+/// which made ids *reusable*: deleting profiles frees their numbers, and the
+/// next import hands them to different hosts. A profile id is also its vault
+/// key — `resolve_auth` looks up `vault.get(&profile.id)` — and a credential
+/// can outlive its profile, because deleting a profile with the vault locked
+/// leaves the entry behind. A reused id therefore let a new profile silently
+/// authenticate to one host with the secret saved for another, which presents
+/// as a server-side problem rather than as a bug here.
+///
+/// Eight random bytes, the same shape as `wr-vault`'s `new_wrapper_id`. The
+/// existence check stays, and is now only a formality.
 fn next_id(existing: &[SessionProfile]) -> String {
-    let mut n = existing.len();
     loop {
-        let candidate = format!("putty-{n}");
+        let suffix: String = wr_vault::random_bytes::<8>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let candidate = format!("putty-{suffix}");
         if !existing.iter().any(|p| p.id == candidate) {
             return candidate;
         }
-        n += 1;
     }
 }
 
@@ -783,6 +796,45 @@ mod tests {
             to_profile(&s, "id-1".into()).unwrap().keepalive_seconds,
             None
         );
+    }
+
+    /// A profile id is also its vault key, so an id that can come back around
+    /// is a credential that can be inherited by a different host. Deleting
+    /// profiles used to free their numbers for the next import to hand out.
+    #[test]
+    fn a_deleted_imports_id_is_never_handed_out_again() {
+        let mut existing: Vec<SessionProfile> = (0..10)
+            .map(|_| {
+                let id = next_id(&[]);
+                to_profile(&session("h", &[("HostName", str_value("h"))]), id).unwrap()
+            })
+            .collect();
+
+        let retired: Vec<String> = existing.split_off(8).into_iter().map(|p| p.id).collect();
+
+        // The vault still holds an entry under each retired id: deleting a
+        // profile with the vault locked can't take its credential with it.
+        for _ in 0..64 {
+            let minted = next_id(&existing);
+            assert!(
+                !retired.contains(&minted),
+                "{minted} was reissued after its profile was deleted"
+            );
+            existing.push(
+                to_profile(&session("h", &[("HostName", str_value("h"))]), minted).unwrap(),
+            );
+        }
+    }
+
+    /// The prefix is what keeps an imported profile identifiable as one in
+    /// `sessions.json`, and the suffix is what makes it unrepeatable.
+    #[test]
+    fn imported_ids_are_prefixed_and_random() {
+        let id = next_id(&[]);
+        let suffix = id.strip_prefix("putty-").expect("keeps the putty- prefix");
+        assert_eq!(suffix.len(), 16, "eight bytes as hex");
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(id, next_id(&[]));
     }
 
     #[test]

@@ -352,12 +352,49 @@ pub async fn vault_unlock(
     master_password: String,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    let vault = Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
+    let mut vault = Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
     if !vault.has_unlock_method(WrapperKind::OsKeyring) {
         let _ = forget_os_unlock_kek();
     }
+    prune_orphaned_credentials(&app, &mut vault);
     *state.vault.lock().await = Some(vault);
     Ok(())
+}
+
+/// Removes credentials whose session profile no longer exists.
+///
+/// Deleting a profile can't take its credential with it when the vault is
+/// locked — nothing can open the vault to do it — so the entry outlives the
+/// only thing that referenced it. Unlock is the moment that becomes fixable,
+/// and doing it here rather than at delete time means profile deletion never
+/// has to demand an unlock for something that isn't a credential operation.
+///
+/// Bails out rather than pruning on anything it isn't sure about:
+///
+/// - **No `sessions.json` on disk.** [`crate::profiles::read_profiles`]
+///   reports a missing file as an empty list, which is right for listing and
+///   very wrong here: a profile store that failed to appear would take every
+///   credential with it, irreversibly. Absent means unknown, not empty.
+/// - **An unreadable or malformed one.** Same reasoning.
+///
+/// Failure to persist is logged and swallowed. An unlock that worked must not
+/// be reported as failed over housekeeping the next one will retry.
+fn prune_orphaned_credentials(app: &AppHandle, vault: &mut Vault) {
+    let Ok(path) = crate::profiles::profiles_path(app) else {
+        return;
+    };
+    if !path.exists() {
+        return;
+    }
+    let Ok(profiles) = crate::profiles::read_profiles(&path) else {
+        return;
+    };
+    let ids: std::collections::HashSet<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
+    match vault.retain(|id| ids.contains(id)) {
+        Ok(0) => {}
+        Ok(n) => log::info!("vault: dropped {n} credential(s) with no matching session profile"),
+        Err(e) => log::warn!("vault: could not drop orphaned credentials: {e}"),
+    }
 }
 
 #[tauri::command]
@@ -613,9 +650,10 @@ pub async fn vault_unlock_with_os(
             .into_iter()
             .find(|w| w.kind() == WrapperKind::Hello)
             .ok_or("the Windows Hello unlock method is no longer set up for this vault")?;
+        let for_prune = app.clone();
         let provider = crate::hello::HelloProvider::new(app);
 
-        let vault = match Vault::unlock_with(path, &provider).await {
+        let mut vault = match Vault::unlock_with(path, &provider).await {
             Ok(vault) => vault,
             // The wrapped key's AEAD tag rejected the KEK we derived. That
             // says the signature was wrong but not why, and the two causes
@@ -626,14 +664,17 @@ pub async fn vault_unlock_with_os(
             }
             Err(e) => return Err(e.to_string()),
         };
+        prune_orphaned_credentials(&for_prune, &mut vault);
         *state.vault.lock().await = Some(vault);
         return Ok(());
     }
     let _ = kind;
 
-    let vault = Vault::unlock_with(path, &OsKeyringProvider { app })
+    let for_prune = app.clone();
+    let mut vault = Vault::unlock_with(path, &OsKeyringProvider { app })
         .await
         .map_err(|e| e.to_string())?;
+    prune_orphaned_credentials(&for_prune, &mut vault);
     *state.vault.lock().await = Some(vault);
     Ok(())
 }

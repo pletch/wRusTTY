@@ -25,6 +25,30 @@ describe('broadcast', () => {
     expect(b.received).toEqual(['uptime\r'])
   })
 
+  /** How `Terminal` actually sends: the origin pane writes to its own session
+   * on the ordinary single-pane path, so including it here too would send
+   * everything typed into it twice. */
+  it('omits the origin pane when asked', () => {
+    const origin = recorder()
+    const other = recorder()
+    broadcast.join('pane-a', 'tab-1', origin.send)
+    broadcast.join('pane-b', 'tab-1', other.send)
+
+    expect(broadcast.send('tab-1', bytes('uptime\r'), 'pane-a')).toBe(1)
+    expect(origin.received).toEqual([])
+    expect(other.received).toEqual(['uptime\r'])
+  })
+
+  /** A pane on its own broadcasts to nobody — the fan-out is additive, so the
+   * single-pane case has to come out as zero extra sends rather than one. */
+  it('sends to nobody when the origin is the only member', () => {
+    const only = recorder()
+    broadcast.join('pane-a', 'tab-1', only.send)
+
+    expect(broadcast.send('tab-1', bytes('x'), 'pane-a')).toBe(0)
+    expect(only.received).toEqual([])
+  })
+
   /** The containment property the whole feature rests on. Broadcasting a
    * `reload` into a tab of switches is intended; leaking it into the tab where
    * someone has a production database open is not. */

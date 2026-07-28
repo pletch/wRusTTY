@@ -42,7 +42,20 @@ export interface TerminalEngine {
   getSelection(): string
   onSelectionChange(cb: () => void): IDisposable
 
+  /**
+   * Everything the engine sends towards the wire: typing, paste, mouse
+   * tracking reports, DEC 1004 focus reports, and the replies the core
+   * generates for host queries (DSR, DA, OSC colour). A single session's
+   * writer wants all of it.
+   */
   onData(cb: (data: string) => void): IDisposable
+  /**
+   * User-originated input only — typing and paste. A strict subset of
+   * `onData`, and the one anything that *redirects* input has to use: a mouse
+   * report carries this pane's geometry, and a query reply belongs to the host
+   * that asked. Sending either somewhere else is wrong in both directions.
+   */
+  onInput(cb: (data: string) => void): IDisposable
   onWriteParsed(cb: () => void): IDisposable
   onScroll(cb: (newPos: number) => void): IDisposable
   onBufferChange(cb: (isAlternate: boolean) => void): IDisposable

@@ -61,12 +61,18 @@ export function size(groupId: string): number {
 /** Sends `data` to every pane in `groupId`, including the one it was typed
  * into. Returns how many panes received it.
  *
+ * `exceptPaneId` omits one member — the caller writing to its own session
+ * directly, which is how `Terminal` does it: the pane being typed into takes
+ * the ordinary single-pane path for everything it produces, and broadcast
+ * only ever *adds* recipients. Sending to the origin here as well would send
+ * its input twice.
+ *
  * Snapshotted before sending: a `send` that disconnects its own pane would
  * otherwise mutate the map mid-iteration. */
-export function send(groupId: string, data: Uint8Array): number {
+export function send(groupId: string, data: Uint8Array, exceptPaneId?: string): number {
   const targets: Send[] = []
-  for (const member of members.values()) {
-    if (member.groupId === groupId) targets.push(member.send)
+  for (const [paneId, member] of members) {
+    if (member.groupId === groupId && paneId !== exceptPaneId) targets.push(member.send)
   }
   for (const target of targets) target(data)
   return targets.length

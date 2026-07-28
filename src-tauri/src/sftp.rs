@@ -207,6 +207,12 @@ const INERT_EXTENSIONS: &[&str] = &[
 ///   defence in depth rather than the only guard.)
 /// - **Trailing dots and spaces.** Stripped during path normalisation, so the
 ///   path written isn't the name asked for.
+/// - **Characters Windows simply forbids.** `< > " | ? *` are not a hazard —
+///   the write fails either way — they are here so that it fails with this
+///   function's message naming the file, rather than with a raw OS error from
+///   `std::fs::write` about a path the user never typed. A remote host is
+///   entitled to name a file `what?`, and someone on Linux editing it through
+///   this deserves to be told why it can't be edited from here.
 fn is_unsafe_windows_filename(basename: &str) -> bool {
     const RESERVED: &[&str] = &[
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
@@ -214,6 +220,7 @@ fn is_unsafe_windows_filename(basename: &str) -> bool {
     ];
     let stem = basename.split('.').next().unwrap_or("");
     basename.contains(':')
+        || basename.contains(['<', '>', '"', '|', '?', '*'])
         || basename.ends_with(' ')
         || basename.ends_with('.')
         || RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
@@ -523,6 +530,15 @@ mod tests {
             "notes.txt:payload",
             "report.txt ",
             "report.txt.",
+            // Legal on the remote host, refused by Windows. Caught here only
+            // so the message names the file instead of `std::fs::write`
+            // returning a bare OS error about a path the user never typed.
+            "what?",
+            "a<b",
+            "a>b",
+            "quote\".txt",
+            "pipe|dream",
+            "star*.log",
         ] {
             assert!(
                 is_unsafe_windows_filename(name),

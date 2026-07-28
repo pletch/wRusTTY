@@ -120,6 +120,17 @@ export class XtermEngine implements TerminalEngine {
     return this.term.onData(cb)
   }
 
+  /**
+   * Aliased to `onData`, which over-delivers: xterm folds replies and reports
+   * into the same event and exposes no user-input-only signal. Acceptable
+   * only because this engine exists for the benchmark harness, which never
+   * connects a session — nothing here reaches a wire, let alone another
+   * pane's. A real consumer of this class would need the split.
+   */
+  onInput(cb: (data: string) => void) {
+    return this.term.onData(cb)
+  }
+
   onWriteParsed(cb: () => void) {
     return this.term.onWriteParsed(cb)
   }

@@ -552,6 +552,28 @@ impl Vault {
         self.persist()
     }
 
+    /// Drops every entry whose key `keep` rejects, in one pass and one write.
+    /// Returns how many went.
+    ///
+    /// For sweeping credentials whose owner no longer exists: a profile
+    /// deleted while the vault was locked can't take its entry with it, so the
+    /// entry outlives it. Written as a predicate over ids rather than a list
+    /// of ids to delete because the caller's knowledge is "these still exist"
+    /// — inverting that here means a caller who computes its set wrongly
+    /// deletes nothing rather than everything.
+    ///
+    /// Persists only when something was actually removed, so the common case
+    /// (nothing orphaned) doesn't rewrite the file on every unlock.
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) -> Result<usize, VaultError> {
+        let before = self.entries.len();
+        self.entries.retain(|id, _| keep(id));
+        let removed = before - self.entries.len();
+        if removed > 0 {
+            self.persist()?;
+        }
+        Ok(removed)
+    }
+
     fn persist(&self) -> Result<(), VaultError> {
         // The decrypt side of this round-trip is `Zeroizing` for the same
         // reason: serialised entries are every credential in the clear, and
@@ -702,6 +724,44 @@ mod tests {
         vault.remove("session-1").unwrap();
         assert!(!vault.has("session-1"));
         assert!(!Vault::unlock(&path, "pw").unwrap().has("session-1"));
+    }
+
+    /// The sweep the app runs at unlock: a credential whose profile was
+    /// deleted while the vault was locked has nothing left to reference it,
+    /// and a profile id that came back around would otherwise inherit it.
+    #[test]
+    fn retain_drops_only_the_entries_the_predicate_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let mut vault = Vault::create(&path, "pw").unwrap();
+        vault.set("kept".into(), pw_secret("keep me")).unwrap();
+        vault.set("orphan-1".into(), pw_secret("a")).unwrap();
+        vault.set("orphan-2".into(), pw_secret("b")).unwrap();
+
+        assert_eq!(vault.retain(|id| id == "kept").unwrap(), 2);
+        drop(vault);
+
+        // Persisted, not merely dropped in memory — the entry has to be gone
+        // from the file, or the next unlock hands it back.
+        let reopened = Vault::unlock(&path, "pw").unwrap();
+        assert!(reopened.has("kept"));
+        assert!(!reopened.has("orphan-1"));
+        assert!(!reopened.has("orphan-2"));
+    }
+
+    /// The common case is nothing to do, and it must not rewrite the file —
+    /// every unlock would otherwise re-encrypt the whole store for nothing.
+    #[test]
+    fn retain_that_keeps_everything_does_not_touch_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let mut vault = Vault::create(&path, "pw").unwrap();
+        vault.set("kept".into(), pw_secret("keep me")).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        assert_eq!(vault.retain(|_| true).unwrap(), 0);
+
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]

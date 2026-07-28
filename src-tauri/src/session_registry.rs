@@ -66,6 +66,11 @@ pub enum Slot<S> {
         size: Option<(u16, u16)>,
     },
     Ready(S),
+    /// Disconnected while still handshaking. The id is already out of the map;
+    /// this marks the slot itself so a handshake that finishes *after* the
+    /// `disconnect` learns it is unwanted without the two having to be
+    /// serialised on the map lock — see [`publish_if_wanted`].
+    Cancelled,
 }
 
 impl<S> Slot<S> {
@@ -75,6 +80,9 @@ impl<S> Slot<S> {
         match self {
             Slot::Ready(session) => Ok(session),
             Slot::Connecting { .. } => Err("session is still connecting".to_string()),
+            // Only reachable through a slot handle cloned out of the map
+            // before the disconnect removed it.
+            Slot::Cancelled => Err("session was disconnected".to_string()),
         }
     }
 }
@@ -83,60 +91,76 @@ impl<S> Slot<S> {
 /// disconnected while the handshake was running — in which case the session is
 /// closed cleanly and whatever was queued for it is discarded.
 ///
-/// The map lock is held across the membership check *and* the replay, which is
-/// the whole point: a `disconnect` arriving mid-publish must either win
-/// outright (this sees the id gone) or wait and then tear down a fully
-/// published session. Landing between the two is exactly the bug this exists to
-/// prevent — the queued input would go to a host the user had already
-/// cancelled, and if what was typed was a password meant for the next prompt,
-/// it would go to a host they had just declined to trust.
+/// The map lock covers the membership check *only*. It used to be held across
+/// the replay as well, on the reasoning that bytes typed during the replay
+/// belong after the bytes being replayed — but that ordering is the *slot*
+/// lock's doing, and `publish` takes it anyway, as does every `write`. What
+/// the wider scope actually bought was serialising every other session of this
+/// transport behind this one's replay: `lookup`, `write`, `resize`,
+/// `disconnect`, `spawn_connect` and SFTP all take the map lock, and an SSH
+/// `write` against a full channel window blocks until the remote reads. One
+/// pane finishing its handshake into a wedged host could therefore stall input
+/// to every other SSH pane, the file browser, and the ability to close any of
+/// them — the precise property the `Connector`/`Session` split exists to
+/// prevent.
 ///
-/// The replay's transport calls run under that lock, so a `write` arriving
-/// concurrently waits for them. That is the ordering we want anyway: bytes
-/// typed during the replay belong after the bytes being replayed.
+/// Narrowing it reopens the gap the wide lock closed: a `disconnect` landing
+/// between the check and the replay. Queued input reaching a host the user
+/// already cancelled is not a cosmetic bug — if what was typed was a password
+/// meant for the next prompt, it goes to a host they just declined to trust.
+/// [`Slot::Cancelled`] closes it under the slot lock instead: `disconnect`
+/// marks the slot, `publish` refuses to replay into a marked one, and each
+/// waits for the other because both need that one lock.
 async fn publish_if_wanted<S: Session>(
     sessions: &SlotMap<S>,
     session_id: &str,
     slot: &SharedSlot<S>,
     session: S,
 ) {
-    let map = sessions.lock().await;
-    if map.contains_key(session_id) {
-        publish(slot, session).await;
-        return;
+    let wanted = sessions.lock().await.contains_key(session_id);
+    let unwanted = if wanted {
+        publish(slot, session).await
+    } else {
+        Some(session)
+    };
+    // Cancelled — either before we looked, or between the look and the slot
+    // lock. Close it properly rather than letting `Drop` do it: for SSH that
+    // is the difference between an `SSH_MSG_DISCONNECT` and the server seeing
+    // the connection evaporate.
+    if let Some(mut session) = unwanted {
+        let _ = session.disconnect().await;
     }
-    drop(map);
-    // Cancelled. Close it properly rather than letting `Drop` do it — for SSH
-    // that is the difference between an `SSH_MSG_DISCONNECT` and the server
-    // seeing the connection evaporate.
-    let mut session = session;
-    let _ = session.disconnect().await;
 }
 
 /// Drains whatever arrived during the handshake into the new session, then
-/// publishes it.
+/// publishes it. Returns the session *unpublished* if the slot was cancelled
+/// while the handshake ran, leaving the caller to close it.
 ///
 /// Its own function so the queue-and-replay behaviour can be tested without an
 /// `AppHandle`, a `Channel` or a real transport — it is the part of this
 /// module most worth pinning, since getting it wrong silently drops the first
 /// thing a user typed.
-async fn publish<S: Session>(slot: &SharedSlot<S>, mut session: S) {
-    // Taken under the slot lock so nothing can be enqueued between draining
-    // and publishing.
+async fn publish<S: Session>(slot: &SharedSlot<S>, mut session: S) -> Option<S> {
+    // Taken across the check and the replay both, so nothing can be enqueued
+    // between draining and publishing and no `disconnect` can slip in
+    // mid-replay: it would have to take this same lock to mark the slot.
     let mut slot = slot.lock().await;
-    if let Slot::Connecting { input, size } = &mut *slot {
-        let pending_input = std::mem::take(input);
-        let pending_size = size.take();
-        // Size first: a resize applied after the bytes have gone out would
-        // reflow what the program already printed in response to them.
-        if let Some((cols, rows)) = pending_size {
-            let _ = session.resize(cols, rows).await;
-        }
-        if !pending_input.is_empty() {
-            let _ = session.write(&pending_input).await;
-        }
+    let (pending_input, pending_size) = match &mut *slot {
+        Slot::Cancelled => return Some(session),
+        Slot::Connecting { input, size } => (std::mem::take(input), size.take()),
+        // Not reachable: one handshake fills one slot, once.
+        Slot::Ready(_) => (Vec::new(), None),
+    };
+    // Size first: a resize applied after the bytes have gone out would
+    // reflow what the program already printed in response to them.
+    if let Some((cols, rows)) = pending_size {
+        let _ = session.resize(cols, rows).await;
+    }
+    if !pending_input.is_empty() {
+        let _ = session.write(&pending_input).await;
     }
     *slot = Slot::Ready(session);
+    None
 }
 
 /// One session id's slot, shared between the command layer and the connect
@@ -215,6 +239,7 @@ impl<C: Connector> SessionRegistry<C> {
                 Ok(())
             }
             Slot::Ready(session) => session.write(data).await.map_err(|e| e.to_string()),
+            Slot::Cancelled => Err("session was disconnected".to_string()),
         }
     }
 
@@ -229,6 +254,7 @@ impl<C: Connector> SessionRegistry<C> {
                 Ok(())
             }
             Slot::Ready(session) => session.resize(cols, rows).await.map_err(|e| e.to_string()),
+            Slot::Cancelled => Err("session was disconnected".to_string()),
         }
     }
 
@@ -238,14 +264,22 @@ impl<C: Connector> SessionRegistry<C> {
     /// leaving a half-dead session in the map would let the frontend keep
     /// writing to it.
     ///
-    /// Disconnecting one that never finished connecting removes the id, which
-    /// is what the connect task checks before publishing: it finds the id gone
-    /// and closes the session it built instead of handing it the queued input.
+    /// Disconnecting one that never finished connecting removes the id *and*
+    /// marks the slot [`Slot::Cancelled`]. Removing the id alone is enough
+    /// only for a handshake that hasn't checked yet; the mark is what stops
+    /// one that already passed the check from replaying queued input into a
+    /// host the user just cancelled — see [`publish_if_wanted`]. Whichever of
+    /// the two gets the slot lock first, the other sees its result.
     pub async fn disconnect(&self, session_id: &str) -> Result<(), String> {
         let slot = self.sessions.lock().await.remove(session_id);
         if let Some(slot) = slot {
-            if let Slot::Ready(session) = &mut *slot.lock().await {
-                session.disconnect().await.map_err(|e| e.to_string())?;
+            let mut slot = slot.lock().await;
+            match &mut *slot {
+                Slot::Ready(session) => session.disconnect().await.map_err(|e| e.to_string())?,
+                // Queued input goes with it: it was typed at a pane the user
+                // has since closed.
+                Slot::Connecting { .. } => *slot = Slot::Cancelled,
+                Slot::Cancelled => {}
             }
         }
         Ok(())
@@ -371,6 +405,16 @@ mod tests {
         }
     }
 
+    /// A slot's state, for a panic message that says what it actually found
+    /// rather than only what it wanted.
+    fn describe(slot: &Slot<FakeSession>) -> &'static str {
+        match slot {
+            Slot::Connecting { .. } => "connecting",
+            Slot::Ready(_) => "ready",
+            Slot::Cancelled => "cancelled",
+        }
+    }
+
     fn connecting() -> SharedSlot<FakeSession> {
         Arc::new(TokioMutex::new(Slot::Connecting {
             input: Vec::new(),
@@ -381,14 +425,14 @@ mod tests {
     async fn enqueue(slot: &SharedSlot<FakeSession>, data: &[u8]) {
         match &mut *slot.lock().await {
             Slot::Connecting { input, .. } => input.extend_from_slice(data),
-            Slot::Ready(_) => panic!("already connected"),
+            other => panic!("not connecting: {}", describe(other)),
         }
     }
 
     async fn enqueue_size(slot: &SharedSlot<FakeSession>, cols: u16, rows: u16) {
         match &mut *slot.lock().await {
             Slot::Connecting { size, .. } => *size = Some((cols, rows)),
-            Slot::Ready(_) => panic!("already connected"),
+            other => panic!("not connecting: {}", describe(other)),
         }
     }
 
@@ -401,7 +445,7 @@ mod tests {
             },
         ) {
             Slot::Ready(s) => s,
-            Slot::Connecting { .. } => panic!("still connecting"),
+            other => panic!("not published: {}", describe(&other)),
         }
     }
 
@@ -413,7 +457,7 @@ mod tests {
         enqueue(&slot, b"who").await;
         enqueue(&slot, b"ami\n").await;
 
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
 
         assert_eq!(published(&slot).await.writes, vec![b"whoami\n".to_vec()]);
     }
@@ -425,7 +469,7 @@ mod tests {
         let slot = connecting();
         enqueue_size(&slot, 120, 40).await;
 
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
 
         assert_eq!(published(&slot).await.sizes, vec![(120, 40)]);
     }
@@ -439,7 +483,7 @@ mod tests {
         enqueue_size(&slot, 100, 30).await;
         enqueue_size(&slot, 120, 40).await;
 
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
 
         assert_eq!(published(&slot).await.sizes, vec![(120, 40)]);
     }
@@ -452,7 +496,7 @@ mod tests {
         enqueue(&slot, b"ls\n").await;
         enqueue_size(&slot, 120, 40).await;
 
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
 
         let session = published(&slot).await;
         assert_eq!(session.sizes, vec![(120, 40)]);
@@ -464,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn an_idle_handshake_replays_nothing() {
         let slot = connecting();
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
 
         let session = published(&slot).await;
         assert!(session.writes.is_empty());
@@ -519,7 +563,7 @@ mod tests {
         let slot = registry.lookup("fake-0").await.unwrap();
         let queued = match &*slot.lock().await {
             Slot::Connecting { input, .. } => input.len(),
-            Slot::Ready(_) => panic!("should still be connecting"),
+            other => panic!("should still be connecting, was {}", describe(other)),
         };
         assert_eq!(queued, 1024);
     }
@@ -531,7 +575,7 @@ mod tests {
     async fn the_cap_does_not_apply_once_connected() {
         let registry = registry_with_connecting_slot("fake-0").await;
         let slot = registry.lookup("fake-0").await.unwrap();
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
 
         assert!(registry
             .write("fake-0", &vec![b'x'; MAX_PENDING_INPUT * 2])
@@ -569,7 +613,7 @@ mod tests {
         // Nothing was published into the orphaned slot...
         assert!(
             slot.lock().await.ready().is_err(),
-            "a cancelled slot must stay Connecting, not receive the session"
+            "a cancelled slot must not receive the session"
         );
         // ...and the session was closed cleanly rather than dropped.
         assert!(
@@ -593,6 +637,81 @@ mod tests {
         assert!(!session.disconnected.load(Ordering::Relaxed));
     }
 
+    /// The race the map lock used to cover by being held across the replay:
+    /// `disconnect` lands *after* the membership check has already passed.
+    /// The mark it leaves on the slot is what the publish then sees.
+    #[tokio::test]
+    async fn a_disconnect_after_the_membership_check_still_wins() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        registry.write("fake-0", b"hunter2\n").await.unwrap();
+
+        // The check that `publish_if_wanted` does first — passing, because the
+        // user has not closed the pane yet.
+        assert!(registry.sessions.lock().await.contains_key("fake-0"));
+
+        // And now they do, in the window before the handshake publishes.
+        registry.disconnect("fake-0").await.unwrap();
+
+        let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = FakeSession {
+            disconnected: disconnected.clone(),
+            ..Default::default()
+        };
+        let unpublished = publish(&slot, session).await;
+
+        let unpublished = unpublished.expect("a cancelled slot must hand the session back");
+        assert!(
+            unpublished.writes.is_empty(),
+            "queued input must not reach a host the user cancelled"
+        );
+        assert!(slot.lock().await.ready().is_err());
+    }
+
+    /// The same race through the front door, so the two halves are pinned
+    /// together rather than only in the piece each one touches.
+    #[tokio::test]
+    async fn a_session_cancelled_mid_publish_is_closed_cleanly() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        registry.disconnect("fake-0").await.unwrap();
+
+        let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session = FakeSession {
+            disconnected: disconnected.clone(),
+            ..Default::default()
+        };
+        publish_if_wanted(&registry.sessions, "fake-0", &slot, session).await;
+
+        assert!(
+            disconnected.load(Ordering::Relaxed),
+            "expected a clean disconnect, not a bare Drop"
+        );
+    }
+
+    /// Disconnecting a still-connecting id leaves the slot marked rather than
+    /// merely dropping it from the map — the mark is the whole mechanism, and
+    /// a slot handle cloned out before the removal is how anything still
+    /// reaches it (`Slot::ready`, which `sftp_list_dir` and friends call).
+    #[tokio::test]
+    async fn disconnecting_a_connecting_id_marks_its_slot() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        registry.write("fake-0", b"queued").await.unwrap();
+
+        registry.disconnect("fake-0").await.unwrap();
+
+        match &*slot.lock().await {
+            Slot::Cancelled => {}
+            other => panic!("expected a cancelled slot, was {}", describe(other)),
+        }
+        assert!(slot.lock().await.ready().is_err());
+        // The id is gone from the map too, so the ordinary path reports it as
+        // no such session rather than as a cancelled one.
+        assert!(registry.write("fake-0", b"x").await.is_err());
+        assert!(registry.resize("fake-0", 80, 24).await.is_err());
+    }
+
     /// Asking a still-connecting slot for its session is an error, not a
     /// panic and not a wait — `sftp_list_dir` and friends reach one this way.
     #[tokio::test]
@@ -600,7 +719,7 @@ mod tests {
         let slot = connecting();
         assert!(slot.lock().await.ready().is_err());
 
-        publish(&slot, FakeSession::default()).await;
+        assert!(publish(&slot, FakeSession::default()).await.is_none());
         assert!(slot.lock().await.ready().is_ok());
     }
 }

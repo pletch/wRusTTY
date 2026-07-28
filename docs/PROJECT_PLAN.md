@@ -85,17 +85,25 @@ mosh, RDP) means adding a crate, not touching the UI.
 
 ### Recommended additions — connectivity
 - **Jump host / ProxyJump chains** — table stakes for anyone on a bastion
-- **Port forwarding** — local, remote, and dynamic (SOCKS); PuTTY parity requires it
-- **Keepalive + auto-reconnect** with visible connection state per tab
+  **(shipped)**
+- **Port forwarding** — local, remote, and dynamic (SOCKS); PuTTY parity
+  requires it **(shipped)**, with a management panel
+- **Keepalive** with visible connection state per tab **(shipped — per-profile
+  interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect is not built.
 - Proxy support (HTTP CONNECT / SOCKS5) for corporate networks
 
 ### Recommended additions — terminal & UX
-- **PuTTY session import** (Windows registry) — your single best adoption feature
-- Scrollback search, configurable scrollback limit, copy-on-select, right-click paste
+- **PuTTY session import** (Windows registry) — your single best adoption
+  feature **(shipped)**
+- Scrollback search, configurable scrollback limit, copy-on-select, right-click
+  paste **(shipped)**
+- Shell integration (OSC 133/633): per-command status, and a notification when
+  a long command finishes with the window in the background **(shipped — see
+  `docs/SHELL_INTEGRATION.md`)**
 - True color, Unicode 11, font/ligature configuration, cursor styles
 - URL detection (web-links addon)
 - Session logging to file (timestamped, per-session toggle) — network/serial
-  engineers rely on this constantly
+  engineers rely on this constantly **(shipped)**
 - Named color themes (import iTerm/VS Code schemes), light/dark following OS
 - Configurable keyboard shortcuts
 - Duplicate tab / reconnect / "restart session" actions
@@ -118,7 +126,10 @@ mosh, RDP) means adding a crate, not touching the UI.
 - Auto-update via `tauri-plugin-updater`
 
 ### Explicitly deferred / out of scope for now
-- Split panes and broadcast-input (nice, but after core is solid)
+- ~~Split panes and broadcast-input~~ — both **shipped**: the core got solid
+  first, as intended. Broadcast fans out typing and paste only; mouse reports,
+  focus reports and query replies stay with the pane that produced them (see
+  `TerminalEngine.onInput`).
 - X11 forwarding, mosh, RDP/VNC (r-shell has these; not your mission)
 - Plugin system (Tabby's biggest complexity source — avoid)
 - Cloud sync of vault (export/import covers it; sync is a security liability)
@@ -203,7 +214,9 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - `wr-telnet`: option negotiation (ECHO, SGA, NAWS, TTYPE), same tab UX
 - `wr-serial`: port enumeration with friendly names, hotplug refresh, full line
   settings, local echo / line-ending controls, DTR/RTS toggles
-- Session manager grows protocol-specific forms
+- Session manager grows protocol-specific forms **(shipped)** — a saved serial
+  session stores the adapter's USB identity, not a COM number, so it survives
+  the adapter moving socket (see `SerialProfile`)
 
 ### Phase 5 — Polish & PuTTY parity
 - Port forwarding (local/remote/dynamic) with a management panel

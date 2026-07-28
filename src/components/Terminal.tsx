@@ -963,21 +963,39 @@ export function Terminal({
       // which is ^? — what modern Unix expects.
       const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
       const bytes = new TextEncoder().encode(out)
-      // The fan-out point. Broadcast replaces this pane's own write rather
-      // than adding to it — the group includes this pane, so writing here as
-      // well would send everything twice to whichever pane was typed into.
-      //
-      // The backspace translation above is applied first and travels with the
-      // bytes, which is the wrong-in-principle-but-right-in-practice choice:
-      // it is a per-pane setting, and a group could in theory mix ^H and ^?
-      // hosts. Re-deriving it per target would mean fanning out the *string*
-      // and translating per pane, which is more machinery than a case nobody
-      // has hit is worth. Noted here rather than silently.
-      if (broadcastingRef.current) {
-        broadcast.send(broadcastGroupRef.current, bytes)
-        return
-      }
       if (sessionId) conn.write(source, sessionId, bytes)
+    })
+
+    // The fan-out point, deliberately on `onInput` and not `onData`.
+    //
+    // `onData` also carries mouse tracking reports, DEC 1004 focus reports and
+    // the core's replies to host queries (DSR, DA, OSC colour). None of those
+    // may leave this pane: a mouse report carries *this* pane's geometry, so
+    // in a differently-sized sibling the click lands on the wrong cell; a
+    // focus report tells a pane it gained focus it did not gain; and a reply
+    // belongs to the host that asked for it — fanning it out both leaves that
+    // host waiting out its timeout and delivers unasked-for text to panes on
+    // other machines entirely.
+    //
+    // Only what a human typed or pasted is broadcast, and it *adds* to this
+    // pane's own write above rather than replacing it (see `broadcast.send`'s
+    // `exceptPaneId`), so the single-pane path is identical either way.
+    //
+    // The backspace translation is re-derived here from this pane's setting
+    // and travels with the bytes, which is the wrong-in-principle-but-right-
+    // in-practice choice: it is a per-pane setting, and a group could in
+    // theory mix ^H and ^? hosts. Translating per target would mean fanning
+    // out the *string*, which is more machinery than a case nobody has hit is
+    // worth. Noted here rather than silently.
+    const inputListener = term.onInput((data) => {
+      // A line-edited session (telnet without remote echo) sends whole lines
+      // from the local editor, not keystrokes; there is nothing here to fan
+      // out until the line is finished, and the keystrokes themselves would
+      // be meaningless to a remote shell.
+      if (lineEditor) return
+      if (!broadcastingRef.current) return
+      const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
+      broadcast.send(broadcastGroupRef.current, new TextEncoder().encode(out), paneId)
     })
 
     const selectionListener = term.onSelectionChange(() => {
@@ -1171,6 +1189,7 @@ export function Terminal({
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()
       dataListener.dispose()
+      inputListener.dispose()
       scrollListener.dispose()
       writeParsedListener.dispose()
       searchResultsListener.dispose()
