@@ -98,7 +98,8 @@ pub async fn serial_connect_profile(
         // what stopped being meaningful.
         wr_serial::Resolved::NotFound => {
             return Err(format!(
-                "{} isn't connected — plug the adapter in, or edit the session to pick a different one",
+                "{} isn't connected — plug the adapter in, or edit the session \
+                 to pick a different one",
                 describe_identity(&serial.identity)
             ))
         }

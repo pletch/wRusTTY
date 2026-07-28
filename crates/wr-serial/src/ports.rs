@@ -301,6 +301,9 @@ mod tests {
             resolve(&identity, &[plain_port("COM1"), plain_port("COM2")]),
             Resolved::Port("COM1".into())
         );
-        assert_eq!(resolve(&identity, &[plain_port("COM2")]), Resolved::NotFound);
+        assert_eq!(
+            resolve(&identity, &[plain_port("COM2")]),
+            Resolved::NotFound
+        );
     }
 }

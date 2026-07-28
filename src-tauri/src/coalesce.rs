@@ -505,7 +505,11 @@ mod tests {
         let (data_channel, _received) = recording_data_channel();
 
         reset_delivery_stats();
-        assert_eq!(delivery_stats().flushes, 0, "reset should zero the counters");
+        assert_eq!(
+            delivery_stats().flushes,
+            0,
+            "reset should zero the counters"
+        );
         assert_eq!(delivery_stats().bytes, 0);
 
         let handle = tokio::spawn(forward_coalesced(
@@ -588,12 +592,20 @@ mod tests {
             "expected the forwarder to stop within one delivery of the window, \
              sent {sent} bytes against a {window} byte window"
         );
-        assert!(sent > 0, "it should have sent up to the window, not nothing");
+        assert!(
+            sent > 0,
+            "it should have sent up to the window, not nothing"
+        );
 
         // Crediting the whole lot back must let it move again.
         ack_delivery(session.clone(), sent as u64);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let after = received.lock().unwrap().iter().map(|b| b.len()).sum::<usize>();
+        let after = received
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| b.len())
+            .sum::<usize>();
         assert!(
             after > sent,
             "acking should have released more; stuck at {sent} bytes"
@@ -662,7 +674,11 @@ mod tests {
         let a = flow_for("session-a");
         a.sent(inflight_window());
         let b = flow_for("session-b");
-        assert_eq!(b.inflight.load(Ordering::Relaxed), 0, "sessions are separate");
+        assert_eq!(
+            b.inflight.load(Ordering::Relaxed),
+            0,
+            "sessions are separate"
+        );
 
         flow_registry().lock().unwrap().remove("session-a");
         flow_registry().lock().unwrap().remove("session-b");

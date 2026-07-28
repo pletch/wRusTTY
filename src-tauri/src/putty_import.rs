@@ -66,7 +66,10 @@ pub struct PuttySession {
 
 impl PuttySession {
     fn string(&self, key: &str) -> Option<&str> {
-        self.values.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+        self.values
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
     }
 
     fn number(&self, key: &str) -> Option<u32> {
@@ -630,7 +633,10 @@ mod tests {
     fn a_session_with_no_host_is_skipped() {
         let s = session(
             "Default%20Settings",
-            &[("Protocol", str_value("ssh")), ("PortNumber", Value::Dword(22))],
+            &[
+                ("Protocol", str_value("ssh")),
+                ("PortNumber", Value::Dword(22)),
+            ],
         );
         assert!(to_profile(&s, "id-1".into()).is_none());
     }
@@ -692,7 +698,10 @@ mod tests {
         assert!(matches!(serial.data_bits, wr_serial::DataBits::Seven));
         assert!(matches!(serial.parity, wr_serial::Parity::Even));
         assert!(matches!(serial.stop_bits, wr_serial::StopBits::Two));
-        assert!(matches!(serial.flow_control, wr_serial::FlowControl::Hardware));
+        assert!(matches!(
+            serial.flow_control,
+            wr_serial::FlowControl::Hardware
+        ));
         // PuTTY never recorded a USB identity, so an imported session behaves
         // exactly as it did in PuTTY until the user re-picks the adapter.
         assert!(serial.identity.usb.is_none());
@@ -716,7 +725,10 @@ mod tests {
     fn a_minimal_serial_session_gets_conventional_defaults() {
         let s = session(
             "console",
-            &[("Protocol", str_value("serial")), ("SerialLine", str_value("COM1"))],
+            &[
+                ("Protocol", str_value("serial")),
+                ("SerialLine", str_value("COM1")),
+            ],
         );
         let serial = to_profile(&s, "id-1".into()).unwrap().serial.unwrap();
         assert_eq!(serial.baud_rate, 9600);
@@ -739,7 +751,10 @@ mod tests {
                 ("PingIntervalSecs", Value::Dword(30)),
             ],
         );
-        assert_eq!(to_profile(&s, "id-1".into()).unwrap().keepalive_seconds, Some(150));
+        assert_eq!(
+            to_profile(&s, "id-1".into()).unwrap().keepalive_seconds,
+            Some(150)
+        );
     }
 
     /// PuTTY writes 0/0 for "keepalives off", which is a real choice — some
@@ -754,13 +769,19 @@ mod tests {
                 ("PingIntervalSecs", Value::Dword(0)),
             ],
         );
-        assert_eq!(to_profile(&s, "id-1".into()).unwrap().keepalive_seconds, Some(0));
+        assert_eq!(
+            to_profile(&s, "id-1".into()).unwrap().keepalive_seconds,
+            Some(0)
+        );
     }
 
     #[test]
     fn a_session_with_no_keepalive_values_gets_the_app_default() {
         let s = session("plain", &[("HostName", str_value("h"))]);
-        assert_eq!(to_profile(&s, "id-1".into()).unwrap().keepalive_seconds, None);
+        assert_eq!(
+            to_profile(&s, "id-1".into()).unwrap().keepalive_seconds,
+            None
+        );
     }
 
     #[test]

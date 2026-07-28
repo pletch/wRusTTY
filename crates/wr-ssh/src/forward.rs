@@ -32,7 +32,11 @@ pub type RemoteForwardRegistry = Arc<Mutex<HashMap<(String, u16), (String, u16)>
 /// port forwarding could not be used at all. `SshEvent` in the app's ssh.rs
 /// already spells both out; this type was simply missing the second.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ForwardSpec {
     /// Listen locally on `bind_host:bind_port`; each connection is tunneled
     /// to `target_host:target_port` as seen from the server.
@@ -391,13 +395,24 @@ mod tests {
                 "targetHost":"localhost","targetPort":22}"#,
         )
         .expect("remote forward should deserialize");
-        assert!(matches!(remote, ForwardSpec::Remote { bind_port: 9090, .. }));
+        assert!(matches!(
+            remote,
+            ForwardSpec::Remote {
+                bind_port: 9090,
+                ..
+            }
+        ));
 
-        let dynamic: ForwardSpec = serde_json::from_str(
-            r#"{"type":"dynamic","bindHost":"127.0.0.1","bindPort":1080}"#,
-        )
-        .expect("dynamic forward should deserialize");
-        assert!(matches!(dynamic, ForwardSpec::Dynamic { bind_port: 1080, .. }));
+        let dynamic: ForwardSpec =
+            serde_json::from_str(r#"{"type":"dynamic","bindHost":"127.0.0.1","bindPort":1080}"#)
+                .expect("dynamic forward should deserialize");
+        assert!(matches!(
+            dynamic,
+            ForwardSpec::Dynamic {
+                bind_port: 1080,
+                ..
+            }
+        ));
     }
 
     /// The other half of the contract: what we emit is what the frontend can

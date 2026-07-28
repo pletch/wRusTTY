@@ -545,7 +545,10 @@ mod tests {
             ".bashrc",
             "my report.txt",
         ] {
-            assert!(!is_unsafe_windows_filename(name), "{name} should be allowed");
+            assert!(
+                !is_unsafe_windows_filename(name),
+                "{name} should be allowed"
+            );
         }
     }
 
