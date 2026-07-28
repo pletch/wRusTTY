@@ -5,6 +5,38 @@ Built from the **Ghostty v1.3.1 release tag** plus our own
 longer tracks that project — see `patches/README.md` for why, for the build
 recipe, and for the rebase notes that matter next time this is upgraded.
 
+## The expected artifact
+
+```text
+SHA-256  be419bfc5b6de37eb1768585aa4225039b9dacde56d429db1f53904af7775b0b
+Size     742,403 bytes
+Source   ghostty-org/ghostty @ v1.3.1 + patches/ghostty-131-wasm-api.patch
+Built    Zig 0.15.2, -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
+```
+
+This binary parses untrusted bytes off the wire from every remote host you
+connect to, which makes it the highest-value thing in the tree to swap. It also
+arrives as an opaque 742 kB blob that no review of a diff can meaningfully read.
+Recording what the bytes are supposed to be is the only check available.
+
+`vendorIntegrity.test.ts` asserts this hash on every `npm test` and CI run, so a
+binary that changes without this file changing fails the suite.
+
+Check it by hand with:
+
+```sh
+sha256sum src/lib/ghostty/vendor/ghostty-vt.wasm
+```
+
+**When you legitimately rebuild the binary, this hash changes and the test is
+supposed to fail.** Rebuild, re-strip, run `sha256sum`, and update both the
+block above and the constant in the test — in the same commit as the new
+binary, so the two can never drift apart. Note that a Zig rebuild is not
+reproducible byte-for-byte across toolchain versions, so a hash that differs
+after a rebuild is expected and is not by itself evidence of anything wrong;
+what the check catches is the binary moving when nobody rebuilt it.
+
 `package.json` still depends on `ghostty-web` for **TypeScript types only**; we
 import none of its JavaScript, and never did. The engine talks to this binary
 directly through the 79 exports listed in `wasmBindings.ts`, which are unchanged
