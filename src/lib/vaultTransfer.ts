@@ -51,9 +51,16 @@ export async function exportVaultBundle(confirm: Ask): Promise<boolean> {
  * Returns whether anything was replaced, so the caller can re-read what it
  * shows. */
 export async function importVaultBundle(confirm: Ask): Promise<boolean> {
+  // The second sentence is the security-relevant one. An imported session
+  // carries a host *and* a key file path, both chosen by whoever wrote the
+  // bundle, and connecting to one hands that host a signature from that key —
+  // so a bundle from somewhere else can be a request to use your key against
+  // someone else's server. Nothing on the Rust side can tell such a profile
+  // from a legitimate one; the defence is the user recognising a session they
+  // did not create, which needs them to know to look.
   const ok = await confirm({
     title: 'Replace vault and sessions?',
-    body: "Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file's master password to unlock it.",
+    body: "Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file's master password to unlock it. Only import a file you created yourself: imported sessions can point at any host and any private key file on this machine, so connecting to one you don't recognise can expose that key to whoever wrote the file.",
     confirmLabel: 'Import and replace',
   })
   if (!ok) return false

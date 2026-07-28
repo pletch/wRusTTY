@@ -90,6 +90,13 @@ fn read_any(path: &Path) -> Result<AnyFile, VaultError> {
     })?;
     let value: serde_json::Value =
         serde_json::from_str(&contents).map_err(|e| VaultError::Corrupt(e.to_string()))?;
+    parse_any(value)
+}
+
+/// The value half of [`read_any`], split out so a vault that arrived as JSON
+/// rather than as a file on disk can be checked the same way — see
+/// [`crate::validate`].
+fn parse_any(value: serde_json::Value) -> Result<AnyFile, VaultError> {
     let version = value
         .get("version")
         .and_then(serde_json::Value::as_u64)
@@ -104,6 +111,60 @@ fn read_any(path: &Path) -> Result<AnyFile, VaultError> {
         )),
         other => Err(VaultError::UnsupportedVersion(other as u32)),
     }
+}
+
+/// Checks that `value` is a vault this crate could actually open, without
+/// unlocking it or touching the filesystem.
+///
+/// For `vault_import`, which replaces the live credential store with a file it
+/// was handed. Parsing is not enough on its own: a JSON object that
+/// deserializes but carries no password wrapper would install a vault that
+/// opens with nothing, destroying every stored credential for a user who has
+/// already been re-locked by the import. So this also insists on the invariant
+/// the crate maintains everywhere else — that a vault always has a master
+/// password wrapper (see [`Vault::remove_unlock_method`]) — and that the
+/// stored KDF costs are ones this crate will agree to derive with, rather than
+/// leaving that to be discovered at unlock time by an allocation.
+///
+/// Deliberately *not* an authenticity check. A bundle is a backup format that
+/// has to be openable on a new machine with nothing but the master password,
+/// so there is no key available to have signed it with. This says "this is a
+/// vault", never "this is your vault".
+pub fn validate(value: &serde_json::Value) -> Result<(), VaultError> {
+    match parse_any(value.clone())? {
+        AnyFile::V1(file) => {
+            crypto::params_from_stored(file.m_cost, file.t_cost, file.p_cost)?;
+            decode_b64("salt", &file.salt)?;
+            decode_b64("nonce", &file.nonce)?;
+            decode_b64("ciphertext", &file.ciphertext)?;
+        }
+        AnyFile::V2(file) => {
+            decode_b64("nonce", &file.nonce)?;
+            decode_b64("ciphertext", &file.ciphertext)?;
+            if !file
+                .wrappers
+                .iter()
+                .any(|w| w.params.kind() == WrapperKind::Password)
+            {
+                return Err(VaultError::Corrupt(
+                    "vault has no master-password unlock method".into(),
+                ));
+            }
+            for wrapper in &file.wrappers {
+                if let WrapperParams::Password {
+                    salt,
+                    m_cost,
+                    t_cost,
+                    p_cost,
+                } = &wrapper.params
+                {
+                    crypto::params_from_stored(*m_cost, *t_cost, *p_cost)?;
+                    decode_b64("wrapper salt", salt)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Short random identifier, distinct from the wrapper's kind so a method can
@@ -999,5 +1060,76 @@ mod tests {
         drop(Vault::create(&path, "pw").unwrap());
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    // ---- validate, for the import path -----------------------------------
+
+    /// A real vault, as the JSON value an export bundle would carry.
+    fn vault_json(dir: &tempfile::TempDir) -> serde_json::Value {
+        let path = vault_path(dir);
+        drop(Vault::create(&path, "pw").unwrap());
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_real_vault_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate(&vault_json(&dir)).is_ok());
+    }
+
+    #[test]
+    fn json_that_is_not_a_vault_is_rejected() {
+        assert!(validate(&serde_json::json!({"hello": "world"})).is_err());
+        assert!(validate(&serde_json::json!([])).is_err());
+        assert!(validate(&serde_json::json!("a string")).is_err());
+        assert!(validate(&serde_json::json!(null)).is_err());
+    }
+
+    #[test]
+    fn a_future_format_version_is_rejected_rather_than_guessed_at() {
+        let mut v = vault_json(&tempfile::tempdir().unwrap());
+        v["version"] = serde_json::json!(99);
+        assert!(matches!(
+            validate(&v),
+            Err(VaultError::UnsupportedVersion(99))
+        ));
+    }
+
+    /// The denial-of-credentials case: shaped like a vault, but nothing can
+    /// ever open it. Installing this would strand the user having already
+    /// re-locked them.
+    #[test]
+    fn a_vault_with_no_password_wrapper_is_rejected() {
+        let mut v = vault_json(&tempfile::tempdir().unwrap());
+        v["wrappers"] = serde_json::json!([]);
+        assert!(validate(&v).is_err());
+    }
+
+    /// Ties to the Argon2 bound: an import is exactly the path that makes an
+    /// absurd stored cost attacker-reachable rather than self-inflicted.
+    #[test]
+    fn a_vault_with_absurd_kdf_costs_is_rejected_before_it_is_installed() {
+        let mut v = vault_json(&tempfile::tempdir().unwrap());
+        v["wrappers"][0]["params"]["m_cost"] = serde_json::json!(u32::MAX);
+        assert!(validate(&v).is_err());
+    }
+
+    #[test]
+    fn a_vault_whose_ciphertext_is_not_base64_is_rejected() {
+        let mut v = vault_json(&tempfile::tempdir().unwrap());
+        v["ciphertext"] = serde_json::json!("not!valid!base64!");
+        assert!(validate(&v).is_err());
+    }
+
+    /// Validation must not be so strict it refuses a file this crate can still
+    /// open — a v1 vault is exactly what someone restoring an old backup has.
+    #[test]
+    fn a_legacy_v1_vault_still_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        write_v1_file(&path, "pw", &HashMap::new());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(validate(&v).is_ok());
     }
 }

@@ -808,17 +808,28 @@ pub async fn vault_export(app: AppHandle) -> Result<bool, String> {
 /// key is cleared too, since it wrapped the *old* file's key and can't unlock
 /// the replacement.
 ///
-/// The whole bundle is parsed before anything is written, so a malformed file
-/// is rejected without having touched a thing, and each of the three writes is
+/// The whole bundle is parsed *and* its vault half validated before anything
+/// is written or torn down, so a file that isn't a usable vault is rejected
+/// with the current unlock still intact. Each of the three writes is
 /// individually atomic. What's *not* covered is atomicity across all three: a
 /// crash between them leaves the new vault beside the old sessions. Closing
 /// that would mean staging all three and renaming them together, which isn't
 /// something a filesystem offers — and the recovery is to re-run the import,
 /// since the bundle is still sitting there.
 ///
+/// Note what is *not* checked, because it can't be: `sessions` is trusted
+/// content. A planted bundle can name any `key_path` it likes against any
+/// host, and connecting to that host would hand it a signature from that key.
+/// Nothing here can distinguish that from a legitimate profile — the import
+/// UI's job is to make clear that the session list is being replaced, so the
+/// user recognises entries they did not create. A signature over the bundle
+/// wouldn't help either: it's a backup that must open on a new machine with
+/// nothing but the master password, so there is no key to have signed it with.
+///
 /// Returns `false` if the user dismissed the file dialog. Nothing is torn
-/// down before a file is chosen — an abandoned import must not have re-locked
-/// the vault the user was already using.
+/// down before a file is chosen *and* found to be good — an abandoned or
+/// rejected import must not have re-locked the vault the user was already
+/// using.
 #[tauri::command]
 pub async fn vault_import(
     app: AppHandle,
@@ -828,14 +839,26 @@ pub async fn vault_import(
     let Some(src_path) = pick_bundle_path(&app, false).await else {
         return Ok(false);
     };
-    *state.vault.lock().await = None;
-    forget_os_unlock_kek()?;
     let contents = std::fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
     let bundle: ExportBundle =
         serde_json::from_str(&contents).map_err(|_| "not a valid vault export file".to_string())?;
     if bundle.format != EXPORT_FORMAT {
         return Err(format!("unsupported export format: {}", bundle.format));
     }
+    // Before anything is torn down. The bundle's `vault` is a bare
+    // `serde_json::Value` that has only been checked to be *some* JSON, and
+    // installing one that is not a vault — or is one with no master-password
+    // wrapper — would leave the user locked out of a store they can no longer
+    // open, having already lost the session this import re-locked. Same
+    // principle as waiting for a file to be chosen: nothing is given up until
+    // the replacement is known good.
+    wr_vault::validate(&bundle.vault).map_err(|e| format!("not a valid vault file: {e}"))?;
+
+    // Only now does the current unlock go: the in-memory vault belonged to the
+    // old file and its key no longer applies, and any stored OS-unlock key
+    // wrapped the *old* file's DEK.
+    *state.vault.lock().await = None;
+    forget_os_unlock_kek()?;
 
     // The vault is the one file here with no other copy — a truncated write
     // loses every stored credential — so it goes through the same atomic
