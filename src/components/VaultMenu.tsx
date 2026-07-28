@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Lock, Unlock, Download, Upload, Fingerprint, Trash2 } from 'lucide-react'
+import { Lock, Unlock, Upload, Fingerprint, Trash2 } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
+import { importVaultBundle } from '../lib/vaultTransfer'
 
 interface Props {
   status: VaultStatus
@@ -158,41 +159,8 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   // distinct extension. The file dialog itself now runs Rust-side (the
   // backend won't accept a path from this process), so there's no `save()`
   // or `open()` call here; both helpers resolve `false` on cancel.
-  async function doExport() {
-    // Stated before the dialog, not after: only the credentials are
-    // encrypted in the bundle. Hostnames, usernames, ports, key paths and
-    // jump topology travel as readable JSON, and "vault export" doesn't
-    // suggest that on its own.
-    const ok = await confirm({
-      title: 'Export vault and sessions',
-      body: "The export protects your saved credentials with the vault's master password. Session details — hostnames, usernames, ports, key file paths — are stored in the file as plain text. Keep it somewhere you would keep that list.",
-      confirmLabel: 'Export',
-    })
-    if (!ok) return
-    try {
-      if (!(await vault.exportVault())) return
-      toast.success('Vault, saved sessions, and workspaces exported')
-    } catch (err) {
-      setError(String(err))
-    }
-  }
-
   async function doImport() {
-    const ok = await confirm({
-      title: 'Replace vault and sessions?',
-      body: "Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file's master password to unlock it.",
-      confirmLabel: 'Import and replace',
-    })
-    if (!ok) return
-    try {
-      if (!(await vault.importVault())) return
-      onStatusChange()
-      toast.info(
-        'Vault, saved sessions, and workspaces imported — unlock the vault with its master password',
-      )
-    } catch (err) {
-      setError(String(err))
-    }
+    if (await importVaultBundle(confirm)) onStatusChange()
   }
 
   const Icon = status === 'unlocked' ? Unlock : Lock
@@ -361,12 +329,12 @@ export function VaultMenu({ status, onStatusChange }: Props) {
               <button onClick={doLock} className={primaryButton}>
                 Lock now
               </button>
-              <button onClick={doExport} className={secondaryButton}>
-                <Download size={13} /> Export vault & sessions...
-              </button>
-              <button onClick={doImport} className={secondaryButton}>
-                <Upload size={13} /> Import vault & sessions...
-              </button>
+              {/* Export and import live in Settings -> Backup & import now.
+                  This menu is about lock state; a padlock icon is not where
+                  anyone looks for "how do I back this up". The locked and
+                  uninitialized states below keep an import, because that is a
+                  recovery path for someone who cannot get in at all, and
+                  sending them to Settings from a dead end would be hostile. */}
               <button
                 onClick={doDelete}
                 className={`${secondaryButton} text-red-300/90 hover:text-red-300`}

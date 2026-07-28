@@ -9,6 +9,8 @@ import {
   Plug,
   Bell,
   ScrollText,
+  Upload,
+  Download,
   X,
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
@@ -17,10 +19,24 @@ import { PRESET_THEMES } from '../lib/theme'
 import { revealLogs } from '../lib/logging'
 import { toast } from '../lib/toast'
 import { SHELL_SNIPPETS } from '../lib/shellSnippets'
+import { puttySessionCount } from '../lib/profiles'
+import { runPuttyImport } from '../lib/puttyBanner'
+import { exportVaultBundle, importVaultBundle } from '../lib/vaultTransfer'
+import { useConfirm } from './confirmContext'
+import type { VaultStatus } from '../lib/vault'
 
 interface Props {
   settings: TerminalSettings
   onChange: (settings: TerminalSettings) => void
+  /** Sessions were added by an import, so the owner should re-read the saved
+   * list — this dialog can trigger one but doesn't own the list. */
+  onSessionsImported?: () => void
+  /** Gates the bundle actions: exporting needs the vault open, since it has
+   * to read the credentials it is about to re-encrypt. */
+  vaultStatus?: VaultStatus
+  /** A bundle import replaces the vault wholesale, so the owner has to
+   * re-read its status — it will be locked afterwards. */
+  onVaultChanged?: () => void
 }
 
 const SECTIONS = [
@@ -30,6 +46,7 @@ const SECTIONS = [
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'shell', label: 'Shell integration', icon: ClipboardCopy },
   { id: 'logging', label: 'Logging', icon: ScrollText },
+  { id: 'import', label: 'Backup & import', icon: Upload },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -97,9 +114,44 @@ function Toggle({
  * Owns its own trigger, like the other toolbar menus (VaultMenu,
  * WorkspaceMenu) — the toolbar stays a row of self-contained buttons rather
  * than App having to hold open-state for one of them. */
-export function SettingsDialog({ settings, onChange }: Props) {
+export function SettingsDialog({
+  settings,
+  onChange,
+  onSessionsImported,
+  vaultStatus,
+  onVaultChanged,
+}: Props) {
+  const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [section, setSection] = useState<SectionId>('terminal')
+  // null while unknown, so the button can say "checking" rather than briefly
+  // claiming there is nothing to import.
+  const [puttyCount, setPuttyCount] = useState<number | null>(null)
+  const [importing, setImporting] = useState(false)
+
+  // Re-checked whenever the section is opened rather than once at mount:
+  // PuTTY may have been installed, or sessions added, since the app started,
+  // and this is the screen someone opens *because* they want to import.
+  useEffect(() => {
+    if (!open || section !== 'import') return
+    setPuttyCount(null)
+    puttySessionCount()
+      .then(setPuttyCount)
+      .catch(() => setPuttyCount(0))
+  }, [open, section])
+
+  async function importPutty() {
+    setImporting(true)
+    const added = await runPuttyImport()
+    setImporting(false)
+    // The count deliberately isn't re-read here. It reports what PuTTY's
+    // registry holds, not what is left to import, so it doesn't move when we
+    // copy sessions out of it — re-reading would just show the same number
+    // and imply nothing happened. Running it again is harmless anyway: the
+    // import is additive and dedupes on label and host, so a second run says
+    // "no new sessions to import" and changes nothing.
+    if (added) onSessionsImported?.()
+  }
 
   useEffect(() => {
     if (!open) return
@@ -454,6 +506,81 @@ export function SettingsDialog({ settings, onChange }: Props) {
                           Open logs folder
                           <span className="mt-0.5 block text-white/40">
                             Where session transcripts are saved.
+                          </span>
+                        </span>
+                      </button>
+                    </>
+                  )}
+                  {section === 'import' && (
+                    <>
+                      <div className="px-2 py-1.5">
+                        <p className="text-white/40">
+                          Your saved credentials, sessions and workspaces move as one bundle —
+                          each is meaningless without the others, so a backup carries all three.
+                          Only the credentials are encrypted.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={vaultStatus !== 'unlocked'}
+                        onClick={() => void exportVaultBundle(confirm)}
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                      >
+                        <Download size={14} className="mt-0.5 shrink-0 text-white/50" />
+                        <span className="text-white/85">
+                          Export a backup…
+                          <span className="mt-0.5 block text-white/40">
+                            {vaultStatus === 'unlocked'
+                              ? 'Vault, saved sessions and workspaces, in one file.'
+                              : // Not a limitation worth hiding: an export has to
+                                // read the credentials it re-encrypts, so it
+                                // genuinely cannot run against a locked vault.
+                                'Unlock the vault first — an export has to read the credentials it protects.'}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (await importVaultBundle(confirm)) {
+                            onVaultChanged?.()
+                            onSessionsImported?.()
+                          }
+                        }}
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5"
+                      >
+                        <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
+                        <span className="text-white/85">
+                          Restore from a backup…
+                          <span className="mt-0.5 block text-white/40">
+                            Replaces everything currently saved. You will need the backup&apos;s
+                            own master password.
+                          </span>
+                        </span>
+                      </button>
+
+                      <div className="mt-2 border-t border-white/10 px-2 pb-1.5 pt-3">
+                        <p className="text-white/40">
+                          Migrating from another client. Additive — a session already saved here
+                          with the same name and host is left exactly as it is, so running one
+                          twice is harmless.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={importing || puttyCount === 0}
+                        onClick={importPutty}
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                      >
+                        <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
+                        <span className="text-white/85">
+                          {importing ? 'Importing…' : 'Import from PuTTY'}
+                          <span className="mt-0.5 block text-white/40">
+                            {puttyCount === null
+                              ? 'Checking for saved PuTTY sessions…'
+                              : puttyCount === 0
+                                ? 'No saved PuTTY sessions found on this machine.'
+                                : `${puttyCount} saved ${puttyCount === 1 ? 'session' : 'sessions'} found. Passwords aren't imported — PuTTY doesn't store them.`}
                           </span>
                         </span>
                       </button>

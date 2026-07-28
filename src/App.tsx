@@ -1177,7 +1177,13 @@ function App() {
             onChanged={() => setWorkspacesVersion((v) => v + 1)}
           />
           <VaultMenu status={vaultStatus} onStatusChange={refreshVaultStatus} />
-          <SettingsDialog settings={terminalSettings} onChange={updateSettings} />
+          <SettingsDialog
+            settings={terminalSettings}
+            onChange={updateSettings}
+            onSessionsImported={() => setProfilesVersion((v) => v + 1)}
+            vaultStatus={vaultStatus}
+            onVaultChanged={refreshVaultStatus}
+          />
         </div>
         <WindowControls maximized={maximized} />
       </div>

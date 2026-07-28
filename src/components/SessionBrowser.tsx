@@ -14,8 +14,8 @@ import {
   Fingerprint,
 } from 'lucide-react'
 import type { SessionProfile } from '../lib/profiles'
-import { profileSubtitle, puttySessionCount, importPuttySessions } from '../lib/profiles'
-import { toast } from '../lib/toast'
+import { profileSubtitle, puttySessionCount } from '../lib/profiles'
+import { isPuttyOfferSettled, settlePuttyOffer, runPuttyImport } from '../lib/puttyBanner'
 import type { Workspace } from '../lib/workspaces'
 
 const inputClass =
@@ -115,6 +115,13 @@ export function SessionBrowser({
   const [importing, setImporting] = useState(false)
 
   useEffect(() => {
+    // Asked at most once ever. Skipping the count entirely when the offer has
+    // already been settled also avoids a registry read on every pane opened
+    // for the rest of the app's life.
+    if (isPuttyOfferSettled()) {
+      setPuttyCount(0)
+      return
+    }
     // Best-effort: a failed check just means the offer isn't made. This runs
     // on a screen the user is looking at, so it must not raise anything.
     puttySessionCount()
@@ -122,31 +129,19 @@ export function SessionBrowser({
       .catch(() => setPuttyCount(0))
   }, [])
 
-  async function runPuttyImport() {
+  function dismissPuttyOffer() {
+    settlePuttyOffer()
+    setPuttyCount(0)
+  }
+
+  async function importFromPutty() {
     setImporting(true)
-    try {
-      const summary = await importPuttySessions()
-      // Dismissed regardless of the outcome: the offer has been taken, and a
-      // banner that stays put after the user acts on it reads as a failure.
-      setPuttyCount(0)
-      if (summary.imported === 0) {
-        toast.info('No new sessions to import — they are already saved here')
-      } else {
-        toast.success(
-          `Imported ${summary.imported} ${summary.imported === 1 ? 'session' : 'sessions'} from PuTTY`,
-        )
-      }
-      // Skipped duplicates are worth saying out loud rather than leaving the
-      // user to wonder why 40 sessions became 12.
-      if (summary.skippedDuplicates > 0) {
-        toast.info(`${summary.skippedDuplicates} were already saved and were left as they are`)
-      }
-      onSessionsImported?.()
-    } catch (err) {
-      toast.error(`Could not import PuTTY sessions: ${String(err)}`)
-    } finally {
-      setImporting(false)
-    }
+    // Hidden regardless of the outcome — the offer has been acted on, and a
+    // banner that stays put after the user acts on it reads as a failure.
+    const added = await runPuttyImport()
+    setPuttyCount(0)
+    setImporting(false)
+    if (added) onSessionsImported?.()
   }
 
   useEffect(() => {
@@ -412,26 +407,45 @@ export function SessionBrowser({
           </div>
         )}
         <div className="flex min-w-0 flex-col">
-          {/* Offered only when there is genuinely something to import — a
-              dead "Import from PuTTY" button on a machine that never had it
-              is noise on the screen everyone sees most. Sits above the form
-              rather than in the sidebar because the sidebar doesn't render
-              at all with no saved sessions, which is exactly the state a
+          {/* A one-time offer, not a standing notice. This is the screen you
+              see most, so an offer that reappears after you have already
+              decided against it is nagging — both buttons settle it for good,
+              and Settings → Import is where it lives from then on. Shown only
+              when there is genuinely something to import, and above the form
+              rather than in the sidebar because the sidebar doesn't render at
+              all with no saved sessions, which is exactly the state a
               first-run migrating user is in. */}
           {puttyCount !== null && puttyCount > 0 && (
-            <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-sky-400/[0.07] px-4 py-2 text-xs">
-              <span className="min-w-0 text-white/60">
+            // `w-0 min-w-full` is load-bearing: this is a flex sibling of the
+            // connect form, so a wider intrinsic size here would widen the
+            // whole column and push the form out with it. Zero intrinsic
+            // width means the column is sized by the form alone, and the
+            // min-width makes this render across whatever that turns out to
+            // be. Without it, the banner's text decides how wide the dialog
+            // is, which is nobody's intent.
+            <div className="w-0 min-w-full border-b border-white/10 bg-sky-400/[0.07] px-4 py-2.5 text-xs">
+              <p className="text-white/60">
                 Found <span className="text-white/90">{puttyCount}</span> saved PuTTY{' '}
                 {puttyCount === 1 ? 'session' : 'sessions'} on this machine.
-              </span>
-              <button
-                type="button"
-                disabled={importing}
-                onClick={runPuttyImport}
-                className="shrink-0 rounded bg-sky-500/90 px-2.5 py-1 font-medium text-white transition-colors duration-100 hover:bg-sky-500 disabled:opacity-50"
-              >
-                {importing ? 'Importing...' : 'Import them'}
-              </button>
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={importing}
+                  onClick={importFromPutty}
+                  className="rounded bg-sky-500/90 px-2.5 py-1 font-medium text-white transition-colors duration-100 hover:bg-sky-500 disabled:opacity-50"
+                >
+                  {importing ? 'Importing...' : 'Import them'}
+                </button>
+                <button
+                  type="button"
+                  onClick={dismissPuttyOffer}
+                  className="rounded px-2 py-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+                >
+                  Not now
+                </button>
+                <span className="ml-auto text-white/30">Settings → Import</span>
+              </div>
             </div>
           )}
           {children}
