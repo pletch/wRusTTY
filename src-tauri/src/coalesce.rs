@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -239,7 +239,7 @@ fn inflight_window() -> u64 {
 pub fn set_inflight_window(bytes: u64) -> u64 {
     let clamped = bytes.clamp(MIN_INFLIGHT_BYTES, MAX_INFLIGHT_BYTES);
     INFLIGHT_WINDOW.store(clamped, Ordering::Relaxed);
-    for flow in flow_registry().lock().unwrap().values() {
+    for flow in lock_registry().values() {
         flow.credit.notify_waiters();
     }
     clamped
@@ -315,14 +315,27 @@ impl FlowControl {
 
 static FLOW: OnceLock<Mutex<HashMap<String, Arc<FlowControl>>>> = OnceLock::new();
 
+/// Locks the registry, recovering the map rather than propagating a poisoning.
+///
+/// This is a process-wide registry on the path every session's output takes,
+/// so a panic anywhere that happened to be holding this lock would otherwise
+/// poison it permanently — turning one fault into a dead output path for every
+/// session, including ones opened afterwards. Nothing guarded here has an
+/// invariant a panic could leave half-applied: it is a map of session id to a
+/// counter, and the worst a recovered map holds is a stale entry that the next
+/// `remove` clears. `logging.rs` recovers its own file map the same way.
+fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<String, Arc<FlowControl>>> {
+    flow_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 fn flow_registry() -> &'static Mutex<HashMap<String, Arc<FlowControl>>> {
     FLOW.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn flow_for(session_id: &str) -> Arc<FlowControl> {
-    flow_registry()
-        .lock()
-        .unwrap()
+    lock_registry()
         .entry(session_id.to_string())
         .or_default()
         .clone()
@@ -336,7 +349,7 @@ pub fn ack_delivery(session_id: String, bytes: u64) {
     // Looked up rather than created: an ack for a session that has already gone
     // is not worth resurrecting an entry for, and doing so would leak one per
     // stale ack.
-    let flow = flow_registry().lock().unwrap().get(&session_id).cloned();
+    let flow = lock_registry().get(&session_id).cloned();
     if let Some(flow) = flow {
         flow.ack(bytes);
     }
@@ -415,7 +428,7 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     // The session is over; nothing will ever ack these bytes. Left behind, the
     // entry would hold a counter for a session that no longer exists and leak
     // one per connection for the life of the process.
-    flow_registry().lock().unwrap().remove(&session_id);
+    lock_registry().remove(&session_id);
 }
 
 /// Returns `false` if the channel is gone (send failed) — callers stop
