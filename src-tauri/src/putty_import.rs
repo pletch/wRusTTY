@@ -119,6 +119,7 @@ pub fn decode_name(raw: &str) -> String {
 /// - **`raw`, `rlogin`, `supdup`.** Not transports this app speaks. Skipping is
 ///   the honest outcome — a raw session silently imported as telnet would look
 ///   like it worked and then behave subtly differently.
+///
 /// Serial sessions *are* imported — see [`to_serial_profile`] — since PuTTY's
 /// `SerialLine`/`SerialSpeed`/... values map nearly one-for-one onto
 /// `SerialProfile`.

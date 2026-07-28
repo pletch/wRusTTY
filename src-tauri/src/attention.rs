@@ -47,7 +47,7 @@ pub fn flash_taskbar(window: &tauri::WebviewWindow) {
     let Ok(hwnd) = window.hwnd() else { return };
     let info = FLASHWINFO {
         cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
-        hwnd: HWND(hwnd.0 as *mut std::ffi::c_void),
+        hwnd: HWND(hwnd.0),
         dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
         uCount: u32::MAX,
         dwTimeout: 0,
