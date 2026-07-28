@@ -23,8 +23,16 @@ use crate::socks;
 /// (which consults it when the server opens a `forwarded-tcpip` channel).
 pub type RemoteForwardRegistry = Arc<Mutex<HashMap<(String, u16), (String, u16)>>>;
 
+/// `rename_all_fields` is load-bearing, not decoration. On an enum,
+/// `rename_all` renames the *variants* — it says nothing about their fields —
+/// so without this the variants arrived as `local`/`remote`/`dynamic` as
+/// intended while the fields were still expected in snake_case. The frontend
+/// sends `bindHost`, so every `ssh_add_forward` was rejected at the IPC
+/// boundary with "missing field `bind_host`" before any forwarding code ran:
+/// port forwarding could not be used at all. `SshEvent` in the app's ssh.rs
+/// already spells both out; this type was simply missing the second.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ForwardSpec {
     /// Listen locally on `bind_host:bind_port`; each connection is tunneled
     /// to `target_host:target_port` as seen from the server.
@@ -360,6 +368,51 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the IPC wire contract against `src/lib/forward.ts`. These are the
+    /// exact payloads the frontend sends; the shape being wrong here is not a
+    /// compile error on either side, so nothing but a test catches it — and
+    /// nothing did, which is why forwarding was unusable.
+    #[test]
+    fn deserializes_the_payloads_the_frontend_actually_sends() {
+        let local: ForwardSpec = serde_json::from_str(
+            r#"{"type":"local","bindHost":"127.0.0.1","bindPort":8080,
+                "targetHost":"example.internal","targetPort":80}"#,
+        )
+        .expect("local forward should deserialize");
+        assert!(matches!(
+            local,
+            ForwardSpec::Local { ref bind_host, bind_port: 8080, ref target_host, target_port: 80 }
+                if bind_host == "127.0.0.1" && target_host == "example.internal"
+        ));
+
+        let remote: ForwardSpec = serde_json::from_str(
+            r#"{"type":"remote","bindHost":"0.0.0.0","bindPort":9090,
+                "targetHost":"localhost","targetPort":22}"#,
+        )
+        .expect("remote forward should deserialize");
+        assert!(matches!(remote, ForwardSpec::Remote { bind_port: 9090, .. }));
+
+        let dynamic: ForwardSpec = serde_json::from_str(
+            r#"{"type":"dynamic","bindHost":"127.0.0.1","bindPort":1080}"#,
+        )
+        .expect("dynamic forward should deserialize");
+        assert!(matches!(dynamic, ForwardSpec::Dynamic { bind_port: 1080, .. }));
+    }
+
+    /// The other half of the contract: what we emit is what the frontend can
+    /// read back, so the rename applies in both directions.
+    #[test]
+    fn serializes_back_to_camel_case_fields() {
+        let json = serde_json::to_string(&ForwardSpec::Dynamic {
+            bind_host: "127.0.0.1".to_string(),
+            bind_port: 1080,
+        })
+        .unwrap();
+        assert!(json.contains("\"bindHost\""), "got {json}");
+        assert!(json.contains("\"bindPort\""), "got {json}");
+        assert!(json.contains("\"type\":\"dynamic\""), "got {json}");
+    }
 
     #[test]
     fn loopback_ips_and_localhost_are_recognized() {
