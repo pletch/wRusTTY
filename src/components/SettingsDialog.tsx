@@ -15,6 +15,8 @@ import {
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings, CursorStyleSetting } from '../lib/settings'
+import { SCROLLBACK_FOOTPRINT_TIERS_MB } from '../lib/settings'
+import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { PRESET_THEMES } from '../lib/theme'
 import { revealLogs } from '../lib/logging'
 import { toast } from '../lib/toast'
@@ -29,6 +31,10 @@ import type { VaultStatus } from '../lib/vault'
 interface Props {
   settings: TerminalSettings
   onChange: (settings: TerminalSettings) => void
+  /** Width to quote the scrollback estimates against — the active pane's, so
+   * the depth shown is the depth *this* user will get. Omitted (or absent)
+   * before anything has connected, which falls back to 80 columns. */
+  referenceCols?: number
   /** Sessions were added by an import, so the owner should re-read the saved
    * list — this dialog can trigger one but doesn't own the list. */
   onSessionsImported?: () => void
@@ -70,7 +76,17 @@ const FONT_STACKS = [
   { label: 'Lucida Console', value: '"Lucida Console", ui-monospace, monospace' },
 ]
 
-const SCROLLBACK_CHOICES = [1000, 5000, 10000, 50000, 100000]
+/** Width the scrollback estimates are quoted against when no pane has fitted
+ *  yet — Settings can be opened before any connection exists. */
+const FALLBACK_COLS = 80
+
+/** Rows, rounded to something readable at a glance. The estimate is ±7% at
+ *  worst, so digits past the first two would be false precision. */
+function formatRows(rows: number): string {
+  if (rows >= 10000) return `${Math.round(rows / 1000)}k`
+  if (rows >= 1000) return `${(rows / 1000).toFixed(1)}k`
+  return String(rows)
+}
 
 /** One boolean setting: the control, what it's called, and what it actually
  * does. The explanation is part of the setting rather than a tooltip — half
@@ -118,10 +134,12 @@ function Toggle({
 export function SettingsDialog({
   settings,
   onChange,
+  referenceCols,
   onSessionsImported,
   vaultStatus,
   onVaultChanged,
 }: Props) {
+  const cols = referenceCols && referenceCols > 0 ? referenceCols : FALLBACK_COLS
   const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [section, setSection] = useState<SectionId>('terminal')
@@ -257,17 +275,25 @@ export function SettingsDialog({
                           </span>
                         </label>
                         <label className="flex items-center justify-between gap-3 text-white/85">
-                          <span>Scrollback</span>
+                          <span>Scrollback memory</span>
                           <select
                             className={selectClass}
-                            value={settings.scrollback}
+                            value={settings.scrollbackBudgetMB}
                             onChange={(e) =>
-                              onChange({ ...settings, scrollback: Number(e.target.value) })
+                              onChange({ ...settings, scrollbackBudgetMB: Number(e.target.value) })
                             }
                           >
-                            {SCROLLBACK_CHOICES.map((n) => (
-                              <option key={n} value={n}>
-                                {n.toLocaleString()} lines
+                            {/* The rows are the point of this control — memory is
+                                what's enforced, but nobody chooses a terminal by
+                                megabytes. Showing the depth each tier buys at the
+                                current pane's width is what makes the unit
+                                usable, so it belongs in the option itself rather
+                                than in the note below. */}
+                            {SCROLLBACK_FOOTPRINT_TIERS_MB.map((mb) => (
+                              <option key={mb} value={mb}>
+                                {`${mb} MB — ~${formatRows(
+                                  estimateScrollbackRows(scrollbackBudgetBytesFor(mb), cols),
+                                )} rows`}
                               </option>
                             ))}
                           </select>
@@ -301,10 +327,13 @@ export function SettingsDialog({
                           />
                         </label>
                         <p className="leading-relaxed text-white/30">
-                          Font changes apply to open sessions immediately. Scrollback counts
-                          wrapped rows rather than logical lines, and costs memory per open
-                          pane. The cursor setting is a starting point — a program that picks
-                          its own cursor, as vim and many TUIs do, overrides it.
+                          Font changes apply to open sessions immediately. Scrollback is set
+                          as memory per pane because memory is what's actually reserved; the
+                          row estimates are for a {cols}-column pane and counted in wrapped
+                          rows, so a wider pane or long lines reach the same limit sooner. It
+                          applies to panes opened afterwards. The cursor setting is a starting
+                          point — a program that picks its own cursor, as vim and many TUIs
+                          do, overrides it.
                         </p>
                       </div>
                       <Toggle

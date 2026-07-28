@@ -60,7 +60,7 @@ function boot() {
   const cfg = ex.ghostty_wasm_alloc_u8_array(80)
   new Uint8Array(mem.buffer).fill(0, cfg, cfg + 80)
   const dv = new DataView(mem.buffer)
-  dv.setUint32(cfg, 1000, true) // scrollback: a LINE COUNT, not bytes
+  dv.setUint32(cfg, 4 * 1024 * 1024, true) // scrollback: a BYTE BUDGET, not lines (0 = unlimited)
   dv.setUint32(cfg + 4, 0xcccccc, true) // fg
   dv.setUint32(cfg + 8, 0x000000, true) // bg
   const term = ex.ghostty_terminal_new_with_config(COLS, ROWS, cfg)

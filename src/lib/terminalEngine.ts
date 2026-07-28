@@ -71,7 +71,13 @@ export interface TerminalEngine {
 
   setTheme(themeName: string, opacity: number): void
   setFont(fontFamily: string, fontSize: number): void
-  setScrollback(scrollback: number): void
+  /** Per-pane scrollback memory tier in MB (8/16/32/64), as chosen in
+   *  Settings. Depth in rows falls out of this and the pane's width rather than
+   *  being set directly — see `scrollbackBudgetBytesFor`. */
+  setScrollbackBudget(footprintMB: number): void
+  /** Bytes of scrollback this engine was actually built with. Fixed at
+   *  construction, so it can differ from the current setting. */
+  readonly scrollbackBudgetBytes: number
   /** Default cursor shape and blink, until the remote application overrides it
    *  with its own DECSCUSR. */
   setCursorStyle(style: CursorStyleSetting, blink: boolean): void

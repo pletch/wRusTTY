@@ -77,11 +77,20 @@ export interface TerminalSettings {
   fontFamily: string
   /** Terminal font size in px. */
   fontSize: number
-  /** Rows of scrollback the engine retains per pane. Counted in *wrapped* rows,
-   * not logical lines, so verbose output with long lines fills it faster
-   * than the number suggests. Memory scales with this times the number of
-   * open panes, which is why it isn't simply set very high. */
-  scrollback: number
+  /**
+   * Memory each pane may spend on scrollback, in MB — one of
+   * `SCROLLBACK_FOOTPRINT_TIERS_MB`, and the pane's whole WASM footprint
+   * rather than the scrollback budget alone.
+   *
+   * Memory rather than rows because memory is the quantity that is actually
+   * enforced. The core's limit is a byte budget, so the *depth* a pane reaches
+   * depends on how wide it is: the same budget that holds ~24,000 rows at 80
+   * columns holds ~6,500 at 400. A row setting is therefore a promise whose
+   * truth depends on how the user later drags the pane — offered and broken
+   * twice here before this. Rows are shown instead, derived at the current
+   * width, in Settings and the status bar.
+   */
+  scrollbackBudgetMB: number
   /**
    * Shape the cursor takes until the remote application says otherwise.
    *
@@ -140,7 +149,10 @@ const defaults: TerminalSettings = {
   clipboardWriteFromRemote: true,
   fontFamily: 'ui-monospace, Consolas, monospace',
   fontSize: 14,
-  scrollback: 10000,
+  // 16 MB, not the smallest tier: it estimates ~10,100 rows at 80 columns,
+  // which is what the previous default (10,000 rows) meant to deliver. A new
+  // install should not quietly get less history than the last version aimed at.
+  scrollbackBudgetMB: 16,
   cursorStyle: 'block',
   cursorBlink: true,
   confirmCloseWithConnection: true,
@@ -150,11 +162,71 @@ const defaults: TerminalSettings = {
   vibrancyMode: 'off',
 }
 
+/**
+ * Per-pane scrollback memory tiers offered in Settings, ascending, in MB of
+ * total pane footprint.
+ *
+ * Lives here rather than beside the byte budgets in `GhosttyEngine` only to
+ * keep the dependency one-way — the engine already imports this module, so the
+ * reverse would be a cycle. `scrollbackBudgetBytesFor` there maps each of these
+ * to a measured budget and must be kept in step; `scrollbackTiers.test.ts`
+ * asserts the two agree rather than trusting that they do.
+ */
+export const SCROLLBACK_FOOTPRINT_TIERS_MB = [8, 16, 32, 64]
+
+/**
+ * Approximate rows each tier holds at 80 columns, used only to translate a
+ * stored row-count setting into a tier. Measured, not derived — see
+ * `SCROLLBACK_BUDGET_BY_FOOTPRINT_MB` in GhosttyEngine.
+ */
+const TIER_ROWS_AT_80_COLS: ReadonlyArray<readonly [tierMB: number, rows: number]> = [
+  [8, 3788],
+  [16, 10100],
+  [32, 24617],
+  [64, 49230],
+]
+
+/**
+ * Migrates the pre-tier `scrollback` row count onto a memory tier.
+ *
+ * The field had to be *renamed* rather than reinterpreted. `loadSettings` does
+ * `{ ...defaults, ...parsed }`, so a stored `scrollback: 10000` left under the
+ * same name would have been read as 10,000 MB — clamped harmlessly, but every
+ * existing user would have silently landed on the largest tier and roughly ten
+ * times the memory they had agreed to.
+ *
+ * Rounds *up* to the first tier that covers what the user had, so nobody loses
+ * history they were already relying on; a value past the largest tier (the old
+ * menu went to 100,000) lands there rather than being refused.
+ */
+export function scrollbackTierForRows(rows: number): number {
+  if (!Number.isFinite(rows)) return defaults.scrollbackBudgetMB
+  for (const [tierMB, tierRows] of TIER_ROWS_AT_80_COLS) {
+    if (rows <= tierRows) return tierMB
+  }
+  return TIER_ROWS_AT_80_COLS[TIER_ROWS_AT_80_COLS.length - 1][0]
+}
+
 export function loadSettings(): TerminalSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
     if (!raw) return defaults
-    return { ...defaults, ...JSON.parse(raw) }
+    const parsed = JSON.parse(raw)
+    const merged = { ...defaults, ...parsed }
+    // A settings blob written before tiers existed carries `scrollback` (rows)
+    // and no `scrollbackBudgetMB`. Convert once; the stale key then rides along
+    // harmlessly until the next save drops it.
+    if (parsed.scrollbackBudgetMB === undefined && parsed.scrollback !== undefined) {
+      merged.scrollbackBudgetMB = scrollbackTierForRows(Number(parsed.scrollback))
+    }
+    // Anything that isn't a tier — corrupt, hand-edited, or retired by a later
+    // version — falls back to the default rather than reaching the engine,
+    // which would silently substitute its own smallest tier instead.
+    if (!SCROLLBACK_FOOTPRINT_TIERS_MB.includes(merged.scrollbackBudgetMB)) {
+      merged.scrollbackBudgetMB = defaults.scrollbackBudgetMB
+    }
+    delete merged.scrollback
+    return merged
   } catch {
     return defaults
   }

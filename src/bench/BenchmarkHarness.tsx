@@ -138,7 +138,7 @@ export function BenchmarkHarness() {
     for (const e of [xterm, ghostty]) {
       e.setTheme('', 1)
       e.setFont('Consolas, monospace', 14)
-      e.setScrollback(5000)
+      e.setScrollbackBudget(16)
     }
 
     // The app registers a bell handler, which routes every write through

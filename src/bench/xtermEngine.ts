@@ -13,6 +13,7 @@ import type { CursorStyleSetting } from '../lib/settings'
  * to keep.
  */
 import { Terminal as XTerm } from '@xterm/xterm'
+import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
@@ -205,8 +206,19 @@ export class XtermEngine implements TerminalEngine {
     this.term.options.cursorBlink = blink
   }
 
-  setScrollback(scrollback: number) {
-    this.term.options.scrollback = scrollback
+  // xterm takes a line count, so the tier is converted at this boundary rather
+  // than the app carrying two units around. Estimated at the current width,
+  // which is the best available answer: unlike Ghostty, xterm's limit is a
+  // plain row cap with no width term, so it cannot express "this much memory".
+  setScrollbackBudget(footprintMB: number) {
+    this._budgetBytes = scrollbackBudgetBytesFor(footprintMB)
+    this.term.options.scrollback = estimateScrollbackRows(this._budgetBytes, this.term.cols)
+  }
+
+  private _budgetBytes = scrollbackBudgetBytesFor(8)
+
+  get scrollbackBudgetBytes(): number {
+    return this._budgetBytes
   }
 
   rebuildWebglRenderer() {

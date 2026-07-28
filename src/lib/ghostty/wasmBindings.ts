@@ -153,11 +153,12 @@ const CONFIG_BYTES = 4 * 4 + 16 * 4
 
 export interface TerminalConfig {
   /**
-   * Lines of scrollback to retain — a **line count**, not a byte budget, and
-   * not free-form: the core multiplies it by its per-line page cost in 32-bit
-   * `usize`, and an out-of-range value overflows to "unlimited" rather than
-   * erroring. Always go through `scrollbackLinesFor` in GhosttyEngine, which
-   * documents the arithmetic and clamps to a range that cannot overflow.
+   * Scrollback to retain, as a **byte budget** — not a row count, despite the
+   * name. It reaches upstream Ghostty's `PageList` as `max_size`. A row-shaped
+   * value sits under the core's minimum page and silently retains ~two pages
+   * whatever the setting says; **0 means unlimited**. Always go through
+   * `scrollbackBudgetBytesFor` in GhosttyEngine, which documents the measurement and
+   * guarantees a positive integer inside u32.
    */
   scrollbackLimit: number
   /** 0xRRGGBB. Zero means "let the core pick". */

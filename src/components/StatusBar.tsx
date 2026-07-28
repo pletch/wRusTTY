@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ScrollText, Zap } from 'lucide-react'
 import * as serial from '../lib/serial'
 import { toast } from '../lib/toast'
+import { estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 
 /** Same status→color mapping as the tab dot (TabBar.statusDotColor), plus a
  * muted resting color for "no active connection" so the bar reads as a stable
@@ -19,6 +20,24 @@ function statusLabel(status: string | undefined): string {
   // toast (see App.tsx), so the bar just needs the short state word.
   if (status.startsWith('failed')) return 'Failed'
   return status.charAt(0).toUpperCase() + status.slice(1)
+}
+
+/** Rows at a glance. The estimate is ±7% at worst, so more than two
+ *  significant digits would be false precision — hence `~` wherever it's
+ *  rendered. */
+function formatRows(rows: number): string {
+  if (rows >= 10000) return `${Math.round(rows / 1000)}k`
+  if (rows >= 1000) return `${(rows / 1000).toFixed(1)}k`
+  return String(rows)
+}
+
+/** Spelled out in full on hover, because the bar itself can't afford to be.
+ *  `120×40` is ambiguous without naming the axes, and `~13k` means nothing at
+ *  all until you know it's scrollback and that it moves when you resize. */
+function sizeTitle(dimensions: { cols: number; rows: number }, depth: number | null): string {
+  const size = `Terminal size: ${dimensions.cols} columns x ${dimensions.rows} rows — what the remote end has been told`
+  if (depth === null) return size
+  return `${size}\nScrollback: roughly ${depth.toLocaleString()} rows at this width. A wider pane holds fewer; the limit is memory, set in Settings.`
 }
 
 function formatUptime(ms: number): string {
@@ -43,6 +62,20 @@ interface Props {
    * live uptime readout. */
   connectedAt: number | null
   logging: boolean
+  /** The active pane's grid in cells, or null before its engine has fitted.
+   *
+   * Worth a permanent slot rather than a transient overlay on resize (the
+   * usual idiom): on network gear you set `terminal width`/`terminal length`
+   * by hand to match the client, and you need the numbers at the moment you
+   * type them, not at the moment you resized. It is also the only place the
+   * width is visible, and width decides scrollback depth — see
+   * `scrollbackBudgetBytesFor`. */
+  dimensions: { cols: number; rows: number } | null
+  /** Bytes of scrollback the active pane's engine was built with, or null
+   * before it has reported. Paired with `dimensions` to estimate depth — both
+   * are needed, since the same budget is worth very different depths at
+   * different widths, which is the whole reason the setting is memory. */
+  scrollbackBudgetBytes: number | null
   /** 1-based position of the active pane among its tab's panes, and the total.
    * The pane readout is only shown when the tab is actually split. */
   paneIndex: number
@@ -61,6 +94,8 @@ export function StatusBar({
   status,
   connectedAt,
   logging,
+  dimensions,
+  scrollbackBudgetBytes,
   paneIndex,
   paneCount,
   tabCount,
@@ -116,6 +151,12 @@ export function StatusBar({
   }, [connectedAt])
 
   const uptime = connectedAt != null ? formatUptime(Date.now() - connectedAt) : null
+
+  // Needs both halves: a budget with no width has no depth to report yet.
+  const scrollbackDepth =
+    dimensions && scrollbackBudgetBytes != null
+      ? estimateScrollbackRows(scrollbackBudgetBytes, dimensions.cols)
+      : null
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-2 border-t border-white/10 bg-black/20 px-3 text-xs text-white/45">
@@ -178,6 +219,17 @@ export function StatusBar({
           <span className="flex items-center gap-1 text-red-400/80" title="Session logging on">
             <ScrollText size={11} strokeWidth={2} />
             REC
+          </span>
+        )}
+        {dimensions && (
+          <span title={sizeTitle(dimensions, scrollbackDepth)} className="tabular-nums">
+            {`${dimensions.cols}×${dimensions.rows}`}
+            {/* One item, not two. The depth is a consequence of the width
+                sitting next to it — reading them as a pair is the point, and
+                two separate figures about the same pane read as clutter. */}
+            {scrollbackDepth !== null && (
+              <span className="text-white/30">{` · ~${formatRows(scrollbackDepth)}`}</span>
+            )}
           </span>
         )}
         {paneCount > 1 && <span title="Active pane in this tab">{`pane ${paneIndex}/${paneCount}`}</span>}

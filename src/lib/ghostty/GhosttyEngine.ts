@@ -41,51 +41,111 @@ import ghosttyWasmUrl from './vendor/ghostty-vt.wasm?url'
 const CURSOR_BLINK_MS = 530
 
 /**
- * `scrollbackLimit` in the core's config is a **line count**, and the value has
- * to stay small enough that the core's own lines→bytes conversion doesn't
- * overflow.
+ * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
+ * — the name reads like xterm's `scrollback` and it is not. It reaches upstream
+ * Ghostty's `PageList` as `max_size`, which is in bytes, so a row-shaped value
+ * lands far below the core's ~530 KB minimum page and every setting collapses
+ * to the same two-page floor. That is exactly how a row count behaved when it
+ * was tried: measured against this build, 1000 / 5000 / 10000 / 50000 / 100000
+ * all retained ~1100 rows at 80 columns, ~250 at 200, with the WASM heap pinned
+ * at its initial 6.6 MB because the core never had a reason to grow.
  *
- * This was previously computed as a *byte* budget, which is what an older
- * revision of the WASM API took. The current core multiplies the value by its
- * per-line page cost with `std.math.mul(usize, lines, bytes_per_line)` — and
- * `usize` is 32-bit on `wasm32`, so a byte-shaped value like 8,000,000 overflows
- * and lands on the `catch std.math.maxInt(usize)` fallback, which means
- * *unlimited*. The limit silently stopped existing: a 100 MB flood retained all
- * 1.15 M rows and grew the WASM heap to ~2 GB, until an allocation failed and
- * the pane wedged. Passing a line count keeps the multiply in range and the
- * budget enforced (verified: 100 MB drains with the heap flat at ~9 MB).
+ * The unit is settled by sweeping the raw field against this binary: retention
+ * tracks `value / (cols * 12.65)` across the range where the budget exceeds one
+ * page. 12.65 bytes per cell is that measurement, near-flat from 40 to 400
+ * columns. Note `vendor/README.md` used to assert the opposite and dismiss
+ * `ghostty-web`'s "it's bytes" docs (their PR #151); they were right.
  *
- * The ceiling is derived rather than picked, for the same reason the old byte
- * budget had one: the limit is committed for the life of the pane and every
- * pane is its own WASM instance, so an unguarded setting is a per-pane memory
- * multiplier across a window full of sessions. Measured against this build the
- * core spends ~12.4–12.65 bytes per cell per retained line, near-flat from 40 to
- * 400 columns; 13 is that rounded up, which biases the cap conservative (a
- * higher per-cell estimate yields *fewer* permitted lines). Lines are therefore
- * only as promised at the width the pane was opened at — widening it later
- * trades lines for columns out of the same ceiling, which is how Ghostty itself
- * behaves.
- *
- * The number asked for is an upper bound, not a promise. The core evicts whole
- * pages rather than single lines, so the retained count settles at or somewhat
- * below the request — measured here, 1000 lines at 80 columns holds ~680 and
- * 5000 holds ~4200. Its own `PageList.maxSize` calls the figure a heuristic and
- * declines to be asserted on, so this side does not try to correct for it: the
- * ceiling is what matters, and padding the request to hit a round number would
- * be guesswork against page geometry that varies with width.
+ * Rows are therefore not a quantity this side can promise — they fall out of
+ * the budget and the width, and widening a pane trades depth for columns out
+ * of the same budget, which is how Ghostty itself behaves. That is why the
+ * *setting* is the budget rather than a row count: a row count is a promise
+ * whose truth depends on how wide the user later drags the pane, and it was
+ * offered and broken twice before this. `estimateScrollbackRows` derives the
+ * rows for display, which is the honest direction to convert in.
  */
-const SCROLLBACK_BYTES_PER_CELL = 13
-const SCROLLBACK_MAX_BYTES = 64 * 1024 * 1024
-const SCROLLBACK_MIN_LINES = 100
+const SCROLLBACK_BYTES_PER_CELL = 12.65
+
+/**
+ * Per-pane memory tiers, keyed by the figure shown in Settings.
+ *
+ * **The key is the pane's total WASM footprint, not the scrollback budget** —
+ * those differ by more than a factor of two and the user is choosing what the
+ * pane costs, so the label has to be the cost. The values are the budgets that
+ * buy the most scrollback without pushing the heap past the label.
+ *
+ * They look arbitrary because they are measured, not derived. WASM memory grows
+ * in doubling steps, so the heap is a staircase against the budget rather than
+ * a line: every budget from 13 MB to 28 MB lands on the same ~30.7 MB heap, and
+ * one more megabyte doubles it. Measured against the vendored core (flood to
+ * saturation, sweeping 80/200/400 columns — the steps are width-independent):
+ *
+ *   budget <= 4 MB   -> 6.6 MB heap        4 MB chosen, labelled 8 MB
+ *   budget 5-12 MB   -> 14.7 MB heap      10 MB chosen, labelled 16 MB
+ *   budget 13-28 MB  -> 30.7 MB heap      24 MB chosen, labelled 32 MB
+ *   budget 44-56 MB  -> 62.7 MB heap      48 MB chosen, labelled 64 MB
+ *
+ * Each budget sits inside its step with room to spare, so the label is an
+ * honest ceiling rather than a target the pane creeps past — the renderer's
+ * scratch buffers come out of the same linear memory and are not in the
+ * measurement above. Picking the *top* of each step is the point: 4 MB and
+ * 12 MB cost the same 14.7 MB heap but differ by 3x in depth, so rounding the
+ * budget down would give away rows for nothing.
+ *
+ * Re-measure before changing any of this; it is a property of the vendored
+ * binary, not arithmetic.
+ */
+const SCROLLBACK_BUDGET_BY_FOOTPRINT_MB: Record<number, number> = {
+  8: 4 * 1024 * 1024,
+  16: 10 * 1024 * 1024,
+  32: 24 * 1024 * 1024,
+  64: 48 * 1024 * 1024,
+}
+
+/** Tier used when a setting is missing, corrupt, or not one of the tiers. The
+ *  smallest, so an unreadable value can never cost more memory than the user
+ *  last agreed to. */
+const DEFAULT_FOOTPRINT_MB = 8
 
 /** How much output may pile up waiting for the core to load before the engine
  *  gives up and says so. See parseSegment — the unbounded version of this hid a
  *  never-loading core behind a blank pane and a lying throughput figure. */
 const MAX_PREREADY_BYTES = 1024 * 1024
 
-export function scrollbackLinesFor(lines: number, cols: number): number {
-  const maxLines = Math.floor(SCROLLBACK_MAX_BYTES / (Math.max(1, cols) * SCROLLBACK_BYTES_PER_CELL))
-  return Math.min(Math.max(Math.floor(lines), SCROLLBACK_MIN_LINES), maxLines)
+/**
+ * Bytes of scrollback to ask the core for, given the footprint tier the user
+ * chose.
+ *
+ * Unlike the row-count version this replaces, the width is not an input: the
+ * budget *is* the setting, and width only decides how many rows it buys.
+ *
+ * Every return path has to be a positive integer inside u32. Zero is not a
+ * small budget to this core — `newWithConfig` reads it as *unlimited* — and the
+ * value is written with `setUint32`, which turns a fractional or out-of-range
+ * number into something arbitrary rather than erroring. Anything that is not a
+ * known tier (a corrupt or hand-edited `localStorage` entry, `NaN`, a tier
+ * retired by a later version) therefore falls back to the smallest tier rather
+ * than being arithmetically coerced into some neighbouring value.
+ */
+export function scrollbackBudgetBytesFor(footprintMB: number): number {
+  return SCROLLBACK_BUDGET_BY_FOOTPRINT_MB[footprintMB] ?? SCROLLBACK_BUDGET_BY_FOOTPRINT_MB[DEFAULT_FOOTPRINT_MB]
+}
+
+/**
+ * Roughly how many rows a budget buys at a given width — the number shown in
+ * Settings and the status bar.
+ *
+ * Approximate on purpose, and labelled that way wherever it is rendered. The
+ * core evicts whole pages, so the true figure lands a little under this;
+ * measured against the vendored binary across 8-64 MB and 80-400 columns the
+ * error runs -7% to +1%, tightening as the budget grows. Good enough to size a
+ * decision by, which is all it is for — the exact depth of a live pane is
+ * `scrollbackLength`, which is measured rather than estimated.
+ */
+export function estimateScrollbackRows(budgetBytes: number, cols: number): number {
+  const safeCols = Number.isFinite(cols) ? Math.max(1, cols) : 1
+  const safeBytes = Number.isFinite(budgetBytes) ? Math.max(0, budgetBytes) : 0
+  return Math.round(safeBytes / (safeCols * SCROLLBACK_BYTES_PER_CELL))
 }
 
 /**
@@ -160,7 +220,9 @@ export class GhosttyEngine implements TerminalEngine {
 
   private _cols = 80
   private _rows = 24
-  private _scrollback = 1000
+  /** Per-pane memory tier, as chosen in Settings. Resolved to a byte budget
+   *  when the terminal is built, and fixed from then on. */
+  private _scrollbackFootprintMB = DEFAULT_FOOTPRINT_MB
   /** The configured default cursor, resent to the core whenever one is built. */
   private _cursorStyle: CursorStyleSetting = 'block'
   private _cursorBlink = true
@@ -336,7 +398,7 @@ export class GhosttyEngine implements TerminalEngine {
       // this theme's palette and defaults, and hands back finished RGB. The
       // renderer therefore never has to know what "color 4" means.
       this.termPtr = createTerminal(this.wasm, this._cols, this._rows, {
-        scrollbackLimit: scrollbackLinesFor(this._scrollback, this._cols),
+        scrollbackLimit: this.scrollbackBudgetBytes,
         ...this.themeConfigColors(),
       })
       if (this.termPtr === 0) {
@@ -1594,11 +1656,18 @@ export class GhosttyEngine implements TerminalEngine {
   //
   // Landing before the terminal exists is the normal case rather than a race:
   // Terminal.tsx calls this synchronously on the new engine, and the terminal
-  // isn't built until the WASM fetch resolves. Mounting and the first fit are
-  // synchronous too, so the column count this is budgeted against is the pane's
-  // real width and not the 80-column default.
-  setScrollback(scrollback: number): void {
-    this._scrollback = scrollback
+  // isn't built until the WASM fetch resolves.
+  setScrollbackBudget(footprintMB: number): void {
+    this._scrollbackFootprintMB = footprintMB
+  }
+
+  /** The byte budget this pane was built with — the *engine's* figure, not the
+   *  current setting. The status bar derives its row estimate from this
+   *  precisely because they diverge: changing the setting leaves open panes on
+   *  the budget they were constructed with, and deriving from the setting would
+   *  show a depth those panes will never reach. */
+  get scrollbackBudgetBytes(): number {
+    return scrollbackBudgetBytesFor(this._scrollbackFootprintMB)
   }
   rebuildWebglRenderer(): void {}
 

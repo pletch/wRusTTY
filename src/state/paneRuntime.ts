@@ -26,6 +26,20 @@ export interface PaneRuntime {
   /** Something you haven't seen: a bell rang, or a long command finished,
    * while this pane wasn't in view. */
   attention: boolean
+  /** The pane's grid in cells, as the engine last fitted it — the same
+   * numbers sent to the remote PTY, so this is what the far end believes the
+   * terminal is. Null until the engine has fitted once. */
+  dimensions: PaneDimensions | null
+  /** Bytes of scrollback *this pane's engine* was built with. Not derivable
+   * from the current setting: the core fixes its limit at construction, so a
+   * pane opened before the setting changed keeps the old budget. Null until
+   * the engine reports it at mount. */
+  scrollbackBudgetBytes: number | null
+}
+
+export interface PaneDimensions {
+  cols: number
+  rows: number
 }
 
 const DEFAULT_RUNTIME: PaneRuntime = {
@@ -37,6 +51,8 @@ const DEFAULT_RUNTIME: PaneRuntime = {
   filesOpen: false,
   activity: IDLE,
   attention: false,
+  dimensions: null,
+  scrollbackBudgetBytes: null,
 }
 
 export type PaneRuntimeState = Record<string, PaneRuntime>
@@ -52,6 +68,8 @@ export type PaneRuntimeAction =
   | { type: 'activityChanged'; paneId: string; activity: CommandActivity }
   | { type: 'attentionRaised'; paneId: string }
   | { type: 'attentionCleared'; paneId: string }
+  | { type: 'dimensionsChanged'; paneId: string; cols: number; rows: number }
+  | { type: 'scrollbackBudgetSet'; paneId: string; budgetBytes: number }
 
 export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeAction): PaneRuntimeState {
   switch (action.type) {
@@ -130,6 +148,32 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
       if (!current?.attention) return state
       return { ...state, [action.paneId]: { ...current, attention: false } }
     }
+
+    case 'dimensionsChanged': {
+      const current = state[action.paneId] ?? DEFAULT_RUNTIME
+      const dims = current.dimensions
+      // The no-op case is the whole point of this action, not a nicety. It is
+      // driven by a ResizeObserver, so it fires continuously while a window is
+      // dragged — but the *cell* grid changes only when a drag crosses a whole
+      // cell, which is a small fraction of those ticks. Returning the same
+      // object lets React bail out of the render entirely; without it a drag
+      // would re-render App, and with it every pane, at pointer rate. Terminal
+      // gates on this too, so an unchanged grid never even dispatches.
+      if (dims && dims.cols === action.cols && dims.rows === action.rows) return state
+      return {
+        ...state,
+        [action.paneId]: { ...current, dimensions: { cols: action.cols, rows: action.rows } },
+      }
+    }
+
+    case 'scrollbackBudgetSet': {
+      const current = state[action.paneId] ?? DEFAULT_RUNTIME
+      if (current.scrollbackBudgetBytes === action.budgetBytes) return state
+      return {
+        ...state,
+        [action.paneId]: { ...current, scrollbackBudgetBytes: action.budgetBytes },
+      }
+    }
   }
 }
 
@@ -190,5 +234,23 @@ export function activityByPaneOf(state: PaneRuntimeState): Record<string, Comman
 export function attentionPanesOf(state: PaneRuntimeState): Record<string, true> {
   const out: Record<string, true> = {}
   for (const id in state) if (state[id].attention) out[id] = true
+  return out
+}
+
+export function dimensionsByPaneOf(state: PaneRuntimeState): Record<string, PaneDimensions> {
+  const out: Record<string, PaneDimensions> = {}
+  for (const id in state) {
+    const dims = state[id].dimensions
+    if (dims !== null) out[id] = dims
+  }
+  return out
+}
+
+export function scrollbackBudgetByPaneOf(state: PaneRuntimeState): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const id in state) {
+    const budget = state[id].scrollbackBudgetBytes
+    if (budget !== null) out[id] = budget
+  }
   return out
 }

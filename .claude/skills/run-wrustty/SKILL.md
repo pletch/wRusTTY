@@ -130,9 +130,13 @@ and cursor per cell.
   the four-character escape. They work but are invisible in source and do not
   survive copy-paste. Use the Write/Edit tools, or build the escape from
   `chr(92)`. This has bitten three separate files here.
-- **`scrollbackLimit` is a line count, not bytes.** Passing a byte-shaped value
-  overflows 32-bit `usize` in the core and silently means *unlimited*: a 100 MB
-  flood then retained ~1.15M rows and grew the heap to ~2 GB.
+- **`scrollbackLimit` is a byte budget, not a line count.** It reaches upstream
+  `PageList` as `max_size`. A row-shaped value sits under the core's ~530 KB
+  minimum page, so every setting collapses to the same ~1100-row floor at 80
+  columns and the scrollback setting silently does nothing. **Zero means
+  unlimited.** Always go through `scrollbackBudgetBytesFor`, which maps the
+  user-facing memory tier (8/16/32/64 MB of *total pane footprint*) to a
+  measured budget. Depth in rows is derived for display only.
 - **A wide glyph occupies two cells**; the trailing one is a spacer with
   `width === 0` and no codepoint. Treating it as a blank is what made CJK overlap.
 - **Writes before the core loads are buffered**, so `engine.write()` is safe

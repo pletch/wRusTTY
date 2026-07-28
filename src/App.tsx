@@ -75,6 +75,8 @@ import {
   sessionIdByPaneOf,
   activityByPaneOf,
   attentionPanesOf,
+  dimensionsByPaneOf,
+  scrollbackBudgetByPaneOf,
 } from './state/paneRuntime'
 import { tabsReducer, layoutSignature } from './state/tabs'
 import { usePanePortals } from './hooks/usePanePortals'
@@ -191,6 +193,8 @@ function App() {
   const sessionIdByPane = useMemo(() => sessionIdByPaneOf(paneRuntime), [paneRuntime])
   const activityByPane = useMemo(() => activityByPaneOf(paneRuntime), [paneRuntime])
   const attentionPanes = useMemo(() => attentionPanesOf(paneRuntime), [paneRuntime])
+  const dimensionsByPane = useMemo(() => dimensionsByPaneOf(paneRuntime), [paneRuntime])
+  const scrollbackBudgetByPane = useMemo(() => scrollbackBudgetByPaneOf(paneRuntime), [paneRuntime])
   // Set by the toolbar search button to ask one specific pane's terminal to
   // open its search box (the box itself is per-Terminal local state, so this
   // is how an App-level control reaches into it). Targeted by pane id — not a
@@ -1207,6 +1211,7 @@ function App() {
           <SettingsDialog
             settings={terminalSettings}
             onChange={updateSettings}
+            referenceCols={activePaneId ? dimensionsByPane[activePaneId]?.cols : undefined}
             onSessionsImported={() => setProfilesVersion((v) => v + 1)}
             vaultStatus={vaultStatus}
             onVaultChanged={refreshVaultStatus}
@@ -1340,6 +1345,12 @@ function App() {
                     }
                   }}
                   onSessionId={(id) => dispatchPaneRuntime({ type: 'sessionIdSet', paneId: leaf.id, sessionId: id })}
+                  onDimensions={(cols, rows) =>
+                    dispatchPaneRuntime({ type: 'dimensionsChanged', paneId: leaf.id, cols, rows })
+                  }
+                  onScrollbackBudget={(budgetBytes) =>
+                    dispatchPaneRuntime({ type: 'scrollbackBudgetSet', paneId: leaf.id, budgetBytes })
+                  }
                   onActivity={(activity) =>
                     dispatchPaneRuntime({ type: 'activityChanged', paneId: leaf.id, activity })
                   }
@@ -1431,6 +1442,8 @@ function App() {
           status={activePaneId ? statusByPane[activePaneId] : undefined}
           connectedAt={activePaneId ? (connectedAtByPane[activePaneId] ?? null) : null}
           logging={activePaneId ? (loggingByPane[activePaneId] ?? false) : false}
+          dimensions={activePaneId ? (dimensionsByPane[activePaneId] ?? null) : null}
+          scrollbackBudgetBytes={activePaneId ? (scrollbackBudgetByPane[activePaneId] ?? null) : null}
           paneIndex={activePaneIndex}
           paneCount={activePaneLeaves.length}
           tabCount={tabs.length}

@@ -90,6 +90,17 @@ interface Props {
   searchRequest?: { nonce: number; paneId: string } | null
   onStatus?: (status: string) => void
   onSessionId?: (id: string | null) => void
+  /** The fitted grid in cells, reported only when it actually changes — see
+   * `reportDimensions`. Fires on the engine's first fit and on every resize
+   * that crosses a cell boundary, which is the same set of moments the remote
+   * PTY is told about. */
+  onDimensions?: (cols: number, rows: number) => void
+  /** Bytes of scrollback this pane's engine was built with, reported once at
+   * mount. Comes from the engine rather than the settings object on purpose:
+   * the core fixes its limit at construction, so a pane opened before the
+   * setting changed is still on the old budget, and the status bar must
+   * describe the pane it is pointing at rather than the preference. */
+  onScrollbackBudget?: (budgetBytes: number) => void
   /** Whether a command is currently running, per the remote shell's own OSC
    * 133 reports — silent (permanently idle) against a shell with no
    * integration set up. See lib/shellIntegration.ts. */
@@ -137,6 +148,8 @@ export function Terminal({
   searchRequest,
   onStatus,
   onSessionId,
+  onDimensions,
+  onScrollbackBudget,
   onActivity,
   onCommandComplete,
   onBell,
@@ -266,6 +279,33 @@ export function Terminal({
   const onSessionIdRef = useRef(onSessionId)
   onSessionIdRef.current = onSessionId
 
+  const onDimensionsRef = useRef(onDimensions)
+  onDimensionsRef.current = onDimensions
+
+  const onScrollbackBudgetRef = useRef(onScrollbackBudget)
+  onScrollbackBudgetRef.current = onScrollbackBudget
+
+  /** Last grid reported upward, so an unchanged one costs nothing.
+   *
+   * The ResizeObserver fires per pointer-move during a window drag, but the
+   * cell grid only changes when a drag crosses a whole cell — a small
+   * fraction of those. App's reducer treats a repeat as a no-op regardless;
+   * this stops it being dispatched at all, which matters because nothing
+   * downstream of App is memo-effective today (see the note at App.tsx's
+   * paneRuntime). */
+  const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null)
+
+  const reportDimensions = (term: TerminalEngine) => {
+    const { cols, rows } = term
+    // A hidden tab fits to 0x0; the callers all guard against that, but a
+    // zero grid is never worth reporting even if one day one doesn't.
+    if (cols <= 0 || rows <= 0) return
+    const last = lastDimsRef.current
+    if (last && last.cols === cols && last.rows === rows) return
+    lastDimsRef.current = { cols, rows }
+    onDimensionsRef.current?.(cols, rows)
+  }
+
   // Same live-ref treatment as onStatus/onSessionId above — App passes these
   // as fresh inline closures every render, and the connect effect must not
   // list anything that changes per-render in its dependencies.
@@ -354,13 +394,13 @@ export function Terminal({
     if (!term) return
     term.setFont(settings.fontFamily, settings.fontSize)
     // term.options.fontFamily = settings.fontFamily
-        term.setScrollback( settings.scrollback)
+        term.setScrollbackBudget(settings.scrollbackBudgetMB)
     term.setCursorStyle(settings.cursorStyle, settings.cursorBlink)
     refitRef.current?.()
   }, [
     settings.fontFamily,
     settings.fontSize,
-    settings.scrollback,
+    settings.scrollbackBudgetMB,
     settings.cursorStyle,
     settings.cursorBlink,
   ])
@@ -461,8 +501,13 @@ export function Terminal({
     // the configured shape.
     term.setTheme(settingsRef.current.themeName, settingsRef.current.backgroundOpacity)
     term.setFont(settingsRef.current.fontFamily, settingsRef.current.fontSize)
-    term.setScrollback(settingsRef.current.scrollback)
+    term.setScrollbackBudget(settingsRef.current.scrollbackBudgetMB)
     term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
+    // Read back rather than echoing the setting: the engine resolves an
+    // unknown tier to its own fallback, and this has to describe what the pane
+    // got. Reported after the setter above and only here — the core fixes the
+    // budget when it builds, so it cannot change for the life of this engine.
+    onScrollbackBudgetRef.current?.(term.scrollbackBudgetBytes)
 
     const searchResultsListener = term.onSearchResult((result) => {
       if (disposed) return
@@ -479,6 +524,7 @@ export function Terminal({
 
     term.mount(container)
     term.fit()
+    reportDimensions(term)
 
     // Custom scrollbar overlay. It originated as a replacement for
     // xterm.js's own scrollbar widget, which explicitly doesn't support
@@ -869,6 +915,7 @@ export function Terminal({
     const beginConnect = () => {
       if (disposed) return
       termRef.current?.fit(true)
+      if (termRef.current) reportDimensions(termRef.current)
       const cols = termRef.current?.cols || 80
       const rows = termRef.current?.rows || 24
       connectWith(cols, rows)
@@ -923,6 +970,7 @@ export function Terminal({
         setTimeout(() => {
           if (termRef.current) {
             termRef.current.fit(true)
+            reportDimensions(termRef.current)
             const { cols: fittedCols, rows: fittedRows } = termRef.current
             conn.resize(source, id, fittedCols, fittedRows).catch(() => {})
           }
@@ -1092,6 +1140,7 @@ export function Terminal({
       // them. A hidden container has nothing useful to fit to anyway.
       if (container.clientWidth === 0 || container.clientHeight === 0) return
       term.fit()
+      reportDimensions(term)
       if (sessionId) conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
       // Guarding against the 0x0 fit stopped the PTY-side desync, but the
       // canvas can still end up visually stale after this — most sharply

@@ -11,6 +11,8 @@ import {
   sessionIdByPaneOf,
   activityByPaneOf,
   attentionPanesOf,
+  dimensionsByPaneOf,
+  scrollbackBudgetByPaneOf,
 } from './paneRuntime'
 import type { PaneRuntimeState } from './paneRuntime'
 
@@ -167,6 +169,46 @@ describe('attentionRaised / attentionCleared', () => {
   })
 })
 
+describe('dimensionsChanged', () => {
+  it('records the grid on a pane with no prior record', () => {
+    const state = paneRuntimeReducer(EMPTY, { type: 'dimensionsChanged', paneId: 'p1', cols: 120, rows: 40 })
+    expect(state.p1.dimensions).toEqual({ cols: 120, rows: 40 })
+  })
+
+  it('is a no-op (same reference) when the grid has not changed', () => {
+    // The reason this action exists in this shape. It is driven by a
+    // ResizeObserver firing per pointer-move during a window drag, while the
+    // cell grid changes only when a drag crosses a whole cell. A new object
+    // here would re-render App — and with it every pane — at pointer rate,
+    // because nothing downstream is memo-effective today.
+    const first = paneRuntimeReducer(EMPTY, { type: 'dimensionsChanged', paneId: 'p1', cols: 120, rows: 40 })
+    const second = paneRuntimeReducer(first, { type: 'dimensionsChanged', paneId: 'p1', cols: 120, rows: 40 })
+    expect(second).toBe(first)
+  })
+
+  it('records a change in either dimension alone', () => {
+    const first = paneRuntimeReducer(EMPTY, { type: 'dimensionsChanged', paneId: 'p1', cols: 120, rows: 40 })
+    const wider = paneRuntimeReducer(first, { type: 'dimensionsChanged', paneId: 'p1', cols: 121, rows: 40 })
+    expect(wider.p1.dimensions).toEqual({ cols: 121, rows: 40 })
+    const taller = paneRuntimeReducer(first, { type: 'dimensionsChanged', paneId: 'p1', cols: 120, rows: 41 })
+    expect(taller.p1.dimensions).toEqual({ cols: 120, rows: 41 })
+  })
+
+  it('leaves the rest of the record alone', () => {
+    let state = paneRuntimeReducer(EMPTY, { type: 'sessionIdSet', paneId: 'p1', sessionId: 's' })
+    state = paneRuntimeReducer(state, { type: 'dimensionsChanged', paneId: 'p1', cols: 80, rows: 24 })
+    expect(state.p1.sessionId).toBe('s')
+    expect(state.p1.dimensions).toEqual({ cols: 80, rows: 24 })
+  })
+
+  it('keeps panes independent', () => {
+    let state = paneRuntimeReducer(EMPTY, { type: 'dimensionsChanged', paneId: 'p1', cols: 80, rows: 24 })
+    state = paneRuntimeReducer(state, { type: 'dimensionsChanged', paneId: 'p2', cols: 200, rows: 60 })
+    expect(state.p1.dimensions).toEqual({ cols: 80, rows: 24 })
+    expect(state.p2.dimensions).toEqual({ cols: 200, rows: 60 })
+  })
+})
+
 describe('derived views', () => {
   const state = paneRuntimeReducer(
     paneRuntimeReducer(
@@ -206,5 +248,52 @@ describe('derived views', () => {
 
   it('attentionPanesOf includes only panes with attention raised', () => {
     expect(attentionPanesOf(state)).toEqual({ p1: true })
+  })
+
+  it('dimensionsByPaneOf omits panes that have never fitted', () => {
+    // StatusBar renders nothing rather than a placeholder for a pane with no
+    // dimensions, so "absent" has to survive the derived view — a pane present
+    // with a null entry would read as fitted at zero.
+    expect(dimensionsByPaneOf(state)).toEqual({})
+    const fitted = paneRuntimeReducer(state, { type: 'dimensionsChanged', paneId: 'p1', cols: 80, rows: 24 })
+    expect(dimensionsByPaneOf(fitted)).toEqual({ p1: { cols: 80, rows: 24 } })
+  })
+})
+
+describe('scrollbackBudgetSet', () => {
+  it('records the budget the engine reported', () => {
+    const state = paneRuntimeReducer(EMPTY, {
+      type: 'scrollbackBudgetSet',
+      paneId: 'p1',
+      budgetBytes: 24 * 1024 * 1024,
+    })
+    expect(state.p1.scrollbackBudgetBytes).toBe(24 * 1024 * 1024)
+  })
+
+  it('is a no-op (same reference) when the budget is unchanged', () => {
+    const first = paneRuntimeReducer(EMPTY, { type: 'scrollbackBudgetSet', paneId: 'p1', budgetBytes: 4096 })
+    const second = paneRuntimeReducer(first, { type: 'scrollbackBudgetSet', paneId: 'p1', budgetBytes: 4096 })
+    expect(second).toBe(first)
+  })
+
+  it('keeps each pane on its own budget', () => {
+    // Panes opened either side of a settings change legitimately differ: the
+    // core fixes the limit at construction, so the older pane keeps the older
+    // budget and the status bar has to describe whichever is active.
+    let state = paneRuntimeReducer(EMPTY, { type: 'scrollbackBudgetSet', paneId: 'p1', budgetBytes: 4 * 1024 * 1024 })
+    state = paneRuntimeReducer(state, { type: 'scrollbackBudgetSet', paneId: 'p2', budgetBytes: 48 * 1024 * 1024 })
+    expect(state.p1.scrollbackBudgetBytes).toBe(4 * 1024 * 1024)
+    expect(state.p2.scrollbackBudgetBytes).toBe(48 * 1024 * 1024)
+  })
+
+  it('scrollbackBudgetByPaneOf omits panes that never reported', () => {
+    const state = paneRuntimeReducer(EMPTY, { type: 'sessionIdSet', paneId: 'p1', sessionId: 's' })
+    expect(scrollbackBudgetByPaneOf(state)).toEqual({})
+    const withBudget = paneRuntimeReducer(state, {
+      type: 'scrollbackBudgetSet',
+      paneId: 'p1',
+      budgetBytes: 4096,
+    })
+    expect(scrollbackBudgetByPaneOf(withBudget)).toEqual({ p1: 4096 })
   })
 })

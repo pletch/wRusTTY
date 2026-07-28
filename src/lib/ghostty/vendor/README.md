@@ -43,23 +43,50 @@ directly through the 79 exports listed in `wasmBindings.ts`, which are unchanged
 from the previous ghostty-web-based build — the move to 1.3.1 needed no change to
 `GhosttyEngine.ts` or `wasmBindings.ts`.
 
-## `scrollbackLimit` is a line count
+## `scrollbackLimit` is a byte budget
 
-Worth knowing before touching it, because getting it wrong is silent and the
-symptom is a hung pane rather than an error.
+Worth knowing before touching it, because getting it wrong is silent in both
+directions and neither symptom names the setting.
 
-`GhosttyTerminalConfig.scrollback_limit` is a **line count**. The core converts
-it to bytes with `std.math.mul(usize, lines, bytes_per_line)`, and `usize` is
-32-bit on `wasm32` — so an out-of-range value does not error, it lands on
-`catch std.math.maxInt(usize)`, which the core reads as *unlimited*. Passing a
-byte-shaped value (this side did, for a while) therefore turns the scrollback
-cap off: a 100 MB flood retained ~1.15 M rows and grew the heap to ~2 GB before
-an allocation failed. Go through `scrollbackLinesFor` in `GhosttyEngine.ts`,
-which clamps to a range that cannot overflow; `scrollbackLimit.test.ts` pins it.
+`GhosttyTerminalConfig.scrollback_limit` is a **byte budget**, despite reading
+like xterm's row-count `scrollback`. `newWithConfig` passes it to
+`Terminal.init` as `max_scrollback`, which reaches upstream `PageList` as
+`max_size`. Two facts follow, and both have shipped as bugs:
 
-Note `ghostty-web`'s own docs assert the opposite — that the field is in bytes
-(their PR #151). For the code we build, it is lines, and the measurement above is
-what settles it. Do not adopt their framing without re-measuring.
+- **A row-shaped value silently does nothing.** Any plausible row count
+  (1,000-30,000) is far below the core's ~530 KB minimum page, so the pane falls
+  back to a two-page floor: measured against this binary, 1000 and 100000 alike
+  retained ~1100 rows at 80 columns and ~250 at 200, with the heap pinned at its
+  initial 6.6 MB. The scrollback setting appeared to be ignored, which is what it
+  was. This is why the *setting* is now memory rather than rows — depth is
+  derived from the budget and the pane's width, for display only.
+- **Zero means unlimited**, not "none" — `newWithConfig` maps it to
+  `maxInt(usize)`. Any path that can reach `setUint32` with a fraction, a
+  non-finite value or something ≥ 2^32 therefore removes the cap.
+
+Go through `scrollbackBudgetBytesFor` in `GhosttyEngine.ts`, which maps the
+user-facing memory tier to a measured budget and guarantees a positive integer
+inside u32. `scrollbackLimit.test.ts` pins it, and drives the real core to do
+so — a unit test of the arithmetic cannot tell a byte budget from a row count,
+which is exactly how this was got wrong.
+
+The tier budgets are measured, not derived, and the reason matters before
+touching them: **WASM memory grows in doubling steps, so the heap is a
+staircase against the budget rather than a line.** Every budget from 13 MB to
+28 MB lands on the same ~30.7 MB heap, and one more megabyte doubles it. Each
+tier therefore takes the largest budget that stays inside its step — 4 / 10 /
+24 / 48 MB, labelled 8 / 16 / 32 / 64 MB of *total pane footprint*. Rounding a
+budget down gives away depth for nothing; nudging one up can double what every
+pane costs. The test floods the real core and asserts the heap stays under the
+label.
+
+To re-measure: sweep the raw field and count `ghostty_terminal_get_scrollback_length`
+after a flood. Retention tracks `value / (cols * 12.65)` wherever the budget
+exceeds one page.
+
+An earlier revision of this file asserted the opposite and dismissed
+`ghostty-web`'s own "it's bytes" docs (their PR #151) as not applying to the code
+we build. They were right; the measurement above is what settles it.
 
 ## Why `ReleaseFast` and not `ReleaseSmall`
 

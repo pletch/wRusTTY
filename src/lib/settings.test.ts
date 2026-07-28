@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
-import { loadSettings, saveSettings, cursorStyleSequence } from './settings'
+import {
+  loadSettings,
+  saveSettings,
+  cursorStyleSequence,
+  scrollbackTierForRows,
+  SCROLLBACK_FOOTPRINT_TIERS_MB,
+} from './settings'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
 const PREVIOUS_STORAGE_KEY = 'wr-shell.terminal-settings'
@@ -92,5 +98,83 @@ describe('cursorStyleSequence', () => {
 
   it('falls back to a block rather than emitting a malformed sequence', () => {
     expect(cursorStyleSequence('nonsense' as never, true)).toBe('[1 q')
+  })
+})
+
+/**
+ * The scrollback setting changed unit — from a row count to a per-pane memory
+ * tier — and the field was renamed to make that safe. This is the migration
+ * and the guard around it.
+ *
+ * The rename is the whole point. `loadSettings` merges a stored payload onto
+ * the defaults, so a `scrollback: 10000` left under its old name would have
+ * been read as 10,000 *MB*: every existing user silently moved to the largest
+ * tier and roughly ten times the memory they had agreed to.
+ */
+describe('scrollbackTierForRows', () => {
+  it('rounds up to the first tier that covers what the user had', () => {
+    // Nobody should lose history they were already relying on.
+    expect(scrollbackTierForRows(1000)).toBe(8)
+    expect(scrollbackTierForRows(5000)).toBe(16)
+    expect(scrollbackTierForRows(10000)).toBe(16)
+    expect(scrollbackTierForRows(30000)).toBe(64)
+  })
+
+  it('lands on the largest tier for a value past every tier', () => {
+    // The old menu went to 100,000, so these exist in the wild.
+    expect(scrollbackTierForRows(100000)).toBe(64)
+    expect(scrollbackTierForRows(1e9)).toBe(64)
+  })
+
+  it('always returns a tier the picker actually offers', () => {
+    for (const rows of [0, -1, 1, 999, 1000, 24617, 49230, 1e9, NaN, Infinity]) {
+      expect(SCROLLBACK_FOOTPRINT_TIERS_MB).toContain(scrollbackTierForRows(rows))
+    }
+  })
+})
+
+describe('scrollback settings migration', () => {
+  it('converts a stored row count to a tier', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ scrollback: 10000 }))
+    expect(loadSettings().scrollbackBudgetMB).toBe(16)
+  })
+
+  it('never reads the old row count as megabytes', () => {
+    // The regression the rename exists to prevent, stated directly.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ scrollback: 100000 }))
+    const settings = loadSettings()
+    expect(settings.scrollbackBudgetMB).toBeLessThanOrEqual(64)
+    expect(SCROLLBACK_FOOTPRINT_TIERS_MB).toContain(settings.scrollbackBudgetMB)
+  })
+
+  it('drops the stale key so it cannot be re-read later', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ scrollback: 5000 }))
+    expect('scrollback' in loadSettings()).toBe(false)
+  })
+
+  it('prefers an explicit tier over a row count left alongside it', () => {
+    // A settings blob written by this version, loaded by a build that also
+    // still carries the old key — the new field wins rather than being
+    // recomputed from stale data.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ scrollback: 1000, scrollbackBudgetMB: 64 }))
+    expect(loadSettings().scrollbackBudgetMB).toBe(64)
+  })
+
+  it('falls back to the default for a tier that is not offered', () => {
+    // Corrupt, hand-edited, or retired by a later version. Must not reach the
+    // engine, which would silently substitute its own smallest tier.
+    for (const bad of [7, 24, 128, 0, -1, 'lots', null]) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ scrollbackBudgetMB: bad }))
+      expect(loadSettings().scrollbackBudgetMB).toBe(16)
+    }
+  })
+
+  it('gives a fresh install the tier matching the old default depth', () => {
+    expect(loadSettings().scrollbackBudgetMB).toBe(16)
+  })
+
+  it('migrates a payload found under the pre-rebrand key too', () => {
+    localStorage.setItem(PREVIOUS_STORAGE_KEY, JSON.stringify({ scrollback: 30000 }))
+    expect(loadSettings().scrollbackBudgetMB).toBe(64)
   })
 })
