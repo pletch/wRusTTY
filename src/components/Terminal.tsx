@@ -143,6 +143,9 @@ export function Terminal({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  /** Whether the search box was open on the previous render, so closing it can
+   * hand focus back without the mount-time run of that effect doing so. */
+  const wasSearchOpen = useRef(false)
   const termRef = useRef<TerminalEngine | null>(null)
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -400,7 +403,18 @@ export function Terminal({
       // highlights behind you.
       termRef.current?.clearSearchDecorations()
       setSearchResults({ index: -1, count: 0 })
+      // Closing the box unmounts the input that had focus, which drops focus
+      // to <body> — so every route out of search left the pane looking active
+      // while swallowing every keystroke until you clicked it. Handled here
+      // rather than at each call site so Escape, Ctrl+Shift+F, the close
+      // button and the toolbar toggle all get it.
+      //
+      // Guarded on having actually been open: this effect also runs once on
+      // mount with `searchOpen` already false, and focusing then would steal
+      // focus from whichever pane really has it in a split.
+      if (wasSearchOpen.current) termRef.current?.focus()
     }
+    wasSearchOpen.current = searchOpen
     // Only meant to fire when the box opens/closes — searchQuery is read as a
     // one-shot restore, not a trigger (keystrokes drive search via onChange).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1289,6 +1303,16 @@ export function Terminal({
               if (e.key === 'Enter') {
                 runSearch(searchQuery, { back: e.shiftKey })
               } else if (e.key === 'Escape') {
+                setSearchOpen(false)
+              } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+                // Repeated from the pane-level binding because this input is a
+                // *sibling* of the terminal container, not a child — so the
+                // container's capture-phase handler never sees a keystroke
+                // typed in here. Without this the toggle is one-way in exactly
+                // the state where closing is the obvious thing to want: the box
+                // focuses and selects itself the moment it opens, so the second
+                // press of the same chord went nowhere.
+                e.preventDefault()
                 setSearchOpen(false)
               }
             }}
