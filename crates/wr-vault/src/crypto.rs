@@ -25,6 +25,39 @@ pub fn default_params() -> Params {
     Params::new(65536, 3, 1, None).expect("hardcoded Argon2 params are valid")
 }
 
+/// Ceilings on the Argon2 cost parameters read back out of a vault file.
+///
+/// These are a **file-sanity bound, not a security bound.** Nothing here is a
+/// minimum-strength check and they must not be mistaken for one: raising a
+/// stored parameter changes the derived KEK, so a tampered file simply fails
+/// to unwrap. There is no downgrade attack to defend against.
+///
+/// What they do defend against is allocation. `m_cost` is a `u32` in KiB, so a
+/// value near `u32::MAX` asks Argon2 for roughly 4 TiB on unlock. Against a
+/// local owner-only file that is a self-inflicted DoS at worst — but
+/// `vault_import` makes the file an *import target*, which is what turns a
+/// corrupt-file edge into an attacker-reachable one.
+///
+/// Set far above anything a legitimately-created vault can hold, so no real
+/// file is ever stranded: the current default is 64 MiB / t=3 / p=1 (see
+/// [`default_params`]) and the legacy v1 default was 19 MiB / t=2 / p=1.
+pub const MAX_M_COST: u32 = 1024 * 1024; // 1 GiB, in KiB
+pub const MAX_T_COST: u32 = 64;
+pub const MAX_P_COST: u32 = 16;
+
+/// Builds [`Params`] from values that came off disk, refusing absurd costs
+/// before Argon2 tries to allocate for them. See [`MAX_M_COST`] for why this
+/// is about allocation rather than key strength.
+pub fn params_from_stored(m_cost: u32, t_cost: u32, p_cost: u32) -> Result<Params, VaultError> {
+    if m_cost > MAX_M_COST || t_cost > MAX_T_COST || p_cost > MAX_P_COST {
+        return Err(VaultError::Corrupt(format!(
+            "stored KDF params are out of range: m={m_cost} t={t_cost} p={p_cost}"
+        )));
+    }
+    Params::new(m_cost, t_cost, p_cost, None)
+        .map_err(|e| VaultError::Corrupt(format!("invalid stored KDF params: {e}")))
+}
+
 /// Explicit Argon2id + version 0x13 rather than relying on the crate's
 /// unstated `Default` — this is the one place a silent algorithm change
 /// upstream would matter most.
@@ -166,5 +199,43 @@ mod tests {
         let c = derive_kek_from_ikm(b"signature", b"salt-b", b"info");
         assert_eq!(a.as_bytes(), b.as_bytes());
         assert_ne!(a.as_bytes(), c.as_bytes());
+    }
+
+    /// The whole point of the bound: this must return rather than ask the
+    /// allocator for ~4 TiB. A hang or an OOM here is the failure.
+    #[test]
+    fn an_absurd_memory_cost_is_rejected_rather_than_allocated() {
+        assert!(matches!(
+            params_from_stored(u32::MAX, 3, 1),
+            Err(VaultError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn absurd_time_and_parallelism_costs_are_rejected() {
+        assert!(params_from_stored(65536, u32::MAX, 1).is_err());
+        assert!(params_from_stored(65536, 3, u32::MAX).is_err());
+    }
+
+    /// The regression that would brick real vaults. Both the current defaults
+    /// and the legacy v1 ones have to keep deriving, or the bound has locked
+    /// people out of files it was supposed to protect.
+    #[test]
+    fn every_parameter_set_a_real_vault_can_hold_still_passes() {
+        let current = default_params();
+        assert!(
+            params_from_stored(current.m_cost(), current.t_cost(), current.p_cost()).is_ok(),
+            "the current defaults must round-trip through the bound"
+        );
+        // Legacy v1: 19 MiB / t=2 / p=1, the RFC 9106 low-memory floor.
+        assert!(params_from_stored(19 * 1024, 2, 1).is_ok());
+    }
+
+    /// Exactly at the ceiling is a legitimate file, not a rejected one — an
+    /// off-by-one here would strand a vault created at the maximum.
+    #[test]
+    fn the_ceiling_itself_is_accepted() {
+        assert!(params_from_stored(MAX_M_COST, MAX_T_COST, MAX_P_COST).is_ok());
+        assert!(params_from_stored(MAX_M_COST + 1, 3, 1).is_err());
     }
 }

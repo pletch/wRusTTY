@@ -107,8 +107,7 @@ impl PasswordProvider {
         let salt = BASE64
             .decode(salt_b64)
             .map_err(|e| VaultError::Corrupt(format!("invalid password wrapper salt: {e}")))?;
-        let params = argon2::Params::new(m_cost, t_cost, p_cost, None)
-            .map_err(|e| VaultError::Corrupt(format!("invalid stored KDF params: {e}")))?;
+        let params = crypto::params_from_stored(m_cost, t_cost, p_cost)?;
         crypto::derive_kek_from_password(&self.password, &salt, params)
     }
 
