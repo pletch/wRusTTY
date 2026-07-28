@@ -69,21 +69,50 @@ export function HostKeyPrompt({
           </p>
         )}
 
+        {/* On `changed`, the emphasis is inverted against every other dialog
+            in the app: Reject takes the filled primary slot, and accepting
+            becomes the ghost. A red-filled Accept reads as "this is the
+            important button" at least as much as it reads "danger", and this
+            is the one dialog where the button muscle memory lands on has to
+            be the safe one. Danger still gets said — in red text on the
+            action that carries it — it just stops being said with emphasis.
+
+            `unknown` deliberately keeps the ordinary arrangement. A
+            first-connect TOFU prompt is routine and accepting is the expected
+            answer; adding friction there is how people get trained to click
+            straight through the one above. */}
         <div className="flex justify-end gap-2 pt-1">
-          <button
-            className="rounded px-3 py-1.5 text-xs text-white/70 transition-colors duration-100 hover:bg-white/10"
-            onClick={() => onAnswer(false)}
-          >
-            Reject
-          </button>
-          <button
-            className={`rounded px-3 py-1.5 text-xs font-medium text-white transition-colors duration-100 ${
-              isChanged ? 'bg-red-600 hover:bg-red-500' : 'bg-sky-500/90 hover:bg-sky-500'
-            }`}
-            onClick={() => onAnswer(true)}
-          >
-            {isChanged ? 'Accept anyway' : 'Accept & connect'}
-          </button>
+          {isChanged ? (
+            <>
+              <button
+                className="rounded px-3 py-1.5 text-xs text-red-300/90 transition-colors duration-100 hover:bg-red-500/15"
+                onClick={() => onAnswer(true)}
+              >
+                Accept anyway
+              </button>
+              <button
+                className="rounded bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-white transition-colors duration-100 hover:bg-sky-500"
+                onClick={() => onAnswer(false)}
+              >
+                Reject
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="rounded px-3 py-1.5 text-xs text-white/70 transition-colors duration-100 hover:bg-white/10"
+                onClick={() => onAnswer(false)}
+              >
+                Reject
+              </button>
+              <button
+                className="rounded bg-sky-500/90 px-3 py-1.5 text-xs font-medium text-white transition-colors duration-100 hover:bg-sky-500"
+                onClick={() => onAnswer(true)}
+              >
+                Accept &amp; connect
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
