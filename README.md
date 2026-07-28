@@ -95,6 +95,33 @@ recoverable offline from a stolen disk given your account password — weaker
 than the master password alone. Hello is preferred automatically wherever
 the machine supports it, and the vault menu names which method is in use.
 
+**Unlock lifetime.** An unlock lasts until the Windows session locks (Win+L,
+or an RDP client disconnecting), the app exits, or you lock the vault
+yourself from the padlock menu. There is deliberately **no idle timeout**.
+
+That is a decision rather than an omission. The case an idle timer is
+usually bought for — walking away from the machine — is already covered by
+the session-lock hook. What it would add is protection at a console that is
+unlocked and unattended, and there a locked vault contains very little:
+sessions already connected stay authenticated and accept typing, the files
+panel keeps working, and anything reachable from the open window stays
+reachable. The vault protects credentials at rest, not sessions in flight.
+Set against that, a timer that fires mid-workflow and asks for a Hello
+gesture to reconnect a pane is the kind of friction that gets configured to
+its maximum, which protects less than not having it.
+
+If your threat model includes an unlocked, unattended console, lock the
+Windows session — that locks the vault too, and unlike a vault timeout it
+also covers the screen and the keyboard.
+
+One consequence worth stating plainly: `change_master_password` requires an
+unlocked vault, not the current password, on the reasoning that possession
+of an unlocked vault is normally proof enough. Combined with an unlock that
+persists until session lock, that means anyone at your unlocked console can
+change the master password. They can equally read every stored credential
+through the app, so this widens nothing that was otherwise narrow — but it
+is the same "unlocked console" boundary, and it is where that boundary sits.
+
 Vault files predating the wrapper format are upgraded in place on the next
 master-password unlock, onto a freshly generated data key. Any copy of the
 old key stops being useful at that moment — including the one that earlier

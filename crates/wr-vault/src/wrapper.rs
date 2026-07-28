@@ -113,6 +113,38 @@ pub enum WrapperParams {
     /// Argon2id, never used as raw key material — an external helper that
     /// returns something short or low-entropy must not silently become a
     /// 32-byte key with 20 bits behind it.
+    ///
+    /// # Security
+    ///
+    /// **Nothing implements this yet, and whatever does must read this first.**
+    /// The variant already exists and looks settled, which is exactly how the
+    /// following gets missed.
+    ///
+    /// `command` is **untrusted input read from a file**, not a user
+    /// preference. `vault_import` will happily overwrite the vault with a
+    /// bundle someone else wrote, and every field in it — this one included —
+    /// arrives from that file. An implementation that simply runs what the
+    /// file says turns "the user imported a backup" into arbitrary code
+    /// execution as that user. That is a file-write-to-code-execution edge,
+    /// and it is the reason `wr_vault::validate` cannot be the thing that
+    /// saves you: validation can tell that a string is present, never that
+    /// running it is safe.
+    ///
+    /// So an implementation must:
+    ///
+    /// - require explicit user confirmation of the exact command **at
+    ///   enrolment**, showing what will be run;
+    /// - never execute whatever the file happens to say **at unlock** — unlock
+    ///   is not a moment where the user is deciding anything, and a prompt
+    ///   there gets clicked through;
+    /// - re-confirm on any change to the stored command, since a changed
+    ///   command is a new decision and not the one already approved.
+    ///
+    /// Note also that nothing else in this workspace runs a subprocess — there
+    /// is no `std::process::Command` anywhere in it — so implementing this
+    /// introduces the first one, and with it every question about argument
+    /// quoting, `PATH` resolution and inherited environment that the codebase
+    /// has so far not had to have an answer for.
     External {
         command: String,
         salt: String,
