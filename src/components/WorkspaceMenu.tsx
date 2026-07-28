@@ -5,6 +5,7 @@ import type { Workspace } from '../lib/workspaces'
 import type { Tab } from '../types'
 import { allLeaves } from '../lib/paneTree'
 import { toast } from '../lib/toast'
+import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 
 interface Props {
@@ -35,14 +36,7 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
     setName('')
   }, [open])
 
-  useEffect(() => {
-    if (!open) return
-    const close = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest('[data-workspace-menu]')) setOpen(false)
-    }
-    window.addEventListener('click', close)
-    return () => window.removeEventListener('click', close)
-  }, [open])
+  useDismissable(open, () => setOpen(false), { within: '[data-workspace-menu]' })
 
   const capturable = workspaces.captureTabs(tabs)
   const paneCount = capturable.reduce((n, t) => n + allLeaves(t.root).length, 0)

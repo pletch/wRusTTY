@@ -4,6 +4,7 @@ import * as forward from '../lib/forward'
 import type { ForwardSpec } from '../lib/forward'
 import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
+import { useDismissable } from '../hooks/useDismissable'
 
 interface ActiveForward {
   id: string
@@ -31,6 +32,8 @@ function describe(spec: ForwardSpec): string {
 
 export function ForwardPanel({ sessionId, onClose }: Props) {
   const confirm = useConfirm()
+  // Rendered only while open, so it is always dismissable while mounted.
+  useDismissable(true, onClose, { within: '[data-forward-panel]' })
   const [active, setActive] = useState<ActiveForward[]>([])
   const [type, setType] = useState<ForwardSpec['type']>('local')
   const [bindHost, setBindHost] = useState('127.0.0.1')
@@ -102,6 +105,7 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
 
   return (
     <div
+      data-forward-panel
       className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
       onClick={(e) => e.stopPropagation()}
     >

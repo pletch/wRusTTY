@@ -4,6 +4,7 @@ import { ArrowUp, File, FileText, Folder, RefreshCw, X } from 'lucide-react'
 import * as sftp from '../lib/sftp'
 import type { RemoteEntry, SftpEvent } from '../lib/sftp'
 import { toast } from '../lib/toast'
+import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
   sessionId: string
@@ -35,6 +36,8 @@ function formatSize(bytes: number): string {
 }
 
 export function FilesPanel({ sessionId, onClose }: Props) {
+  // Rendered only while open, so it is always dismissable while mounted.
+  useDismissable(true, onClose, { within: '[data-files-panel]' })
   const [cwd, setCwd] = useState<string | null>(null)
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -136,6 +139,7 @@ export function FilesPanel({ sessionId, onClose }: Props) {
 
   return (
     <div
+      data-files-panel
       className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
       onClick={(e) => e.stopPropagation()}
     >

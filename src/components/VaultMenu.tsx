@@ -3,6 +3,7 @@ import { Lock, Unlock, Upload, Fingerprint, Trash2 } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 import { toast } from '../lib/toast'
+import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 import { importVaultBundle } from '../lib/vaultTransfer'
 
@@ -40,14 +41,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     vault.osUnlockMethod().then(setOsUnlockMethod).catch(() => {})
   }, [open_, status])
 
-  useEffect(() => {
-    if (!open_) return
-    const close = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest('[data-vault-menu]')) setOpen(false)
-    }
-    window.addEventListener('click', close)
-    return () => window.removeEventListener('click', close)
-  }, [open_])
+  useDismissable(open_, () => setOpen(false), { within: '[data-vault-menu]' })
 
   async function submitCreate(e: React.FormEvent) {
     e.preventDefault()
