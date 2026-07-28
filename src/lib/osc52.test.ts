@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseOsc52, OSC52_MAX_BASE64 } from './osc52'
+import { parseOsc52, applyOsc52, OSC52_MAX_BASE64 } from './osc52'
 
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64')
 
@@ -61,5 +61,75 @@ describe('parseOsc52', () => {
   it('accepts a payload at the size bound', () => {
     const at = parseOsc52(`c;${'A'.repeat(OSC52_MAX_BASE64)}`)
     expect(at.kind).toBe('write')
+  })
+})
+
+describe('applyOsc52', () => {
+  /** A sink that records what the shipped decision did with a payload. */
+  function sink(allowWrite: boolean) {
+    const written: string[] = []
+    const wrote: number[] = []
+    const errors: string[] = []
+    return {
+      written,
+      wrote,
+      errors,
+      opts: {
+        allowWrite,
+        writeText: async (text: string) => {
+          written.push(text)
+        },
+        onWrote: () => wrote.push(1),
+        onError: (m: string) => errors.push(m),
+      },
+    }
+  }
+
+  it('writes and reports when the setting is on', async () => {
+    const s = sink(true)
+    expect(applyOsc52(`c;${b64('from the far end')}`, s.opts)).toBe(true)
+    await Promise.resolve()
+    expect(s.written).toEqual(['from the far end'])
+    expect(s.wrote).toEqual([1])
+  })
+
+  it('drops the write when the setting is off, and still consumes the sequence', async () => {
+    const s = sink(false)
+    // `true` matters as much as the empty clipboard: returning false would let
+    // the sequence fall through and print its base64 payload into the pane.
+    expect(applyOsc52(`c;${b64('from the far end')}`, s.opts)).toBe(true)
+    await Promise.resolve()
+    expect(s.written).toEqual([])
+    expect(s.wrote).toEqual([])
+  })
+
+  /** The toggle gates writes only. If this ever fails, the setting has been
+   *  misread as "allow OSC 52" and the remote end can read the clipboard. */
+  it('refuses a read whether the setting is on or off', async () => {
+    for (const allow of [true, false]) {
+      const s = sink(allow)
+      expect(applyOsc52('c;?', s.opts)).toBe(true)
+      await Promise.resolve()
+      expect(s.written).toEqual([])
+      expect(s.wrote).toEqual([])
+    }
+  })
+
+  it('reports a failed write without claiming it landed', async () => {
+    const errors: string[] = []
+    const wrote: number[] = []
+    const ok = applyOsc52(`c;${b64('x')}`, {
+      allowWrite: true,
+      writeText: async () => {
+        throw new Error('clipboard busy')
+      },
+      onWrote: () => wrote.push(1),
+      onError: (m) => errors.push(m),
+    })
+    expect(ok).toBe(true)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(wrote).toEqual([])
+    expect(errors[0]).toContain('clipboard busy')
   })
 })

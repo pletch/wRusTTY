@@ -56,6 +56,19 @@ export interface TerminalSettings {
    * merging them would have meant retiring `bellMarksTab`'s storage key and
    * silently resetting anyone who had turned it off. */
   bellSound: boolean
+  /** Programs on the far end may put text on this machine's clipboard with
+   * OSC 52. Reading it is never allowed regardless of this setting — that
+   * half is refused in the parser, not gated here.
+   *
+   * On by default: it is the only copy path a remote full-screen program has
+   * (it can't reach the local clipboard, and while it holds the mouse the
+   * user can't drag out a selection either), and network-gear operators hit
+   * legitimate uses of it. The risk it carries is clipboard poisoning — a
+   * hostile host replacing what the user last copied so they paste an
+   * attacker-chosen command into a *local* shell — which is why a write
+   * always raises a toast even when allowed. Silence was the actual problem;
+   * the toggle is for people who'd rather not have the capability at all. */
+  clipboardWriteFromRemote: boolean
   /** Font stack passed to the terminal engine. Anything CSS accepts; the
    * default is the platform's UI monospace with Consolas behind it. Only
    * fixed-width fonts make sense — the engine measures one glyph and assumes
@@ -124,6 +137,7 @@ const defaults: TerminalSettings = {
   notifyOnCommandComplete: true,
   bellMarksTab: true,
   bellSound: false,
+  clipboardWriteFromRemote: true,
   fontFamily: 'ui-monospace, Consolas, monospace',
   fontSize: 14,
   scrollback: 10000,

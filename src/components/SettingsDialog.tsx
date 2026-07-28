@@ -319,6 +319,12 @@ export function SettingsDialog({
                         label="Right-click to paste"
                         hint="PuTTY-style: right mouse button pastes the clipboard."
                       />
+                      <Toggle
+                        checked={settings.clipboardWriteFromRemote}
+                        onChange={(v) => onChange({ ...settings, clipboardWriteFromRemote: v })}
+                        label="Remote hosts can set your clipboard"
+                        hint="Programs on the remote host can put text on your clipboard (OSC 52), and you'll see a notice when they do. Reading it is never allowed. Turn this off if you don't want a remote host able to change what you paste."
+                      />
                     </>
                   )}
 

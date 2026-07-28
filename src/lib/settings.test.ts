@@ -40,6 +40,22 @@ describe('loadSettings', () => {
     expect(loadSettings().fontSize).toBe(1)
   })
 
+  /**
+   * A settings blob written before `clipboardWriteFromRemote` existed has no
+   * such key, and `undefined` is not `false` — but a merge that let the stored
+   * object win would still turn remote clipboard writes off for every existing
+   * user on upgrade. The feature has to survive its own gate being added.
+   */
+  it('leaves remote clipboard writes enabled for a blob predating the setting', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 20, bellSound: true }))
+    expect(loadSettings().clipboardWriteFromRemote).toBe(true)
+  })
+
+  it('honours the setting once it has actually been turned off', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ clipboardWriteFromRemote: false }))
+    expect(loadSettings().clipboardWriteFromRemote).toBe(false)
+  })
+
   it('falls back to defaults on corrupted JSON rather than throwing', () => {
     localStorage.setItem(STORAGE_KEY, '{not valid json')
     expect(loadSettings()).toEqual(loadSettingsDefaultsSnapshot())

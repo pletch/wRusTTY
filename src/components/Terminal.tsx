@@ -29,7 +29,8 @@ import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
-import { parseOsc52 } from '../lib/osc52'
+import { applyOsc52 } from '../lib/osc52'
+import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
 
 /** Matches .term-scrollbar-inner's width in index.css. */
@@ -723,15 +724,19 @@ export function Terminal({
     // are parsed and dropped — answering one would hand whatever the user last
     // copied (a password, a token) to the remote end unasked.
     oscListeners.push(
-      term.registerOscHandler(52, (data) => {
-        const req = parseOsc52(data)
-        if (req.kind === 'write') {
-          writeText(req.text).catch((e) => {
-            logError(`OSC 52 clipboard write failed: ${e}`)
-          })
-        }
-        return true
-      }),
+      term.registerOscHandler(52, (data) =>
+        applyOsc52(data, {
+          allowWrite: settingsRef.current.clipboardWriteFromRemote,
+          writeText,
+          // The write is the point of the feature, but doing it silently is
+          // what makes clipboard poisoning work: the user pastes into a
+          // *local* shell believing the contents are their own. A toast costs
+          // nothing when the write was wanted, and is the whole defence when
+          // it wasn't.
+          onWrote: () => toast.info('The remote host set your clipboard'),
+          onError: logError,
+        }),
+      ),
     )
     // Entering the alternate screen mid-command means a full-screen program
     // took over (vim, top, less). Recorded on the run so the completion it

@@ -83,3 +83,39 @@ export function parseOsc52(payload: string): Osc52Request {
   // still land (with a replacement character) rather than being dropped whole.
   return { kind: 'write', text: new TextDecoder().decode(bytes) }
 }
+
+/** What [`applyOsc52`] needs from its surroundings, so the decision can be
+ *  tested without a real clipboard. */
+export interface Osc52Sink {
+  /** Whether the user allows the far end to set the clipboard at all. */
+  allowWrite: boolean
+  /** Performs the write. Rejection is reported through `onError`. */
+  writeText: (text: string) => Promise<void>
+  /** A write landed — the caller surfaces this to the user. */
+  onWrote: () => void
+  onError: (message: string) => void
+}
+
+/**
+ * Decides and performs what a parsed payload asks for. Lives here rather than
+ * inline in `Terminal.tsx` so the *shipped* decision is what tests exercise —
+ * a gate re-implemented in a test file pins the copy, not the code.
+ *
+ * Always returns `true`: the sequence is consumed whether or not it was acted
+ * on. Returning `false` for a refused write would let it fall through to the
+ * terminal, which prints the base64 payload as garbage rather than dropping it.
+ */
+export function applyOsc52(payload: string, sink: Osc52Sink): boolean {
+  const req = parseOsc52(payload)
+  // Note there is no `read` branch, and adding one would be a bug. A read is
+  // parsed so it can be recognised and dropped; answering it would hand the
+  // remote end whatever the user last copied. `allowWrite` gates writes only
+  // and must never be read as "allow OSC 52".
+  if (req.kind === 'write' && sink.allowWrite) {
+    sink
+      .writeText(req.text)
+      .then(sink.onWrote)
+      .catch((e) => sink.onError(`OSC 52 clipboard write failed: ${e}`))
+  }
+  return true
+}
