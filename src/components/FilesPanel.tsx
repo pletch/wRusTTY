@@ -37,7 +37,7 @@ function formatSize(bytes: number): string {
 
 export function FilesPanel({ sessionId, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
-  useDismissable(true, onClose, { within: '[data-files-panel]' })
+  useDismissable(true, onClose, { within: '[data-files-panel], [data-files-toggle]' })
   const [cwd, setCwd] = useState<string | null>(null)
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)

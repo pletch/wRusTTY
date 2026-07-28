@@ -58,7 +58,19 @@ export function useDismissable(
 
   useEffect(() => {
     if (!active || !within) return
+    // React flushes passive effects synchronously at the end of a discrete
+    // event, so for a surface opened by a click this listener is attached
+    // while that very click is *still bubbling* toward window. It then arrives
+    // here, is found to be outside the surface, and closes it again — the
+    // surface appears never to open at all.
+    //
+    // Callers are expected to include their trigger in `within`, which is the
+    // semantically right answer (pressing the trigger is not "clicking away").
+    // This is the belt to that's braces: a caller who forgets gets a surface
+    // that opens, rather than one that silently refuses to.
+    const attachedAt = performance.now()
     const onClick = (e: MouseEvent) => {
+      if (e.timeStamp < attachedAt) return
       if (!(e.target as HTMLElement).closest(within)) onDismiss()
     }
     window.addEventListener('click', onClick)

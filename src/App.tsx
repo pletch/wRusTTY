@@ -1121,6 +1121,11 @@ function App() {
                     ? 'text-white/90'
                     : 'text-white/50 hover:text-white/90'
                 }`}
+                // Marks this button as part of the panel's own interaction
+                // scope, so the panel's click-away doesn't treat opening it as
+                // a click elsewhere. Without it the panel closed on the very
+                // click that opened it.
+                data-forward-toggle
                 title="Port forwarding"
                 onClick={() => activePaneId && toggleForwards(activePaneId)}
               >
@@ -1134,6 +1139,7 @@ function App() {
                     ? 'text-white/90'
                     : 'text-white/50 hover:text-white/90'
                 }`}
+                data-files-toggle
                 title="Remote files"
                 onClick={() => activePaneId && toggleFiles(activePaneId)}
               >

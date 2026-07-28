@@ -33,7 +33,7 @@ function describe(spec: ForwardSpec): string {
 export function ForwardPanel({ sessionId, onClose }: Props) {
   const confirm = useConfirm()
   // Rendered only while open, so it is always dismissable while mounted.
-  useDismissable(true, onClose, { within: '[data-forward-panel]' })
+  useDismissable(true, onClose, { within: '[data-forward-panel], [data-forward-toggle]' })
   const [active, setActive] = useState<ActiveForward[]>([])
   const [type, setType] = useState<ForwardSpec['type']>('local')
   const [bindHost, setBindHost] = useState('127.0.0.1')
