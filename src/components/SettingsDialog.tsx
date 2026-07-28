@@ -23,6 +23,7 @@ import { puttySessionCount } from '../lib/profiles'
 import { runPuttyImport } from '../lib/puttyBanner'
 import { exportVaultBundle, importVaultBundle } from '../lib/vaultTransfer'
 import { useConfirm } from './confirmContext'
+import { useDismissable } from '../hooks/useDismissable'
 import type { VaultStatus } from '../lib/vault'
 
 interface Props {
@@ -153,14 +154,7 @@ export function SettingsDialog({
     if (added) onSessionsImported?.()
   }
 
-  useEffect(() => {
-    if (!open) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open])
+  useDismissable(open, () => setOpen(false))
 
   // Deliberately not resetting `section` on close: reopening where you left
   // off is right far more often than not, since settings get revisited in

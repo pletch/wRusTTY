@@ -23,6 +23,7 @@ import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { useConfirm } from './confirmContext'
+import { useDismissable } from '../hooks/useDismissable'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
@@ -156,6 +157,13 @@ export function Terminal({
     index: -1,
     count: 0,
   })
+
+  // The search box is a dismissable surface like any other, so Escape reaches
+  // it only when it is the topmost one. Previously it had its own Escape on
+  // both the container and the input, which fired regardless of what else was
+  // open — so closing search with a forwarding panel up closed that too.
+  useDismissable(searchOpen, () => setSearchOpen(false))
+
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
   const [searchRegex, setSearchRegex] = useState(false)
   // Reinitializes to true on every mount, which is what we want — Pane.tsx
@@ -1042,9 +1050,11 @@ export function Terminal({
       } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
         setSearchOpen((v) => !v)
-      } else if (e.key === 'Escape') {
-        setSearchOpen(false)
       }
+      // Escape is not handled here. Closing search runs through the shared
+      // dismiss stack instead, so it competes properly with anything else
+      // open. Note it is never preventDefault'd on any path: ESC has to keep
+      // reaching the engine, or vim stops working.
     }
     container.addEventListener('keydown', onKeyDown, true)
 
@@ -1302,8 +1312,6 @@ export function Terminal({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 runSearch(searchQuery, { back: e.shiftKey })
-              } else if (e.key === 'Escape') {
-                setSearchOpen(false)
               } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
                 // Repeated from the pane-level binding because this input is a
                 // *sibling* of the terminal container, not a child — so the

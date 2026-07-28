@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { isTopDismissable, pushDismissable, removeDismissable } from '../lib/dismissStack'
 
 /** Closing a transient surface with the keyboard, and by clicking away from it.
  *
@@ -28,14 +29,28 @@ export function useDismissable(
   } = {},
 ) {
   const { within } = options
+  // Identity for this surface in the dismiss stack. A ref so it survives
+  // re-renders — a fresh token each render would re-register constantly and
+  // keep stealing the top spot from whatever is genuinely above.
+  const token = useRef<symbol>(undefined as unknown as symbol)
+  if (token.current === undefined) token.current = Symbol('dismissable')
 
   useEffect(() => {
     if (!active) return
+    const self = token.current
+    pushDismissable(self)
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDismiss()
+      // Every surface listens on `window`, because that is the only way to
+      // catch Escape wherever focus is — so without this check they all fire
+      // at once, and cancelling a confirmation raised from a panel would close
+      // the panel underneath it too.
+      if (e.key === 'Escape' && isTopDismissable(self)) onDismiss()
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      removeDismissable(self)
+    }
     // `onDismiss` is called, never compared — listing it would re-bind on every
     // render for callers passing an inline arrow, which is most of them.
     // eslint-disable-next-line react-hooks/exhaustive-deps

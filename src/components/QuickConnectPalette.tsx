@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search, Server, Network } from 'lucide-react'
 import type { SessionProfile } from '../lib/profiles'
 import { profileSubtitle } from '../lib/profiles'
+import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
   sessions: SessionProfile[]
@@ -13,6 +14,12 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Escape moved off this component's own input and onto the shared stack.
+  // On the input it fired regardless of what else was open, so pressing it
+  // with a panel already up closed both. Rendered only while open, so it is
+  // registered exactly as long as it is on screen.
+  useDismissable(true, onClose)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -29,9 +36,7 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
   }, [query])
 
   function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Escape') {
-      onClose()
-    } else if (e.key === 'ArrowDown') {
+    if (e.key === 'ArrowDown') {
       e.preventDefault()
       setIndex((i) => Math.min(i + 1, results.length - 1))
     } else if (e.key === 'ArrowUp') {

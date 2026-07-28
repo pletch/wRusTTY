@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { AlertTriangle } from 'lucide-react'
+import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
   title: string
@@ -21,17 +23,19 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
     cancelRef.current?.focus()
   }, [])
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onCancel])
+  // Rendered only while asking, so it is always the surface Escape should
+  // reach — and being registered last, it sits above whatever raised it.
+  useDismissable(true, onCancel)
 
-  return (
+  // Portalled to the body and above z-50, because a confirmation is by
+  // definition the topmost thing on screen — it is always raised *from*
+  // something else. Rendered inline it sat inside #root while SettingsDialog
+  // portals to the body, so at equal z-index the later DOM node won and the
+  // confirmation was invisible behind the dialog that raised it: a dimmed,
+  // apparently frozen app whose only way out was guessing Escape.
+  return createPortal(
     <div
-      className="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 duration-150"
+      className="animate-in fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 duration-150"
       onClick={onCancel}
     >
       <div
@@ -59,6 +63,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
