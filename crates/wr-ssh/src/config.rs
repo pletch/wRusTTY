@@ -142,6 +142,78 @@ mod tests {
             AuthMethod::Agent
         ));
     }
+
+    #[test]
+    fn debug_does_not_leak_password() {
+        let auth = AuthMethod::Password {
+            password: "hunter2".into(),
+        };
+        assert_eq!(format!("{auth:?}"), "Password(<redacted>)");
+    }
+
+    #[test]
+    fn debug_does_not_leak_key_material() {
+        let auth = AuthMethod::PublicKeyMaterial {
+            key_material: "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n".into(),
+            passphrase: Some("hunter2".into()),
+        };
+        let rendered = format!("{auth:?}");
+        assert_eq!(rendered, "PublicKeyMaterial(<redacted>)");
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("hunter2"));
+    }
+
+    /// The path is shown deliberately; the passphrase beside it is not.
+    #[test]
+    fn debug_shows_key_path_but_not_its_passphrase() {
+        let auth = AuthMethod::PublicKey {
+            key_path: "~/.ssh/id_ed25519".into(),
+            passphrase: Some("hunter2".into()),
+        };
+        let rendered = format!("{auth:?}");
+        assert!(rendered.contains("~/.ssh/id_ed25519"));
+        assert!(!rendered.contains("hunter2"));
+    }
+
+    /// The transitive case — `SshConfig` keeps its derived `Debug`, and it is
+    /// the type that actually gets logged in practice. Its safety is a
+    /// consequence of `AuthMethod`'s impl, so pin it rather than assume it.
+    #[test]
+    fn ssh_config_debug_does_not_leak_its_auth() {
+        let config = SshConfig {
+            host: "example.com".into(),
+            username: "root".into(),
+            auth: AuthMethod::Password {
+                password: "hunter2".into(),
+            },
+            ..Default::default()
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("hunter2"));
+        // The non-secret fields must still be there, or the redaction has
+        // cost the diagnostic its whole reason for existing.
+        assert!(rendered.contains("example.com"));
+    }
+
+    /// A jump host is a nested `SshConfig` with its own `auth`, so the
+    /// recursion has to stay clean too.
+    #[test]
+    fn ssh_config_debug_does_not_leak_a_jump_hosts_auth() {
+        let config = SshConfig {
+            host: "target".into(),
+            jump: Some(Box::new(SshConfig {
+                host: "bastion".into(),
+                auth: AuthMethod::Password {
+                    password: "jumppw".into(),
+                },
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("jumppw"));
+        assert!(rendered.contains("bastion"));
+    }
 }
 
 impl Default for SshConfig {
@@ -168,7 +240,13 @@ impl Default for SshConfig {
 /// passphrases, whole private keys) cloned out of the vault at connect
 /// time — the vault's own copies are zeroized on lock, and these
 /// short-lived copies shouldn't be the ones left lingering in freed heap.
-#[derive(Debug, Clone, Serialize, Deserialize, ZeroizeOnDrop)]
+///
+/// `Serialize` is an *inbound* path: `ssh_connect` receives an `SshConfig`
+/// from the webview, so the derive has to stay. Nothing here may be
+/// serialized *outbound* — not to disk, not into a log line. The session
+/// snapshot code already respects this by dropping ad-hoc SSH panes rather
+/// than persisting them.
+#[derive(Clone, Serialize, Deserialize, ZeroizeOnDrop)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
     Password {
@@ -200,4 +278,32 @@ pub enum AuthMethod {
     /// YubiKeys. Those are unreachable through every other variant here, no
     /// matter what the vault stores.
     Agent,
+}
+
+/// Written by hand rather than derived, for the same reason `Dek`/`Kek` in
+/// `wr-vault`'s `key.rs` do it: a derived `Debug` is one `tracing::debug!(?
+/// config)` away from writing a plaintext password — or a whole private key —
+/// into `%LOCALAPPDATA%/sh.wrustty.app/logs`, which isn't encrypted and is
+/// exactly what `reveal_session_logs` opens in Explorer. Nothing logs this
+/// type today; the point is to close the class rather than depend on every
+/// future edit remembering.
+///
+/// `key_path` is printed because it's a local filename the user chose, and a
+/// diagnostic saying only `PublicKey(<redacted>)` can't distinguish "wrong
+/// key" from "wrong passphrase" — which is the question this type usually
+/// gets debugged for. Everything that is or derives from a secret is not.
+impl std::fmt::Debug for AuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Password { .. } => f.write_str("Password(<redacted>)"),
+            Self::PublicKey { key_path, .. } => f
+                .debug_struct("PublicKey")
+                .field("key_path", key_path)
+                .field("passphrase", &"<redacted>")
+                .finish(),
+            Self::PublicKeyMaterial { .. } => f.write_str("PublicKeyMaterial(<redacted>)"),
+            Self::KeyboardInteractive => f.write_str("KeyboardInteractive"),
+            Self::Agent => f.write_str("Agent"),
+        }
+    }
 }
