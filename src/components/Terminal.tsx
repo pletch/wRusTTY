@@ -959,9 +959,11 @@ export function Terminal({
       if (text) writeText(text).catch(() => {})
     })
 
-    const onContextMenu = (e: MouseEvent) => {
-      if (!settingsRef.current.rightClickPaste) return
-      e.preventDefault()
+    // The single paste path, shared by right-click, Ctrl+Shift+V and
+    // Shift+Insert. Its own function precisely so the multi-line guard cannot
+    // apply to one route and not another: a keyboard paste that silently ran
+    // forty lines while the mouse route asked first would be the worst of both.
+    const pasteFromClipboard = () => {
       readText()
         .then((text) => {
           if (!text) return
@@ -980,6 +982,12 @@ export function Terminal({
         })
         .catch(() => {})
     }
+
+    const onContextMenu = (e: MouseEvent) => {
+      if (!settingsRef.current.rightClickPaste) return
+      e.preventDefault()
+      pasteFromClipboard()
+    }
     container.addEventListener('contextmenu', onContextMenu)
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -997,6 +1005,26 @@ export function Terminal({
         e.preventDefault()
         e.stopPropagation()
         writeText(text).catch(() => {})
+      } else if (
+        // The counterpart to the copy binding above, and safe for the same
+        // reason: Ctrl+Shift+V maps to no terminal sequence, so consuming it
+        // costs nothing on the wire. Plain Ctrl+V deliberately isn't bound —
+        // it sends ^V, which is readline's quoted-insert, and a terminal that
+        // swallowed it would break entering a literal control character.
+        //
+        // Shift+Insert is here because it is what PuTTY binds paste to, and
+        // that is the muscle memory this app's users arrive with.
+        //
+        // Neither respects `rightClickPaste`: that setting is about what the
+        // mouse does, not about whether pasting is allowed at all. Without
+        // these, turning it off left no way to paste — the same hole the
+        // Ctrl+Shift+C binding was added to close for copy.
+        (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v') ||
+        (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'Insert')
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        pasteFromClipboard()
       } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
         setSearchOpen((v) => !v)
