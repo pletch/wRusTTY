@@ -14,6 +14,13 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Checking out and building needs nothing but read. Declared here rather than
+# inherited from the repository default so the floor is visible in the file and
+# doesn't quietly widen if that default changes — matching audit.yml. Any job
+# needing more raises it for itself; see windows-build.
+permissions:
+  contents: read
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
@@ -58,6 +65,10 @@ jobs:
     # to hand someone.
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
+    # The one job that writes: tauri-action publishes the installer to a
+    # release when this runs on a tag, which is what its GITHUB_TOKEN is for.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
