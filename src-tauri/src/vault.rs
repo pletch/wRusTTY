@@ -352,7 +352,8 @@ pub async fn vault_unlock(
     master_password: String,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    let mut vault = Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
+    let mut vault =
+        Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
     if !vault.has_unlock_method(WrapperKind::OsKeyring) {
         let _ = forget_os_unlock_kek();
     }

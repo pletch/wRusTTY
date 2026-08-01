@@ -820,9 +820,8 @@ mod tests {
                 !retired.contains(&minted),
                 "{minted} was reissued after its profile was deleted"
             );
-            existing.push(
-                to_profile(&session("h", &[("HostName", str_value("h"))]), minted).unwrap(),
-            );
+            existing
+                .push(to_profile(&session("h", &[("HostName", str_value("h"))]), minted).unwrap());
         }
     }
 
