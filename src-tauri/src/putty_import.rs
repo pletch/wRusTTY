@@ -29,9 +29,21 @@ use tauri::AppHandle;
 use crate::profiles::SessionProfile;
 
 /// Where PuTTY and its forks keep saved sessions, under `HKEY_CURRENT_USER`.
+///
+/// Gated, unlike the rest of this module: it is read by `read_sessions` and
+/// nothing else, so off Windows there is no registry to name and no test that
+/// needs the string.
+#[cfg(windows)]
 const PUTTY_SESSIONS_KEY: &str = r"Software\SimonTatham\PuTTY\Sessions";
 
 /// A registry value, in the two shapes PuTTY actually stores.
+///
+/// Only `read_sessions` and the tests build one — the accessors below just
+/// match — so off Windows a non-test build sees the variants constructed
+/// nowhere. They are still wanted there: the mapping they feed is the part
+/// this module keeps testable on a Linux runner, which is the whole reason it
+/// is split this way.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Str(String),
@@ -87,6 +99,10 @@ impl PuttySession {
 /// A malformed escape is passed through as literal text rather than dropped: a
 /// name is cosmetic, and mangling one is a better outcome than refusing to
 /// import the session it belongs to.
+///
+/// Called by `read_sessions` and by the tests, so off Windows a non-test build
+/// has no caller — see the note on [`Value`].
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn decode_name(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
