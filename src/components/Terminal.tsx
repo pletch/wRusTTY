@@ -12,6 +12,7 @@ import {
   Regex,
   RotateCw,
   Unplug,
+  TextCursorInput,
 } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import { error as logError } from '@tauri-apps/plugin-log'
@@ -191,6 +192,10 @@ export function Terminal({
   const termRef = useRef<TerminalEngine | null>(null)
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
+  /** Keyboard selection is on. Mirrors engine state so the pane can say so —
+   *  a mode that takes the arrow keys with nothing on screen to explain why is
+   *  indistinguishable from a wedged pane. */
+  const [markMode, setMarkMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   // Result position for the "N/M" count, fed by the addon's onDidChangeResults
   // (set up in the connect effect). index is 0-based, -1 when there are none.
@@ -1141,6 +1146,14 @@ export function Terminal({
       if (text) writeText(text).catch(() => {})
     })
 
+    // Mark mode copies through the engine rather than by reaching for the
+    // clipboard itself — see TerminalEngine.onCopyRequest. Unconditional:
+    // pressing Enter to copy is an explicit request, not copy-on-select.
+    const copyListener = term.onCopyRequest?.((text) => {
+      if (text) writeText(text).catch(() => {})
+    })
+    const markModeListener = term.onMarkModeChange?.(setMarkMode)
+
     // The single paste path, shared by right-click, Ctrl+Shift+V and
     // Shift+Insert. Its own function precisely so the multi-line guard cannot
     // apply to one route and not another: a keyboard paste that silently ran
@@ -1210,6 +1223,14 @@ export function Terminal({
       } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
         e.preventDefault()
         setSearchOpen((v) => !v)
+      } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'm') {
+        // Selecting with the keyboard. Ctrl+Shift+M is what Windows Terminal
+        // binds mark mode to, and like the copy and paste bindings above it
+        // maps to no terminal sequence, so consuming it costs nothing on the
+        // wire. The engine owns the mode itself — this is only the way in.
+        e.preventDefault()
+        e.stopPropagation()
+        term.toggleMarkMode?.()
       }
       // Escape is not handled here. Closing search runs through the shared
       // dismiss stack instead, so it competes properly with anything else
@@ -1326,6 +1347,8 @@ export function Terminal({
       container.removeEventListener('contextmenu', onContextMenu)
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()
+      copyListener?.dispose()
+      markModeListener?.dispose()
       dataListener.dispose()
       inputListener.dispose()
       scrollListener.dispose()
@@ -1462,6 +1485,17 @@ export function Terminal({
           <p className="max-w-xs text-white/70">This pane's terminal renderer failed to start.</p>
           <p className="max-w-xs text-white/40">{engineFailed}</p>
           <p className="max-w-xs text-white/40">Details are in the application log.</p>
+        </div>
+      )}
+      {markMode && (
+        // Bottom-left, clear of the search bar: both can be open at once, and
+        // the mode is the thing you need to see while looking at text in the
+        // middle of the pane. The keys are spelled out because a mode that
+        // swallows typing has to say how to get back out of it.
+        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs text-white/70 shadow-xl duration-fast ease-swift">
+          <TextCursorInput size={13} className="text-emerald-400" />
+          <span className="font-medium">Mark</span>
+          <span className="text-white/40">Shift+arrows select · Enter copies · Esc exits</span>
         </div>
       )}
       {searchOpen && (

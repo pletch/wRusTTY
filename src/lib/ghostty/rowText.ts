@@ -29,3 +29,26 @@ export function columnText(row: RowText, c: number): string {
   if (c < 0 || c + 1 >= row.colStart.length) return ''
   return row.text.slice(row.colStart[c], row.colStart[c + 1])
 }
+
+/**
+ * What counts as one word. Deliberately wider than alphanumerics: the things
+ * worth grabbing out of a terminal in one gesture are paths, flags, hostnames
+ * and URLs, and stopping at every `/` or `.` turns picking up a path into
+ * several gestures.
+ *
+ * Hoisted to module scope so the literal isn't recompiled per call — V8 handles
+ * the inline form well, but a word scan calls this once per column and a
+ * module-level constant is free.
+ *
+ * Lives here rather than in either caller because both the mouse's double-click
+ * and mark mode's word-wise movement have to agree on where a word ends; two
+ * copies of this regex would be two slightly different answers within a week.
+ */
+const WORD_RE = /[A-Za-z0-9_\-./:@~+=%?&#]/
+
+export function isWordChar(s: string): boolean {
+  if (s.length === 0) return false
+  const c = s.codePointAt(0)!
+  if (c > 127) return true // CJK, accented letters, and the like
+  return WORD_RE.test(s[0])
+}

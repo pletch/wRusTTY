@@ -1,4 +1,4 @@
-import { columnText, type RowText } from './rowText'
+import { columnText, isWordChar, type RowText } from './rowText'
 
 /**
  * Selecting text with the mouse, extracted from `GhosttyEngine`.
@@ -18,25 +18,6 @@ import { columnText, type RowText } from './rowText'
 /** How far a drag past the edge can scroll per tick, and how often. */
 const DRAG_SCROLL_MAX_LINES = 8
 const DRAG_SCROLL_INTERVAL_MS = 50
-
-/**
- * What counts as one word for double-click. Deliberately wider than
- * alphanumerics: the things worth grabbing out of a terminal in one gesture
- * are paths, flags, hostnames and URLs, and stopping at every `/` or `.`
- * turns picking up a path into several drags.
- *
- * Hoisted to module scope so the literal isn't recompiled per call — V8
- * handles the inline form well, but the word scan calls this once per column
- * and a module-level constant is free.
- */
-const WORD_RE = /[A-Za-z0-9_\-./:@~+=%?&#]/
-
-function isWordChar(s: string): boolean {
-  if (s.length === 0) return false
-  const c = s.codePointAt(0)!
-  if (c > 127) return true // CJK, accented letters, and the like
-  return WORD_RE.test(s[0])
-}
 
 export interface Point {
   x: number

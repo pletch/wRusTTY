@@ -340,7 +340,7 @@ export function SettingsDialog({
                         checked={settings.copyOnSelect}
                         onChange={(v) => onChange({ ...settings, copyOnSelect: v })}
                         label="Copy on select"
-                        hint="Selecting text in the terminal copies it automatically. Ctrl+Shift+C copies the selection either way."
+                        hint="Selecting text in the terminal copies it automatically. Ctrl+Shift+C copies the selection either way, and Ctrl+Shift+M selects with the keyboard."
                       />
                       <Toggle
                         checked={settings.rightClickPaste}

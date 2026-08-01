@@ -7,6 +7,7 @@ import type {
 import { SearchController } from './SearchController'
 import { MouseReporter } from './MouseReporter'
 import { SelectionController } from './SelectionController'
+import { MarkModeController } from './MarkModeController'
 import { ContextManager } from './ContextManager'
 import type { RowText } from './rowText'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
@@ -243,6 +244,11 @@ export class GhosttyEngine implements TerminalEngine {
    *  a selection into text. Assigned in the constructor. */
   private readonly selection: SelectionController
   private onSelectionChangeHandlers = new Set<() => void>()
+  /** Keyboard selection. Off unless the user asks for it; while on it takes
+   *  the arrow keys, which otherwise belong to the program. */
+  private readonly markMode: MarkModeController
+  private onMarkModeHandlers = new Set<(active: boolean) => void>()
+  private onCopyRequestHandlers = new Set<(text: string) => void>()
   /** Bytes of an OSC that began in an earlier chunk and has not terminated.
    *  Already parsed; retained only to match the pattern across the boundary. */
   private oscPending: Uint8Array | null = null
@@ -317,6 +323,28 @@ export class GhosttyEngine implements TerminalEngine {
         for (const h of this.onSelectionChangeHandlers) h()
       },
       cols: () => this._cols,
+    })
+    this.markMode = new MarkModeController({
+      readRows: (from, to) => this.readRows(from, to),
+      cols: () => this._cols,
+      rows: () => this._rows,
+      totalRows: () => this.scrollbackLength,
+      terminalCursor: () => this.terminalCursorCell(),
+      setSelection: (sel) => {
+        if (this.renderer) this.renderer.selection = sel
+        this.needsRedraw = true
+      },
+      scrollRowIntoView: (row) => this.scrollRowIntoView(row),
+      emitChange: () => {
+        for (const h of this.onSelectionChangeHandlers) h()
+      },
+      selectionText: () => this.getSelection(),
+      requestCopy: (text) => {
+        for (const h of this.onCopyRequestHandlers) h(text)
+      },
+      notifyMode: (active) => {
+        for (const h of this.onMarkModeHandlers) h(active)
+      },
     })
     this.searchController = new SearchController({
       readRows: (from, to) => this.readRows(from, to),
@@ -873,6 +901,15 @@ export class GhosttyEngine implements TerminalEngine {
     window.removeEventListener('mousemove', this.onWindowMouseMove)
   }
 
+  /** A key mark mode claimed is a key nothing else may see: one that both moved
+   *  the mark cursor and reached the shell would be doing two contradictory
+   *  things at once. */
+  private onMarkModeKey = (e: KeyboardEvent) => {
+    if (!this.markMode.handleKey(e)) return
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
   private onWindowMouseMove = (e: MouseEvent) => {
     // A button released outside the window never delivers mouseup here, and a
     // selection left believing it is still being dragged keeps the autoscroll
@@ -1041,6 +1078,12 @@ export class GhosttyEngine implements TerminalEngine {
 
     window.addEventListener('mouseup', this.onMouseUp)
 
+    // Capture, on the container: the input element is a child of it, so this
+    // sees a key before the handler that would turn it into a sequence on the
+    // wire. Mark mode is the only thing here that can consume a key, and it
+    // consumes none at all while it is off.
+    this.container.addEventListener('keydown', this.onMarkModeKey, true)
+
     // Only a focused pane blinks. A wall of panes all blinking out of phase is
     // noise, and it also means an idle background pane never wakes the loop.
     this.cursorBlinkTimer = setInterval(this.onBlinkTick, CURSOR_BLINK_MS)
@@ -1064,6 +1107,11 @@ export class GhosttyEngine implements TerminalEngine {
       e.preventDefault()
       this.inputHandler?.focus()
       if (e.button !== 0) return // Only handle left-click for selection
+
+      // The mouse is taking the selection over, so the keyboard has to let go
+      // of it — otherwise the arrow keys stay captured while pointing at a
+      // selection the drag has already replaced.
+      this.markMode.cancel()
       // `detail` counts clicks in a run, which is how the platform already
       // decides what a double-click is — no timing to reimplement here.
       if (e.detail === 2) {
@@ -1138,7 +1186,9 @@ export class GhosttyEngine implements TerminalEngine {
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
     window.removeEventListener('mouseup', this.onMouseUp)
+    this.container?.removeEventListener('keydown', this.onMarkModeKey, true)
     this.stopDragTracking()
+    this.markMode.cancel()
     this.selection.dispose()
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)
@@ -1765,6 +1815,55 @@ export class GhosttyEngine implements TerminalEngine {
     this.scrollToLine(target)
   }
 
+  /**
+   * Scrolls the least amount that puts absolute `row` on screen.
+   *
+   * Deliberately not `revealRow`: that parks its target a third of the way down
+   * so a search hit has context around it, which is right for a jump and wrong
+   * for a cursor being walked one line at a time — the pane would lurch on
+   * every arrow key.
+   */
+  private scrollRowIntoView(row: number): void {
+    const top = this.viewportY
+    if (row < top) this.scrollToLine(row)
+    else if (row >= top + this._rows) this.scrollToLine(row - this._rows + 1)
+  }
+
+  /** Where the terminal's own cursor is, in absolute buffer coordinates. The
+   *  core reports it relative to the active screen, which always sits at the
+   *  end of the buffer however far the view is scrolled back. */
+  private terminalCursorCell(): { x: number; y: number } {
+    if (!this.wasm) return { x: 0, y: 0 }
+    const screenTop = Math.max(0, this.scrollbackLength - this._rows)
+    return {
+      x: this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr),
+      y: screenTop + this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr),
+    }
+  }
+
+  /**
+   * Turns keyboard selection on or off. See `MarkModeController` for why it is
+   * a mode at all rather than a shift-arrow binding.
+   */
+  toggleMarkMode(): void {
+    if (!this.renderer) return
+    this.markMode.toggle()
+  }
+
+  isMarkMode(): boolean {
+    return this.markMode.isActive()
+  }
+
+  onMarkModeChange(cb: (active: boolean) => void): IDisposable {
+    this.onMarkModeHandlers.add(cb)
+    return { dispose: () => this.onMarkModeHandlers.delete(cb) }
+  }
+
+  onCopyRequest(cb: (text: string) => void): IDisposable {
+    this.onCopyRequestHandlers.add(cb)
+    return { dispose: () => this.onCopyRequestHandlers.delete(cb) }
+  }
+
   clearSearchDecorations(): void {
     this.searchController.clear()
   }
@@ -1790,6 +1889,10 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   clearSelection(): void {
+    // Whatever is dropping the selection is also ending keyboard selection —
+    // the mark cursor is drawn *as* the selection, so leaving the mode on would
+    // leave a captured keyboard with nothing on screen to show for it.
+    this.markMode.cancel()
     // Guarded here rather than in the controller: "there was nothing to
     // clear" must not fire a change notification.
     if (!this.renderer || !this.renderer.selection) return

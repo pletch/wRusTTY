@@ -108,4 +108,23 @@ export interface TerminalEngine {
   search(query: string, options?: SearchOptions): void
   clearSearchDecorations(): void
   onSearchResult(cb: (result: SearchResult) => void): IDisposable
+
+  /**
+   * Keyboard selection ("mark mode"): a mode rather than a shift-arrow binding,
+   * because the modified arrows are sequences the running program owns.
+   *
+   * Optional as a group — an engine either takes the keyboard for selection or
+   * it doesn't, and one that doesn't omits all four. Callers must treat their
+   * absence as "no keyboard selection here", not as "not selecting right now".
+   */
+  toggleMarkMode?(): void
+  isMarkMode?(): boolean
+  onMarkModeChange?(cb: (active: boolean) => void): IDisposable
+  /**
+   * The engine is asking for text to be put on the clipboard — currently only
+   * mark mode's copy. The engine has no clipboard of its own: the app's is
+   * Tauri's, and reaching it from inside the engine would put a platform
+   * dependency where there is otherwise none.
+   */
+  onCopyRequest?(cb: (text: string) => void): IDisposable
 }
