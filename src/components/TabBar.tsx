@@ -11,6 +11,7 @@ import {
   CircleDashed,
 } from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
+import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
 import { allLeaves, verticalRows } from '../lib/paneTree'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
@@ -22,6 +23,15 @@ interface Props {
   /** Per-pane command state from shell integration — a tab spins while any
    * of its panes has a command running. */
   activityByPane: Record<string, CommandActivity>
+  /** Per-pane progress a *program* reported for itself (OSC 9;4), for panes
+   * that have any. Drives the same running marker as `activityByPane`, and
+   * deliberately so: to the user "something is working in that pane" is one
+   * fact, whoever happened to say it. The two informants cover disjoint cases
+   * — the shell goes quiet exactly when a full-screen program takes over —
+   * so in practice they rarely both speak at once, and either alone is enough
+   * to spin the marker. All three progress states count, including `error`
+   * and `paused`: each still means a program is there and hasn't finished. */
+  progressByPane: Record<string, AppProgress>
   /** Panes holding something the user hasn't seen yet: a bell rang, or a long
    * command finished, while the tab was in the background. Keyed by pane, not
    * tab, so the marker can sit on the segment of the pane it happened in. */
@@ -235,6 +245,7 @@ export function TabBar({
   activeTabId,
   statusByPane,
   activityByPane,
+  progressByPane,
   attentionPanes,
   onSelect,
   onClose,
@@ -361,7 +372,9 @@ export function TabBar({
           const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null
           const runningPaneIds = new Set(
-            leaves.filter((l) => activityByPane[l.id]?.state === 'running').map((l) => l.id),
+            leaves
+              .filter((l) => activityByPane[l.id]?.state === 'running' || progressByPane[l.id])
+              .map((l) => l.id),
           )
           const attentionPaneIds = new Set(leaves.filter((l) => attentionPanes[l.id]).map((l) => l.id))
           const running = runningPaneIds.size > 0

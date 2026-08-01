@@ -74,6 +74,7 @@ import {
   filesOpenByPaneOf,
   sessionIdByPaneOf,
   activityByPaneOf,
+  progressByPaneOf,
   attentionPanesOf,
   dimensionsByPaneOf,
   scrollbackBudgetByPaneOf,
@@ -102,6 +103,15 @@ function refit() {
  * would fire a toast — which trains you to ignore them, defeating the point.
  * Ten seconds is roughly "long enough that you went and did something else". */
 const COMMAND_NOTIFY_THRESHOLD_MS = 10_000
+
+/** Progress shorter than this leaves no marker behind when it clears.
+ *
+ * Lower than the command threshold above because it buys less and costs less.
+ * It raises a passive marker rather than a toast, and a program only reports
+ * progress at all when it deliberately chose to — there is no equivalent of a
+ * shell reporting every `ls`. Five seconds is enough to rule out the one real
+ * false positive: a tool that flashes progress for a moment on startup. */
+const PROGRESS_NOTIFY_THRESHOLD_MS = 5_000
 
 /** The same event, for a notification the OS renders — which on Windows means
  * the lock screen, by default, for a machine the user has walked away from.
@@ -192,6 +202,7 @@ function App() {
   const filesOpenByPane = useMemo(() => filesOpenByPaneOf(paneRuntime), [paneRuntime])
   const sessionIdByPane = useMemo(() => sessionIdByPaneOf(paneRuntime), [paneRuntime])
   const activityByPane = useMemo(() => activityByPaneOf(paneRuntime), [paneRuntime])
+  const progressByPane = useMemo(() => progressByPaneOf(paneRuntime), [paneRuntime])
   const attentionPanes = useMemo(() => attentionPanesOf(paneRuntime), [paneRuntime])
   const dimensionsByPane = useMemo(() => dimensionsByPaneOf(paneRuntime), [paneRuntime])
   const scrollbackBudgetByPane = useMemo(() => scrollbackBudgetByPaneOf(paneRuntime), [paneRuntime])
@@ -1050,6 +1061,7 @@ function App() {
           activeTabId={activeTabId}
           statusByPane={statusByPane}
           activityByPane={activityByPane}
+          progressByPane={progressByPane}
           attentionPanes={attentionPanes}
           onSelect={selectTab}
           onClose={closeTab}
@@ -1354,6 +1366,56 @@ function App() {
                   onActivity={(activity) =>
                     dispatchPaneRuntime({ type: 'activityChanged', paneId: leaf.id, activity })
                   }
+                  onProgress={(progress) =>
+                    dispatchPaneRuntime({ type: 'progressChanged', paneId: leaf.id, progress })
+                  }
+                  onProgressComplete={(durationMs) => {
+                    // The moment a full-screen program over SSH finally has
+                    // something to say. While it works the running marker
+                    // covers it, but that marker vanishes the instant it
+                    // stops — so without this, coming back from another app
+                    // means finding a tab that looks exactly as idle as one
+                    // that never ran anything.
+                    if (durationMs < PROGRESS_NOTIFY_THRESHOLD_MS) return
+                    // Same "was this pane in view" test as a bell — the other
+                    // half of a split finishing still deserves a marker.
+                    if (leaf.id === focusedPaneId && document.hasFocus()) return
+                    dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
+                    // Marker and flash, but no toast or notification, which is
+                    // the bell's treatment rather than a command completion's.
+                    // All this knows is that something stopped: it has no
+                    // command line, no exit code and no text, so a notification
+                    // would say nothing the flashing button doesn't. A program
+                    // with something to say can say it — that's OSC 9/777, and
+                    // it goes through onRemoteNotify below.
+                    if (!document.hasFocus()) void flashWindow()
+                  }}
+                  onRemoteNotify={(notification) => {
+                    if (!terminalSettings.remoteNotifications) return
+                    // The pane's name is prepended rather than used as the
+                    // title, so remote text can never occupy the line a user
+                    // reads as the app speaking. A hostile host gets to say
+                    // something; it does not get to say it *as* wRusTTY.
+                    const from = notification.title
+                      ? `${tab.title}: ${notification.title}`
+                      : tab.title
+                    // Same "was this pane in view" test as a bell or a
+                    // completion — a notification from the other half of a
+                    // split still deserves a marker.
+                    if (!(leaf.id === focusedPaneId && document.hasFocus())) {
+                      dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
+                    }
+                    // Shown even for the pane you are watching, unlike a
+                    // command completion. A completion is inferred, so it has
+                    // to guess whether you needed telling; this was asked for
+                    // by name, and swallowing it would make the sequence
+                    // unreliable in the one case its sender can't detect.
+                    if (document.hasFocus()) {
+                      toast.info(`${from} — ${notification.body}`)
+                      return
+                    }
+                    void notifyInBackground(from, notification.body)
+                  }}
                   onCommandComplete={(result) => {
                     if (!terminalSettings.notifyOnCommandComplete) return
                     // A full-screen program (vim, top) that you quit a moment

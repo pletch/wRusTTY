@@ -56,6 +56,22 @@ export interface TerminalSettings {
    * merging them would have meant retiring `bellMarksTab`'s storage key and
    * silently resetting anyone who had turned it off. */
   bellSound: boolean
+  /** A program on the far end may ask for a desktop notification by name,
+   * with OSC 9 or OSC 777, and have its text shown.
+   *
+   * Distinct from `notifyOnCommandComplete`, which is this app *inferring* a
+   * notification from a command's exit: here the remote side is choosing both
+   * the moment and the words. That is why it gets its own toggle despite
+   * sounding like the same feature — the text is attacker-controlled if the
+   * host is hostile (bounded and stripped of control characters in
+   * lib/appProgress.ts, and always shown under the pane's own name so it can
+   * never impersonate the app itself), and someone may reasonably want no
+   * such channel at all.
+   *
+   * On by default regardless: it needs no shell setup, works through a
+   * full-screen program where nothing else does, and only fires when a
+   * program deliberately asks. */
+  remoteNotifications: boolean
   /** Programs on the far end may put text on this machine's clipboard with
    * OSC 52. Reading it is never allowed regardless of this setting — that
    * half is refused in the parser, not gated here.
@@ -146,6 +162,7 @@ const defaults: TerminalSettings = {
   notifyOnCommandComplete: true,
   bellMarksTab: true,
   bellSound: false,
+  remoteNotifications: true,
   clipboardWriteFromRemote: true,
   fontFamily: 'ui-monospace, Consolas, monospace',
   fontSize: 14,

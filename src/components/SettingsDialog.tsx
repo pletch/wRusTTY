@@ -471,6 +471,12 @@ export function SettingsDialog({
                         hint="A bell from the far end flags its pane in the tab strip until you focus it. Needs no setup on the host."
                       />
                       <Toggle
+                        checked={settings.remoteNotifications}
+                        onChange={(v) => onChange({ ...settings, remoteNotifications: v })}
+                        label="Programs may raise notifications"
+                        hint="A program on the far end can ask for a notification by name (OSC 9 / OSC 777) and choose its text. Works inside full-screen programs, where shell integration can't. Always shown under the pane's name."
+                      />
+                      <Toggle
                         checked={settings.bellSound}
                         onChange={(v) => onChange({ ...settings, bellSound: v })}
                         label="Bell plays a sound"

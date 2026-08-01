@@ -29,6 +29,8 @@ import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
+import { parseOsc9, parseOsc777, ProgressTracker } from '../lib/appProgress'
+import type { AppProgress, RemoteNotification } from '../lib/appProgress'
 import { applyOsc52 } from '../lib/osc52'
 import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
@@ -105,6 +107,28 @@ interface Props {
    * 133 reports — silent (permanently idle) against a shell with no
    * integration set up. See lib/shellIntegration.ts. */
   onActivity?: (activity: CommandActivity) => void
+  /** What a program on the far end says it is doing, via OSC 9;4 — null when
+   * it has cleared its progress or the session has gone.
+   *
+   * The signal for the case `onActivity` structurally cannot cover: a
+   * full-screen program on a remote host, which the shell sees as one long
+   * command and reports nothing about. See lib/appProgress.ts. */
+  onProgress?: (progress: AppProgress | null) => void
+  /** A program that had been reporting progress has stopped — it cleared its
+   * own progress, or the shell got back to a prompt, which proves it can't
+   * still be running.
+   *
+   * The full-screen counterpart to `onCommandComplete`, and the moment that
+   * actually wants you back: a tool that has been working for ten minutes has
+   * either finished or is waiting on you. Not raised when the *session* went
+   * away — a dropped connection says nothing about what the program was doing.
+   *
+   * @param durationMs how long progress had been up. The caller applies its
+   * own floor; a program that flashes progress for a second wants nothing. */
+  onProgressComplete?: (durationMs: number) => void
+  /** The far end asked for a desktop notification by name (OSC 9 / OSC 777),
+   * rather than this app inferring one from a command's exit. */
+  onRemoteNotify?: (notification: RemoteNotification) => void
   /** A command finished, with its exit code and how long it took. */
   onCommandComplete?: (result: CommandResult) => void
   /** The far end rang the terminal bell (BEL, 0x07) — the oldest and most
@@ -151,6 +175,9 @@ export function Terminal({
   onDimensions,
   onScrollbackBudget,
   onActivity,
+  onProgress,
+  onProgressComplete,
+  onRemoteNotify,
   onCommandComplete,
   onBell,
   onBackToConnect,
@@ -314,6 +341,15 @@ export function Terminal({
 
   const onCommandCompleteRef = useRef(onCommandComplete)
   onCommandCompleteRef.current = onCommandComplete
+
+  const onProgressRef = useRef(onProgress)
+  onProgressRef.current = onProgress
+
+  const onProgressCompleteRef = useRef(onProgressComplete)
+  onProgressCompleteRef.current = onProgressComplete
+
+  const onRemoteNotifyRef = useRef(onRemoteNotify)
+  onRemoteNotifyRef.current = onRemoteNotify
 
   const onBellRef = useRef(onBell)
   onBellRef.current = onBell
@@ -761,8 +797,57 @@ export function Terminal({
         if (!disposed) onCommandCompleteRef.current?.(result)
       },
     })
+    // What a program on the far end last reported through OSC 9;4, so a
+    // repeat can be recognised and dropped before it reaches App. A busy app
+    // re-sends the same indeterminate state for as long as it runs, and this
+    // handler is on the output hot path.
+    const progressTracker = new ProgressTracker({
+      onChange: (progress) => {
+        if (!disposed) onProgressRef.current?.(progress)
+      },
+      onComplete: (durationMs) => {
+        if (!disposed) onProgressCompleteRef.current?.(durationMs)
+      },
+    })
+
     const oscListeners = [133, 633].map((ident) =>
-      term.registerOscHandler(ident, (data) => tracker.handleOsc(data)),
+      term.registerOscHandler(ident, (data) => {
+        // A prompt being drawn, or a command reporting its exit, means the
+        // program that set any progress is gone. Apps are supposed to clear
+        // their own with `9;4;0` on the way out, and a great many do — but one
+        // killed with SIGKILL, or cut off mid-run, never gets to, and the
+        // indicator would otherwise spin for the rest of the pane's life. The
+        // shell reaching a fresh prompt is the proof that it can't still be
+        // running. Done here rather than inside CommandTracker: this is not
+        // the shell's signal to own, only the moment that invalidates it.
+        const kind = data.split(';')[0]
+        if (kind === 'A' || kind === 'D') progressTracker.set(null)
+        return tracker.handleOsc(data)
+      }),
+    )
+    // Progress and notifications the *application* emits, as opposed to the
+    // shell markers above. This is the only signal that survives a full-screen
+    // program over SSH: there is no local PTY to inspect, and the shell sees
+    // the whole session as one command and says nothing until it ends. See
+    // lib/appProgress.ts.
+    oscListeners.push(
+      term.registerOscHandler(9, (data) => {
+        const result = parseOsc9(data)
+        if (result.kind === 'progress') progressTracker.set(result.progress)
+        else if (result.kind === 'notify') onRemoteNotifyRef.current?.(result.notification)
+        // Claimed either way, including the ignored forms: nothing else here
+        // handles OSC 9, and letting an unrecognised subcommand fall through
+        // gains nothing.
+        return true
+      }),
+      term.registerOscHandler(777, (data) => {
+        const notification = parseOsc777(data)
+        if (notification) onRemoteNotifyRef.current?.(notification)
+        // Not claimed unconditionally: OSC 777 has subcommands beyond
+        // `notify` that this doesn't implement, and swallowing them would
+        // silently block a later handler that does.
+        return notification !== null
+      }),
     )
     // OSC 52 is the only copy path a program on the far end of a session has:
     // it cannot reach this machine's clipboard, and while it is grabbing the
@@ -805,8 +890,12 @@ export function Terminal({
             term.writeln(`\r\n[${event.status}]`)
             // Whatever was running went down with the connection. Its real
             // outcome is unknowable from here, so drop it silently rather
-            // than leaving the tab spinning or claiming a completion.
+            // than leaving the tab spinning or claiming a completion. The
+            // same goes for any progress an application had set: it had no
+            // chance to clear it, and there is now no session it could
+            // describe.
             tracker.reset()
+            progressTracker.reset()
           }
           if (event.status.startsWith('failed')) {
             setConnectFailed(event.status.replace(/^failed: /, ''))
@@ -1250,6 +1339,9 @@ export function Terminal({
       // is a no-op when nothing was running) so a pane torn down mid-command
       // can't leave a spinner behind on a tab that no longer has a session.
       onActivityRef.current?.(IDLE)
+      // Same reasoning, and reported directly for the same reason: `disposed`
+      // is already set by this point, so setProgress would refuse it.
+      onProgressRef.current?.(null)
       upBtn.removeEventListener('mousedown', onUpMouseDown)
       downBtn.removeEventListener('mousedown', onDownMouseDown)
       track.removeEventListener('mousedown', onTrackMouseDown)

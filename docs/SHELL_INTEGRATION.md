@@ -13,7 +13,9 @@ source, which is why there is a setup step at all.
 
 Nothing breaks without it — a pane's segment of the tab strip simply never
 shows the running marker, and command notifications never fire. The bell
-marker (below) needs no setup.
+marker needs no setup, and neither do the sequences a program emits about
+itself — see "Programs that report for themselves" below, which is also the
+only thing that reports anything while a full-screen program is up.
 
 ## Installing it
 
@@ -230,6 +232,87 @@ A completion only raises a toast when all of these hold:
   finish, you don't need telling.
 - It never entered the alternate screen. Quitting `vim` after twenty minutes
   is not a background job landing.
+
+## Programs that report for themselves
+
+Shell integration has one structural gap: it reports *commands*, and a
+full-screen program is a single command. Start `tmux`, `vim`, `top` or Claude
+Code and the shell says nothing for however long you stay in it — and wRusTTY
+suppresses the running marker on the alternate screen anyway, since "you are
+using a program" is not news.
+
+An application can close that gap itself, because these sequences come from the
+program rather than the shell. That makes them work with no setup on the host,
+inside a full-screen program, and over SSH — they are just bytes in the output
+stream, exactly like a title change.
+
+**Progress** (ConEmu's OSC 9;4; Windows Terminal draws the same thing in its
+tab). wRusTTY spins the pane's marker for as long as progress is set:
+
+```sh
+printf '\033]9;4;3\a'          # busy, no idea how far along
+printf '\033]9;4;1;40\a'       # 40%
+printf '\033]9;4;0\a'          # done — clear it
+```
+
+State `2` is an error and `4` is paused; both still count as "a program is
+there and hasn't finished", so both keep the marker up. An app that dies
+without clearing its progress doesn't strand the marker: the next OSC 133
+prompt or command exit clears it, as does a disconnect.
+
+When progress that had been up for at least five seconds clears, the pane
+keeps the amber attention marker until you focus it, and the taskbar button
+flashes if the window isn't in front — the same treatment a bell gets. That
+transition is the point of the whole thing: while the program works the
+running marker covers it, but that marker vanishes the moment it stops, so
+without this, coming back from another application would show a tab that
+looks exactly as idle as one that never ran anything. There's no toast or
+desktop notification, because this signal carries no text — a program with
+something to say can say it with OSC 9 or OSC 777 below.
+
+A *disconnect* takes the marker down without leaving that trace. The program's
+fate isn't knowable from here, and claiming it finished would be a lie.
+
+### Telling programs the terminal supports it
+
+Programs don't probe for progress support — they recognise terminals by name
+from a fixed list, and stay silent for anything they don't know. wRusTTY
+therefore advertises itself as ConEmu-compatible (`ConEmuANSI=ON`) when
+opening an SSH session, since OSC 9;4 is ConEmu's sequence.
+
+That is sent as an SSH environment request, which **a default sshd throws
+away**: `AcceptEnv` defaults to `LANG LC_*`. So on any host where progress
+matters, set it in the shell's rc instead:
+
+```sh
+echo 'export ConEmuANSI=ON' >> ~/.bashrc     # or ~/.zshrc
+```
+
+Claude Code is the concrete case. It emits `9;4;3` while it works and `9;4;0`
+when it stops — but only when it sees `ConEmuANSI`/`ConEmuPID`/`ConEmuTask`,
+or a `TERM_PROGRAM` of `ghostty` >= 1.2.0 or `iTerm.app` >= 3.6.6. Without one
+of those it emits nothing at all, no matter what its own **terminal progress
+bar** setting says, and the pane stays blank for the whole turn. (It also
+disables progress outright under Windows Terminal, which is why the activity
+indicator you see there is the tab *title*, not a progress bar.)
+
+With the variable set, its pane spins over SSH even though it never returns to
+a prompt, its tab is marked when it stops, and the taskbar flashes if you're in
+another application.
+
+**Notifications** (iTerm2's OSC 9, and urxvt/kitty's OSC 777), gated by
+**Programs may raise notifications** in Settings → Notifications:
+
+```sh
+printf '\033]9;backup finished\a'
+printf '\033]777;notify;Backup;finished in 4m\a'
+```
+
+Unlike a completion notification these fire whenever the program asks,
+including for the pane you are watching — the sender has no way to know
+whether you saw it. The text is remote input, so it is truncated, stripped of
+control characters, and always shown under the pane's own name rather than as
+a title of its own.
 
 ## Bell
 

@@ -236,6 +236,28 @@ impl SshConnector {
         // Must precede `request_shell` — environment set after the shell
         // starts cannot reach it.
         let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
+        // Advertise progress reporting — OSC 9;4, the sequence that spins a
+        // pane's marker while a program works (see lib/appProgress.ts).
+        //
+        // `ConEmuANSI` rather than a name of our own because programs do not
+        // probe for this capability, they recognise terminals by name from a
+        // fixed list. Claude Code is the concrete case: it emits OSC 9;4 only
+        // when it sees `ConEmuANSI`/`ConEmuPID`/`ConEmuTask`, or a
+        // `TERM_PROGRAM` of `ghostty` >= 1.2.0 or `iTerm.app` >= 3.6.6 — and
+        // it explicitly *disables* progress under `WT_SESSION`. With none of
+        // those set it never emits, whatever its own progress setting says.
+        //
+        // Claiming ConEmu's name is a claim about the protocol, not the
+        // program: OSC 9;4 is ConEmu's, and this app implements it. The
+        // alternative — impersonating Ghostty or iTerm2 — would also opt us
+        // into their unrelated private sequences, which this app does not
+        // implement. Nothing else keys off `ConEmuANSI` in a way that changes
+        // rendering, so the blast radius is the capability itself.
+        //
+        // Same best-effort caveat as `COLORTERM` above, and it bites harder
+        // here: a default sshd drops both, so the reliable fix is a line in
+        // the remote shell's rc. See docs/SHELL_INTEGRATION.md.
+        let _ = channel.set_env(false, "ConEmuANSI", "ON").await;
         channel
             .request_pty(
                 false,

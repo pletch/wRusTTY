@@ -1,3 +1,4 @@
+import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
 import { IDLE } from '../lib/shellIntegration'
 
@@ -23,6 +24,14 @@ export interface PaneRuntime {
   forwardsOpen: boolean
   filesOpen: boolean
   activity: CommandActivity
+  /** What a program on the far end says it is doing, via OSC 9;4 — null when
+   * nothing has reported any.
+   *
+   * Separate from `activity` rather than folded into it because the two have
+   * different informants and disagree by design: `activity` comes from the
+   * shell and deliberately goes quiet while a full-screen program owns the
+   * screen, which is exactly when this one speaks up. See lib/appProgress.ts. */
+  progress: AppProgress | null
   /** Something you haven't seen: a bell rang, or a long command finished,
    * while this pane wasn't in view. */
   attention: boolean
@@ -50,6 +59,7 @@ const DEFAULT_RUNTIME: PaneRuntime = {
   forwardsOpen: false,
   filesOpen: false,
   activity: IDLE,
+  progress: null,
   attention: false,
   dimensions: null,
   scrollbackBudgetBytes: null,
@@ -66,6 +76,7 @@ export type PaneRuntimeAction =
   | { type: 'panelToggled'; paneId: string; panel: 'forwards' | 'files' }
   | { type: 'panelSet'; paneId: string; panel: 'forwards' | 'files'; open: boolean }
   | { type: 'activityChanged'; paneId: string; activity: CommandActivity }
+  | { type: 'progressChanged'; paneId: string; progress: AppProgress | null }
   | { type: 'attentionRaised'; paneId: string }
   | { type: 'attentionCleared'; paneId: string }
   | { type: 'dimensionsChanged'; paneId: string; cols: number; rows: number }
@@ -135,6 +146,21 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
         ...state,
         [action.paneId]: { ...(current ?? DEFAULT_RUNTIME), activity: action.activity },
       }
+    }
+
+    case 'progressChanged': {
+      const current = state[action.paneId]
+      const now = current?.progress ?? null
+      const next = action.progress
+      // Bails on an unchanged value, not just on null-to-null. A determinate
+      // reporter re-sends its progress on every step, and a busy one re-sends
+      // the same indeterminate state indefinitely — at whatever rate the far
+      // end feels like, on the output hot path. Without this, an app spinning
+      // at 30 Hz would re-render App and every pane 30 times a second to say
+      // nothing had changed.
+      if (now === next) return state
+      if (now && next && now.state === next.state && now.percent === next.percent) return state
+      return { ...state, [action.paneId]: { ...(current ?? DEFAULT_RUNTIME), progress: next } }
     }
 
     case 'attentionRaised':
@@ -228,6 +254,15 @@ export function sessionIdByPaneOf(state: PaneRuntimeState): Record<string, strin
 export function activityByPaneOf(state: PaneRuntimeState): Record<string, CommandActivity> {
   const out: Record<string, CommandActivity> = {}
   for (const id in state) out[id] = state[id].activity
+  return out
+}
+
+export function progressByPaneOf(state: PaneRuntimeState): Record<string, AppProgress> {
+  const out: Record<string, AppProgress> = {}
+  for (const id in state) {
+    const progress = state[id].progress
+    if (progress !== null) out[id] = progress
+  }
   return out
 }
 
