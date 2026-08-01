@@ -636,6 +636,7 @@ export class GhosttyEngine implements TerminalEngine {
     // typing until something else clears it — the wedge after a native prompt.
     this.mouse.forgetButton()
     this.selection.cancel()
+    this.stopDragTracking()
     this.reportFocus(false)
   }
 
@@ -842,10 +843,47 @@ export class GhosttyEngine implements TerminalEngine {
 
   private onMouseUp = (e: MouseEvent) => {
     this.mouse.reportRelease(e)
+    this.stopDragTracking()
     if (this.selection.isSelecting()) {
       this.selection.cancel()
       for (const h of this.onSelectionChangeHandlers) h()
     }
+  }
+
+  /**
+   * Carries a drag on past the edges of the pane.
+   *
+   * The canvas stops delivering `mousemove` the moment the pointer leaves it,
+   * and "the pointer is outside the canvas" is the exact condition the
+   * selection's autoscroll waits for — so bound to the canvas alone the
+   * autoscroll could never arm, and a drag could only ever cover what was
+   * already on screen. Listening on the window for the length of the drag is
+   * what lets the pointer get far enough out to be measured.
+   *
+   * Bound and unbound rather than left on permanently, so a pane that isn't
+   * being dragged in does no work per mouse move. Both calls are idempotent —
+   * the same function reference registers once and unregisters whether or not
+   * it was there — which is why neither needs a flag guarding it.
+   */
+  private startDragTracking(): void {
+    window.addEventListener('mousemove', this.onWindowMouseMove)
+  }
+
+  private stopDragTracking(): void {
+    window.removeEventListener('mousemove', this.onWindowMouseMove)
+  }
+
+  private onWindowMouseMove = (e: MouseEvent) => {
+    // A button released outside the window never delivers mouseup here, and a
+    // selection left believing it is still being dragged keeps the autoscroll
+    // timer running — the pane scrolls on its own and cannot be stopped.
+    // `buttons` is the live state rather than an event history, so it catches
+    // exactly that.
+    if (e.buttons === 0) {
+      this.onMouseUp(e)
+      return
+    }
+    if (!this.selection.drag(e)) this.stopDragTracking()
   }
 
   /**
@@ -1051,9 +1089,11 @@ export class GhosttyEngine implements TerminalEngine {
       // the gesture that has to work.
       if (e.shiftKey && !this.mouse.tracking() && this.renderer?.selection && this.selection.hasAnchor()) {
         this.selection.extendFromAnchor(e)
+        this.startDragTracking()
         return
       }
       this.selection.begin(e)
+      this.startDragTracking()
     })
 
     this.canvas.addEventListener('mousemove', (e) => {
@@ -1061,18 +1101,11 @@ export class GhosttyEngine implements TerminalEngine {
       // so a selection in progress suppresses reporting entirely.
       if (this.mouse.tracking() && !this.selection.isSelecting()) {
         this.mouse.reportMotion(e)
-        return
       }
-      // A button released outside the window never delivers mouseup here, and
-      // a selection left believing it is still being dragged keeps the
-      // autoscroll timer running — the pane scrolls on its own and cannot be
-      // stopped. `buttons` is the live state rather than an event history, so
-      // it catches exactly that.
-      if (this.selection.isSelecting() && e.buttons === 0) {
-        this.onMouseUp(e)
-        return
-      }
-      this.selection.drag(e)
+      // Extending a drag is not handled here: it runs off the window listener
+      // for as long as the button is down, so that it keeps going once the
+      // pointer leaves the canvas. This handler would only ever see the part of
+      // the gesture that is already on screen.
     })
 
     this.inputHandler = new GhosttyInputHandler(this.container, (data) => {
@@ -1105,6 +1138,7 @@ export class GhosttyEngine implements TerminalEngine {
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
     window.removeEventListener('mouseup', this.onMouseUp)
+    this.stopDragTracking()
     this.selection.dispose()
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)

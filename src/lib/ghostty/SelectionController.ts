@@ -265,8 +265,13 @@ export class SelectionController {
       this.stopDragScroll()
       return
     }
-    // Negative is upward: scrollLines takes the direction the *content* moves.
-    this.host.scrollLines(-this.dragScrollLines)
+    // `out` is already signed the way `scrollLines` wants it — negative for a
+    // pointer above the pane, and negative is what scrolls back into history
+    // (it raises the viewport offset, the same as a wheel-up's negative
+    // deltaY). Negating it here sent a drag past the top forward instead, so
+    // the one gesture that has to reach into the scrollback was the one that
+    // ran away from it.
+    this.host.scrollLines(this.dragScrollLines)
     this.host.setSelection({
       start: this.start,
       end: this.host.coords(this.dragScrollAt as MouseEvent),

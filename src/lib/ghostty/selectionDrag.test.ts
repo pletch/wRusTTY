@@ -50,6 +50,13 @@ async function mounted({ mouseTracking = false } = {}) {
   inner.mouseTracking = () => mouseTracking
 
   const canvas = container.querySelector('canvas')!
+  // jsdom lays nothing out, so every rect is zero-sized — which would put any
+  // pointer at all outside the canvas and arm the drag-autoscroll on moves that
+  // never left it. The edges have to be real for anything about dragging *past*
+  // them to mean something.
+  canvas.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, right: 800, bottom: 480, width: 800, height: 480, x: 0, y: 0 }) as DOMRect
+
   const at = (x: number, y: number) => ({
     clientX: x * CELL.width + CELL.width / 2,
     clientY: y * CELL.height + CELL.height / 2,
@@ -66,6 +73,9 @@ async function mounted({ mouseTracking = false } = {}) {
     )
   const up = (x: number, y: number) =>
     window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, ...at(x, y) }))
+  /** A move the canvas would never see, because the pointer has left it. */
+  const moveOutside = (clientX: number, clientY: number) =>
+    window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX, clientY }))
   const selection = () => (inner.renderer as { selection: Sel | null }).selection
 
   /** Leaves a selection on screen, which is the precondition for extending. */
@@ -75,7 +85,7 @@ async function mounted({ mouseTracking = false } = {}) {
     up(toX, 0)
   }
 
-  return { engine, selection, down, move, up, dragOut, inner }
+  return { engine, selection, down, move, up, moveOutside, dragOut, inner }
 }
 
 beforeEach(() => {
@@ -109,6 +119,84 @@ describe('dragging out a selection', () => {
     move(6, 2, { altKey: true })
     expect(selection()).toMatchObject({ end: { x: 6, y: 2 }, rectangular: true })
     engine.unmount()
+  })
+})
+
+describe('dragging past the edge of the pane', () => {
+  it('keeps following the pointer once it has left the canvas', async () => {
+    const { engine, selection, down, moveOutside } = await mounted()
+    down(2, 0)
+    // The regression: `mousemove` was bound to the canvas, so this event — the
+    // only kind that can ever report a pointer outside it — was delivered
+    // nowhere, and the selection stopped dead at the edge.
+    moveOutside(95, 600)
+    expect(selection()).toMatchObject({ start: { x: 2, y: 0 } })
+    engine.unmount()
+  })
+
+  // `scrollLines` is signed the way the wheel is: negative goes back into the
+  // scrollback, positive goes forward towards the prompt.
+  it('scrolls back into the scrollback while the pointer is held above it', async () => {
+    vi.useFakeTimers()
+    const { engine, down, moveOutside } = await mounted()
+    const scrolled = vi.spyOn(engine, 'scrollLines').mockImplementation(() => {})
+    down(2, 5)
+    moveOutside(95, -200)
+    vi.advanceTimersByTime(200)
+    // The direction that matters: dragging up out of the pane is how you select
+    // something that has already scrolled off, and it was going the other way —
+    // running away from the history instead of into it.
+    expect(scrolled).toHaveBeenCalled()
+    expect(scrolled.mock.calls.every(([n]) => n < 0)).toBe(true)
+    engine.unmount()
+    vi.useRealTimers()
+  })
+
+  it('scrolls forward while the pointer is held below it', async () => {
+    vi.useFakeTimers()
+    const { engine, down, moveOutside } = await mounted()
+    const scrolled = vi.spyOn(engine, 'scrollLines').mockImplementation(() => {})
+    down(2, 0)
+    moveOutside(95, 600)
+    vi.advanceTimersByTime(200)
+    expect(scrolled).toHaveBeenCalled()
+    expect(scrolled.mock.calls.every(([n]) => n > 0)).toBe(true)
+    engine.unmount()
+    vi.useRealTimers()
+  })
+
+  it('scrolls faster the further out the pointer is dragged', async () => {
+    vi.useFakeTimers()
+    const { engine, down, moveOutside } = await mounted()
+    const scrolled = vi.spyOn(engine, 'scrollLines').mockImplementation(() => {})
+    down(2, 5)
+    moveOutside(95, -10)
+    vi.advanceTimersByTime(50)
+    const near = Math.abs(scrolled.mock.calls[0][0])
+    scrolled.mockClear()
+    moveOutside(95, -400)
+    vi.advanceTimersByTime(50)
+    // Reaching a long way back has to feel like one gesture rather than a wait.
+    expect(Math.abs(scrolled.mock.calls[0][0])).toBeGreaterThan(near)
+    engine.unmount()
+    vi.useRealTimers()
+  })
+
+  it('stops scrolling when the button is released outside', async () => {
+    vi.useFakeTimers()
+    const { engine, down, moveOutside } = await mounted()
+    const scrolled = vi.spyOn(engine, 'scrollLines').mockImplementation(() => {})
+    down(2, 0)
+    moveOutside(95, 600)
+    vi.advanceTimersByTime(200)
+    window.dispatchEvent(new MouseEvent('mouseup', { clientX: 95, clientY: 600 }))
+    scrolled.mockClear()
+    vi.advanceTimersByTime(500)
+    // A pane that keeps scrolling on its own after the drag ended has no way
+    // left to be stopped.
+    expect(scrolled).not.toHaveBeenCalled()
+    engine.unmount()
+    vi.useRealTimers()
   })
 })
 
