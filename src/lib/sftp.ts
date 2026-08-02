@@ -181,6 +181,7 @@ export function uploadPath(
   remoteDir: string,
   localPath: string,
   overwrite: boolean,
+  resume: boolean,
   channel: Channel<SftpEvent>,
 ) {
   return invoke<string>('sftp_upload_path', {
@@ -188,6 +189,7 @@ export function uploadPath(
     remoteDir,
     localPath,
     overwrite,
+    resume,
     channel,
   })
 }
@@ -203,6 +205,12 @@ export function uploadPath(
  * lands beside it under `.wrustty-part` and is renamed over it only on success,
  * so a failed download over an existing file costs nothing.
  *
+ * `resume` skips destination files that already look copied — same size, and
+ * not older than the source. Only meaningful for a folder, and set by the Retry
+ * button so a transfer that died on file 400 of 500 costs the remaining hundred
+ * rather than all five hundred. It is a heuristic, not a comparison: the
+ * transfer reports how many files it left alone.
+ *
  * Total size arrives on the channel as `transferStarted` — only the backend can
  * know it, and it comes before the first chunk so a progress bar never has to
  * begin life as a spinner.
@@ -211,9 +219,16 @@ export function downloadBegin(
   sessionId: string,
   remotePath: string,
   localPath: string,
+  resume: boolean,
   channel: Channel<SftpEvent>,
 ) {
-  return invoke<string>('sftp_download_begin', { sessionId, remotePath, localPath, channel })
+  return invoke<string>('sftp_download_begin', {
+    sessionId,
+    remotePath,
+    localPath,
+    resume,
+    channel,
+  })
 }
 
 /** Asks a running transfer to stop, either direction. It stops between chunks,

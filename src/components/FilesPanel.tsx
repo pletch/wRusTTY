@@ -15,6 +15,7 @@ import {
   FolderUp,
   KeyRound,
   RefreshCw,
+  RotateCw,
   Trash2,
   Upload,
   X,
@@ -82,6 +83,16 @@ function basename(path: string): string {
  * its id — short, but long enough to click the cancel button in, which is why
  * the row renders before the id exists rather than after. */
 interface Transfer {
+  /**
+   * This row's own identity, assigned when it is created.
+   *
+   * Separate from `id` because a row exists before the backend has given it
+   * one, and "the pending row" stops being a unique description the moment two
+   * transfers are started in quick succession — both would answer to it, and a
+   * single `transferStarted` would stamp its id onto both.
+   */
+  key: string
+  /** The backend's transfer id, once it has one. */
   id: string | null
   name: string
   direction: 'up' | 'down'
@@ -90,17 +101,24 @@ interface Transfer {
   /** Which file a folder transfer is on. Absent for a single file, which is
    *  already named by the row itself. */
   file?: { name: string; index: number; count: number }
+  /**
+   * Runs this same transfer again with resume on.
+   *
+   * Held from the moment the transfer starts, because by the time it fails the
+   * arguments that built it are long out of scope. A failed transfer used to
+   * vanish into a toast, which for a folder meant the only offer after dying on
+   * file 400 of 500 was to set the whole thing up again from the context menu.
+   */
+  restart: () => void
+  /** The error, once there is one. The row stays on screen holding it. */
+  failed?: string
 }
 
-/**
- * A transfer the panel started but does not yet have an id for.
- *
- * The gap is one round trip, and the cancel button has to exist inside it —
- * otherwise the first thing a user does with a transfer they started by mistake
- * is discover they cannot stop it yet. `PENDING` is what the row is keyed by
- * until the real id arrives.
- */
-const PENDING = 'pending'
+// A row is created with `id: null` and gets its real one a round trip later.
+// The cancel button has to exist inside that gap — otherwise the first thing a
+// user does with a transfer started by mistake is discover they cannot stop it
+// yet — so the row renders throughout, and cancelling before the id lands is a
+// no-op rather than an error.
 
 export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
@@ -148,6 +166,10 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   // then refresh whichever directory the panel opened on.
   const cwdRef = useRef<string | null>(null)
   cwdRef.current = cwd
+  // Row identities. A counter rather than a random id: it only has to be
+  // unique within this panel's lifetime, and a counter is reproducible in a
+  // test where a random one is not.
+  const nextKey = useRef(0)
 
   function getChannel(): Channel<SftpEvent> {
     if (channelRef.current) return channelRef.current
@@ -211,15 +233,23 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         // download's from `stat` or the tree walk, an upload's from the file
         // or tree itself — and `transferStarted` is also where a row stops
         // being `PENDING` and takes its real id.
-        case 'transferStarted':
+        case 'transferStarted': {
+          // Claims the *first* row still waiting for an id, in start order. The
+          // command sends this before it returns, so the row it belongs to
+          // normally has no id yet and cannot be found by one.
+          let claimed = false
           setTransfers((list) =>
-            list.map((t) =>
-              t.id === PENDING || t.id === event.transferId
-                ? { ...t, id: event.transferId, total: event.total }
-                : t,
-            ),
+            list.map((t) => {
+              if (t.id === event.transferId) return { ...t, total: event.total }
+              if (!claimed && t.id === null) {
+                claimed = true
+                return { ...t, id: event.transferId, total: event.total }
+              }
+              return t
+            }),
           )
           break
+        }
         case 'transferProgress':
           setTransfers((list) =>
             list.map((t) =>
@@ -265,9 +295,12 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
           if (cwdRef.current) void load(cwdRef.current)
           break
         case 'transferFailed':
-          setTransfers((list) => list.filter((t) => t.id !== event.transferId))
-          // Named with the file it got to, which for a folder is the whole
-          // difference between "it failed" and "it failed on this one".
+          // Kept on screen rather than removed. The error names the file it got
+          // to, which for a folder is the whole difference between "it failed"
+          // and "it failed on this one" — and the row is where Retry lives.
+          setTransfers((list) =>
+            list.map((t) => (t.id === event.transferId ? { ...t, failed: event.error } : t)),
+          )
           toast.error(`Transfer failed: ${event.error}`)
           if (cwdRef.current) void load(cwdRef.current)
           break
@@ -353,19 +386,22 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  /** The three halves of starting a transfer, which every caller repeats: show
-   *  the row before the id exists, give it the id when it arrives, and take it
-   *  away again if the call never got that far. */
-  function addTransfer(t: Transfer) {
-    setTransfers((list) => [...list, t])
+  /** Starting a transfer takes three steps, and every caller does all three:
+   *  show the row before the id exists, give it the id when it arrives, and take
+   *  it away again if the call never got that far. Keyed by the row's own key,
+   *  so two transfers started together cannot be confused for each other. */
+  function addTransfer(t: Omit<Transfer, 'key'>): string {
+    const key = `t${nextKey.current++}`
+    setTransfers((list) => [...list, { ...t, key }])
+    return key
   }
-  function claimPending(id: string) {
-    // `transferStarted` usually wins the race and has already done this; the
-    // guard is for the transfer that fails before ever sending one.
-    setTransfers((list) => list.map((t) => (t.id === PENDING ? { ...t, id } : t)))
+  function claimTransfer(key: string, id: string) {
+    // `transferStarted` usually wins the race and has already set this; the
+    // guard is for a transfer that fails before ever sending one.
+    setTransfers((list) => list.map((t) => (t.key === key ? { ...t, id: t.id ?? id } : t)))
   }
-  function dropPending() {
-    setTransfers((list) => list.filter((t) => t.id !== PENDING))
+  function dropTransfer(key: string) {
+    setTransfers((list) => list.filter((t) => t.key !== key))
   }
 
   async function open(entry: RemoteEntry) {
@@ -412,18 +448,31 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
 
     // `entry.size` is the listing's and is 0 for a directory; the backend stats
     // or walks and sends the real total as `transferStarted`.
-    addTransfer({
-      id: PENDING,
+    void startDownload(remotePath, localPath, entry.isDir ? 0 : entry.size, false)
+  }
+
+  /** Starts (or restarts) one download. `resume` is false the first time and
+   *  true from the Retry button — a fresh copy should copy everything, a retry
+   *  should not redo what already landed. */
+  async function startDownload(
+    remotePath: string,
+    localPath: string,
+    total: number,
+    resume: boolean,
+  ) {
+    const key = addTransfer({
+      id: null,
       name: basename(localPath),
       direction: 'down',
       transferred: 0,
-      total: entry.isDir ? 0 : entry.size,
+      total,
+      restart: () => void startDownload(remotePath, localPath, total, true),
     })
     try {
-      const id = await sftp.downloadBegin(sessionId, remotePath, localPath, getChannel())
-      claimPending(id)
+      const id = await sftp.downloadBegin(sessionId, remotePath, localPath, resume, getChannel())
+      claimTransfer(key, id)
     } catch (err) {
-      dropPending()
+      dropTransfer(key)
       toast.error(`Download failed: ${String(err)}`)
     }
   }
@@ -469,12 +518,37 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       return
     }
 
-    addTransfer({ id: PENDING, name, direction: 'up', transferred: 0, total: 0 })
+    void startUpload(cwd, picked, name, overwrite, false)
+  }
+
+  /** Starts (or restarts) one upload. See `startDownload` for `resume`. */
+  async function startUpload(
+    remoteDir: string,
+    localPath: string,
+    name: string,
+    overwrite: boolean,
+    resume: boolean,
+  ) {
+    const key = addTransfer({
+      id: null,
+      name,
+      direction: 'up',
+      transferred: 0,
+      total: 0,
+      restart: () => void startUpload(remoteDir, localPath, name, overwrite, true),
+    })
     try {
-      const id = await sftp.uploadPath(sessionId, cwd, picked, overwrite, getChannel())
-      claimPending(id)
+      const id = await sftp.uploadPath(
+        sessionId,
+        remoteDir,
+        localPath,
+        overwrite,
+        resume,
+        getChannel(),
+      )
+      claimTransfer(key, id)
     } catch (err) {
-      dropPending()
+      dropTransfer(key)
       toast.error(`Upload failed: ${String(err)}`)
     }
   }
@@ -816,7 +890,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       {transfers.length > 0 && (
         <div className="mt-2 flex max-h-32 flex-col gap-2 overflow-y-auto border-t border-white/10 pt-2">
           {transfers.map((t) => (
-            <div key={t.id} className="flex flex-col gap-1.5">
+            <div key={t.key} className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
                 {t.direction === 'down' ? (
                   <Download size={13} className="shrink-0 text-sky-400" />
@@ -824,14 +898,29 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                   <Upload size={13} className="shrink-0 text-sky-400" />
                 )}
                 <span className="min-w-0 flex-1 truncate text-white/80">{t.name}</span>
+                {t.failed && (
+                  <button
+                    onClick={() => {
+                      // The failed row goes as the retry's own row arrives, so
+                      // one transfer is never on screen twice.
+                      dropTransfer(t.key)
+                      t.restart()
+                    }}
+                    title="Try again, skipping whatever already arrived"
+                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-sky-400/80 transition-colors duration-100 hover:bg-white/10 hover:text-sky-300"
+                  >
+                    <RotateCw size={11} /> Retry
+                  </button>
+                )}
                 <button
                   onClick={() => {
-                    // A row exists before its id does; cancelling in that
-                    // window is a no-op rather than an error, and the window is
-                    // one round trip long.
-                    if (t.id !== PENDING) void sftp.cancelTransfer(t.id!).catch(() => {})
+                    // Two jobs, one button, and which one it is depends on
+                    // whether the transfer is still running: cancel it, or
+                    // dismiss the record of one that already stopped.
+                    if (t.failed) dropTransfer(t.key)
+                    else if (t.id) void sftp.cancelTransfer(t.id).catch(() => {})
                   }}
-                  title="Cancel this transfer"
+                  title={t.failed ? 'Dismiss' : 'Cancel this transfer'}
                   className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
                 >
                   <X size={12} />
@@ -839,7 +928,9 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
               </div>
               <div className="h-1 overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="h-full bg-sky-400 transition-[width] duration-150"
+                  className={`h-full transition-[width] duration-150 ${
+                    t.failed ? 'bg-red-400/70' : 'bg-sky-400'
+                  }`}
                   style={{
                     width: `${
                       t.total > 0 ? Math.min(100, (t.transferred / t.total) * 100) : 100
@@ -847,21 +938,25 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                   }}
                 />
               </div>
-              <span className="flex items-baseline gap-2 text-white/40">
-                <span className="shrink-0">
-                  {formatBytes(t.transferred)}
-                  {t.total > 0 && ` of ${formatBytes(t.total)}`}
-                </span>
-                {t.file && (
-                  // The file *and* the count. Either alone leaves a question:
-                  // the name without "3 of 57" gives no sense of how far along
-                  // it is, and the count without the name gives no sense of
-                  // whether it is stuck.
-                  <span className="min-w-0 truncate text-white/25">
-                    {t.file.index} of {t.file.count} — {t.file.name}
+              {t.failed ? (
+                <span className="text-red-300/90">{t.failed}</span>
+              ) : (
+                <span className="flex items-baseline gap-2 text-white/40">
+                  <span className="shrink-0">
+                    {formatBytes(t.transferred)}
+                    {t.total > 0 && ` of ${formatBytes(t.total)}`}
                   </span>
-                )}
-              </span>
+                  {t.file && (
+                    // The file *and* the count. Either alone leaves a question:
+                    // the name without "3 of 57" gives no sense of how far along
+                    // it is, and the count without the name gives no sense of
+                    // whether it is stuck.
+                    <span className="min-w-0 truncate text-white/25">
+                      {t.file.index} of {t.file.count} — {t.file.name}
+                    </span>
+                  )}
+                </span>
+              )}
             </div>
           ))}
         </div>

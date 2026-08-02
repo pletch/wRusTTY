@@ -1268,6 +1268,131 @@ struct PlannedFile {
     /// convention is what keeps the two runners symmetrical.
     relative: String,
     size: u64,
+    /// Unix seconds, where the source reported one. Only used to decide whether
+    /// a destination copy is already up to date — see `is_already_there`.
+    modified: Option<i64>,
+}
+
+/// A local timestamp as the Unix seconds the remote side speaks in.
+///
+/// Local metadata is a `SystemTime` and remote metadata is already seconds, so
+/// one of the two has to be converted before they can be compared at all. A
+/// pre-epoch time gives `None` rather than a negative number: it cannot come
+/// from a file this app wrote, and treating it as unknown falls back to the
+/// size-only rule instead of inventing an ordering.
+fn unix_seconds(time: Option<std::time::SystemTime>) -> Option<i64> {
+    time.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
+/// What resume needs to know about one side of one file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFacts {
+    size: u64,
+    modified: Option<i64>,
+}
+
+/// Whether the destination copy can be left alone.
+///
+/// This is the whole of resume, and it is worth being precise about what it
+/// claims. It is **not** "these files are identical" — nothing short of reading
+/// both could say that, and reading both is the transfer this exists to avoid.
+/// It is "the destination looks like the result of already having copied this",
+/// which is the question actually being asked when someone re-runs a transfer
+/// that died partway.
+///
+/// Size must match, and where both sides report an mtime the destination's must
+/// be at least the source's. That second test is what stops a *changed* source
+/// of coincidentally equal size being skipped — the common shape of which is an
+/// edited config file, where a one-character change leaves the size alone. The
+/// direction is deliberate: neither side's clock is trusted against the other's,
+/// only "the copy is not older than what it was copied from", and a
+/// freshly-written destination always satisfies that because writing it set its
+/// mtime to now.
+///
+/// When either side reports no mtime it falls back to size alone and the caller
+/// says how many files were skipped, because a silent size-only skip is exactly
+/// the kind of thing found out much later by something that needed the file.
+fn is_already_there(src: &FileFacts, dst: Option<&FileFacts>) -> bool {
+    let Some(dst) = dst else { return false };
+    if dst.size != src.size {
+        return false;
+    }
+    match (src.modified, dst.modified) {
+        (Some(src_mtime), Some(dst_mtime)) => dst_mtime >= src_mtime,
+        _ => true,
+    }
+}
+
+/// A failed file transfer, and whether trying it again is worth anything.
+///
+/// The flag has to travel with the message because the decision is made where
+/// the error is understood — `SftpError::is_transient` — and acted on a level
+/// up, where the retry loop lives. A bare `String` would have meant
+/// re-classifying by matching on text.
+struct TransferFailure {
+    message: String,
+    transient: bool,
+}
+
+impl TransferFailure {
+    /// The default. Anything local — a part file that cannot be created, a
+    /// rename that will not go through — is reported as-is: those do not clear
+    /// on their own, and the Retry button covers the case where the user has
+    /// fixed the cause.
+    fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            transient: false,
+        }
+    }
+
+    fn from_sftp(error: wr_sftp::SftpError) -> Self {
+        Self {
+            transient: error.is_transient(),
+            message: error.to_string(),
+        }
+    }
+}
+
+/// How many times a per-file transfer is retried before the job gives up.
+///
+/// Small, because `SftpError::is_transient` only claims errors the protocol
+/// itself calls timing — so an attempt that fails twice is telling the truth,
+/// and a longer ladder would only delay it.
+const TRANSFER_ATTEMPTS: u32 = 3;
+
+/// First backoff step; doubles each retry (200, 400 ms).
+const TRANSFER_BACKOFF: Duration = Duration::from_millis(200);
+
+/// Runs one file's transfer, retrying only what is worth retrying.
+///
+/// The retry is narrow by design. It covers a server hiccup mid-copy, which is
+/// otherwise fatal to a 500-file job on file 400 — but it cannot cover a dropped
+/// connection, because the session caches its SFTP client and would hand back
+/// the same dead channel every time. That case is answered by resume plus the
+/// Retry button, not here.
+/// Each attempt starts the file over rather than continuing it — the part file
+/// is recreated, so a retry cannot append to the half a failed attempt left.
+/// Progress for that file therefore goes backwards on a retry, which is the
+/// truth about what is being sent.
+async fn with_retries<F, Fut>(mut attempt: F) -> Result<wr_sftp::Transferred, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<wr_sftp::Transferred, TransferFailure>>,
+{
+    let mut delay = TRANSFER_BACKOFF;
+    for remaining in (0..TRANSFER_ATTEMPTS).rev() {
+        match attempt().await {
+            Ok(outcome) => return Ok(outcome),
+            Err(e) if remaining > 0 && e.transient => {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(e) => return Err(e.message),
+        }
+    }
+    unreachable!("the last attempt always returns")
 }
 
 /// What a recursive transfer is going to do, worked out before it starts.
@@ -1346,6 +1471,7 @@ async fn plan_remote_tree(sftp: &wr_sftp::SftpClient, root: &str) -> Result<Tree
                 plan.files.push(PlannedFile {
                     relative: child,
                     size: entry.size,
+                    modified: entry.modified,
                 });
             }
             if plan.is_oversized() {
@@ -1412,6 +1538,7 @@ async fn plan_local_tree(root: &std::path::Path) -> Result<TreePlan, String> {
                 plan.files.push(PlannedFile {
                     relative: child,
                     size: meta.len(),
+                    modified: unix_seconds(meta.modified().ok()),
                 });
             }
             if plan.is_oversized() {
@@ -1602,6 +1729,8 @@ pub async fn sftp_upload_path(
     remote_dir: String,
     local_path: String,
     overwrite: bool,
+    // See `sftp_download_begin`. Only meaningful for a folder.
+    resume: bool,
     channel: Channel<SftpEvent>,
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
@@ -1626,6 +1755,7 @@ pub async fn sftp_upload_path(
             &name,
             local,
             plan,
+            resume,
             channel,
         )
         .await;
@@ -1687,6 +1817,7 @@ async fn start_upload_tree(
     name: &str,
     local_root: PathBuf,
     plan: TreePlan,
+    resume: bool,
     channel: Channel<SftpEvent>,
 ) -> Result<String, String> {
     if !is_usable_remote_name(name) {
@@ -1719,6 +1850,7 @@ async fn start_upload_tree(
             local_root,
             remote_root,
             plan,
+            resume,
             channel,
             task_id,
             cancel,
@@ -1970,6 +2102,10 @@ pub async fn sftp_download_begin(
     session_id: String,
     remote_path: String,
     local_path: String,
+    // Skip destination files that already look copied. Set when the user
+    // presses Retry on a failed transfer, which is what makes "it died on file
+    // 400 of 500" cost the remaining hundred rather than all five.
+    resume: bool,
     channel: Channel<SftpEvent>,
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
@@ -2020,8 +2156,10 @@ pub async fn sftp_download_begin(
     tokio::spawn(async move {
         match plan {
             Some(plan) => {
-                run_download_tree(app, sftp, remote_path, local, plan, channel, task_id, cancel)
-                    .await
+                run_download_tree(
+                    app, sftp, remote_path, local, plan, resume, channel, task_id, cancel,
+                )
+                .await
             }
             None => run_download(app, sftp, local, remote_path, channel, task_id, cancel).await,
         }
@@ -2044,15 +2182,15 @@ async fn download_one(
     remote: &str,
     local: &std::path::Path,
     progress: impl FnMut(u64) -> bool,
-) -> Result<wr_sftp::Transferred, String> {
-    let part = part_path_for(local)?;
+) -> Result<wr_sftp::Transferred, TransferFailure> {
+    let part = part_path_for(local).map_err(TransferFailure::permanent)?;
     let mut file = tokio::fs::File::create(&part)
         .await
-        .map_err(|e| format!("could not write to {}: {e}", part.display()))?;
+        .map_err(|e| TransferFailure::permanent(format!("could not write to {}: {e}", part.display())))?;
 
     let outcome = sftp.download(remote, &mut file, progress).await;
-    let placed: Result<wr_sftp::Transferred, String> = match outcome {
-        Err(e) => Err(e.to_string()),
+    let placed: Result<wr_sftp::Transferred, TransferFailure> = match outcome {
+        Err(e) => Err(TransferFailure::from_sftp(e)),
         Ok(wr_sftp::Transferred::Cancelled) => Ok(wr_sftp::Transferred::Cancelled),
         Ok(wr_sftp::Transferred::Complete) => {
             // Before the rename, not after: a rename that lands while the
@@ -2073,13 +2211,16 @@ async fn download_one(
                         .and_then(|r| r.map_err(|e| e.to_string()))
                         .map(|()| wr_sftp::Transferred::Complete)
                         .map_err(|e| {
-                            format!(
+                            TransferFailure::permanent(format!(
                                 "downloaded, but could not move it into place as {}: {e}",
                                 local.display()
-                            )
+                            ))
                         })
                 }
-                Err(e) => Err(format!("could not finish writing {}: {e}", local.display())),
+                Err(e) => Err(TransferFailure::permanent(format!(
+                    "could not finish writing {}: {e}",
+                    local.display()
+                ))),
             }
         }
     };
@@ -2123,20 +2264,24 @@ async fn upload_one(
     local: &std::path::Path,
     remote: &str,
     progress: impl FnMut(u64) -> bool,
-) -> Result<wr_sftp::Transferred, String> {
+) -> Result<wr_sftp::Transferred, TransferFailure> {
     let part_path = format!("{remote}{PART_SUFFIX}");
-    let file = tokio::fs::File::open(local)
+    let file = tokio::fs::File::open(local).await.map_err(|e| {
+        TransferFailure::permanent(format!("could not open {}: {e}", local.display()))
+    })?;
+    let replacing = sftp
+        .try_exists(remote)
         .await
-        .map_err(|e| format!("could not open {}: {e}", local.display()))?;
-    let replacing = sftp.try_exists(remote).await.map_err(|e| e.to_string())?;
+        .map_err(TransferFailure::from_sftp)?;
 
     let outcome = sftp.upload(&part_path, file, progress).await;
-    let placed: Result<wr_sftp::Transferred, String> = match outcome {
-        Err(e) => Err(e.to_string()),
+    let placed: Result<wr_sftp::Transferred, TransferFailure> = match outcome {
+        Err(e) => Err(TransferFailure::from_sftp(e)),
         Ok(wr_sftp::Transferred::Cancelled) => Ok(wr_sftp::Transferred::Cancelled),
         Ok(wr_sftp::Transferred::Complete) => place_remote_part(sftp, &part_path, remote, replacing)
             .await
-            .map(|()| wr_sftp::Transferred::Complete),
+            .map(|()| wr_sftp::Transferred::Complete)
+            .map_err(TransferFailure::permanent),
     };
     if !matches!(placed, Ok(wr_sftp::Transferred::Complete)) {
         let _ = sftp.remove_file(&part_path).await;
@@ -2155,15 +2300,20 @@ async fn run_download(
     transfer_id: String,
     cancel: Arc<AtomicBool>,
 ) {
-    let progress_channel = channel.clone();
-    let progress_id = transfer_id.clone();
-    let progress_cancel = cancel.clone();
-    let outcome = download_one(&sftp, &remote_path, &local, move |transferred| {
-        let _ = progress_channel.send(SftpEvent::TransferProgress {
-            transfer_id: progress_id.clone(),
-            transferred,
-        });
-        !progress_cancel.load(Ordering::Relaxed)
+    // A single file gets the same retry as one inside a folder. There is no
+    // resume for it — half a file is not a file, and the part-file staging
+    // means there is never half a file at the destination to resume onto.
+    let outcome = with_retries(|| {
+        let progress_channel = channel.clone();
+        let progress_id = transfer_id.clone();
+        let progress_cancel = cancel.clone();
+        download_one(&sftp, &remote_path, &local, move |transferred| {
+            let _ = progress_channel.send(SftpEvent::TransferProgress {
+                transfer_id: progress_id.clone(),
+                transferred,
+            });
+            !progress_cancel.load(Ordering::Relaxed)
+        })
     })
     .await;
 
@@ -2190,11 +2340,13 @@ async fn run_download_tree(
     remote_root: String,
     local_root: PathBuf,
     plan: TreePlan,
+    resume: bool,
     channel: Channel<SftpEvent>,
     transfer_id: String,
     cancel: Arc<AtomicBool>,
 ) {
     let count = plan.files.len() as u64;
+    let mut skipped = 0u64;
     let outcome = async {
         // Every directory first, including the empty ones — a folder that
         // copies without its empty subdirectories has not been copied.
@@ -2213,26 +2365,47 @@ async fn run_download_tree(
             if cancel.load(Ordering::Relaxed) {
                 return Ok(wr_sftp::Transferred::Cancelled);
             }
+            let remote = format!("{remote_root}/{}", file.relative);
+            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+
+            if resume {
+                let dst = tokio::fs::metadata(&local).await.ok().map(|m| FileFacts {
+                    size: m.len(),
+                    modified: unix_seconds(m.modified().ok()),
+                });
+                let src = FileFacts {
+                    size: file.size,
+                    modified: file.modified,
+                };
+                if is_already_there(&src, dst.as_ref()) {
+                    // Counted as done: the bar measures the job the user asked
+                    // for, not the part of it that happened to need doing.
+                    base += file.size;
+                    skipped += 1;
+                    continue;
+                }
+            }
+
             let _ = channel.send(SftpEvent::TransferFile {
                 transfer_id: transfer_id.clone(),
                 name: file.relative.clone(),
                 index: i as u64 + 1,
                 count,
             });
-            let remote = format!("{remote_root}/{}", file.relative);
-            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
 
-            let progress_channel = channel.clone();
-            let progress_id = transfer_id.clone();
-            let progress_cancel = cancel.clone();
-            let outcome = download_one(&sftp, &remote, &local, move |bytes| {
-                let _ = progress_channel.send(SftpEvent::TransferProgress {
-                    transfer_id: progress_id.clone(),
-                    // The job's running total, not this file's — one bar, one
-                    // meaning, however many files it is made of.
-                    transferred: base + bytes,
-                });
-                !progress_cancel.load(Ordering::Relaxed)
+            let outcome = with_retries(|| {
+                let progress_channel = channel.clone();
+                let progress_id = transfer_id.clone();
+                let progress_cancel = cancel.clone();
+                download_one(&sftp, &remote, &local, move |bytes| {
+                    let _ = progress_channel.send(SftpEvent::TransferProgress {
+                        transfer_id: progress_id.clone(),
+                        // The job's running total, not this file's — one bar,
+                        // one meaning, however many files it is made of.
+                        transferred: base + bytes,
+                    });
+                    !progress_cancel.load(Ordering::Relaxed)
+                })
             })
             .await
             .map_err(|e| format!("{} ({} of {count}): {e}", file.relative, i + 1))?;
@@ -2249,22 +2422,44 @@ async fn run_download_tree(
     }
     .await;
 
-    if plan.skipped_links > 0 {
-        // Said out loud rather than buried: a copy quietly missing entries is
-        // the kind of thing found out much later, by something that needed one.
-        let _ = channel.send(SftpEvent::TransferNote {
-            transfer_id: transfer_id.clone(),
-            note: format!(
-                "{} symbolic link{} skipped — a link's target only means something on the host it \
-                 came from.",
-                plan.skipped_links,
-                if plan.skipped_links == 1 { "" } else { "s" }
-            ),
-        });
-    }
+    note_what_was_skipped(&channel, &transfer_id, plan.skipped_links, skipped);
 
     let cancelled = cancel.load(Ordering::Relaxed);
     finish_transfer(&app, &channel, transfer_id, remote_root, outcome, cancelled).await;
+}
+
+/// Reports the two kinds of file a recursive transfer passed over.
+///
+/// Both are said out loud rather than buried, and for the same reason: a copy
+/// quietly missing entries is the kind of thing found out much later, by
+/// something that needed one. Resume's skip is the more dangerous of the two to
+/// leave silent, because it is the one that looks like a complete copy.
+fn note_what_was_skipped(
+    channel: &Channel<SftpEvent>,
+    transfer_id: &str,
+    links: usize,
+    already_there: u64,
+) {
+    let mut notes: Vec<String> = Vec::new();
+    if already_there > 0 {
+        notes.push(format!(
+            "{already_there} file{} already up to date and left alone",
+            if already_there == 1 { "" } else { "s" }
+        ));
+    }
+    if links > 0 {
+        notes.push(format!(
+            "{links} symbolic link{} skipped — a link's target only means something on the host it \
+             came from",
+            if links == 1 { "" } else { "s" }
+        ));
+    }
+    if !notes.is_empty() {
+        let _ = channel.send(SftpEvent::TransferNote {
+            transfer_id: transfer_id.to_owned(),
+            note: notes.join("; "),
+        });
+    }
 }
 
 /// Sends a whole local directory up. The mirror of `run_download_tree`, with
@@ -2276,11 +2471,13 @@ async fn run_upload_tree(
     local_root: PathBuf,
     remote_root: String,
     plan: TreePlan,
+    resume: bool,
     channel: Channel<SftpEvent>,
     transfer_id: String,
     cancel: Arc<AtomicBool>,
 ) {
     let count = plan.files.len() as u64;
+    let mut skipped = 0u64;
     let outcome = async {
         // `create_dir` fails on one that already exists, and re-sending into an
         // existing tree is an ordinary thing to want — so an existing directory
@@ -2303,24 +2500,43 @@ async fn run_upload_tree(
             if cancel.load(Ordering::Relaxed) {
                 return Ok(wr_sftp::Transferred::Cancelled);
             }
+            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let remote = format!("{remote_root}/{}", file.relative);
+
+            if resume {
+                let dst = sftp.stat(&remote).await.ok().map(|s| FileFacts {
+                    size: s.size,
+                    modified: s.modified,
+                });
+                let src = FileFacts {
+                    size: file.size,
+                    modified: file.modified,
+                };
+                if is_already_there(&src, dst.as_ref()) {
+                    base += file.size;
+                    skipped += 1;
+                    continue;
+                }
+            }
+
             let _ = channel.send(SftpEvent::TransferFile {
                 transfer_id: transfer_id.clone(),
                 name: file.relative.clone(),
                 index: i as u64 + 1,
                 count,
             });
-            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
-            let remote = format!("{remote_root}/{}", file.relative);
 
-            let progress_channel = channel.clone();
-            let progress_id = transfer_id.clone();
-            let progress_cancel = cancel.clone();
-            let outcome = upload_one(&sftp, &local, &remote, move |bytes| {
-                let _ = progress_channel.send(SftpEvent::TransferProgress {
-                    transfer_id: progress_id.clone(),
-                    transferred: base + bytes,
-                });
-                !progress_cancel.load(Ordering::Relaxed)
+            let outcome = with_retries(|| {
+                let progress_channel = channel.clone();
+                let progress_id = transfer_id.clone();
+                let progress_cancel = cancel.clone();
+                upload_one(&sftp, &local, &remote, move |bytes| {
+                    let _ = progress_channel.send(SftpEvent::TransferProgress {
+                        transfer_id: progress_id.clone(),
+                        transferred: base + bytes,
+                    });
+                    !progress_cancel.load(Ordering::Relaxed)
+                })
             })
             .await
             .map_err(|e| format!("{} ({} of {count}): {e}", file.relative, i + 1))?;
@@ -2334,16 +2550,7 @@ async fn run_upload_tree(
     }
     .await;
 
-    if plan.skipped_links > 0 {
-        let _ = channel.send(SftpEvent::TransferNote {
-            transfer_id: transfer_id.clone(),
-            note: format!(
-                "{} symbolic link{} skipped.",
-                plan.skipped_links,
-                if plan.skipped_links == 1 { "" } else { "s" }
-            ),
-        });
-    }
+    note_what_was_skipped(&channel, &transfer_id, plan.skipped_links, skipped);
 
     let cancelled = cancel.load(Ordering::Relaxed);
     finish_transfer(&app, &channel, transfer_id, remote_root, outcome, cancelled).await;
@@ -2412,7 +2619,7 @@ mod tests {
     use super::{
         is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name, part_path_for,
         TreePlan,
-        parse_editor_command, rename_target, ChunkReader,
+        is_already_there, parse_editor_command, rename_target, ChunkReader,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
@@ -2663,6 +2870,7 @@ mod tests {
         plan.files.push(super::PlannedFile {
             relative: "one-too-many".into(),
             size: 0,
+            modified: None,
         });
         assert!(plan.is_oversized());
     }
@@ -2717,6 +2925,67 @@ mod tests {
         assert!(parse_editor_command("", Path::new("/tmp/a")).is_err());
         assert!(parse_editor_command("   ", Path::new("/tmp/a")).is_err());
         assert!(parse_editor_command(r#""unclosed --wait"#, Path::new("/tmp/a")).is_err());
+    }
+
+    fn facts(size: u64, modified: Option<i64>) -> super::FileFacts {
+        super::FileFacts { size, modified }
+    }
+
+    /// What resume is for: the second run of a transfer that died partway.
+    #[test]
+    fn a_file_already_copied_is_left_alone() {
+        assert!(is_already_there(
+            &facts(1024, Some(100)),
+            Some(&facts(1024, Some(100)))
+        ));
+        // A destination written *after* the source is still a copy of it —
+        // downloading sets the local mtime to now, so this is the ordinary case
+        // rather than the exception.
+        assert!(is_already_there(
+            &facts(1024, Some(100)),
+            Some(&facts(1024, Some(500)))
+        ));
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_is_copied() {
+        assert!(!is_already_there(&facts(1024, Some(100)), None));
+    }
+
+    #[test]
+    fn a_different_size_is_always_copied() {
+        assert!(!is_already_there(
+            &facts(1024, Some(100)),
+            Some(&facts(1023, Some(500)))
+        ));
+    }
+
+    /// The hazard resume has to not walk into. Editing one character in a
+    /// config file leaves its size alone, so size-only would skip the very
+    /// change the user is copying — and would look like it worked.
+    #[test]
+    fn a_newer_source_of_the_same_size_is_copied_again() {
+        assert!(!is_already_there(
+            &facts(1024, Some(900)),
+            Some(&facts(1024, Some(100)))
+        ));
+    }
+
+    /// Some servers report no mtime at all. Refusing to skip would make resume
+    /// useless against them; skipping on size alone is the documented fallback,
+    /// and the transfer says how many files it passed over either way.
+    #[test]
+    fn a_missing_mtime_falls_back_to_size_alone() {
+        assert!(is_already_there(&facts(1024, None), Some(&facts(1024, Some(1)))));
+        assert!(is_already_there(&facts(1024, Some(1)), Some(&facts(1024, None))));
+        assert!(!is_already_there(&facts(1024, None), Some(&facts(99, None))));
+    }
+
+    /// An empty file is a file: zero-length on both sides is a match, not a
+    /// missing destination.
+    #[test]
+    fn an_empty_file_counts_as_already_there() {
+        assert!(is_already_there(&facts(0, Some(5)), Some(&facts(0, Some(5)))));
     }
 
     /// The reader an upload streams from. The empty-chunk case is the one that

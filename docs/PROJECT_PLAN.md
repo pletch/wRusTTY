@@ -415,6 +415,31 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - **More than one transfer at a time.** The backend always allowed it — the
   `transfers` map was there from the start — and only the panel's single
   progress row did not. It is a list now.
+- **A failed transfer stays on screen with a Retry that resumes.** Resume skips
+  destination files that already look copied, so retrying a folder that died on
+  file 400 of 500 costs the remaining hundred.
+  - **The skip rule claims less than it looks like it does.** Same size, and
+    where both sides report an mtime the destination's must not be older. That
+    is "the destination looks like the result of having copied this", not "these
+    files are identical" — reading both to be sure is the transfer it exists to
+    avoid. The mtime half is what stops an edited config of coincidentally equal
+    size being skipped; a fresh destination always passes it, since writing it
+    set its mtime to now.
+  - **Resume is off for a first run and on for a retry.** A fresh copy should
+    copy; only a retry has a reason to assume anything already there is its own
+    work.
+  - **Skipped files are reported**, like skipped symlinks, because a silent
+    size-only skip is exactly what gets found out later by something that needed
+    the file.
+  - **The automatic retry is narrow on purpose.** `SftpError::is_transient`
+    claims only what the protocol itself calls timing, and treats the catch-all
+    `Failure` — which servers return for a full disk as readily as a read-only
+    mount — as permanent. Retrying a permission error three times delays the
+    real message and teaches nobody anything; missing a genuine hiccup costs one
+    click on a button that exists anyway.
+  - Each attempt **restarts the file** rather than continuing it, so a retry can
+    never append to the half a failed attempt left. Progress for that file goes
+    backwards, which is the truth about what is being sent.
 - **Both directions stream**, chunk by chunk, with progress and cancellation,
   and neither writes over its destination until the whole file has arrived —
   `.wrustty-part` remotely, a sibling part file plus `wr_fs::replace_atomic`
@@ -518,40 +543,36 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 #### What is not, roughly in the order it matters
 
-1. **Retry after a dropped connection.** A transfer that fails partway reports
-   `transferFailed` and stops. Nothing is corrupted — the part file is removed
-   and the destination untouched — but there is no retry, which starts to matter
-   exactly when transfers are large enough to span a reconnect. A recursive
-   transfer makes this sharper: it can now fail on file 400 of 500, and the only
-   answer offered is to start again.
-2. **Resume, which is the same problem one level up.** A recursive transfer that
-   stopped has no memory of what it finished, so re-running it re-sends
-   everything. `stat` on the destination plus a size comparison would skip the
-   files already there — cheap, and worth far more here than the per-file retry
-   above.
-3. **The edit save still reads its local file whole.** The download half of that
+1. **Surviving a dropped connection**, which is the half of "retry" that is not
+   built and cannot be built here. Resume and the Retry button cover a transfer
+   that *failed*; neither covers the connection itself going away, because the
+   session caches its SFTP client in a `OnceCell` and would hand back the same
+   dead channel on every attempt. Reconnecting is the missing piece, and it is
+   the same missing piece as auto-reconnect generally — so it belongs with that,
+   not with transfers.
+2. **The edit save still reads its local file whole.** The download half of that
    round trip streams; the re-upload on save calls `write` with a `Vec<u8>` read
    from the temp copy. Bounded by whatever the user just saved rather than by a
    remote host's word, so it is a much smaller version of the problem streaming
    fixed — but the same shape, and `upload` is right there.
-4. **The editor setting is per-app, not per-file-type.** One command opens
+3. **The editor setting is per-app, not per-file-type.** One command opens
    everything, so someone who wants a hex editor for binaries and a text editor
    for configs has to choose. A per-extension mapping is the natural extension
    and nothing in the current shape prevents it.
-5. **Symlinks are skipped in both directions, and cannot yet be copied.** The
+4. **Symlinks are skipped in both directions, and cannot yet be copied.** The
    walk reports how many it passed over, which is the honest minimum. Recreating
    them properly means deciding what a link means on the other side, and for a
    *download* the answer is usually "nothing" — a target path that only resolves
    on the host it came from. Worth doing for upload before download.
-6. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
+5. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
    network appliances, which is squarely this app's audience.
-7. **`chmod` is per-entry only** — no recursive apply, and no way to set the
+6. **`chmod` is per-entry only** — no recursive apply, and no way to set the
    permissions a recursive *upload* lands with (they come out as whatever the
    server's umask says, not what they were locally).
-8. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
+7. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
    the optional dual-pane manager view (r-shell has a reference
    implementation).
-9. **The in-app Monaco editor is now a decision, not a task.** The external
+8. **The in-app Monaco editor is now a decision, not a task.** The external
    editor route is arguably the better feature — a real editor, real
    keybindings, no bundled editor weight — and Monaco would mainly buy in-app
    diff and conflict UI, most of which conflict detection now delivers without
