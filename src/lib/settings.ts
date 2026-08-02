@@ -125,6 +125,26 @@ export interface TerminalSettings {
    * session it drops may have taken a vault unlock and a jump host to
    * establish. */
   confirmCloseWithConnection: boolean
+  /**
+   * Command used to open a remote file for editing, instead of handing it to
+   * Windows. Empty (the default) keeps the OS handler.
+   *
+   * **It must block until the user is finished** — `code --wait`,
+   * `subl --wait`, `gvim -f`. That is the entire reason the setting exists: the
+   * OS opener returns the moment it has dispatched the file, usually to an
+   * editor that was already running, so nothing can tell when the user is done
+   * and the "watching" marker has to be dismissed by hand. A command that
+   * blocks turns that into a real signal, and the watch ends itself.
+   *
+   * `{file}` marks where the path goes; without it the path is appended.
+   * Backslashes are literal (they are path separators here), and double quotes
+   * group — so a program path with spaces needs quoting and nothing else does.
+   *
+   * A command that returns immediately is detected and the watch is kept, since
+   * the alternative is deleting the temp file out from under an editor the user
+   * is still typing in.
+   */
+  externalEditor: string
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -173,6 +193,10 @@ const defaults: TerminalSettings = {
   cursorStyle: 'block',
   cursorBlink: true,
   confirmCloseWithConnection: true,
+  // Empty on purpose: the OS handler opens the user's *own* editor with no
+  // setup at all, and that is the better default even though it can report
+  // nothing back. This is the trade to opt into, not out of.
+  externalEditor: '',
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

@@ -52,6 +52,9 @@ interface Props {
    * home. See `startDirFor` for where it comes from.
    */
   startDir: string | null
+  /** The `externalEditor` setting, passed through to every edit this panel
+   *  opens. Empty means the OS handler, which cannot report a close. */
+  editorCommand: string
   onClose: () => void
 }
 
@@ -99,7 +102,7 @@ interface Transfer {
  */
 const PENDING = 'pending'
 
-export function FilesPanel({ sessionId, startDir, onClose }: Props) {
+export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
   useDismissable(true, onClose, { within: '[data-files-panel], [data-files-toggle]' })
   const confirm = useConfirm()
@@ -157,6 +160,26 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
           break
         case 'uploadFailed':
           toast.error(`Failed to save ${event.remotePath}: ${event.error}`)
+          break
+        case 'editorExited':
+          if (event.stillWatching) {
+            // The command returned before the user could plausibly have
+            // finished, which means it handed the file off rather than waiting.
+            // Said plainly and with the fix in it, because the symptom
+            // otherwise is "the chip never goes away" and nothing points at the
+            // setting.
+            toast.info(
+              `${basename(event.remotePath)} is still being watched — your editor command ` +
+                `returned immediately. Add its wait flag (for example "code --wait").`,
+            )
+            break
+          }
+          setActiveEdits((prev) => {
+            const next = { ...prev }
+            delete next[event.remotePath]
+            return next
+          })
+          toast.info(`Finished editing ${basename(event.remotePath)}`)
           break
         case 'uploadConflict': {
           // Nothing has been written at this point — the save stopped. So the
@@ -354,7 +377,7 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
     }
     try {
       toast.info(`Opening ${entry.name}`)
-      const editId = await sftp.editFile(sessionId, path, getChannel())
+      const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel())
       setActiveEdits((prev) => ({ ...prev, [path]: editId }))
     } catch (err) {
       toast.error(String(err))
@@ -730,13 +753,18 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
               </span>
               <span className="flex shrink-0 items-center gap-2 text-white/30">
                 {editId && (
-                  // "watching", not "editing": there's no way to detect an
-                  // external editor closing (the OS hands the file off and
-                  // returns immediately), so this deliberately persists until
-                  // dismissed — otherwise the second save of an editing
-                  // session would silently not upload. Labelled and shaped as
-                  // a dismissable subscription so it reads as "still live,
-                  // click to end" rather than a status stuck on.
+                  // "watching", not "editing", and dismissable by hand —
+                  // because on the default route nothing can tell when the
+                  // editor is closed. The OS hands the file off and returns at
+                  // once, usually to an instance already running, so ending the
+                  // watch on that would mean the second save of a session
+                  // silently not uploading. Shaped as a subscription so it
+                  // reads as "still live, click to end" rather than a status
+                  // stuck on.
+                  //
+                  // With `externalEditor` set the chip clears itself on
+                  // `editorExited`, and this is then a manual override rather
+                  // than the only way out.
                   <button
                     onClick={() => stopEditing(path)}
                     title="Watching for saves and uploading each one. Click to stop — this also deletes the local temp copy, so save in your editor first."

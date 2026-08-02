@@ -1265,6 +1265,7 @@ function App() {
                 filesOpenByPane={filesOpenByPane}
                 cwdByPane={cwdByPane}
                 titleByPane={titleByPane}
+                editorCommand={terminalSettings.externalEditor}
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
                 workspaces={savedWorkspaces}

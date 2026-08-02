@@ -21,6 +21,11 @@ export type SftpEvent =
   | { type: 'uploading'; editId: string; remotePath: string }
   | { type: 'uploaded'; editId: string; remotePath: string }
   | { type: 'uploadFailed'; editId: string; remotePath: string; error: string }
+  // An editor this app launched has exited. Only ever sent when `externalEditor`
+  // is set — the OS handler returns instantly and has nothing to report.
+  // `stillWatching` means the command came back too fast to be believed (it is
+  // missing its wait flag), so the watch was deliberately left alone.
+  | { type: 'editorExited'; editId: string; remotePath: string; stillWatching: boolean }
   // The remote file changed under an edit and the save was *not* made. Nothing
   // has been written when this arrives; `saveEdit(editId, true)` is how the
   // user says to overwrite anyway.
@@ -62,8 +67,22 @@ export interface ActiveEdit {
   remotePath: string
 }
 
-export function editFile(sessionId: string, remotePath: string, channel: Channel<SftpEvent>) {
-  return invoke<string>('sftp_edit_file', { sessionId, remotePath, channel })
+/**
+ * Downloads a remote file to a temp copy, opens it, and watches it for saves.
+ *
+ * `editorCommand` is the `externalEditor` setting. Empty hands the file to
+ * Windows, which returns immediately and can never say when the user is done —
+ * so the watch has to be dismissed by hand. A command that blocks
+ * (`code --wait`) reports back through `editorExited`, and the watch ends
+ * itself.
+ */
+export function editFile(
+  sessionId: string,
+  remotePath: string,
+  editorCommand: string,
+  channel: Channel<SftpEvent>,
+) {
+  return invoke<string>('sftp_edit_file', { sessionId, remotePath, editorCommand, channel })
 }
 
 /** Every edit still being watched for this session, authoritative. Watches

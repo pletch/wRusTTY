@@ -50,6 +50,7 @@ const SECTIONS = [
   { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'session', label: 'Session', icon: Plug },
+  { id: 'files', label: 'Remote files', icon: FolderOpen },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'shell', label: 'Shell integration', icon: ClipboardCopy },
   { id: 'logging', label: 'Logging', icon: ScrollText },
@@ -454,6 +455,45 @@ export function SettingsDialog({
                         hint="Offers to reopen open tabs next time you start wRusTTY."
                       />
                     </>
+                  )}
+
+                  {section === 'files' && (
+                    <div className="space-y-3 px-2 py-1.5">
+                      <label className="flex flex-col gap-1.5 text-white/85">
+                        <span>Open remote files with</span>
+                        <input
+                          type="text"
+                          spellCheck={false}
+                          placeholder="Windows default (leave empty)"
+                          className="w-full rounded border border-white/10 bg-black/20 px-2 py-1 font-mono text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+                          value={settings.externalEditor}
+                          onChange={(e) => onChange({ ...settings, externalEditor: e.target.value })}
+                        />
+                      </label>
+                      <p className="leading-relaxed text-white/50">
+                        Empty opens the file in whatever Windows uses for its type. That
+                        works with no setup, but nothing can tell when you have finished
+                        with it — the editor usually hands the file to a copy of itself
+                        that is already running and returns at once — so the panel's
+                        “watching” marker has to be dismissed by hand.
+                      </p>
+                      <p className="leading-relaxed text-white/50">
+                        A command that <em>waits</em> fixes that: wRusTTY knows when you
+                        close the file, uploads the last save, and stops watching on its
+                        own. The wait flag is the whole point — without it the command
+                        returns immediately and nothing is gained.
+                      </p>
+                      <div className="space-y-1 font-mono text-white/40">
+                        <div>code --wait</div>
+                        <div>"C:\Program Files\Sublime Text\subl.exe" --wait</div>
+                        <div>gvim -f</div>
+                      </div>
+                      <p className="leading-relaxed text-white/30">
+                        The file path is added at the end, or put <code>{'{file}'}</code>{' '}
+                        where you need it. Quote a program path containing spaces;
+                        backslashes are literal.
+                      </p>
+                    </div>
                   )}
 
                   {section === 'notifications' && (

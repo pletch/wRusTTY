@@ -460,9 +460,34 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   file streams to an OS temp directory with its basename preserved, opens in
   *the user's own* default application, and the containing directory is watched
   — every save re-uploads, with `uploading`/`uploaded`/`uploadFailed` driving
-  the panel's "watching" chip. Watches outlive the panel on purpose: there is
-  no way to detect an external editor closing, and stopping early would
-  silently drop the next save, so `sftp_list_edits` is the authoritative list.
+  the panel's "watching" chip. Watches outlive the panel on purpose, so
+  `sftp_list_edits` is the authoritative list.
+- **An editor that waits ends its own watch** (`externalEditor`, off by
+  default). The chip exists because the OS opener returns the instant it has
+  dispatched the file — usually to an editor already running — so there is no
+  process whose exit means anything, and "are you finished" is unanswerable.
+  A configured command that *blocks* (`code --wait`, `subl --wait`, `gvim -f`)
+  turns that into a real signal: the watch tears itself down and the temp copy
+  goes with it.
+  - **Off by default even though it is better**, because the default opens the
+    user's *own* editor with no setup at all. This is the trade to opt into.
+  - **A command that returns too quickly is treated as misconfigured, not as an
+    answer.** Without its wait flag a launcher hands off and exits at once,
+    which is indistinguishable from "closed instantly" — and acting on it would
+    delete the temp file out from under an editor the user is still typing in.
+    Under `MIN_EDITOR_LIFETIME` the watch is kept and the frontend says which
+    flag is missing.
+  - **The teardown waits out the save debounce** (`EDITOR_EXIT_GRACE`). Editors
+    write and then exit, so the write's 300 ms debounce is usually still pending
+    when the process is already gone; tearing down immediately would lose the
+    last edit at the exact moment the user believes they are done.
+  - **No extension confirmation on this path**, deliberately. That prompt guards
+    against the *OS handler* for a type being something that executes it; a
+    named text editor is not that handler, and asking anyway would train the
+    user to dismiss a warning that still matters on the other route.
+  - **Backslash is not an escape** in the command. It is the path separator
+    here, and treating `C:\Program Files\...` as escapes is how a setting that
+    looks obviously correct fails mysteriously. Only double quotes group.
 - **The open path is hardened**, and that work should not be re-litigated when
   the rest of this phase lands: an inert-extension allowlist with a
   confirmation dialog for anything whose OS handler executes (`.hta`, `.lnk`,
@@ -489,20 +514,24 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
    from the temp copy. Bounded by whatever the user just saved rather than by a
    remote host's word, so it is a much smaller version of the problem streaming
    fixed — but the same shape, and `upload` is right there.
-4. **Symlinks are skipped in both directions, and cannot yet be copied.** The
+4. **The editor setting is per-app, not per-file-type.** One command opens
+   everything, so someone who wants a hex editor for binaries and a text editor
+   for configs has to choose. A per-extension mapping is the natural extension
+   and nothing in the current shape prevents it.
+5. **Symlinks are skipped in both directions, and cannot yet be copied.** The
    walk reports how many it passed over, which is the honest minimum. Recreating
    them properly means deciding what a link means on the other side, and for a
    *download* the answer is usually "nothing" — a target path that only resolves
    on the host it came from. Worth doing for upload before download.
-5. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
+6. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
    network appliances, which is squarely this app's audience.
-6. **`chmod` is per-entry only** — no recursive apply, and no way to set the
+7. **`chmod` is per-entry only** — no recursive apply, and no way to set the
    permissions a recursive *upload* lands with (they come out as whatever the
    server's umask says, not what they were locally).
-7. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
+8. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
    the optional dual-pane manager view (r-shell has a reference
    implementation).
-8. **The in-app Monaco editor is now a decision, not a task.** The external
+9. **The in-app Monaco editor is now a decision, not a task.** The external
    editor route is arguably the better feature — a real editor, real
    keybindings, no bundled editor weight — and Monaco would mainly buy in-app
    diff and conflict UI, most of which conflict detection now delivers without

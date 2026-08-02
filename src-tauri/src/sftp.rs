@@ -44,6 +44,22 @@ pub enum SftpEvent {
         remote_path: String,
         error: String,
     },
+    /// A configured editor that this app launched has exited.
+    ///
+    /// Only ever sent when the editor was started by `externalEditor` rather
+    /// than handed to the OS: the default opener returns the instant it has
+    /// dispatched the file, usually to an editor that was already running, so
+    /// there is no process whose exit means anything. That is the whole reason
+    /// the "watching" chip has to be dismissed by hand without this setting.
+    ///
+    /// `still_watching` is the misconfiguration case — see
+    /// `MIN_EDITOR_LIFETIME`. The watch is intact and the user needs to know
+    /// their command is missing its wait flag.
+    EditorExited {
+        edit_id: String,
+        remote_path: String,
+        still_watching: bool,
+    },
     /// The remote file changed under an edit, and the save was **not** made.
     ///
     /// Nothing has been written when this arrives — the point is that the save
@@ -372,6 +388,94 @@ fn is_inert_to_open(basename: &str) -> bool {
     }
 }
 
+/// The placeholder a configured editor command may put the file path in.
+const EDITOR_FILE_PLACEHOLDER: &str = "{file}";
+
+/// How long after the editor exits before the watch is torn down.
+///
+/// An editor writes the file and then exits, and the two are close enough
+/// together that the write's debounce (300 ms) is usually still pending when
+/// the process is already gone. Tearing down immediately deletes the temp
+/// directory out from under a save that was about to happen — the user's last
+/// edit, lost, at the exact moment they believe they are done. A second and a
+/// half is far longer than the debounce plus a local read, and it is time
+/// nobody is waiting on: the editor window has already closed.
+const EDITOR_EXIT_GRACE: Duration = Duration::from_millis(1500);
+
+/// Below this, the editor is assumed not to have waited.
+///
+/// The whole mechanism rests on the configured command *blocking* until the
+/// user is finished — `code --wait`, `subl --wait`, `gvim -f`. Without the
+/// flag, the launcher hands the file to a running instance and returns at once,
+/// which would look exactly like "the user closed the editor instantly" and
+/// tear down a watch they are still typing into. So a suspiciously fast exit is
+/// treated as a misconfiguration rather than an answer: the watch stays, and
+/// the frontend is told why.
+const MIN_EDITOR_LIFETIME: Duration = Duration::from_secs(3);
+
+/// Splits a configured editor command into a program and its arguments, with
+/// the file path substituted in.
+///
+/// **Backslash is not an escape character here.** It is the path separator on
+/// the platform this app targets, and treating `C:\Program Files\Foo\foo.exe`
+/// as a string of escapes is how a setting that looks obviously correct fails
+/// mysteriously. Only the double quote groups, which is enough for the one hard
+/// case — a program path with spaces in it.
+///
+/// `{file}` marks where the path goes, anywhere in any argument
+/// (`--file={file}` works). A command with no placeholder gets the path
+/// appended, since that is what every editor's own command line looks like.
+fn parse_editor_command(
+    command: &str,
+    file: &std::path::Path,
+) -> Result<(String, Vec<String>), String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut has_token = false;
+    for c in command.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                // An empty pair of quotes is still an argument — `foo "" bar`
+                // has three — so the token is marked as started here rather
+                // than only by a character landing in it.
+                has_token = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if has_token {
+                    tokens.push(std::mem::take(&mut current));
+                    has_token = false;
+                }
+            }
+            c => {
+                current.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if has_token {
+        tokens.push(current);
+    }
+    if quoted {
+        return Err("editor command has an unclosed quote".into());
+    }
+
+    let mut tokens = tokens.into_iter();
+    let program = tokens
+        .next()
+        .filter(|p| !p.is_empty())
+        .ok_or("editor command is empty")?;
+    let path = file.to_string_lossy().into_owned();
+    let mut args: Vec<String> = tokens
+        .map(|arg| arg.replace(EDITOR_FILE_PLACEHOLDER, &path))
+        .collect();
+    if !command.contains(EDITOR_FILE_PLACEHOLDER) {
+        args.push(path);
+    }
+    Ok((program, args))
+}
+
 /// Asks before opening something whose handler might execute it. Same shape
 /// as a browser's download warning, and defaults to not opening: a dismissed
 /// or failed dialog reads as "no".
@@ -406,14 +510,23 @@ async fn confirm_risky_open(app: &AppHandle, basename: &str) -> bool {
 /// If the same remote file is already being watched, reuses the existing
 /// temp file/watcher instead of starting a second, competing one.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn sftp_edit_file(
     app: AppHandle,
     session_id: String,
     remote_path: String,
+    // `editor_command` is the `externalEditor` setting: a command that must
+    // *block* until the user is done with the file. Empty hands the file to the
+    // OS instead, which is the default and cannot report anything back.
+    editor_command: String,
     channel: Channel<SftpEvent>,
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<String, String> {
+    let editor = Some(editor_command.trim())
+        .filter(|c| !c.is_empty())
+        .map(str::to_owned);
+
     {
         let edits = sftp_state.edits.lock().await;
         if let Some((id, entry)) = edits
@@ -423,19 +536,15 @@ pub async fn sftp_edit_file(
             let local_path = entry.local_path.clone();
             let id = id.clone();
             drop(edits);
-            // Re-asked on every open, not just the first. The warning is
-            // about the act of opening, and a watch that's already running
-            // isn't evidence the user meant to open it again.
-            let basename = local_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if !is_inert_to_open(&basename) && !confirm_risky_open(&app, &basename).await {
-                return Ok(id);
-            }
-            app.opener()
-                .open_path(local_path.to_string_lossy(), None::<&str>)
-                .map_err(|e| e.to_string())?;
+            open_in_editor(
+                &app,
+                editor.as_deref(),
+                &local_path,
+                &id,
+                &remote_path,
+                &channel,
+            )
+            .await?;
             return Ok(id);
         }
     }
@@ -509,16 +618,6 @@ pub async fn sftp_edit_file(
         sftp.stat(&remote_path).await.ok().and_then(|s| s.modified),
     ));
 
-    // Downloaded and watched either way — declining only means the file
-    // isn't handed to the OS opener. The user can still reach it from the
-    // panel, and the watcher below is what makes an external edit round-trip.
-    let open_it = is_inert_to_open(basename) || confirm_risky_open(&app, basename).await;
-    if open_it {
-        app.opener()
-            .open_path(local_path.to_string_lossy(), None::<&str>)
-            .map_err(|e| e.to_string())?;
-    }
-
     let edit_id = sftp_state.next_edit_id();
     let watch_expected = expected_mtime.clone();
     let watch_path = local_path.clone();
@@ -530,10 +629,14 @@ pub async fn sftp_edit_file(
     // (async) re-read + re-upload + event push.
     let rt_handle = tokio::runtime::Handle::current();
 
+    // Cloned for the watcher; the original stays here to launch the editor with
+    // once the watch is registered.
+    let watch_channel = channel.clone();
     let mut debouncer = new_debouncer(
         Duration::from_millis(300),
         None,
         move |result: DebounceEventResult| {
+            let channel = &watch_channel;
             let Ok(events) = result else { return };
             if !events.iter().any(|e| e.paths.contains(&watch_path)) {
                 return;
@@ -577,15 +680,119 @@ pub async fn sftp_edit_file(
         edit_id.clone(),
         EditEntry {
             session_id,
-            remote_path,
-            local_path,
+            remote_path: remote_path.clone(),
+            local_path: local_path.clone(),
             expected_mtime,
             _debouncer: debouncer,
             _temp_dir: temp_dir,
         },
     );
 
+    // After the watch is registered, not before. Launching first would open a
+    // window on a file nothing is yet watching, and a fast typist's first save
+    // would go nowhere.
+    open_in_editor(
+        &app,
+        editor.as_deref(),
+        &local_path,
+        &edit_id,
+        &remote_path,
+        &channel,
+    )
+    .await?;
+
     Ok(edit_id)
+}
+
+/// Puts the local copy in front of the user, by whichever of the two routes is
+/// configured.
+///
+/// The difference between them is not just which program opens: it is whether
+/// this app ever finds out the user is finished. The OS opener returns as soon
+/// as it has dispatched the file — usually to an editor that was already
+/// running — so there is no process to wait on and the watch has to be
+/// dismissed by hand. A configured command that blocks gives a real signal, and
+/// the watch can end itself.
+async fn open_in_editor(
+    app: &AppHandle,
+    editor: Option<&str>,
+    local_path: &std::path::Path,
+    edit_id: &str,
+    remote_path: &str,
+    channel: &Channel<SftpEvent>,
+) -> Result<(), String> {
+    let basename = local_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let Some(command) = editor else {
+        // The OS-handler route, and the reason `INERT_EXTENSIONS` exists:
+        // opening dispatches by extension, and on Windows a remote `.hta`,
+        // `.js` or `.ps1` *runs*. Re-asked on every open, not just the first —
+        // the warning is about the act of opening, and a watch that is already
+        // running is not evidence the user meant to open it again.
+        if !is_inert_to_open(&basename) && !confirm_risky_open(app, &basename).await {
+            return Ok(());
+        }
+        return app
+            .opener()
+            .open_path(local_path.to_string_lossy(), None::<&str>)
+            .map_err(|e| e.to_string());
+    };
+
+    // No extension confirmation on this path, and that is not an oversight.
+    // The prompt guards against the *OS handler* for a type being something
+    // that executes it; a named text editor is not that handler, and
+    // `code --wait payload.hta` opens a file rather than running one. Asking
+    // anyway would train the user to dismiss a warning that no longer means
+    // anything, which is how the warning stops working where it does matter.
+    let (program, args) = parse_editor_command(command, local_path)?;
+    let mut child = tokio::process::Command::new(&program)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("could not start the editor ({program}): {e}"))?;
+
+    let app = app.clone();
+    let channel = channel.clone();
+    let edit_id = edit_id.to_owned();
+    let remote_path = remote_path.to_owned();
+    tokio::spawn(async move {
+        let started = tokio::time::Instant::now();
+        let _ = child.wait().await;
+        let waited = started.elapsed();
+
+        // A launcher that handed the file to a running instance and returned —
+        // the missing-wait-flag case. Tearing the watch down here would delete
+        // the temp file out from under an editor the user is still typing in.
+        if waited < MIN_EDITOR_LIFETIME {
+            let _ = channel.send(SftpEvent::EditorExited {
+                edit_id,
+                remote_path,
+                still_watching: true,
+            });
+            return;
+        }
+
+        // Long enough for the debounced save of whatever the editor wrote on
+        // its way out to have fired and finished.
+        tokio::time::sleep(EDITOR_EXIT_GRACE).await;
+        let existed = app
+            .state::<SftpState>()
+            .edits
+            .lock()
+            .await
+            .remove(&edit_id)
+            .is_some();
+        if existed {
+            let _ = channel.send(SftpEvent::EditorExited {
+                edit_id,
+                remote_path,
+                still_watching: false,
+            });
+        }
+    });
+    Ok(())
 }
 
 /// Writes an edit's local copy back to the host, unless the host's copy moved
@@ -2205,7 +2412,7 @@ mod tests {
     use super::{
         is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name, part_path_for,
         TreePlan,
-        rename_target, ChunkReader,
+        parse_editor_command, rename_target, ChunkReader,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
@@ -2458,6 +2665,58 @@ mod tests {
             size: 0,
         });
         assert!(plan.is_oversized());
+    }
+
+    /// The setting people will actually type, on the platform this targets.
+    #[test]
+    fn an_editor_command_keeps_a_windows_path_intact() {
+        let (program, args) = parse_editor_command(
+            r#""C:\Program Files\Microsoft VS Code\Code.exe" --wait"#,
+            Path::new(r"C:\Temp\notes.txt"),
+        )
+        .unwrap();
+        // Backslashes survive: treating them as escapes is how a setting that
+        // looks obviously correct fails mysteriously.
+        assert_eq!(program, r"C:\Program Files\Microsoft VS Code\Code.exe");
+        assert_eq!(args, ["--wait", r"C:\Temp\notes.txt"]);
+    }
+
+    #[test]
+    fn an_editor_command_appends_the_path_when_there_is_no_placeholder() {
+        let (program, args) =
+            parse_editor_command("code --wait", Path::new("/tmp/a.txt")).unwrap();
+        assert_eq!(program, "code");
+        assert_eq!(args, ["--wait", "/tmp/a.txt"]);
+    }
+
+    /// The placeholder exists for editors that will not take the file last.
+    #[test]
+    fn an_editor_command_substitutes_the_placeholder_in_place() {
+        let (program, args) =
+            parse_editor_command("gvim -f {file} +1", Path::new("/tmp/a.txt")).unwrap();
+        assert_eq!(program, "gvim");
+        assert_eq!(args, ["-f", "/tmp/a.txt", "+1"]);
+
+        // Anywhere in an argument, not only as the whole of one.
+        let (_, args) =
+            parse_editor_command("ed --file={file}", Path::new("/tmp/a.txt")).unwrap();
+        assert_eq!(args, ["--file=/tmp/a.txt"]);
+    }
+
+    /// A path with a space in it is the case quoting exists for, and the one
+    /// that would otherwise arrive as two arguments.
+    #[test]
+    fn an_editor_command_passes_a_spaced_path_as_one_argument() {
+        let (_, args) =
+            parse_editor_command("code --wait", Path::new(r"C:\My Files\a b.txt")).unwrap();
+        assert_eq!(args, ["--wait", r"C:\My Files\a b.txt"]);
+    }
+
+    #[test]
+    fn an_editor_command_has_to_be_something() {
+        assert!(parse_editor_command("", Path::new("/tmp/a")).is_err());
+        assert!(parse_editor_command("   ", Path::new("/tmp/a")).is_err());
+        assert!(parse_editor_command(r#""unclosed --wait"#, Path::new("/tmp/a")).is_err());
     }
 
     /// The reader an upload streams from. The empty-chunk case is the one that

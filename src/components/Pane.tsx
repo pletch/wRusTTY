@@ -35,6 +35,8 @@ interface Props {
   /** What each host set as its window title. Used here only to *guess* a
    *  directory when nothing reported one — see `startDirFor`. */
   titleByPane: Record<string, string | null>
+  /** The `externalEditor` setting, for the Files panel's edit route. */
+  editorCommand: string
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
   workspaces: Workspace[]
@@ -105,6 +107,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     filesOpenByPane,
     cwdByPane,
     titleByPane,
+    editorCommand,
     sessionIdByPane,
     sessions,
     workspaces,
@@ -289,6 +292,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         <FilesPanel
           sessionId={sessionId}
           startDir={startDirFor(cwdByPane[node.id], titleByPane[node.id])}
+          editorCommand={editorCommand}
           onClose={() => onCloseFiles(node.id)}
         />
       )}
