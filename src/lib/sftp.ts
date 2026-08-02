@@ -39,6 +39,12 @@ export type SftpEvent =
   // sized by the webview before the transfer exists.
   | { type: 'transferStarted'; transferId: string; remotePath: string; total: number }
   | { type: 'transferProgress'; transferId: string; transferred: number }
+  // Which file a *folder* transfer is on. Never sent for a single file, which
+  // `transferStarted` already named. `index` is 1-based: it is shown as "3 of 57".
+  | { type: 'transferFile'; transferId: string; name: string; index: number; count: number }
+  // Something worth knowing about a transfer that still succeeded — so far only
+  // the symlinks a recursive copy passed over.
+  | { type: 'transferNote'; transferId: string; note: string }
   | { type: 'transferDone'; transferId: string; remotePath: string }
   | { type: 'transferCancelled'; transferId: string }
   | { type: 'transferFailed'; transferId: string; remotePath: string; error: string }
@@ -219,8 +225,24 @@ export function rename(sessionId: string, path: string, newName: string) {
  * last said. A non-empty directory is refused — SFTP has no recursive delete,
  * and growing one implicitly out of a menu item is far too sharp an edge.
  */
-export function remove(sessionId: string, path: string) {
-  return invoke<void>('sftp_remove', { sessionId, path })
+export function remove(sessionId: string, path: string, recursive = false) {
+  return invoke<void>('sftp_remove', { sessionId, path, recursive })
+}
+
+/** What a directory holds, so a delete confirmation can say what it is about to
+ *  remove. "Are you sure" is worth almost nothing; "341 files in 27
+ *  directories" is worth a great deal — but only before the user answers. */
+export interface TreeCount {
+  files: number
+  dirs: number
+  bytes: number
+  /** Symlinks, which a recursive copy skips and a recursive delete unlinks
+   *  without following. */
+  links: number
+}
+
+export function countTree(sessionId: string, path: string) {
+  return invoke<TreeCount>('sftp_count_tree', { sessionId, path })
 }
 
 /** Sets the permission bits on a remote path. `mode` is a number — parse the

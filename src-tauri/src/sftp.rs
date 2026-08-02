@@ -78,8 +78,28 @@ pub enum SftpEvent {
     },
     TransferProgress {
         transfer_id: String,
-        /// Bytes moved so far, whichever way they were going.
+        /// Bytes moved so far, whichever way they were going. For a folder this
+        /// is the running total across every file in it, so one progress bar
+        /// still means one thing.
         transferred: u64,
+    },
+    /// Which file a folder transfer is on now. Never sent for a single file —
+    /// the transfer is already named by `TransferStarted`.
+    ///
+    /// `index` is 1-based, because it is shown to a human as "3 of 57".
+    TransferFile {
+        transfer_id: String,
+        name: String,
+        index: u64,
+        count: u64,
+    },
+    /// Something the user should know about a transfer that still succeeded —
+    /// so far, only the symlinks a recursive copy passed over. A copy quietly
+    /// missing entries is the kind of thing found out much later, by something
+    /// that needed one.
+    TransferNote {
+        transfer_id: String,
+        note: String,
     },
     TransferDone {
         transfer_id: String,
@@ -872,6 +892,7 @@ pub async fn sftp_rename(
 pub async fn sftp_remove(
     session_id: String,
     path: String,
+    recursive: bool,
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<(), String> {
@@ -879,15 +900,95 @@ pub async fn sftp_remove(
 
     let sftp = browse_client(&ssh_state, &session_id).await?;
     let stat = sftp.stat(&path).await.map_err(|e| e.to_string())?;
-    if stat.is_dir {
-        sftp.remove_dir(&path).await.map_err(|e| {
-            format!("could not delete {path}: {e} (a directory has to be empty first)")
-        })
-    } else {
-        sftp.remove_file(&path)
+    if !stat.is_dir {
+        return sftp
+            .remove_file(&path)
             .await
-            .map_err(|e| format!("could not delete {path}: {e}"))
+            .map_err(|e| format!("could not delete {path}: {e}"));
     }
+    if !recursive {
+        return sftp.remove_dir(&path).await.map_err(|e| {
+            format!("could not delete {path}: {e} (a directory has to be empty first)")
+        });
+    }
+
+    // Walked first, so the count in the confirmation the user already answered
+    // is the count that gets deleted, and so a tree too large to reason about
+    // is refused before anything is removed rather than partway through.
+    //
+    // The walk skips symlinks, which is exactly right here: it means deleting a
+    // directory containing a link to `/etc` removes the link and not `/etc`.
+    // The links themselves still have to go, or the directories holding them
+    // will not be empty — `remove_file` is the correct verb for one, and it
+    // unlinks without touching what it points at.
+    let plan = plan_remote_tree(&sftp, &path).await?;
+    for file in &plan.files {
+        let victim = format!("{path}/{}", file.relative);
+        sftp.remove_file(&victim)
+            .await
+            .map_err(|e| format!("could not delete {victim}: {e}"))?;
+    }
+    // Children before parents: `rmdir` only works on an empty directory, and
+    // the plan is sorted parents-first.
+    for dir in plan.dirs.iter().rev() {
+        let victim = format!("{path}/{dir}");
+        remove_dir_with_links(&sftp, &victim).await?;
+    }
+    remove_dir_with_links(&sftp, &path).await
+}
+
+/// `rmdir`, after unlinking any symlinks the walk deliberately passed over.
+///
+/// Listing again rather than remembering them from the plan: they are the only
+/// entries the walk drops, this is the one place that needs them, and a second
+/// small listing costs less than carrying a parallel structure through
+/// `TreePlan` for the sake of one caller.
+async fn remove_dir_with_links(sftp: &wr_sftp::SftpClient, dir: &str) -> Result<(), String> {
+    let entries = sftp
+        .list_dir(dir)
+        .await
+        .map_err(|e| format!("could not read {dir}: {e}"))?;
+    for entry in entries.iter().filter(|e| e.is_symlink) {
+        let victim = format!("{dir}/{}", entry.name);
+        sftp.remove_file(&victim)
+            .await
+            .map_err(|e| format!("could not delete {victim}: {e}"))?;
+    }
+    sftp.remove_dir(dir)
+        .await
+        .map_err(|e| format!("could not delete {dir}: {e}"))
+}
+
+/// How much a recursive delete is about to remove, so the confirmation can say
+/// so before it happens.
+///
+/// A separate command rather than a flag on the delete: "are you sure" is worth
+/// almost nothing, and "this removes 341 files in 27 directories" is worth a
+/// great deal, but only if the user sees it *before* answering.
+#[tauri::command]
+pub async fn sftp_count_tree(
+    session_id: String,
+    path: String,
+    ssh_state: State<'_, SshState>,
+) -> Result<TreeCount, String> {
+    let sftp = browse_client(&ssh_state, &session_id).await?;
+    let plan = plan_remote_tree(&sftp, &path).await?;
+    Ok(TreeCount {
+        files: plan.files.len() as u64,
+        dirs: plan.dirs.len() as u64,
+        bytes: plan.total_bytes,
+        links: plan.skipped_links as u64,
+    })
+}
+
+/// What a directory holds, for a confirmation that can be specific.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TreeCount {
+    pub files: u64,
+    pub dirs: u64,
+    pub bytes: u64,
+    pub links: u64,
 }
 
 /// Sets the permission bits on a remote path.
@@ -943,6 +1044,179 @@ pub async fn sftp_mkdir(
 
 /// The suffix an upload lands under before it is put in place.
 const PART_SUFFIX: &str = ".wrustty-part";
+
+/// How many entries a recursive transfer will take on before refusing.
+///
+/// Not a performance limit — a cap on how wrong a mistake can go. Dropping a
+/// folder chosen by accident, or one whose contents are far larger than the
+/// user pictured, should be a sentence saying so rather than a walk that runs
+/// for minutes before the first byte moves. 20,000 covers a source tree or a
+/// year of logs; anything past it is a job for `tar`.
+const MAX_TREE_ENTRIES: usize = 20_000;
+
+/// One file in a planned recursive transfer, named relative to the root.
+struct PlannedFile {
+    /// Always `/`-separated, whichever side it came from — it is joined onto a
+    /// remote path in one direction and a `PathBuf` in the other, and one
+    /// convention is what keeps the two runners symmetrical.
+    relative: String,
+    size: u64,
+}
+
+/// What a recursive transfer is going to do, worked out before it starts.
+///
+/// Walking first costs a pass over the tree and buys the two things a folder
+/// transfer needs and a single-file one does not: a total to show progress
+/// against, and the chance to refuse an unreasonable job before anything has
+/// been created at the destination.
+#[derive(Default)]
+struct TreePlan {
+    /// Relative directory paths, parents before children.
+    dirs: Vec<String>,
+    files: Vec<PlannedFile>,
+    total_bytes: u64,
+    /// Symlinks passed over. Reported rather than silently dropped — see
+    /// `plan_remote_tree`.
+    skipped_links: usize,
+}
+
+impl TreePlan {
+    fn is_oversized(&self) -> bool {
+        self.dirs.len() + self.files.len() > MAX_TREE_ENTRIES
+    }
+
+    /// Parents before children, so creating them in order always works.
+    /// Lexicographic order does this for `/`-separated relative paths: `a`
+    /// sorts before `a/b`.
+    fn sorted(mut self) -> Self {
+        self.dirs.sort();
+        self.files.sort_by(|a, b| a.relative.cmp(&b.relative));
+        self
+    }
+}
+
+/// Walks a remote directory tree.
+///
+/// **Symlinks are skipped, not followed.** Following them means a link to `/`
+/// copies the filesystem and a link to an ancestor never terminates, and this
+/// walk has no way to tell a useful link from either. Copying them *as links*
+/// would be better, and SFTP can do it — but a link's target is meaningful only
+/// on the host it came from, so recreating one locally produces something
+/// broken that looks like it worked. Skipping and saying how many were skipped
+/// is the only option that is never quietly wrong.
+async fn plan_remote_tree(sftp: &wr_sftp::SftpClient, root: &str) -> Result<TreePlan, String> {
+    let mut plan = TreePlan::default();
+    // Breadth is irrelevant here and a stack avoids a deque; order is imposed
+    // at the end by `sorted`.
+    let mut pending = vec![String::new()];
+    while let Some(rel) = pending.pop() {
+        let dir = if rel.is_empty() {
+            root.to_string()
+        } else {
+            format!("{root}/{rel}")
+        };
+        let entries = sftp
+            .list_dir(&dir)
+            .await
+            .map_err(|e| format!("could not read {dir}: {e}"))?;
+        for entry in entries {
+            let child = if rel.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{rel}/{}", entry.name)
+            };
+            // Checked before `is_dir`, which is true for a link *to* a
+            // directory and would otherwise send the walk straight into it.
+            if entry.is_symlink {
+                plan.skipped_links += 1;
+                continue;
+            }
+            if entry.is_dir {
+                plan.dirs.push(child.clone());
+                pending.push(child);
+            } else {
+                plan.total_bytes += entry.size;
+                plan.files.push(PlannedFile {
+                    relative: child,
+                    size: entry.size,
+                });
+            }
+            if plan.is_oversized() {
+                return Err(format!(
+                    "{root} holds more than {MAX_TREE_ENTRIES} entries — too much to copy from \
+                     here. Archive it on the host first."
+                ));
+            }
+        }
+    }
+    Ok(plan.sorted())
+}
+
+/// Walks a local directory tree, for an upload.
+///
+/// Symlinks are skipped for the same reasons as the remote walk, and with the
+/// extra Windows wrinkle that a directory junction is a reparse point most
+/// tools present as an ordinary directory — `symlink_metadata` is what tells
+/// them apart, so it is what this asks.
+async fn plan_local_tree(root: &std::path::Path) -> Result<TreePlan, String> {
+    let mut plan = TreePlan::default();
+    let mut pending = vec![String::new()];
+    while let Some(rel) = pending.pop() {
+        let dir = if rel.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))
+        };
+        let mut reader = tokio::fs::read_dir(&dir)
+            .await
+            .map_err(|e| format!("could not read {}: {e}", dir.display()))?;
+        while let Some(entry) = reader
+            .next_entry()
+            .await
+            .map_err(|e| format!("could not read {}: {e}", dir.display()))?
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // The remote side is POSIX and the name is about to be joined onto
+            // a remote path, so a name this app could not send has to be caught
+            // here rather than halfway through the transfer.
+            if !is_usable_remote_name(&name) {
+                return Err(format!(
+                    "{} contains a file this cannot send: {name}",
+                    dir.display()
+                ));
+            }
+            let child = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            let meta = tokio::fs::symlink_metadata(entry.path())
+                .await
+                .map_err(|e| format!("could not read {}: {e}", entry.path().display()))?;
+            if meta.is_symlink() {
+                plan.skipped_links += 1;
+                continue;
+            }
+            if meta.is_dir() {
+                plan.dirs.push(child.clone());
+                pending.push(child);
+            } else {
+                plan.total_bytes += meta.len();
+                plan.files.push(PlannedFile {
+                    relative: child,
+                    size: meta.len(),
+                });
+            }
+            if plan.is_oversized() {
+                return Err(format!(
+                    "{} holds more than {MAX_TREE_ENTRIES} entries — too much to send from here.",
+                    root.display()
+                ));
+            }
+        }
+    }
+    Ok(plan.sorted())
+}
 
 /// A file arriving from the webview, chunk by chunk, as an `AsyncRead`.
 ///
@@ -1125,10 +1399,30 @@ pub async fn sftp_upload_path(
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<String, String> {
-    let name = std::path::Path::new(&local_path)
+    let local = PathBuf::from(&local_path);
+    let name = local
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .ok_or_else(|| format!("{local_path} has no file name"))?;
+
+    // A directory is walked before anything is created on the far side, so an
+    // unreadable or unreasonable tree is refused while the host is still
+    // untouched.
+    if local.is_dir() {
+        let plan = plan_local_tree(&local).await?;
+        return start_upload_tree(
+            app,
+            &ssh_state,
+            &sftp_state,
+            &session_id,
+            &remote_dir,
+            &name,
+            local,
+            plan,
+            channel,
+        )
+        .await;
+    }
 
     // Opened before the destination is prepared: a file that cannot be read is
     // the user's own pick and the fastest thing to find out about, and doing it
@@ -1167,6 +1461,63 @@ pub async fn sftp_upload_path(
         .await
     });
 
+    Ok(transfer_id)
+}
+
+/// Registers and launches a recursive upload.
+///
+/// Split out only because `sftp_upload_path` would otherwise have two halves
+/// that share nothing but their arguments — a folder has no single destination
+/// file to check for, no `overwrite` question (it merges into whatever is
+/// there), and no part file of its own.
+#[allow(clippy::too_many_arguments)]
+async fn start_upload_tree(
+    app: AppHandle,
+    ssh_state: &State<'_, SshState>,
+    sftp_state: &State<'_, SftpState>,
+    session_id: &str,
+    remote_dir: &str,
+    name: &str,
+    local_root: PathBuf,
+    plan: TreePlan,
+    channel: Channel<SftpEvent>,
+) -> Result<String, String> {
+    if !is_usable_remote_name(name) {
+        return Err(format!("{name} is not a usable directory name"));
+    }
+    let remote_root = format!("{}/{name}", remote_dir.trim_end_matches('/'));
+    let sftp = transfer_client(ssh_state, session_id).await?;
+
+    let transfer_id = sftp_state.next_transfer_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    sftp_state.transfers.lock().await.insert(
+        transfer_id.clone(),
+        TransferEntry {
+            tx: None,
+            cancel: cancel.clone(),
+        },
+    );
+
+    let _ = channel.send(SftpEvent::TransferStarted {
+        transfer_id: transfer_id.clone(),
+        remote_path: remote_root.clone(),
+        total: plan.total_bytes,
+    });
+
+    let task_id = transfer_id.clone();
+    tokio::spawn(async move {
+        run_upload_tree(
+            app,
+            sftp,
+            local_root,
+            remote_root,
+            plan,
+            channel,
+            task_id,
+            cancel,
+        )
+        .await
+    });
     Ok(transfer_id)
 }
 
@@ -1417,25 +1768,27 @@ pub async fn sftp_download_begin(
     sftp_state: State<'_, SftpState>,
 ) -> Result<String, String> {
     let local = PathBuf::from(&local_path);
-    let part = part_path_for(&local)?;
+    // Validates the destination name before anything is created, and is what
+    // the per-file staging will use.
+    part_path_for(&local)?;
 
     let sftp = transfer_client(&ssh_state, &session_id).await?;
 
-    // Before creating anything locally, so a path that isn't there or is a
-    // directory fails with the remote's own words and leaves no debris.
+    // Before creating anything locally, so a path that isn't there fails with
+    // the remote's own words and leaves no debris.
     let stat = sftp
         .stat(&remote_path)
         .await
         .map_err(|e| format!("could not read {remote_path}: {e}"))?;
-    if stat.is_dir {
-        return Err(format!(
-            "{remote_path} is a directory — downloading a folder is not supported yet."
-        ));
-    }
 
-    let file = tokio::fs::File::create(&part)
-        .await
-        .map_err(|e| format!("could not write to {}: {e}", part.display()))?;
+    // A folder is walked first: the total to show progress against, and the
+    // chance to refuse an unreasonable job, both come from that pass.
+    let plan = if stat.is_dir {
+        Some(plan_remote_tree(&sftp, &remote_path).await?)
+    } else {
+        None
+    };
+    let total = plan.as_ref().map_or(stat.size, |p| p.total_bytes);
 
     let transfer_id = sftp_state.next_transfer_id();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1453,63 +1806,48 @@ pub async fn sftp_download_begin(
     let _ = channel.send(SftpEvent::TransferStarted {
         transfer_id: transfer_id.clone(),
         remote_path: remote_path.clone(),
-        total: stat.size,
+        total,
     });
 
     let task_id = transfer_id.clone();
     tokio::spawn(async move {
-        run_download(
-            app,
-            sftp,
-            file,
-            part,
-            local,
-            remote_path,
-            channel,
-            task_id,
-            cancel,
-        )
-        .await
+        match plan {
+            Some(plan) => {
+                run_download_tree(app, sftp, remote_path, local, plan, channel, task_id, cancel)
+                    .await
+            }
+            None => run_download(app, sftp, local, remote_path, channel, task_id, cancel).await,
+        }
     });
 
     Ok(transfer_id)
 }
 
-/// Drives one download to its end and reports which end it was.
-#[allow(clippy::too_many_arguments)]
-async fn run_download(
-    app: AppHandle,
-    sftp: std::sync::Arc<wr_sftp::SftpClient>,
-    mut file: tokio::fs::File,
-    part: PathBuf,
-    local: PathBuf,
-    remote_path: String,
-    channel: Channel<SftpEvent>,
-    transfer_id: String,
-    cancel: Arc<AtomicBool>,
-) {
-    let progress_channel = channel.clone();
-    let progress_id = transfer_id.clone();
-    let progress_cancel = cancel.clone();
-    let outcome = sftp
-        .download(&remote_path, &mut file, move |transferred| {
-            let _ = progress_channel.send(SftpEvent::TransferProgress {
-                transfer_id: progress_id.clone(),
-                transferred,
-            });
-            !progress_cancel.load(Ordering::Relaxed)
-        })
-        .await;
+/// Streams one remote file to one local path, staged and renamed.
+///
+/// The single-file download and every file of a folder download go through
+/// here, so "the destination is not touched until the whole file has arrived"
+/// is one piece of code rather than a property two paths have to keep
+/// agreeing on.
+///
+/// `progress` is called with *this file's* running byte count; a folder
+/// transfer adds its own base to make that a job total.
+async fn download_one(
+    sftp: &wr_sftp::SftpClient,
+    remote: &str,
+    local: &std::path::Path,
+    progress: impl FnMut(u64) -> bool,
+) -> Result<wr_sftp::Transferred, String> {
+    let part = part_path_for(local)?;
+    let mut file = tokio::fs::File::create(&part)
+        .await
+        .map_err(|e| format!("could not write to {}: {e}", part.display()))?;
 
-    // Same reasoning as the upload: a cancel that lands after the last chunk
-    // arrives as `Complete`, and the flag is what tells the two apart.
-    let cancelled = cancel.load(Ordering::Relaxed);
-    let complete = matches!(outcome, Ok(wr_sftp::Transferred::Complete)) && !cancelled;
-
-    let result: Result<bool, String> = match outcome {
+    let outcome = sftp.download(remote, &mut file, progress).await;
+    let placed: Result<wr_sftp::Transferred, String> = match outcome {
         Err(e) => Err(e.to_string()),
-        Ok(_) if !complete => Ok(false),
-        Ok(_) => {
+        Ok(wr_sftp::Transferred::Cancelled) => Ok(wr_sftp::Transferred::Cancelled),
+        Ok(wr_sftp::Transferred::Complete) => {
             // Before the rename, not after: a rename that lands while the
             // contents are still only in the page cache is exactly the
             // truncated-file outcome the part file exists to prevent.
@@ -1518,7 +1856,7 @@ async fn run_download(
                     // Dropped here so Windows isn't asked to rename a file it
                     // still holds an open handle on.
                     drop(file);
-                    let (from, to) = (part.clone(), local.clone());
+                    let (from, to) = (part.clone(), local.to_path_buf());
                     // `replace_atomic` sleeps through a backoff ladder on the
                     // Windows failures that clear on their own, so it does not
                     // belong on the runtime's thread.
@@ -1526,7 +1864,7 @@ async fn run_download(
                         .await
                         .map_err(|e| e.to_string())
                         .and_then(|r| r.map_err(|e| e.to_string()))
-                        .map(|()| true)
+                        .map(|()| wr_sftp::Transferred::Complete)
                         .map_err(|e| {
                             format!(
                                 "downloaded, but could not move it into place as {}: {e}",
@@ -1544,25 +1882,301 @@ async fn run_download(
     // user has to identify and clean up themselves. On success it is gone
     // already, having been renamed; `remove_file` then finds nothing, which is
     // why the error is dropped.
-    if !matches!(result, Ok(true)) {
+    if !matches!(placed, Ok(wr_sftp::Transferred::Complete)) {
         let _ = tokio::fs::remove_file(&part).await;
     }
+    placed
+}
 
-    let _ = match result {
-        Ok(true) => channel.send(SftpEvent::TransferDone {
+/// Puts a finished `.wrustty-part` into place on the host.
+///
+/// Remove-then-rename because SFTP v3's rename will not overwrite. The window
+/// between the two is real but small, and it opens only once the new data is
+/// complete on the far side.
+async fn place_remote_part(
+    sftp: &wr_sftp::SftpClient,
+    part_path: &str,
+    remote_path: &str,
+    replacing: bool,
+) -> Result<(), String> {
+    if replacing {
+        sftp.remove_file(remote_path)
+            .await
+            .map_err(|e| format!("could not replace {remote_path}: {e}"))?;
+    }
+    sftp.rename(part_path, remote_path)
+        .await
+        .map_err(|e| format!("uploaded, but could not move it into place as {remote_path}: {e}"))
+}
+
+/// Streams one local file to one remote path, staged and renamed. The mirror of
+/// `download_one`, and used by the same two callers in the other direction.
+async fn upload_one(
+    sftp: &wr_sftp::SftpClient,
+    local: &std::path::Path,
+    remote: &str,
+    progress: impl FnMut(u64) -> bool,
+) -> Result<wr_sftp::Transferred, String> {
+    let part_path = format!("{remote}{PART_SUFFIX}");
+    let file = tokio::fs::File::open(local)
+        .await
+        .map_err(|e| format!("could not open {}: {e}", local.display()))?;
+    let replacing = sftp.try_exists(remote).await.map_err(|e| e.to_string())?;
+
+    let outcome = sftp.upload(&part_path, file, progress).await;
+    let placed: Result<wr_sftp::Transferred, String> = match outcome {
+        Err(e) => Err(e.to_string()),
+        Ok(wr_sftp::Transferred::Cancelled) => Ok(wr_sftp::Transferred::Cancelled),
+        Ok(wr_sftp::Transferred::Complete) => place_remote_part(sftp, &part_path, remote, replacing)
+            .await
+            .map(|()| wr_sftp::Transferred::Complete),
+    };
+    if !matches!(placed, Ok(wr_sftp::Transferred::Complete)) {
+        let _ = sftp.remove_file(&part_path).await;
+    }
+    placed
+}
+
+/// Drives one download to its end and reports which end it was.
+#[allow(clippy::too_many_arguments)]
+async fn run_download(
+    app: AppHandle,
+    sftp: std::sync::Arc<wr_sftp::SftpClient>,
+    local: PathBuf,
+    remote_path: String,
+    channel: Channel<SftpEvent>,
+    transfer_id: String,
+    cancel: Arc<AtomicBool>,
+) {
+    let progress_channel = channel.clone();
+    let progress_id = transfer_id.clone();
+    let progress_cancel = cancel.clone();
+    let outcome = download_one(&sftp, &remote_path, &local, move |transferred| {
+        let _ = progress_channel.send(SftpEvent::TransferProgress {
+            transfer_id: progress_id.clone(),
+            transferred,
+        });
+        !progress_cancel.load(Ordering::Relaxed)
+    })
+    .await;
+
+    // Same reasoning as the upload: a cancel that lands after the last chunk
+    // arrives as `Complete`, and the flag is what tells the two apart.
+    let cancelled = cancel.load(Ordering::Relaxed);
+    finish_transfer(&app, &channel, transfer_id, remote_path, outcome, cancelled).await;
+}
+
+/// Copies a whole remote directory down, file by file.
+///
+/// **There is no atomic tree.** Each *file* keeps the guarantee it has on its
+/// own — staged beside its destination, renamed into place — but a job that
+/// stops halfway leaves the files it already finished. That is deliberate:
+/// staging the whole tree somewhere else and moving it at the end would double
+/// the disk needed and turn a resumable nuisance into an all-or-nothing one,
+/// and there is no atomic directory swap to reach for anyway. What matters is
+/// that no *individual* file is ever left half-written, and that the failure
+/// says how far it got.
+#[allow(clippy::too_many_arguments)]
+async fn run_download_tree(
+    app: AppHandle,
+    sftp: std::sync::Arc<wr_sftp::SftpClient>,
+    remote_root: String,
+    local_root: PathBuf,
+    plan: TreePlan,
+    channel: Channel<SftpEvent>,
+    transfer_id: String,
+    cancel: Arc<AtomicBool>,
+) {
+    let count = plan.files.len() as u64;
+    let outcome = async {
+        // Every directory first, including the empty ones — a folder that
+        // copies without its empty subdirectories has not been copied.
+        tokio::fs::create_dir_all(&local_root)
+            .await
+            .map_err(|e| format!("could not create {}: {e}", local_root.display()))?;
+        for dir in &plan.dirs {
+            let path = local_root.join(dir.replace('/', std::path::MAIN_SEPARATOR_STR));
+            tokio::fs::create_dir_all(&path)
+                .await
+                .map_err(|e| format!("could not create {}: {e}", path.display()))?;
+        }
+
+        let mut base = 0u64;
+        for (i, file) in plan.files.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(wr_sftp::Transferred::Cancelled);
+            }
+            let _ = channel.send(SftpEvent::TransferFile {
+                transfer_id: transfer_id.clone(),
+                name: file.relative.clone(),
+                index: i as u64 + 1,
+                count,
+            });
+            let remote = format!("{remote_root}/{}", file.relative);
+            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+
+            let progress_channel = channel.clone();
+            let progress_id = transfer_id.clone();
+            let progress_cancel = cancel.clone();
+            let outcome = download_one(&sftp, &remote, &local, move |bytes| {
+                let _ = progress_channel.send(SftpEvent::TransferProgress {
+                    transfer_id: progress_id.clone(),
+                    // The job's running total, not this file's — one bar, one
+                    // meaning, however many files it is made of.
+                    transferred: base + bytes,
+                });
+                !progress_cancel.load(Ordering::Relaxed)
+            })
+            .await
+            .map_err(|e| format!("{} ({} of {count}): {e}", file.relative, i + 1))?;
+
+            if matches!(outcome, wr_sftp::Transferred::Cancelled) {
+                return Ok(wr_sftp::Transferred::Cancelled);
+            }
+            // The planned size, not what arrived: a file that grew since the
+            // walk would otherwise push the bar past its own total, and the
+            // total is what the walk measured.
+            base += file.size;
+        }
+        Ok(wr_sftp::Transferred::Complete)
+    }
+    .await;
+
+    if plan.skipped_links > 0 {
+        // Said out loud rather than buried: a copy quietly missing entries is
+        // the kind of thing found out much later, by something that needed one.
+        let _ = channel.send(SftpEvent::TransferNote {
             transfer_id: transfer_id.clone(),
-            remote_path,
-        }),
-        Ok(false) => channel.send(SftpEvent::TransferCancelled {
+            note: format!(
+                "{} symbolic link{} skipped — a link's target only means something on the host it \
+                 came from.",
+                plan.skipped_links,
+                if plan.skipped_links == 1 { "" } else { "s" }
+            ),
+        });
+    }
+
+    let cancelled = cancel.load(Ordering::Relaxed);
+    finish_transfer(&app, &channel, transfer_id, remote_root, outcome, cancelled).await;
+}
+
+/// Sends a whole local directory up. The mirror of `run_download_tree`, with
+/// the same partial-failure semantics.
+#[allow(clippy::too_many_arguments)]
+async fn run_upload_tree(
+    app: AppHandle,
+    sftp: std::sync::Arc<wr_sftp::SftpClient>,
+    local_root: PathBuf,
+    remote_root: String,
+    plan: TreePlan,
+    channel: Channel<SftpEvent>,
+    transfer_id: String,
+    cancel: Arc<AtomicBool>,
+) {
+    let count = plan.files.len() as u64;
+    let outcome = async {
+        // `create_dir` fails on one that already exists, and re-sending into an
+        // existing tree is an ordinary thing to want — so an existing directory
+        // is not an error here, only a failure to create a missing one is.
+        for dir in std::iter::once(&String::new()).chain(plan.dirs.iter()) {
+            let path = if dir.is_empty() {
+                remote_root.clone()
+            } else {
+                format!("{remote_root}/{dir}")
+            };
+            if !sftp.try_exists(&path).await.map_err(|e| e.to_string())? {
+                sftp.create_dir(&path)
+                    .await
+                    .map_err(|e| format!("could not create {path}: {e}"))?;
+            }
+        }
+
+        let mut base = 0u64;
+        for (i, file) in plan.files.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(wr_sftp::Transferred::Cancelled);
+            }
+            let _ = channel.send(SftpEvent::TransferFile {
+                transfer_id: transfer_id.clone(),
+                name: file.relative.clone(),
+                index: i as u64 + 1,
+                count,
+            });
+            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let remote = format!("{remote_root}/{}", file.relative);
+
+            let progress_channel = channel.clone();
+            let progress_id = transfer_id.clone();
+            let progress_cancel = cancel.clone();
+            let outcome = upload_one(&sftp, &local, &remote, move |bytes| {
+                let _ = progress_channel.send(SftpEvent::TransferProgress {
+                    transfer_id: progress_id.clone(),
+                    transferred: base + bytes,
+                });
+                !progress_cancel.load(Ordering::Relaxed)
+            })
+            .await
+            .map_err(|e| format!("{} ({} of {count}): {e}", file.relative, i + 1))?;
+
+            if matches!(outcome, wr_sftp::Transferred::Cancelled) {
+                return Ok(wr_sftp::Transferred::Cancelled);
+            }
+            base += file.size;
+        }
+        Ok(wr_sftp::Transferred::Complete)
+    }
+    .await;
+
+    if plan.skipped_links > 0 {
+        let _ = channel.send(SftpEvent::TransferNote {
             transfer_id: transfer_id.clone(),
-        }),
+            note: format!(
+                "{} symbolic link{} skipped.",
+                plan.skipped_links,
+                if plan.skipped_links == 1 { "" } else { "s" }
+            ),
+        });
+    }
+
+    let cancelled = cancel.load(Ordering::Relaxed);
+    finish_transfer(&app, &channel, transfer_id, remote_root, outcome, cancelled).await;
+}
+
+/// The one place a transfer's ending becomes an event and lets go of its id.
+///
+/// Every runner ends the same way and used to say so in its own words, which is
+/// how a cancelled folder transfer came to report differently from a cancelled
+/// file. `cancelled` is read from the flag rather than inferred from the
+/// outcome because a cancel landing after the last chunk arrives as `Complete`.
+async fn finish_transfer(
+    app: &AppHandle,
+    channel: &Channel<SftpEvent>,
+    transfer_id: String,
+    remote_path: String,
+    outcome: Result<wr_sftp::Transferred, String>,
+    cancelled: bool,
+) {
+    let _ = match outcome {
         Err(error) => channel.send(SftpEvent::TransferFailed {
             transfer_id: transfer_id.clone(),
             remote_path,
             error,
         }),
+        Ok(_) if cancelled => channel.send(SftpEvent::TransferCancelled {
+            transfer_id: transfer_id.clone(),
+        }),
+        Ok(wr_sftp::Transferred::Cancelled) => channel.send(SftpEvent::TransferCancelled {
+            transfer_id: transfer_id.clone(),
+        }),
+        Ok(wr_sftp::Transferred::Complete) => channel.send(SftpEvent::TransferDone {
+            transfer_id: transfer_id.clone(),
+            remote_path,
+        }),
     };
 
+    // The frontend removes the entry when it finishes or cancels; this covers
+    // the transfer that ended on its own — a failure, or a webview that walked
+    // away — so a dead transfer cannot hold its id forever.
     app.state::<SftpState>()
         .transfers
         .lock()
@@ -1590,6 +2204,7 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
 mod tests {
     use super::{
         is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name, part_path_for,
+        TreePlan,
         rename_target, ChunkReader,
     };
     use std::path::{Path, PathBuf};
@@ -1796,6 +2411,53 @@ mod tests {
     #[test]
     fn a_rename_refuses_a_path_with_no_directory() {
         assert!(rename_target("notes.txt", "other.txt").is_err());
+    }
+
+    /// Two things depend on this order and would both fail quietly without it:
+    /// creating destination directories (a child before its parent fails) and
+    /// recursive delete, which walks the same list backwards because `rmdir`
+    /// only works on an empty directory.
+    #[test]
+    fn a_plan_orders_parents_before_children() {
+        let plan = TreePlan {
+            dirs: vec![
+                "a/b/c".into(),
+                "b".into(),
+                "a".into(),
+                "a/b".into(),
+                "a-sibling".into(),
+            ],
+            ..Default::default()
+        }
+        .sorted();
+        assert_eq!(plan.dirs, ["a", "a-sibling", "a/b", "a/b/c", "b"]);
+
+        // Reversed, every directory comes after everything inside it — which is
+        // the property the delete relies on.
+        for (i, dir) in plan.dirs.iter().enumerate() {
+            for child in &plan.dirs[i + 1..] {
+                assert!(
+                    !dir.starts_with(&format!("{child}/")),
+                    "{child} must not sort before its child {dir}"
+                );
+            }
+        }
+    }
+
+    /// The cap is a limit on how wrong a mistake can go, so it has to count
+    /// both kinds of entry — a tree of 20,000 empty directories is exactly as
+    /// unreasonable as one of 20,000 files.
+    #[test]
+    fn a_plan_counts_directories_towards_the_cap() {
+        let mut plan = TreePlan::default();
+        assert!(!plan.is_oversized());
+        plan.dirs = vec![String::new(); super::MAX_TREE_ENTRIES];
+        assert!(!plan.is_oversized());
+        plan.files.push(super::PlannedFile {
+            relative: "one-too-many".into(),
+            size: 0,
+        });
+        assert!(plan.is_oversized());
     }
 
     /// The reader an upload streams from. The empty-chunk case is the one that

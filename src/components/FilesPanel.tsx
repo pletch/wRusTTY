@@ -12,6 +12,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  FolderUp,
   KeyRound,
   RefreshCw,
   Trash2,
@@ -24,10 +25,10 @@ import { toast } from '../lib/toast'
 import { formatBytes } from '../lib/formatBytes'
 import { formatMode, formatOctal, parseOctal } from '../lib/fileMode'
 import {
+  describeTree,
   expandHome,
   nameError,
   safeSuggestedName,
-  verdictForDownload,
   verdictForMutation,
 } from '../lib/fileActions'
 import { useDismissable } from '../hooks/useDismissable'
@@ -83,7 +84,20 @@ interface Transfer {
   direction: 'up' | 'down'
   transferred: number
   total: number
+  /** Which file a folder transfer is on. Absent for a single file, which is
+   *  already named by the row itself. */
+  file?: { name: string; index: number; count: number }
 }
+
+/**
+ * A transfer the panel started but does not yet have an id for.
+ *
+ * The gap is one round trip, and the cancel button has to exist inside it —
+ * otherwise the first thing a user does with a transfer they started by mistake
+ * is discover they cannot stop it yet. `PENDING` is what the row is keyed by
+ * until the real id arrives.
+ */
+const PENDING = 'pending'
 
 export function FilesPanel({ sessionId, startDir, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
@@ -103,7 +117,11 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
   // every marker while the watches keep running and keep uploading on save.
   const [activeEdits, setActiveEdits] = useState<Record<string, string>>({})
   const [menu, setMenu] = useState<{ entry: RemoteEntry; x: number; y: number } | null>(null)
-  const [transfer, setTransfer] = useState<Transfer | null>(null)
+  // A list, not one: the backend always allowed concurrent transfers — the map
+  // was there from the start — and only this row's singularity stopped the panel
+  // offering them. A folder copy can run for minutes, and refusing to let
+  // anything else happen meanwhile was the wrong trade.
+  const [transfers, setTransfers] = useState<Transfer[]>([])
   // The one inline text field the panel ever shows: renaming an existing entry,
   // or naming a new directory. One at a time, because it is one field — and
   // because two open at once would leave the user unsure which Enter they were
@@ -166,22 +184,47 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
             })
           break
         }
-        // An explicit transfer. Only the backend knows the total for these —
-        // a download's from `stat`, a picked upload's from the file itself.
+        // An explicit transfer. Only the backend knows the total for these — a
+        // download's from `stat` or the tree walk, an upload's from the file
+        // or tree itself — and `transferStarted` is also where a row stops
+        // being `PENDING` and takes its real id.
         case 'transferStarted':
-          setTransfer((t) => (t ? { ...t, total: event.total } : t))
+          setTransfers((list) =>
+            list.map((t) =>
+              t.id === PENDING || t.id === event.transferId
+                ? { ...t, id: event.transferId, total: event.total }
+                : t,
+            ),
+          )
           break
         case 'transferProgress':
-          setTransfer((t) => (t ? { ...t, transferred: event.transferred } : t))
+          setTransfers((list) =>
+            list.map((t) =>
+              t.id === event.transferId ? { ...t, transferred: event.transferred } : t,
+            ),
+          )
+          break
+        case 'transferFile':
+          setTransfers((list) =>
+            list.map((t) =>
+              t.id === event.transferId
+                ? { ...t, file: { name: event.name, index: event.index, count: event.count } }
+                : t,
+            ),
+          )
+          break
+        case 'transferNote':
+          toast.info(event.note)
           break
         case 'transferDone':
-          setTransfer((t) => {
+          setTransfers((list) => {
+            const done = list.find((t) => t.id === event.transferId)
             toast.success(
-              t?.direction === 'down'
-                ? `Downloaded ${t.name}`
-                : `Uploaded ${t?.name ?? basename(event.remotePath)}`,
+              done?.direction === 'down'
+                ? `Downloaded ${done.name}`
+                : `Uploaded ${done?.name ?? basename(event.remotePath)}`,
             )
-            return null
+            return list.filter((t) => t.id !== event.transferId)
           })
           // An upload changed the directory being shown; a download didn't, but
           // reloading costs one listing and keeps the size column honest if the
@@ -189,14 +232,21 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
           if (cwdRef.current) void load(cwdRef.current)
           break
         case 'transferCancelled':
-          setTransfer((t) => {
-            toast.info(`${t?.direction === 'down' ? 'Download' : 'Upload'} cancelled`)
-            return null
+          setTransfers((list) => {
+            const stopped = list.find((t) => t.id === event.transferId)
+            toast.info(`${stopped?.direction === 'down' ? 'Download' : 'Upload'} cancelled`)
+            return list.filter((t) => t.id !== event.transferId)
           })
+          // A cancelled folder transfer leaves what it already copied, so the
+          // listing is stale in exactly the case the user most wants to check.
+          if (cwdRef.current) void load(cwdRef.current)
           break
         case 'transferFailed':
-          setTransfer(null)
+          setTransfers((list) => list.filter((t) => t.id !== event.transferId))
+          // Named with the file it got to, which for a folder is the whole
+          // difference between "it failed" and "it failed on this one".
           toast.error(`Transfer failed: ${event.error}`)
+          if (cwdRef.current) void load(cwdRef.current)
           break
       }
     }
@@ -280,6 +330,21 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
+  /** The three halves of starting a transfer, which every caller repeats: show
+   *  the row before the id exists, give it the id when it arrives, and take it
+   *  away again if the call never got that far. */
+  function addTransfer(t: Transfer) {
+    setTransfers((list) => [...list, t])
+  }
+  function claimPending(id: string) {
+    // `transferStarted` usually wins the race and has already done this; the
+    // guard is for the transfer that fails before ever sending one.
+    setTransfers((list) => list.map((t) => (t.id === PENDING ? { ...t, id } : t)))
+  }
+  function dropPending() {
+    setTransfers((list) => list.filter((t) => t.id !== PENDING))
+  }
+
   async function open(entry: RemoteEntry) {
     if (!cwd) return
     const path = join(cwd, entry.name)
@@ -303,56 +368,56 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
    * IPC — the backend reads the SFTP stream and writes straight to disk. */
   async function download(entry: RemoteEntry) {
     if (!cwd) return
-    const verdict = verdictForDownload({ isDir: entry.isDir, busy: transfer !== null })
-    if (!verdict.ok) {
-      toast.error(verdict.reason)
-      return
-    }
     const remotePath = join(cwd, entry.name)
     let localPath: string | null
     try {
-      localPath = await save({ defaultPath: safeSuggestedName(entry.name) })
+      // A folder needs somewhere to go, not a name to be saved as — so the
+      // dialog asks for the *parent* and the folder keeps its own name inside
+      // it, which is what every other copy of a directory does.
+      localPath = entry.isDir
+        ? await openDialog({ directory: true, title: `Copy ${entry.name} into…` }).then((dir) =>
+            typeof dir === 'string' ? `${dir}/${safeSuggestedName(entry.name)}` : null,
+          )
+        : await save({ defaultPath: safeSuggestedName(entry.name) })
     } catch (err) {
-      toast.error(`Could not open the save dialog: ${String(err)}`)
+      toast.error(`Could not open the dialog: ${String(err)}`)
       return
     }
     // Dismissed. Not an error and not worth a toast — the user changed their
     // mind, and they know it.
     if (!localPath) return
 
-    // `entry.size` is the listing's, which may be minutes old; the backend
-    // stats the file and sends the real total as `transferStarted`.
-    setTransfer({
-      id: null,
+    // `entry.size` is the listing's and is 0 for a directory; the backend stats
+    // or walks and sends the real total as `transferStarted`.
+    addTransfer({
+      id: PENDING,
       name: basename(localPath),
       direction: 'down',
       transferred: 0,
-      total: entry.size,
+      total: entry.isDir ? 0 : entry.size,
     })
     try {
       const id = await sftp.downloadBegin(sessionId, remotePath, localPath, getChannel())
-      setTransfer((t) => (t ? { ...t, id } : t))
+      claimPending(id)
     } catch (err) {
-      setTransfer(null)
+      dropPending()
       toast.error(`Download failed: ${String(err)}`)
     }
   }
 
-  /** Upload into the directory being shown, from a file picker.
+  /** Upload into the directory being shown, from a picker.
    *
    * The route for anyone who would rather not drag — and the cheaper one, since
-   * a picked file has a path and its bytes never touch the webview. */
-  async function uploadHere() {
+   * a picked path never puts its bytes through the webview. It is also the only
+   * route that can send a *folder*: a drop hands over a `File` with no path, so
+   * there is nothing to walk. */
+  async function uploadHere(directory: boolean) {
     if (!cwd) return
-    if (transfer) {
-      toast.error('One transfer at a time — wait for the current one to finish.')
-      return
-    }
     let picked: string | string[] | null
     try {
-      picked = await openDialog({ multiple: false, directory: false })
+      picked = await openDialog({ multiple: false, directory })
     } catch (err) {
-      toast.error(`Could not open the file picker: ${String(err)}`)
+      toast.error(`Could not open the picker: ${String(err)}`)
       return
     }
     if (!picked || Array.isArray(picked)) return
@@ -363,9 +428,15 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
     try {
       if (await sftp.exists(sessionId, remotePath)) {
         const replace = await confirm({
-          title: `Replace ${name}?`,
-          body: `${remotePath} already exists. The existing file is left alone unless the whole upload succeeds.`,
-          confirmLabel: 'Replace',
+          title: directory ? `Merge into ${name}?` : `Replace ${name}?`,
+          // A folder is not replaced, it is merged into — files with the same
+          // name are overwritten and everything else is left where it is. That
+          // is a materially different promise from the single-file one, and the
+          // dialog has to make it rather than imply the other.
+          body: directory
+            ? `${remotePath} already exists. Files with the same names are replaced; anything else already in it is left alone.`
+            : `${remotePath} already exists. The existing file is left alone unless the whole upload succeeds.`,
+          confirmLabel: directory ? 'Merge' : 'Replace',
         })
         if (!replace) return
         overwrite = true
@@ -375,12 +446,12 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
       return
     }
 
-    setTransfer({ id: null, name, direction: 'up', transferred: 0, total: 0 })
+    addTransfer({ id: PENDING, name, direction: 'up', transferred: 0, total: 0 })
     try {
       const id = await sftp.uploadPath(sessionId, cwd, picked, overwrite, getChannel())
-      setTransfer((t) => (t ? { ...t, id } : t))
+      claimPending(id)
     } catch (err) {
-      setTransfer(null)
+      dropPending()
       toast.error(`Upload failed: ${String(err)}`)
     }
   }
@@ -456,23 +527,45 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
       toast.error(verdict.reason)
       return
     }
+    // Counted before asking, so the question is specific. "Are you sure" is
+    // worth almost nothing; "this removes 341 files in 27 directories" is worth
+    // a great deal — and only if it is said *before* the answer.
+    let count: sftp.TreeCount | null = null
+    if (entry.isDir) {
+      try {
+        count = await sftp.countTree(sessionId, path)
+      } catch (err) {
+        toast.error(`Could not read ${path}: ${String(err)}`)
+        return
+      }
+    }
+
     const ok = await confirm({
       title: `Delete ${entry.name}?`,
       // Named plainly rather than softened. This is a remote host the user may
       // not easily get back to, there is no undo, and there is no recycle bin
       // on the far side.
-      body: entry.isDir
-        ? `${path} will be deleted. This cannot be undone, and only works if the directory is empty.`
+      body: count
+        ? count.files + count.dirs + count.links === 0
+          ? `${path} is empty and will be deleted. This cannot be undone.`
+          : `${path} and everything in it will be deleted — ${describeTree(count)}. ` +
+            `This cannot be undone.` +
+            (count.links
+              ? `\n\nSymbolic links are removed as links; whatever they point at is left alone.`
+              : '')
         : `${path} will be deleted on the remote host. This cannot be undone.`,
       confirmLabel: 'Delete',
     })
     if (!ok) return
     try {
-      await sftp.remove(sessionId, path)
+      await sftp.remove(sessionId, path, entry.isDir)
       toast.success(`Deleted ${entry.name}`)
       load(cwd)
     } catch (err) {
       toast.error(String(err))
+      // Partial deletes are possible — the walk removes files before
+      // directories — so what is on screen may no longer be what is there.
+      load(cwd)
     }
   }
 
@@ -569,12 +662,20 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
           <FolderPlus size={12} />
         </button>
         <button
-          onClick={uploadHere}
-          disabled={!cwd || transfer !== null}
+          onClick={() => uploadHere(false)}
+          disabled={!cwd}
           title="Upload a file into this directory"
           className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80 disabled:opacity-30"
         >
           <Upload size={12} />
+        </button>
+        <button
+          onClick={() => uploadHere(true)}
+          disabled={!cwd}
+          title="Upload a folder into this directory"
+          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80 disabled:opacity-30"
+        >
+          <FolderUp size={12} />
         </button>
         <button
           onClick={() => cwd && load(cwd)}
@@ -684,41 +785,57 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
         })}
       </ul>
 
-      {transfer && (
-        <div className="mt-2 flex flex-col gap-1.5 border-t border-white/10 pt-2">
-          <div className="flex items-center gap-2">
-            {transfer.direction === 'down' ? (
-              <Download size={13} className="shrink-0 text-sky-400" />
-            ) : (
-              <Upload size={13} className="shrink-0 text-sky-400" />
-            )}
-            <span className="min-w-0 flex-1 truncate text-white/80">{transfer.name}</span>
-            <button
-              onClick={() => {
-                if (transfer.id) void sftp.cancelTransfer(transfer.id).catch(() => {})
-              }}
-              title="Cancel this transfer"
-              className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
-            >
-              <X size={12} />
-            </button>
-          </div>
-          <div className="h-1 overflow-hidden rounded-full bg-white/10">
-            <div
-              className="h-full bg-sky-400 transition-[width] duration-150"
-              style={{
-                width: `${
-                  transfer.total > 0
-                    ? Math.min(100, (transfer.transferred / transfer.total) * 100)
-                    : 100
-                }%`,
-              }}
-            />
-          </div>
-          <span className="text-white/40">
-            {formatBytes(transfer.transferred)}
-            {transfer.total > 0 && ` of ${formatBytes(transfer.total)}`}
-          </span>
+      {transfers.length > 0 && (
+        <div className="mt-2 flex max-h-32 flex-col gap-2 overflow-y-auto border-t border-white/10 pt-2">
+          {transfers.map((t) => (
+            <div key={t.id} className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                {t.direction === 'down' ? (
+                  <Download size={13} className="shrink-0 text-sky-400" />
+                ) : (
+                  <Upload size={13} className="shrink-0 text-sky-400" />
+                )}
+                <span className="min-w-0 flex-1 truncate text-white/80">{t.name}</span>
+                <button
+                  onClick={() => {
+                    // A row exists before its id does; cancelling in that
+                    // window is a no-op rather than an error, and the window is
+                    // one round trip long.
+                    if (t.id !== PENDING) void sftp.cancelTransfer(t.id!).catch(() => {})
+                  }}
+                  title="Cancel this transfer"
+                  className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="h-1 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full bg-sky-400 transition-[width] duration-150"
+                  style={{
+                    width: `${
+                      t.total > 0 ? Math.min(100, (t.transferred / t.total) * 100) : 100
+                    }%`,
+                  }}
+                />
+              </div>
+              <span className="flex items-baseline gap-2 text-white/40">
+                <span className="shrink-0">
+                  {formatBytes(t.transferred)}
+                  {t.total > 0 && ` of ${formatBytes(t.total)}`}
+                </span>
+                {t.file && (
+                  // The file *and* the count. Either alone leaves a question:
+                  // the name without "3 of 57" gives no sense of how far along
+                  // it is, and the count without the name gives no sense of
+                  // whether it is stuck.
+                  <span className="min-w-0 truncate text-white/25">
+                    {t.file.index} of {t.file.count} — {t.file.name}
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -738,13 +855,9 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
           <button
             className={menuItem}
             onClick={() => download(menu.entry)}
-            // Offered-but-refused for a folder rather than hidden: the entry
-            // does have a download in its future, and a menu whose items move
-            // between entries is harder to learn than one where they grey out.
-            disabled={menu.entry.isDir || transfer !== null}
             title={
               menu.entry.isDir
-                ? 'Downloading a folder is not supported yet'
+                ? 'Copy this folder and everything in it to a local directory'
                 : 'Save this file to a local path'
             }
           >

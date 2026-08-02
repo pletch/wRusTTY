@@ -1,30 +1,36 @@
 import { describe, expect, it } from 'vitest'
 import {
+  describeTree,
   expandHome,
   nameError,
   safeSuggestedName,
   startDirFor,
-  verdictForDownload,
   verdictForMutation,
 } from './fileActions'
 
-describe('verdictForDownload', () => {
-  it('allows an ordinary file', () => {
-    expect(verdictForDownload({ isDir: false, busy: false })).toEqual({ ok: true })
+describe('describeTree', () => {
+  it('counts what a recursive delete would remove', () => {
+    expect(describeTree({ files: 341, dirs: 27, links: 0 })).toBe('341 files and 27 directories')
+    expect(describeTree({ files: 3, dirs: 1, links: 2 })).toBe(
+      '3 files, 1 directory and 2 symbolic links',
+    )
   })
 
-  it('refuses a folder, which needs a recursive queue nothing has yet', () => {
-    const verdict = verdictForDownload({ isDir: true, busy: false })
-    expect(verdict.ok).toBe(false)
-    expect(verdict.ok === false && verdict.reason).toMatch(/folder/i)
+  it('says one thing in the singular', () => {
+    expect(describeTree({ files: 1, dirs: 0, links: 0 })).toBe('1 file')
+    expect(describeTree({ files: 0, dirs: 1, links: 0 })).toBe('1 directory')
+    expect(describeTree({ files: 0, dirs: 0, links: 1 })).toBe('1 symbolic link')
   })
 
-  /** The transient obstacle is reported ahead of the permanent one, matching
-   *  `verdictForDrop`: being told "pick a file, not a folder" while a transfer
-   *  is what's actually in the way sends the user after the wrong problem. */
-  it('reports the running transfer before the folder limit', () => {
-    const verdict = verdictForDownload({ isDir: true, busy: true })
-    expect(verdict.ok === false && verdict.reason).toMatch(/one transfer at a time/i)
+  /** "0 directories" invites the reader to work out whether that matters
+   *  instead of reading the number that does. */
+  it('leaves out the parts that are zero', () => {
+    expect(describeTree({ files: 5, dirs: 0, links: 0 })).toBe('5 files')
+    expect(describeTree({ files: 0, dirs: 4, links: 0 })).toBe('4 directories')
+  })
+
+  it('has something to say about an empty tree', () => {
+    expect(describeTree({ files: 0, dirs: 0, links: 0 })).toBe('nothing')
   })
 })
 

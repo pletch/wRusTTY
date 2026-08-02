@@ -56,33 +56,42 @@ export function expandHome(path: string, home: string): string {
   return home === '/' ? `/${rest}` : `${home.replace(/\/+$/, '')}/${rest}`
 }
 
-/** Everything about an entry and the panel that decides whether it can be sent
- *  or fetched. */
-export interface TransferState {
-  /** Directories need the recursive queue neither direction has yet. */
-  isDir: boolean
-  /** A transfer is already running in this panel. */
-  busy: boolean
-}
-
 export type TransferVerdict = { ok: true } | { ok: false; reason: string }
 
 /**
- * Ordered the same way `verdictForDrop` is, and for the same reason: the first
- * true refusal is the one worth reporting. Being told "pick a file, not a
- * folder" while the real obstacle is the transfer already running would send
- * someone off solving the wrong problem — and unlike the folder limit, that one
- * clears on its own.
+ * "341 files in 27 directories" — what a recursive delete is about to remove.
+ *
+ * Written out rather than shown as a table because it goes in the middle of a
+ * sentence in a confirmation dialog, and because the parts that are zero should
+ * not appear at all: "0 directories" invites the reader to work out whether
+ * that matters instead of just reading the number that does.
  */
-export function verdictForDownload(state: TransferState): TransferVerdict {
-  if (state.busy) {
-    return { ok: false, reason: 'One transfer at a time — wait for the current one to finish.' }
-  }
-  if (state.isDir) {
-    return { ok: false, reason: 'Downloading a folder is not supported yet — pick a file.' }
-  }
-  return { ok: true }
+export function describeTree(count: {
+  files: number
+  dirs: number
+  links: number
+}): string {
+  const parts: string[] = []
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+  if (count.files) parts.push(plural(count.files, 'file', 'files'))
+  if (count.dirs) parts.push(plural(count.dirs, 'directory', 'directories'))
+  if (count.links) parts.push(plural(count.links, 'symbolic link', 'symbolic links'))
+  if (parts.length === 0) return 'nothing'
+  if (parts.length === 1) return parts[0]
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
 }
+
+// There is deliberately no `verdictForDownload` any more. It refused two things
+// that are now supported: a folder (walked and copied file by file) and a second
+// concurrent transfer (the backend always allowed it; only the panel's single
+// progress row did not). Both rules were satisfied rather than relaxed, so
+// keeping a function that can only answer "yes" would have been a rule in name
+// only. What remains genuinely refusable — a tree too large to take on — is
+// decided by the walk, since only it can know.
+//
+// `verdictForDrop` still refuses a dropped folder, and that is not an
+// oversight: a drop hands the webview a `File` with no path, so there is
+// nothing to walk. The picker route is the one that can send a folder.
 
 /**
  * Whether a file can be renamed or deleted — the two things a live edit watch

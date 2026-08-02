@@ -3,10 +3,11 @@
 A lightweight, security-focused SSH / Telnet / Serial client for Windows 11 with a
 modern GUI, tabbed session management, an encrypted credential vault, and
 GPU-accelerated terminal rendering. Remote file browsing, editing and transfer
-over SFTP have since landed — upload and download both stream, with progress and
-cancellation, and rename, delete and new folder are in the panel's context menu.
-What Phase 6 still holds is what needs a queue or a permission bit: recursive
-folder transfers, `chmod`, conflict detection and retry.
+over SFTP have since landed — files and whole folders move in both directions,
+streamed, with progress and cancellation; rename, delete, new folder and chmod
+are in the panel's context menu; and a save can no longer quietly overwrite a
+remote file that changed underneath it. What Phase 6 still holds is what happens
+when a transfer *stops*: retry, resume, and an SCP fallback.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -342,7 +343,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   signing **not built** — the two that have to be settled before any public
   release
 
-### Phase 6 — Files (extended capability) — **partial: browse, edit, transfer and mutations ship; folders and `chmod` do not**
+### Phase 6 — Files (extended capability) — **browse, edit, transfer, folders and mutations all ship; retry, resume and SCP do not**
 
 #### What is built
 
@@ -365,6 +366,35 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   nothing. There is deliberately no `read`: returning a whole file as a
   `Vec<u8>` was the thing that made every download unbounded in memory, and
   deleting it is what stops the next caller reaching for it.
+- **Folders transfer recursively, in both directions, and delete recursively.**
+  The tree is walked before anything moves, which buys the two things a folder
+  transfer needs and a single file does not: a byte total to show progress
+  against, and the chance to refuse an unreasonable job (`MAX_TREE_ENTRIES`)
+  while the destination is still untouched. The same walk backs the delete's
+  confirmation, so it can say "341 files and 27 directories" rather than "are
+  you sure".
+  - **There is no atomic tree.** Each *file* keeps its own guarantee — staged,
+    then renamed into place — but a job that stops halfway leaves what it
+    already finished. Staging a whole tree elsewhere would double the disk
+    needed and there is no atomic directory swap to reach for; what matters is
+    that no individual file is ever half-written and that the failure names the
+    file it got to.
+  - **Symlinks are skipped, and said so.** Following them means a link to `/`
+    copies the filesystem and a link to an ancestor never terminates. Copying
+    them as links would be better, but a link's target usually means nothing on
+    the other side, so recreating one produces something broken that looks like
+    it worked. A recursive *delete* unlinks them without following, which is the
+    reason deleting a directory holding a link to `/etc` removes the link.
+  - **A folder upload merges, and the dialog says merge.** Files with the same
+    name are replaced; anything else already there is left alone. That is a
+    materially different promise from the single-file replace, and using one
+    word for both would be a lie in one of the two cases.
+  - **Only the picker can send a folder.** A drop hands the webview a `File`
+    with no path, so there is nothing to walk — `verdictForDrop` still refuses
+    one, and that is a limit of the drag, not of the feature.
+- **More than one transfer at a time.** The backend always allowed it — the
+  `transfers` map was there from the start — and only the panel's single
+  progress row did not. It is a list now.
 - **Both directions stream**, chunk by chunk, with progress and cancellation,
   and neither writes over its destination until the whole file has arrived —
   `.wrustty-part` remotely, a sibling part file plus `wr_fs::replace_atomic`
@@ -422,10 +452,10 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   - **Directory-ness is settled by `stat`, not by the listing.** The frontend's
     answer may be minutes old, and being wrong means `rmdir` on a file or
     `unlink` on a directory — both fail, neither says why.
-  - **A non-empty directory is refused.** SFTP has no recursive delete, so
-    honouring one would mean walking the tree — the queue recursive transfer
-    needs, and much too sharp an edge to grow implicitly out of a menu item
-    labelled "Delete".
+  - **A non-empty directory is deleted only after being counted.** SFTP has no
+    recursive delete, so this walks the tree itself — and the walk is what lets
+    the confirmation name what it is about to remove instead of asking whether
+    the user is sure.
 - **Remote editing, in a different shape than this plan first described.** A
   file streams to an OS temp directory with its basename preserved, opens in
   *the user's own* default application, and the containing directory is watched
@@ -443,48 +473,41 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 #### What is not, roughly in the order it matters
 
-1. **Conflict detection — now the cheapest real fix in the list.** The save path
-   writes `CREATE | TRUNCATE` with no check, so a remote file that changed
-   between download and save is silently clobbered. `stat` exists and returns an
-   mtime for exactly this reason: remember it when the edit's copy is fetched
-   and prompt on a mismatch. This plan filed it under the Monaco editor; it
-   belongs to the external-editor flow that actually shipped.
-2. **Recursive folder transfer.** The single hole both directions still share,
-   and the reason a folder is refused out loud in each. It needs a cancellable
-   queue and a progress model over *n* files rather than one — the per-file
-   machinery is now complete on both sides, so this is a layer above it rather
-   than a change to it.
-3. **`chmod`, and a permissions column** — the one mutation still missing.
-   Rename, delete and mkdir ship (see below); `chmod` does not, because
-   `RemoteEntry` carries name, isDir, isSymlink, size and modified — no mode and
-   no owner. So it needs metadata plumbed through the crate before it needs a
-   UI, and the column is worth having on its own: "why is this script not
-   running" is a routine question this panel currently cannot answer.
-4. **Retry after a dropped connection.** A transfer that fails partway reports
-   `transferFailed` and stops. Nothing is corrupted (the part file is removed,
-   the destination untouched), but there is no retry and no queue — which starts
-   to matter exactly when transfers are large enough to span a reconnect.
-5. **The edit save still reads its local file whole.** The download half of that
-   round trip streams now; the re-upload on save calls `write` with a `Vec<u8>`
-   read from the temp copy. Bounded by whatever the user just saved rather than
-   by a remote host's word, so it is a much smaller version of the problem
-   item 1 of the previous revision described — but it is the same shape, and
-   `upload` is right there.
-6. **More than one transfer at a time.** Both the pane and the panel refuse a
-   second while one runs. The backend does not require this — `transfers` is a
-   map and always was — it is the UI that has one progress row. A queue is the
-   real answer, and it is the same queue item 2 needs.
-7. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
+1. **Retry after a dropped connection.** A transfer that fails partway reports
+   `transferFailed` and stops. Nothing is corrupted — the part file is removed
+   and the destination untouched — but there is no retry, which starts to matter
+   exactly when transfers are large enough to span a reconnect. A recursive
+   transfer makes this sharper: it can now fail on file 400 of 500, and the only
+   answer offered is to start again.
+2. **Resume, which is the same problem one level up.** A recursive transfer that
+   stopped has no memory of what it finished, so re-running it re-sends
+   everything. `stat` on the destination plus a size comparison would skip the
+   files already there — cheap, and worth far more here than the per-file retry
+   above.
+3. **The edit save still reads its local file whole.** The download half of that
+   round trip streams; the re-upload on save calls `write` with a `Vec<u8>` read
+   from the temp copy. Bounded by whatever the user just saved rather than by a
+   remote host's word, so it is a much smaller version of the problem streaming
+   fixed — but the same shape, and `upload` is right there.
+4. **Symlinks are skipped in both directions, and cannot yet be copied.** The
+   walk reports how many it passed over, which is the honest minimum. Recreating
+   them properly means deciding what a link means on the other side, and for a
+   *download* the answer is usually "nothing" — a target path that only resolves
+   on the host it came from. Worth doing for upload before download.
+5. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
    network appliances, which is squarely this app's audience.
-8. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
+6. **`chmod` is per-entry only** — no recursive apply, and no way to set the
+   permissions a recursive *upload* lands with (they come out as whatever the
+   server's umask says, not what they were locally).
+7. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
    the optional dual-pane manager view (r-shell has a reference
    implementation).
-9. **The in-app Monaco editor is now a decision, not a task.** The external
+8. **The in-app Monaco editor is now a decision, not a task.** The external
    editor route is arguably the better feature — a real editor, real
    keybindings, no bundled editor weight — and Monaco would mainly buy in-app
-   diff and conflict UI, most of which item 1 delivers without it. Schedule it
-   deliberately or kill it; leaving it on the list implies the edit flow is
-   unfinished when it is not.
+   diff and conflict UI, most of which conflict detection now delivers without
+   it. Schedule it deliberately or kill it; leaving it on the list implies the
+   edit flow is unfinished when it is not.
 
 #### The structural decision, taken
 

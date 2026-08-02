@@ -77,6 +77,7 @@ pub fn run() {
             sftp::sftp_remove,
             sftp::sftp_mkdir,
             sftp::sftp_chmod,
+            sftp::sftp_count_tree,
             telnet::telnet_connect,
             telnet::telnet_write,
             telnet::telnet_resize,
