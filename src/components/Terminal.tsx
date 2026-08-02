@@ -13,6 +13,7 @@ import {
   RotateCw,
   Unplug,
   TextCursorInput,
+  Upload,
   ExternalLink,
   Copy,
 } from 'lucide-react'
@@ -34,9 +35,13 @@ import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 import { parseOsc9, parseOsc777, ProgressTracker } from '../lib/appProgress'
-import { parseWindowTitle, parseCwd } from '../lib/remoteIdentity'
+import { parseWindowTitle, parseCwd, parseCwdProperty, guessCwdFromTitle } from '../lib/remoteIdentity'
 import type { AppProgress, RemoteNotification } from '../lib/appProgress'
 import { applyOsc52 } from '../lib/osc52'
+import { formatBytes } from '../lib/formatBytes'
+import { verdictForDrop } from '../lib/dropUpload'
+import { Channel } from '@tauri-apps/api/core'
+import * as sftp from '../lib/sftp'
 import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
 
@@ -231,6 +236,42 @@ export function Terminal({
    */
   const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string } | null>(null)
   useDismissable(linkMenu !== null, () => setLinkMenu(null))
+
+  /**
+   * The last directory the host actually *reported*, which is where a dropped
+   * file goes. Fed by OSC 7, by OSC 133/633's `P;Cwd=` and by OSC 1337's
+   * `CurrentDir=` — three roads for one fact, and hosts differ in which they
+   * take. Reading only OSC 7 meant a session that plainly showed its
+   * directory still had none as far as a drop was concerned.
+   */
+  const remoteCwdRef = useRef<string | null>(null)
+  /** A directory *guessed* out of the window title. Never a destination on its
+   *  own — only the prefill for the prompt. */
+  const titleCwdRef = useRef<string | null>(null)
+  /** A file is being dragged over this pane. */
+  const [dropTarget, setDropTarget] = useState(false)
+  /**
+   * A dropped file with nowhere to put it: the shell never reported a working
+   * directory, so the destination has to be asked for rather than guessed.
+   * Guessing `~`, or scraping it off the prompt, puts the file somewhere the
+   * user did not ask for and did not watch it go.
+   */
+  const [dropDest, setDropDest] = useState<{
+    file: File
+    path: string
+    /** The prefill was read off the window title rather than reported, so the
+     *  prompt has to say so — it may be a directory the shell has since left. */
+    fromTitle: boolean
+  } | null>(null)
+  /** What was typed into that prompt last time, to prefill it the next. */
+  const lastDestRef = useRef<string | null>(null)
+  /** The upload in flight, for the progress readout and its cancel button. */
+  const [transfer, setTransfer] = useState<{
+    id: string | null
+    name: string
+    sent: number
+    total: number
+  } | null>(null)
 
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
   const [searchRegex, setSearchRegex] = useState(false)
@@ -507,6 +548,139 @@ export function Terminal({
     } catch {
       setSearchResults({ index: -1, count: 0 })
     }
+  }
+
+  /**
+   * How much of a dropped file goes over IPC at a time.
+   *
+   * The bytes have to travel through the webview at all because Tauri's native
+   * drag-drop is off on purpose — enabling it breaks the HTML5 drag events
+   * tab-to-pane dragging is built on (see `dragDropEnabled` in
+   * tauri.conf.json). 256 KB is large enough that the per-call overhead
+   * disappears and small enough that the backend's four-deep queue is a
+   * fraction of a megabyte rather than a buffer worth worrying about.
+   */
+  const UPLOAD_CHUNK_BYTES = 256 * 1024
+
+  /** One place for the three sequences that can report a directory, so a pane
+   *  and the status bar can never disagree about which one arrived last. */
+  function noteRemoteCwd(cwd: string) {
+    onRemoteCwdRef.current?.(cwd)
+    // Kept locally as well as reported upwards: a file dropped on this pane
+    // goes to the directory this pane is sitting in, and the drop handler is
+    // local. Routing it up to App state and back down as a prop would make the
+    // destination a render behind.
+    remoteCwdRef.current = cwd
+  }
+
+  /** Only SSH has a file transfer channel at all. Asked of the shared mapping
+   *  rather than by matching protocols here, so a new source variant cannot
+   *  quietly become "not SSH" in one place and SSH in another. */
+  const canUpload = conn.transportOf(source) === 'ssh'
+
+  /**
+   * Sends one file to `remoteDir` on this pane's host, keeping its name.
+   *
+   * Reads the file in slices and hands each to the backend, which streams them
+   * straight into the SFTP write — so the file is never held whole on either
+   * side, and the progress shown is bytes the server has actually taken rather
+   * than bytes the webview has read.
+   */
+  async function uploadFile(file: File, remoteDir: string) {
+    const sessionId = sessionIdRef.current
+    if (!sessionId) {
+      toast.error('Not connected — nothing to upload to.')
+      return
+    }
+    const dir = remoteDir.replace(/\/+$/, '')
+    const remotePath = `${dir}/${file.name}`
+
+    let overwrite = false
+    try {
+      if (await sftp.exists(sessionId, remotePath)) {
+        const replace = await confirmRef.current({
+          title: `Replace ${file.name}?`,
+          body: `${remotePath} already exists on ${labelRef.current}. The existing file is left alone unless the whole upload succeeds.`,
+          confirmLabel: 'Replace',
+        })
+        if (!replace) return
+        overwrite = true
+      }
+    } catch (err) {
+      toast.error(`Could not check ${remotePath}: ${String(err)}`)
+      return
+    }
+
+    setTransfer({ id: null, name: file.name, sent: 0, total: file.size })
+    const channel = new Channel<sftp.SftpEvent>()
+    channel.onmessage = (event) => {
+      switch (event.type) {
+        case 'transferProgress':
+          setTransfer((t) => (t ? { ...t, sent: event.sent } : t))
+          break
+        case 'transferDone':
+          setTransfer(null)
+          toast.success(`Uploaded ${file.name} to ${dir}`)
+          break
+        case 'transferCancelled':
+          setTransfer(null)
+          toast.info(`Upload of ${file.name} cancelled`)
+          break
+        case 'transferFailed':
+          setTransfer(null)
+          toast.error(`Upload failed: ${event.error}`)
+          break
+      }
+    }
+
+    let transferId: string
+    try {
+      transferId = await sftp.uploadBegin(sessionId, dir, file.name, overwrite, channel)
+    } catch (err) {
+      setTransfer(null)
+      toast.error(`Upload failed: ${String(err)}`)
+      return
+    }
+    setTransfer((t) => (t ? { ...t, id: transferId } : t))
+
+    try {
+      for (let at = 0; at < file.size; at += UPLOAD_CHUNK_BYTES) {
+        const slice = await file.slice(at, at + UPLOAD_CHUNK_BYTES).arrayBuffer()
+        await sftp.uploadChunk(transferId, new Uint8Array(slice))
+      }
+      await sftp.uploadFinish(transferId)
+    } catch {
+      // A chunk is refused when the transfer is already over — cancelled from
+      // the button, or failed on the far side. Both have reported themselves
+      // through the channel already, so this only has to stop pushing and
+      // make sure nothing is left half-written.
+      await sftp.cancelUpload(transferId).catch(() => {})
+    }
+  }
+
+  /** The file to send, or null having said out loud why not. The rules
+   *  themselves are in `verdictForDrop`. */
+  function fileFromDrop(e: React.DragEvent): File | null {
+    // `webkitGetAsEntry` has to be called while the handler runs — the item
+    // list is emptied as soon as it returns — and it is the only reliable way
+    // to tell a folder from a file, since a dropped folder arrives as a `File`
+    // with an empty type and a plausible-looking size.
+    const folder = Array.from(e.dataTransfer.items).some(
+      (item) => item.webkitGetAsEntry?.()?.isDirectory,
+    )
+    const files = Array.from(e.dataTransfer.files)
+    const verdict = verdictForDrop({
+      transport: conn.transportOf(source),
+      connected: sessionIdRef.current !== null,
+      busy: transfer !== null,
+      folder,
+      fileCount: files.length,
+    })
+    if (!verdict.ok) {
+      toast.error(verdict.reason)
+      return null
+    }
+    return files[0]
   }
 
   useEffect(() => {
@@ -855,6 +1029,12 @@ export function Terminal({
         // the shell's signal to own, only the moment that invalidates it.
         const kind = data.split(';')[0]
         if (kind === 'A' || kind === 'D') progressTracker.set(null)
+        // `P;Cwd=` rides in on the same sequence. Read here rather than in
+        // `CommandTracker` because it is not part of what the shell is
+        // *doing* — it is the same fact OSC 7 carries, arriving by another
+        // road, and plenty of hosts take only this one.
+        const reported = parseCwdProperty(data)
+        if (reported) noteRemoteCwd(reported)
         return tracker.handleOsc(data)
       }),
     )
@@ -894,16 +1074,29 @@ export function Terminal({
       // notion of the title from the same bytes.
       ...[0, 2].map((ident) =>
         term.registerOscHandler(ident, (data) => {
-          onRemoteTitleRef.current?.(parseWindowTitle(data))
+          const title = parseWindowTitle(data)
+          onRemoteTitleRef.current?.(title)
+          // Not a reported directory — a guess at one, kept only to prefill
+          // the prompt a drop puts up when nothing has reported anything. See
+          // `guessCwdFromTitle`.
+          titleCwdRef.current = guessCwdFromTitle(title)
           return false
         }),
       ),
       term.registerOscHandler(7, (data) => {
         const cwd = parseCwd(data)
-        if (cwd) onRemoteCwdRef.current?.(cwd)
+        if (cwd) noteRemoteCwd(cwd)
         // Claimed only when it parsed. A payload that isn't a directory is
         // something else using the number, and swallowing it would silently
         // block a handler that understands it.
+        return cwd !== null
+      }),
+      // iTerm2's `CurrentDir=`, which several shells emit alongside or instead
+      // of OSC 7.
+      term.registerOscHandler(1337, (data) => {
+        const cwd = parseCwdProperty(data)
+        if (cwd) noteRemoteCwd(cwd)
+        // OSC 1337 carries a great deal this does not implement.
         return cwd !== null
       }),
     )
@@ -1525,6 +1718,46 @@ export function Terminal({
       // which a previous attempt at this (matching color one level up, in
       // App.tsx) did the moment a non-default theme was actually tested.
       style={{ background: backgroundWithOpacity(findTheme(settings.themeName), settings.backgroundOpacity) }}
+      // A file dragged in from Explorer, as a DOM event rather than Tauri's
+      // own drag-drop — that is switched off because it intercepts OS drags on
+      // WebView2 and breaks the HTML5 events tab-to-pane dragging needs. The
+      // `Files` check is what keeps the two apart: a pane being dragged
+      // between tabs carries its own MIME type and must fall straight through
+      // to the handlers that expect it.
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+        if (!dropTarget) setDropTarget(true)
+      }}
+      onDragLeave={(e) => {
+        // Moving onto a child fires leave on the parent; the pointer has only
+        // really left when what it moved to is outside this pane.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+        setDropTarget(false)
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        setDropTarget(false)
+        const file = fileFromDrop(e)
+        if (!file) return
+        const cwd = remoteCwdRef.current
+        // No OSC 7 means the shell never said where it is. Asking is the only
+        // honest option — guessing `~` puts the file somewhere the user did
+        // not choose and did not watch it go.
+        if (!cwd) {
+          // Prefer a path read off the window title over the last one typed:
+          // it is at least this session's, and on a stock bash prompt it is
+          // usually exactly right — it just isn't *reported*, so it gets
+          // confirmed rather than used.
+          setDropDest({
+            file,
+            path: titleCwdRef.current ?? lastDestRef.current ?? '',
+            fromTitle: titleCwdRef.current !== null,
+          })
+        } else void uploadFile(file, cwd)
+      }}
     >
       {/* Deliberately loud, and on every pane in the group rather than only
           the focused one: the failure mode this guards against is typing a
@@ -1603,6 +1836,100 @@ export function Terminal({
           <ExternalLink size={13} className="text-amber-400" />
           <span className="font-medium">Links</span>
           <span className="text-white/40">Type a label to open · Esc exits</span>
+        </div>
+      )}
+      {dropTarget && canUpload && (
+        // Deliberately just a ring and a word: the pane underneath is what the
+        // file is being aimed at, and covering it would hide the directory the
+        // prompt line is showing.
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-start justify-center rounded-sm bg-sky-400/5 ring-2 ring-inset ring-sky-400/70">
+          <span className="mt-3 rounded-md border border-white/10 bg-[#1f2028] px-2 py-1 text-xs text-white/80 shadow-xl">
+            {remoteCwdRef.current
+              ? `Send to ${remoteCwdRef.current}`
+              : titleCwdRef.current
+                ? `Send to ${titleCwdRef.current}? — you will be asked to confirm`
+                : 'Drop to send — you will be asked where'}
+          </span>
+        </div>
+      )}
+      {dropDest && (
+        // The fallback for a shell with no OSC 7. Prefilled with whatever was
+        // typed last rather than with a guess at the shell's own directory,
+        // which is the thing we just established we do not know.
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-80 rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl">
+            <p className="mb-1 font-medium text-white/90">Send {dropDest.file.name}</p>
+            <p className="mb-2 text-white/40">
+              {dropDest.fromTitle
+                ? 'This session reports its directory only in the window title, so this is read from there rather than told to us — check it before sending.'
+                : 'This session has not reported a working directory, so there is nowhere to send it by default. Give a directory on the host.'}
+            </p>
+            <input
+              autoFocus
+              value={dropDest.path}
+              onChange={(e) => setDropDest({ ...dropDest, path: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && dropDest.path.trim()) {
+                  const path = dropDest.path.trim()
+                  lastDestRef.current = path
+                  setDropDest(null)
+                  void uploadFile(dropDest.file, path)
+                } else if (e.key === 'Escape') {
+                  setDropDest(null)
+                }
+              }}
+              placeholder="/var/tmp"
+              className="mb-2 w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-white/90 outline-none placeholder:text-white/25"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setDropDest(null)}
+                className="rounded px-2 py-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={!dropDest.path.trim()}
+                onClick={() => {
+                  const path = dropDest.path.trim()
+                  lastDestRef.current = path
+                  setDropDest(null)
+                  void uploadFile(dropDest.file, path)
+                }}
+                className="rounded bg-sky-500/25 px-2 py-1 text-sky-100 transition-colors duration-100 hover:bg-sky-500/40 disabled:opacity-30"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {transfer && (
+        <div className="animate-in fade-in slide-in-from-bottom-1 absolute bottom-2 right-2 z-40 flex w-64 flex-col gap-1.5 rounded-lg border border-white/10 bg-[#1f2028] px-2.5 py-2 text-xs shadow-xl duration-fast ease-swift">
+          <div className="flex items-center gap-2">
+            <Upload size={13} className="shrink-0 text-sky-400" />
+            <span className="min-w-0 flex-1 truncate text-white/80">{transfer.name}</span>
+            <button
+              onClick={() => {
+                if (transfer.id) void sftp.cancelUpload(transfer.id).catch(() => {})
+              }}
+              title="Cancel this upload"
+              className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div className="h-1 overflow-hidden rounded-full bg-white/10">
+            <div
+              className="h-full bg-sky-400 transition-[width] duration-150"
+              style={{
+                width: `${transfer.total > 0 ? Math.min(100, (transfer.sent / transfer.total) * 100) : 100}%`,
+              }}
+            />
+          </div>
+          <span className="text-white/40">
+            {formatBytes(transfer.sent)} of {formatBytes(transfer.total)}
+          </span>
         </div>
       )}
       {linkMenu && (

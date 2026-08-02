@@ -100,3 +100,57 @@ export function parseCwd(data: string): string | null {
 
   return clampText(path, MAX_PATH) || null
 }
+
+/**
+ * The working directory as reported by a *shell integration* sequence rather
+ * than by OSC 7.
+ *
+ *   OSC 633 ; P ; Cwd=<path>      VS Code's shell integration
+ *   OSC 133 ; P ; Cwd=<path>      the same property syntax, seen in the wild
+ *   OSC 1337 ; CurrentDir=<path>  iTerm2's
+ *
+ * These exist because OSC 7 is far from universal: it is emitted by GNOME's
+ * `vte.sh`, by fish and by zsh's own hooks, but a plain bash on a Debian or
+ * RHEL host typically sets only the *window title* — where the directory is
+ * plainly visible to a human and completely unavailable to a program that
+ * wants a path. A terminal that reads only OSC 7 therefore reports "no
+ * directory" on a session that is quite clearly showing one, which is exactly
+ * as unhelpful as it sounds.
+ *
+ * @param data everything after the OSC number and its `;`
+ * @returns the decoded path, or null if this payload was not a directory report
+ */
+export function parseCwdProperty(data: string): string | null {
+  const raw = data.trim()
+  // `P;Cwd=/home/tim` — the property form, with the leading `P;` already part
+  // of the payload the handler is given.
+  const property = /^P;(?:.*;)?Cwd=(.*)$/.exec(raw) ?? /^CurrentDir=(.*)$/.exec(raw)
+  if (!property) return null
+  const path = property[1].trim()
+  if (!path.startsWith('/') && !path.startsWith('~') && !/^[A-Za-z]:/.test(path)) return null
+  return clampText(path, MAX_PATH) || null
+}
+
+/**
+ * A directory *guessed* from a window title, for use as a suggestion and
+ * never as an answer.
+ *
+ * Bash's stock prompt on Debian and RHEL sets the title to `\u@\h: \w`, so the
+ * path is right there in the status bar while nothing has actually reported
+ * one. Offering it as a prefilled suggestion turns "type the whole path" into
+ * "press Enter", which is worth having — but it stays a suggestion, because a
+ * title is arbitrary text a program chose and a file sent somewhere nobody
+ * chose is the failure this whole path exists to avoid.
+ *
+ * Only shapes that cannot be anything else are offered: a leading `/` or `~/`,
+ * optionally after a `user@host: ` prefix. A bare word is not a path.
+ */
+export function guessCwdFromTitle(title: string | null): string | null {
+  if (!title) return null
+  const afterPrefix = /^[^\s:]+:\s*(.+)$/.exec(title.trim())
+  const candidate = (afterPrefix ? afterPrefix[1] : title).trim()
+  if (!/^(\/|~\/|~$)/.test(candidate)) return null
+  // A title of `~/src — vim` is a path plus commentary; take the path.
+  const path = candidate.split(/\s+[—–-]\s+|\s{2,}/)[0].trim()
+  return clampText(path, MAX_PATH) || null
+}
