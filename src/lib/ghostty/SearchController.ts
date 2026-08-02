@@ -1,6 +1,7 @@
 import type { SearchOptions, SearchResult } from '../terminalEngine'
 import type { SearchHighlight } from './WebGLRenderer'
 import type { RowText } from './rowText'
+import { logicalLines, segmentsFor, type Segment } from './logicalLines'
 
 /**
  * Find-in-scrollback, extracted from `GhosttyEngine`.
@@ -25,7 +26,7 @@ export interface SearchMatch {
   row: number
   from: number
   to: number
-  segments: { row: number; from: number; to: number }[]
+  segments: Segment[]
 }
 
 /**
@@ -180,7 +181,9 @@ export class SearchController {
    * unavoidable: the core answered `is_row_wrapped` only for the active screen,
    * so a hit that had scrolled into history could not be reassembled. Our own
    * shim now exports the scrollback form too, so rows are joined into the line
-   * they belong to before matching.
+   * they belong to before matching. The join itself lives in `logicalLines`,
+   * shared with link detection — two ideas of what a line is would be two
+   * answers within a week.
    *
    * A match still highlights per row — it has to, the rows are apart on screen
    * — so each carries the segments it covers, while navigation treats it as the
@@ -192,58 +195,21 @@ export class SearchController {
     const wrapped = this.host.readWrapFlags(rows.length)
     const out: SearchMatch[] = []
 
-    let i = 0
-    while (i < rows.length) {
-      // This row plus every continuation of it.
-      let end = i + 1
-      while (end < rows.length && wrapped[end]) end++
-
-      // A column can hold more than one character (a grapheme cluster), so the
-      // offset a match reports is not a column. These map back, and now also
-      // say which row the offset landed on.
-      let text = ''
-      const rowAt: number[] = []
-      const colAt: number[] = []
-      for (let r = i; r < end; r++) {
-        const row = rows[r]
-        // The row's text is already joined; the per-character maps come from
-        // the column index rather than from re-measuring per-cell strings.
-        text += row.text
-        const cs = row.colStart
-        for (let c = 0; c + 1 < cs.length; c++) {
-          for (let k = cs[c]; k < cs[c + 1]; k++) {
-            rowAt.push(r)
-            colAt.push(c)
-          }
-        }
-      }
-
+    for (const line of logicalLines(rows, wrapped)) {
       re.lastIndex = 0
       let m: RegExpExecArray | null
-      while ((m = re.exec(text)) !== null) {
+      while ((m = re.exec(line.text)) !== null) {
         if (m[0].length === 0) {
           // A pattern that can match nothing would otherwise spin here.
           re.lastIndex++
           continue
         }
-        const from = m.index
-        const to = Math.min(m.index + m[0].length - 1, rowAt.length - 1)
-        if (rowAt[from] === undefined || rowAt[to] === undefined) continue
-
-        const segments: { row: number; from: number; to: number }[] = []
-        let k = from
-        while (k <= to) {
-          const row = rowAt[k]
-          let j = k
-          while (j + 1 <= to && rowAt[j + 1] === row) j++
-          segments.push({ row, from: colAt[k], to: colAt[j] })
-          k = j + 1
-        }
+        const segments = segmentsFor(line, m.index, m.index + m[0].length - 1)
+        if (segments.length === 0) continue
         // The head doubles as the match's own position, so reveal and ordering
         // keep working on matches that never wrap.
         out.push({ ...segments[0], segments })
       }
-      i = end
     }
     return out
   }
