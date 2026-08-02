@@ -450,6 +450,49 @@ pub async fn ssh_respond_host_key(
     Ok(())
 }
 
+/// Every host key this app has been told to trust.
+///
+/// Loaded from the file on each call rather than held in state. The store is
+/// small, it is read once when a dialog opens, and every connector already
+/// keeps its own copy — adding a fourth long-lived one that could drift is the
+/// opposite of what a trust anchor needs.
+#[tauri::command]
+pub async fn ssh_list_known_hosts(app: AppHandle) -> Result<Vec<wr_ssh::KnownHostEntry>, String> {
+    let path = known_hosts_path(&app)?;
+    Ok(wr_ssh::KnownHostsStore::load(path)
+        .map_err(|e| e.to_string())?
+        .list())
+}
+
+/// Forgets one stored host key, identified by the exact line it is stored as.
+///
+/// By the line rather than by fingerprint because an unparseable entry has no
+/// fingerprint — and those are the ones that most need removing, since they pin
+/// a host to "the key changed" until someone edits the file by hand.
+#[tauri::command]
+pub async fn ssh_forget_host_key(
+    app: AppHandle,
+    host: String,
+    port: u16,
+    key_text: String,
+) -> Result<bool, String> {
+    let path = known_hosts_path(&app)?;
+    wr_ssh::KnownHostsStore::load(path)
+        .map_err(|e| e.to_string())?
+        .forget(&host, port, &key_text)
+        .map_err(|e| e.to_string())
+}
+
+/// Forgets every key held for one host, returning how many there were.
+#[tauri::command]
+pub async fn ssh_forget_host(app: AppHandle, host: String, port: u16) -> Result<usize, String> {
+    let path = known_hosts_path(&app)?;
+    wr_ssh::KnownHostsStore::load(path)
+        .map_err(|e| e.to_string())?
+        .forget_host(&host, port)
+        .map_err(|e| e.to_string())
+}
+
 /// `pub(crate)` so the `sftp` module can look up the SSH session an SFTP
 /// operation piggybacks on, without exposing `SshState`'s session map itself.
 /// Kept as a free function because `sftp.rs` reaches for a live SSH session

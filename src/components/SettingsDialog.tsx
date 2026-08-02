@@ -11,6 +11,7 @@ import {
   ScrollText,
   Upload,
   Download,
+  ShieldCheck,
   X,
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
@@ -25,6 +26,7 @@ import { puttySessionCount } from '../lib/profiles'
 import { runPuttyImport } from '../lib/puttyBanner'
 import { exportVaultBundle, importVaultBundle } from '../lib/vaultTransfer'
 import { useConfirm } from './confirmContext'
+import { KnownHostsSection } from './KnownHostsSection'
 import { useDismissable } from '../hooks/useDismissable'
 import type { VaultStatus } from '../lib/vault'
 
@@ -51,6 +53,7 @@ const SECTIONS = [
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'session', label: 'Session', icon: Plug },
   { id: 'files', label: 'Remote files', icon: FolderOpen },
+  { id: 'hostkeys', label: 'Host keys', icon: ShieldCheck },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'shell', label: 'Shell integration', icon: ClipboardCopy },
   { id: 'logging', label: 'Logging', icon: ScrollText },
@@ -495,6 +498,8 @@ export function SettingsDialog({
                       </p>
                     </div>
                   )}
+
+                  {section === 'hostkeys' && <KnownHostsSection />}
 
                   {section === 'notifications' && (
                     <>

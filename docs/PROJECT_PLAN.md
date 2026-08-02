@@ -93,10 +93,30 @@ mosh, RDP) means adding a crate, not touching the UI.
 - **Tauri hardening** — minimal capability grants **(shipped —
   `capabilities/default.json` grants named permissions, and the opener is
   scoped to `http`/`https`)**
-- **Host key management UI** — view/remove/pin known hosts. **Not built**: the
-  mismatch/TOFU prompt exists (`HostKeyPrompt.tsx`, `ssh_respond_host_key`) but
-  there is no way to list or remove an entry, so a stale key can only be fixed
-  by hand-editing `known_hosts`. The most conspicuous security gap left.
+- **Host key management UI** — view and remove known hosts **(shipped —
+  Settings → Host keys)**. Reading the store was the missing half: the prompt
+  that writes it has always existed, so trust could be granted and never
+  withdrawn. The case that mattered is not exotic — a host is rebuilt, offers a
+  new key, and the prompt correctly says the key changed and may be an attack;
+  with no way to remove the old entry the only fix was hand-editing
+  `known_hosts`, which is exactly the situation that teaches a user to click
+  through the warning instead.
+  - **Entries are identified by their stored line, not by fingerprint.** A line
+    that will not parse has no fingerprint, and those are precisely the ones
+    that must be removable: a corrupt entry fails closed (deliberately — it
+    could be the one that would have matched), so it pins the host to "changed"
+    forever. They are listed with a warning saying so.
+  - **`learn` re-reads before it writes.** Every connector holds its own copy of
+    the store and the management UI is another, so persisting from a copy loaded
+    minutes ago would rewrite the file from stale state and resurrect a key the
+    user had just deleted. A trust anchor returning from the dead is the one
+    outcome this file exists to prevent.
+  - **The dialogs say that forgetting is safe**, because it is — the worst
+    result is being asked to confirm a fingerprint again. Wording it like a
+    dangerous action would put the alarm on the wrong step; the dangerous step
+    is accepting a *changed* key, and that prompt is elsewhere.
+  - Not built: **pinning** (marking a key as never-to-change), and importing
+    from or exporting to OpenSSH's own `known_hosts` format.
 - Algorithm configuration (allow disabling legacy kex/ciphers per session for
   old network gear — a big deal for serial/telnet-adjacent users). **Not
   built**: russh's defaults are what every session gets.
