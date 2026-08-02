@@ -139,4 +139,31 @@ export interface TerminalEngine {
    * dependency where there is otherwise none.
    */
   onCopyRequest?(cb: (text: string) => void): IDisposable
+
+  /**
+   * Clickable URLs: the engine detects them in its own buffer, decides when
+   * one has been activated, and asks the frontend to open it — the same
+   * division as `onCopyRequest`, and for the same reason. Opening a URL is
+   * the platform's business, and the engine has no platform dependency.
+   *
+   * Optional as a group, like mark mode above: an engine either offers links
+   * or it doesn't, and one that doesn't omits all three. `xtermEngine` — the
+   * benchmark harness's comparison engine, and its only remaining user — is
+   * exactly such an engine.
+   */
+  onLinkActivate?(cb: (url: string) => void): IDisposable
+  /**
+   * Hint mode: a label over every link on screen, opened by typing its label.
+   * Part of the same optional group — and the only link path that works while
+   * a full-screen program owns the mouse, or with no pointing device at all.
+   */
+  toggleHintMode?(): void
+  isHintMode?(): boolean
+  onHintModeChange?(cb: (active: boolean) => void): IDisposable
+  /** The URL under a pointer event, for a context menu. */
+  linkAtPointer?(e: MouseEvent): string | null
+  /** Open a URL that came back from `linkAtPointer`. Goes through the engine
+   *  rather than straight to the opener so every route takes the same scheme
+   *  check. */
+  openLink?(url: string): void
 }

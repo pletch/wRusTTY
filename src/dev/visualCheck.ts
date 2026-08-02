@@ -43,11 +43,19 @@ let out = `${ESC}[H${ESC}[2J`
 for (const [label, sgr] of rows) out += `  ${sgr}${label.padEnd(24)}${RESET}\r\n`
 out += `\r\n  cursor shapes — press 1..6 to switch (DECSCUSR)\r\n`
 out += `  1 blink block  2 steady block  3 blink under  4 steady under  5 blink bar  6 steady bar\r\n`
+// Links: the hover underline and the hint labels are drawn, not set, so they
+// belong here for the same reason the underline styles do. The second one is
+// long enough to wrap at this width, which is the case the join exists for.
+out += `\r\n  links — hold Ctrl and hover, or press h for hint labels\r\n`
+out += `  see https://example.com/a for details, or (https://example.org/b).\r\n`
+out += `  https://example.com/a/rather/long/path/that/has/to/wrap/at/this/width/to/be/interesting\r\n`
 out += `\r\n  cursor is here ->${ESC}[5 q `
 engine.write(out)
 
 // Typing a digit re-issues the matching DECSCUSR so every shape can be seen
-// without editing this file.
+// without editing this file. `h` stands in for the app's Ctrl+Shift+U, which
+// is bound in Terminal.tsx rather than in the engine.
 window.addEventListener('keydown', (e) => {
   if (e.key >= '1' && e.key <= '6') engine.write(`${ESC}[${e.key} q`)
+  if (e.key === 'h') engine.toggleHintMode()
 })

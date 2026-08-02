@@ -3,7 +3,34 @@
 Implementation plan for detecting URLs in terminal output and opening them in
 the system browser.
 
-Not implemented. Written against the engine as it stands after the
+**Implemented**, phases 1-6, as described below. What shipped differs from the
+plan in three places, each noted at the phase it belongs to:
+
+- **Phase 1's signatures.** `logicalLines` carries the offset-to-row/column
+  maps on the `LogicalLine` itself (they are built during the join anyway), so
+  `segmentsFor(line, start, end)` needs no second pass over the rows. It also
+  takes a `firstRow`, which is what lets link detection read a window of the
+  buffer and still report absolute rows.
+- **Phase 4's hover-only feedback.** Underlining only what the pointer is on
+  makes the feature undiscoverable: nobody holds Ctrl over text they have no
+  reason to think is a link. Every link on screen now carries a **dotted**
+  underline, and the hovered one a solid one. That is the only part of the
+  feature that is not on demand — it costs one viewport parse per buffer
+  generation, keyed on the same cache the hit test uses, and still nothing on
+  the parse path.
+- **Phase 5's context menu.** The pane had no context menu to add an item to —
+  right-click pastes. A right-click *on a link* now opens a small menu with
+  Open link / Copy link and the resolved URL under them; anywhere else the
+  gesture is exactly what it was.
+- **Phase 7.** Skipped, as the phase itself allows: `xtermEngine` is the
+  benchmark harness's comparison engine and its only user, so the link methods
+  are optional on `TerminalEngine` the way `toggleMarkMode` and friends are.
+
+OSC 8 remains where this plan puts it: a later producer, not an alternative.
+`Link.source` exists and is checked for, and nothing about the hit-testing,
+hover or activation path would have to change to add it.
+
+Written against the engine as it stands after the
 SelectionController/MouseReporter/MarkModeController extractions,
 `readRows`/`RowText`, and the vendored shim that answers `is_row_wrapped` for
 scrollback — all of which between them do most of what an earlier draft of this
@@ -182,8 +209,14 @@ Then:
   dependency today.
 - `Terminal.tsx` calls `openUrl` from `@tauri-apps/plugin-opener` (already a
   dependency; `tauri-plugin-opener` is already in `src-tauri/Cargo.toml`).
-- **Add `"opener:allow-open-url"` to `src-tauri/capabilities/default.json`** —
-  it currently grants `opener:allow-open-path` only.
+- **Grant the opener capability in `src-tauri/capabilities/default.json`** —
+  and note that the permission is *two* grants, not one. `opener:allow-open-url`
+  enables the command "without any pre-configured scope", so on its own every
+  URL is still refused at runtime — which is exactly what happened on the first
+  build, as `Could not open that link` on every Ctrl+click. The capability has
+  to name a scope as well; ours is `http://*` and `https://*`, deliberately
+  matching `isOpenableUrl` rather than the plugin's `allow-default-urls` set,
+  which would also grant `mailto:` and `tel:`.
 - Enforce the rules in **Security** below at this point, not only at detection.
 
 Right-click → **Open Link** in the pane's context menu, for the same reason

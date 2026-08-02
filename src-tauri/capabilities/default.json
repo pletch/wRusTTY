@@ -16,6 +16,10 @@
     "clipboard-manager:allow-write-text",
     "dialog:allow-open",
     "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "http://*" }, { "url": "https://*" }]
+    },
     "log:default",
     "notification:default"
   ]

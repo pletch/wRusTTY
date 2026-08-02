@@ -9,6 +9,9 @@ import { SearchController } from './SearchController'
 import { MouseReporter } from './MouseReporter'
 import { SelectionController } from './SelectionController'
 import { MarkModeController } from './MarkModeController'
+import { LinkController, type Link } from './LinkController'
+import { HintModeController } from './HintModeController'
+import { isOpenableUrl } from '../urlDetect'
 import { ContextManager } from './ContextManager'
 import type { RowText } from './rowText'
 import { WebGLRenderer, measureCell } from './WebGLRenderer'
@@ -278,6 +281,29 @@ export class GhosttyEngine implements TerminalEngine {
    *  the arrow keys, which otherwise belong to the program. */
   private readonly markMode: MarkModeController
   private onMarkModeHandlers = new Set<(active: boolean) => void>()
+  /** URLs in the buffer: what is under a cell, and what is on screen. */
+  private readonly links: LinkController
+  /** Opening a link from the keyboard. Off unless the user asks for it; the
+   *  path that works when a program has grabbed the mouse. */
+  private readonly hintMode: HintModeController
+  private onHintModeHandlers = new Set<(active: boolean) => void>()
+  private onLinkActivateHandlers = new Set<(url: string) => void>()
+  /** Where the pointer last was, so the hit test can be redone when the
+   *  modifier is pressed or released without the mouse having moved. */
+  private hoverPointer: { clientX: number; clientY: number } | null = null
+  /** The link currently underlined, or null. */
+  private hoveredLink: Link | null = null
+  /** What the current hover answer was computed against: cell, modifier,
+   *  buffer generation and viewport. Recomputing only when this changes is
+   *  what keeps detection off the per-mousemove path — the events arrive at
+   *  pointer resolution and the answer only changes at cell resolution. */
+  private hoverSig = ''
+  /** What the painted set of link underlines was computed against — buffer
+   *  generation, viewport and width, the same key the hit test caches on. */
+  private linkRangesSig = ''
+  /** A Ctrl+press that landed on a link, waiting for the release that decides
+   *  whether it was a click or the start of a drag. */
+  private pendingLink: { url: string; at: { x: number; y: number } } | null = null
   private onCopyRequestHandlers = new Set<(text: string) => void>()
   /** Bytes of an OSC that began in an earlier chunk and has not terminated.
    *  Already parsed; retained only to match the pattern across the boundary. */
@@ -376,9 +402,35 @@ export class GhosttyEngine implements TerminalEngine {
         for (const h of this.onMarkModeHandlers) h(active)
       },
     })
+    this.links = new LinkController({
+      readRows: (from, to) => this.readRows(from, to),
+      readWrapFlags: (from, to) => this.readWrapFlags(from, to),
+      viewportY: () => this.viewportY,
+      rows: () => this._rows,
+      totalRows: () => this.scrollbackLength,
+      bufferGen: () => this.bufferGen,
+      cols: () => this._cols,
+    })
+    this.hintMode = new HintModeController({
+      linksInViewport: () => this.links.linksInViewport(),
+      viewport: () => ({ top: this.viewportY, bottom: this.viewportY + this._rows - 1 }),
+      cols: () => this._cols,
+      setHints: (hints) => {
+        if (this.renderer) {
+          this.renderer.hintLabels = hints
+            ? hints.map((h) => ({ row: h.row, col: h.col, text: h.label }))
+            : null
+        }
+        this.needsRedraw = true
+      },
+      openLink: (url) => this.activateLink(url),
+      notifyMode: (active) => {
+        for (const h of this.onHintModeHandlers) h(active)
+      },
+    })
     this.searchController = new SearchController({
       readRows: (from, to) => this.readRows(from, to),
-      readWrapFlags: (total) => this.readWrapFlags(total),
+      readWrapFlags: (total) => this.readWrapFlags(0, total - 1),
       scrollbackLength: () => this.scrollbackLength,
       bufferGen: () => this.bufferGen,
       viewportY: () => this.viewportY,
@@ -695,6 +747,11 @@ export class GhosttyEngine implements TerminalEngine {
     this.mouse.forgetButton()
     this.selection.cancel()
     this.stopDragTracking()
+    // The modifier's release will be delivered to whatever has focus now, not
+    // here, so an armed hover would stay armed for as long as the pane is
+    // untouched.
+    this.clearLinkHover()
+    this.pendingLink = null
     this.reportFocus(false)
   }
 
@@ -900,12 +957,155 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   private onMouseUp = (e: MouseEvent) => {
+    // Before anything else clears its state: a Ctrl+press that landed on a
+    // link opens it *here*, not on the press. Opening on mousedown would mean
+    // a Ctrl+drag that happens to begin on a link launches a browser, and
+    // Ctrl+drag has to keep doing what it does today.
+    const pending = this.pendingLink
+    this.pendingLink = null
+    if (pending && this.withinCanvas(e)) {
+      const at = this.getCoords(e)
+      if (at.x === pending.at.x && at.y === pending.at.y) this.activateLink(pending.url)
+    }
+
     this.mouse.reportRelease(e)
     this.stopDragTracking()
     if (this.selection.isSelecting()) {
       this.selection.cancel()
       for (const h of this.onSelectionChangeHandlers) h()
     }
+  }
+
+  /** Whether the pointer is over the grid. `getCoords` clamps to it, so a
+   *  release well outside would otherwise resolve to an edge cell and could
+   *  match the cell a press began on. */
+  private withinCanvas(e: MouseEvent): boolean {
+    if (!this.canvas) return false
+    const rect = this.canvas.getBoundingClientRect()
+    return (
+      e.clientX >= rect.left && e.clientX < rect.right && e.clientY >= rect.top && e.clientY < rect.bottom
+    )
+  }
+
+  /**
+   * The modifier that makes the pointer a link pointer.
+   *
+   * Ctrl, and Meta so the same gesture reads as Cmd+click on a Mac. Not
+   * Shift: shift already means "this click is the terminal's, not the
+   * program's" and, separately, "extend the selection", and a third meaning
+   * cannot be resolved against those two without one of them feeling broken.
+   * Every terminal that ships this — Windows Terminal, VTE, WezTerm, VS Code,
+   * Ghostty itself — uses Ctrl or Cmd for exactly that reason.
+   */
+  private static linkModifier(e: { ctrlKey: boolean; metaKey: boolean }): boolean {
+    return e.ctrlKey || e.metaKey
+  }
+
+  /**
+   * Recomputes what the pointer is over, if anything about the answer could
+   * have changed.
+   *
+   * The signature is the gate: mousemove arrives at pointer resolution and the
+   * answer only changes at cell resolution, so an ordinary sweep across a link
+   * costs one hit test per cell rather than one per event. An ordinary session
+   * never holds the modifier over the grid and never pays anything at all.
+   */
+  private refreshLinkHover(armed: boolean): void {
+    if (!armed || !this.hoverPointer || !this.renderer) {
+      this.hoverSig = ''
+      this.setHoveredLink(null)
+      return
+    }
+    const cell = this.getCoords(this.hoverPointer as MouseEvent)
+    const sig = `${cell.x},${cell.y},${this.bufferGen},${this.viewportY}`
+    if (sig === this.hoverSig) return
+    this.hoverSig = sig
+    this.setHoveredLink(this.links.linkAt(cell))
+  }
+
+  /**
+   * Keeps the dotted underline over every link on screen up to date.
+   *
+   * This is the one part of the feature that is *not* on demand, and it is
+   * deliberate: a link nobody can see is a link nobody will ever hold Ctrl
+   * over, so hover-only feedback makes the whole gesture undiscoverable. The
+   * cost is bounded by the same cache the hit test uses — the signature below
+   * is the controller's own key, so a still buffer costs one string
+   * comparison per frame and a changing one costs a single viewport parse per
+   * generation, not per frame and never per cell.
+   *
+   * Detection still does not run on the parse path: `write()` is untouched,
+   * and its only coupling to this is the `bufferGen` counter that was already
+   * there for search.
+   */
+  private refreshLinkRanges(): void {
+    if (!this.renderer) return
+    const sig = `${this.bufferGen}:${this.viewportY}:${this._cols}`
+    if (sig === this.linkRangesSig) return
+    this.linkRangesSig = sig
+    const ranges = this.links.linksInViewport().flatMap((l) => l.segments)
+    // An empty screen keeps `null` rather than an empty array, so the
+    // renderer's per-row filter is skipped entirely on the common case of a
+    // pane with no links in it.
+    this.renderer.linkRanges = ranges.length > 0 ? ranges : null
+    this.needsRedraw = true
+  }
+
+  private setHoveredLink(link: Link | null): void {
+    const before = this.hoveredLink
+    const same =
+      (before === null && link === null) ||
+      (before !== null &&
+        link !== null &&
+        before.url === link.url &&
+        before.segments[0].row === link.segments[0].row &&
+        before.segments[0].from === link.segments[0].from)
+    this.hoveredLink = link
+    if (same) return
+    if (this.renderer) this.renderer.linkHighlight = link ? link.segments : null
+    this.needsRedraw = true
+    // Cleared to the empty string rather than a name, so the stylesheet's own
+    // cursor for the canvas comes back.
+    if (this.canvas) this.canvas.style.cursor = link ? 'pointer' : ''
+  }
+
+  /** Pointer gone, or focus gone: the underline and the pointer cursor must go
+   *  with it, or a pane the mouse has left keeps claiming to have a link
+   *  under it. */
+  private clearLinkHover(): void {
+    this.hoverPointer = null
+    this.hoverSig = ''
+    this.setHoveredLink(null)
+  }
+
+  /** A stable reference, so mount and unmount add and remove the same one. */
+  private clearLinkHoverListener = () => this.clearLinkHover()
+
+  /** Modifier pressed or released without the mouse moving. The keys are
+   *  otherwise none of this handler's business — it reads the modifier state
+   *  off whatever key event arrives and does nothing when nothing changed. */
+  private onHoverModifierKey = (e: KeyboardEvent) => {
+    if (!this.hoverPointer) return
+    this.refreshLinkHover(GhosttyEngine.linkModifier(e))
+  }
+
+  /**
+   * Hands a URL to whatever is hosting this engine.
+   *
+   * The scheme is checked again here even though detection only ever produced
+   * `http`/`https`: this is the last point before the string reaches the
+   * platform opener, the two are far apart in the code, and an OSC 8 URI
+   * (later) never passes through detection at all. On Windows the cost of
+   * being wrong is not a broken link — a `file://` or UNC-flavoured target can
+   * provoke an outbound SMB authentication attempt and leak credentials to a
+   * host of the attacker's choosing.
+   *
+   * The engine does not open it itself: every other platform interaction is
+   * the frontend's, and the engine has no platform dependency today.
+   */
+  private activateLink(url: string): void {
+    if (!isOpenableUrl(url)) return
+    for (const h of this.onLinkActivateHandlers) h(url)
   }
 
   /**
@@ -931,11 +1131,18 @@ export class GhosttyEngine implements TerminalEngine {
     window.removeEventListener('mousemove', this.onWindowMouseMove)
   }
 
-  /** A key mark mode claimed is a key nothing else may see: one that both moved
-   *  the mark cursor and reached the shell would be doing two contradictory
-   *  things at once. */
+  /**
+   * A key one of the modes claimed is a key nothing else may see: one that
+   * both moved the mark cursor and reached the shell would be doing two
+   * contradictory things at once.
+   *
+   * Hint mode is offered the key first, because it is the shorter-lived of the
+   * two — it is a mode you are in for the length of one label. Only one can be
+   * active at a time in practice (each cancels the other on entry), so the
+   * order is about intent rather than arbitration.
+   */
   private onMarkModeKey = (e: KeyboardEvent) => {
-    if (!this.markMode.handleKey(e)) return
+    if (!this.hintMode.handleKey(e) && !this.markMode.handleKey(e)) return
     e.preventDefault()
     e.stopPropagation()
   }
@@ -989,6 +1196,18 @@ export class GhosttyEngine implements TerminalEngine {
       }
       GhosttyEngine.contexts.noteVisibility(this, w > 0 && h > 0)
     }
+
+    // Which cells are links at all, for the dotted underline that makes them
+    // discoverable without holding a modifier over them first.
+    this.refreshLinkRanges()
+
+    // An underlined link can be scrolled away or overwritten under a pointer
+    // that never moved, and the underline would sit on whatever took its
+    // place. Only checked while something is actually underlined, so a pane
+    // nobody is hovering pays nothing — and the hit test behind it is cached
+    // per buffer generation and viewport, so a still buffer costs one string
+    // comparison.
+    if (this.hoveredLink) this.refreshLinkHover(true)
 
     // A pane with no context has nowhere to draw, and the snapshot work below
     // is the bulk of a frame. Leaving needsRedraw set means the pane repaints
@@ -1119,6 +1338,29 @@ export class GhosttyEngine implements TerminalEngine {
     this.cursorBlinkTimer = setInterval(this.onBlinkTick, CURSOR_BLINK_MS)
 
     this.canvas.addEventListener('mousedown', (e) => {
+      // A Ctrl+press on a link is the one case that outranks mouse reporting:
+      // it is what the modifier exists for, and the program does not see the
+      // click. Everything else about this handler is untouched — in
+      // particular shift keeps both of its current meanings, and a Ctrl+press
+      // that is *not* on a link falls through to whatever it does today.
+      //
+      // Only the first click of a run arms it: a Ctrl+double-click already
+      // opened the link on the first release, and the second would open it
+      // again while also selecting a word.
+      if (e.button === 0 && e.detail === 1 && GhosttyEngine.linkModifier(e)) {
+        const at = this.getCoords(e)
+        const link = this.links.linkAt(at)
+        if (link) {
+          this.pendingLink = { url: link.url, at }
+          e.preventDefault()
+          this.inputHandler?.focus()
+          // Under mouse reporting there is no selection to begin, so the press
+          // stops here rather than falling through to code that would report
+          // it. With the mouse free it falls through, so a Ctrl+drag from a
+          // link still selects exactly as it does today.
+          if (this.mouse.tracking()) return
+        }
+      }
       // Holding shift is the long-standing way to reach the terminal's own
       // selection while a full-screen program is grabbing the mouse.
       if (this.mouse.tracking() && !e.shiftKey) {
@@ -1140,8 +1382,11 @@ export class GhosttyEngine implements TerminalEngine {
 
       // The mouse is taking the selection over, so the keyboard has to let go
       // of it — otherwise the arrow keys stay captured while pointing at a
-      // selection the drag has already replaced.
+      // selection the drag has already replaced. Hint mode goes for the same
+      // reason: a press means the pointer is the tool being used, and its
+      // labels are painted over the text the drag is about to select.
       this.markMode.cancel()
+      this.hintMode.cancel()
       // `detail` counts clicks in a run, which is how the platform already
       // decides what a double-click is — no timing to reimplement here.
       if (e.detail === 2) {
@@ -1175,6 +1420,8 @@ export class GhosttyEngine implements TerminalEngine {
     })
 
     this.canvas.addEventListener('mousemove', (e) => {
+      this.hoverPointer = { clientX: e.clientX, clientY: e.clientY }
+      this.refreshLinkHover(GhosttyEngine.linkModifier(e))
       // A shift-drag is the user talking to the terminal, not to the program,
       // so a selection in progress suppresses reporting entirely.
       if (this.mouse.tracking() && !this.selection.isSelecting()) {
@@ -1185,6 +1432,14 @@ export class GhosttyEngine implements TerminalEngine {
       // pointer leaves the canvas. This handler would only ever see the part of
       // the gesture that is already on screen.
     })
+
+    this.canvas.addEventListener('mouseleave', this.clearLinkHoverListener)
+    // On the window rather than the container: the modifier can be released
+    // while the pointer rests over this pane but the keyboard is elsewhere,
+    // and a pointer cursor left behind by a release nobody heard is exactly
+    // the state that makes the feature feel stuck.
+    window.addEventListener('keydown', this.onHoverModifierKey)
+    window.addEventListener('keyup', this.onHoverModifierKey)
 
     this.inputHandler = new GhosttyInputHandler(this.container, (data) => {
       // Typing while scrolled up otherwise sends keystrokes to a prompt that
@@ -1216,9 +1471,16 @@ export class GhosttyEngine implements TerminalEngine {
   unmount(): void {
     cancelAnimationFrame(this.renderLoopId)
     window.removeEventListener('mouseup', this.onMouseUp)
+    window.removeEventListener('keydown', this.onHoverModifierKey)
+    window.removeEventListener('keyup', this.onHoverModifierKey)
+    this.canvas?.removeEventListener('mouseleave', this.clearLinkHoverListener)
     this.container?.removeEventListener('keydown', this.onMarkModeKey, true)
+    this.clearLinkHover()
+    this.links.invalidate()
+    this.linkRangesSig = ''
     this.stopDragTracking()
     this.markMode.cancel()
+    this.hintMode.cancel()
     this.selection.dispose()
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)
@@ -1803,19 +2065,21 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Which absolute rows continue the row above them.
+   * Which of the absolute rows `fromAbs..toAbs` continue the row above them.
    *
-   * One call per row, which sounds worse than it is: `findMatches` already
-   * reads every row, and the result is cached behind the same query/buffer
-   * signature the matches are.
+   * One call per row, which sounds worse than it is: search already reads
+   * every row it asks about, and caches the answer behind the same
+   * query/buffer signature its matches are cached behind. Link detection asks
+   * about a viewport's worth, which is where the range form earns its keep —
+   * the whole-buffer form would be reading ten thousand rows to underline one.
    */
-  private readWrapFlags(total: number): boolean[] {
-    const out = new Array<boolean>(Math.max(0, total)).fill(false)
+  private readWrapFlags(fromAbs: number, toAbs: number): boolean[] {
+    const out = new Array<boolean>(Math.max(0, toAbs - fromAbs + 1)).fill(false)
     if (!this.wasm || !this.termPtr) return out
     const wasm = this.wasm
     const scrollbackCount = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
-    for (let abs = 0; abs < total; abs++) {
-      out[abs] =
+    for (let abs = Math.max(0, fromAbs); abs <= toAbs; abs++) {
+      out[abs - fromAbs] =
         abs < scrollbackCount
           ? wasm.exports.ghostty_terminal_is_scrollback_row_wrapped(this.termPtr, abs) !== 0
           : wasm.exports.ghostty_terminal_is_row_wrapped(this.termPtr, abs - scrollbackCount) !== 0
@@ -1892,9 +2156,59 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onMarkModeHandlers.delete(cb) }
   }
 
+  /**
+   * Turns hint mode on or off.
+   *
+   * Worth having beside Ctrl+click rather than instead of it: this is the only
+   * path that works while a full-screen program owns the mouse, and the only
+   * one that works with no pointing device at all.
+   */
+  toggleHintMode(): void {
+    if (!this.renderer) return
+    // The two modes both take the keyboard, and a mark cursor left behind a
+    // screen of labels is a captured keyboard with nothing on screen to
+    // explain it.
+    if (!this.hintMode.isActive()) this.markMode.cancel()
+    this.hintMode.toggle()
+  }
+
+  isHintMode(): boolean {
+    return this.hintMode.isActive()
+  }
+
+  onHintModeChange(cb: (active: boolean) => void): IDisposable {
+    this.onHintModeHandlers.add(cb)
+    return { dispose: () => this.onHintModeHandlers.delete(cb) }
+  }
+
   onCopyRequest(cb: (text: string) => void): IDisposable {
     this.onCopyRequestHandlers.add(cb)
     return { dispose: () => this.onCopyRequestHandlers.delete(cb) }
+  }
+
+  /** A link was activated and wants opening. See `activateLink` for why the
+   *  engine asks rather than opens. */
+  onLinkActivate(cb: (url: string) => void): IDisposable {
+    this.onLinkActivateHandlers.add(cb)
+    return { dispose: () => this.onLinkActivateHandlers.delete(cb) }
+  }
+
+  /**
+   * The URL under a pointer event, or null.
+   *
+   * For the frontend's context menu, which is the discoverable path for
+   * anyone who never learns the modifier — the same reason VTE has it. It
+   * costs one menu item over machinery the hover path already built.
+   */
+  linkAtPointer(e: MouseEvent): string | null {
+    if (!this.renderer || !this.withinCanvas(e)) return null
+    return this.links.linkAt(this.getCoords(e))?.url ?? null
+  }
+
+  /** Opens a URL that came back from `linkAtPointer`, subject to the same
+   *  scheme check every other route takes. */
+  openLink(url: string): void {
+    this.activateLink(url)
   }
 
   clearSearchDecorations(): void {

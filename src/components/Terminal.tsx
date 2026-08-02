@@ -13,8 +13,11 @@ import {
   RotateCw,
   Unplug,
   TextCursorInput,
+  ExternalLink,
+  Copy,
 } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
@@ -201,6 +204,9 @@ export function Terminal({
    *  a mode that takes the arrow keys with nothing on screen to explain why is
    *  indistinguishable from a wedged pane. */
   const [markMode, setMarkMode] = useState(false)
+  /** Hint mode is on. Same reasoning as `markMode`: a mode that swallows
+   *  typing has to say so, and has to say how to get back out. */
+  const [hintMode, setHintMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   // Result position for the "N/M" count, fed by the addon's onDidChangeResults
   // (set up in the connect effect). index is 0-based, -1 when there are none.
@@ -214,6 +220,17 @@ export function Terminal({
   // both the container and the input, which fired regardless of what else was
   // open — so closing search with a forwarding panel up closed that too.
   useDismissable(searchOpen, () => setSearchOpen(false))
+
+  /**
+   * The right-click menu offered when the pointer is on a link.
+   *
+   * Right-click otherwise pastes (when that setting is on), and that gesture
+   * is untouched away from a link. On one, a menu is the discoverable path for
+   * anyone who never learns Ctrl+click — the same reason VTE has it — and it
+   * also puts the destination on screen before anything is opened.
+   */
+  const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string } | null>(null)
+  useDismissable(linkMenu !== null, () => setLinkMenu(null))
 
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
   const [searchRegex, setSearchRegex] = useState(false)
@@ -1189,6 +1206,29 @@ export function Terminal({
       if (text) writeText(text).catch(() => {})
     })
     const markModeListener = term.onMarkModeChange?.(setMarkMode)
+    const hintModeListener = term.onHintModeChange?.(setHintMode)
+
+    // The engine decides *that* a link was activated; opening it is the
+    // platform's business and therefore this side's. The engine has already
+    // checked the scheme immediately before asking — see `activateLink` — so
+    // there is deliberately no second policy here, only the call.
+    //
+    // The opener plugin enforces a *scope* of its own on top of the command
+    // permission, and the two are separate grants: `opener:allow-open-url`
+    // enables the command "without any pre-configured scope", which means
+    // every URL is refused until the capability also names one. Both live in
+    // `src-tauri/capabilities/default.json`, where the scope is `http://*`
+    // and `https://*` — deliberately the same allow-list `isOpenableUrl`
+    // enforces, rather than the plugin's `allow-default-urls` set, which
+    // would also grant `mailto:` and `tel:`.
+    const linkListener = term.onLinkActivate?.((url) => {
+      openUrl(url).catch((err) => {
+        void logError(`opening a link failed: ${String(err)}`).catch(() => {})
+        // The reason is in the message — a refused scope and a missing
+        // browser are different problems and looked identical without it.
+        toast.error(`Could not open that link: ${String(err)}`)
+      })
+    })
 
     // The single paste path, shared by right-click, Ctrl+Shift+V and
     // Shift+Insert. Its own function precisely so the multi-line guard cannot
@@ -1215,6 +1255,15 @@ export function Terminal({
     }
 
     const onContextMenu = (e: MouseEvent) => {
+      // A right-click on a link offers the link; anywhere else the gesture is
+      // exactly what it was. Checked first because the paste setting would
+      // otherwise swallow the event before the link was ever considered.
+      const url = term.linkAtPointer?.(e) ?? null
+      if (url) {
+        e.preventDefault()
+        setLinkMenu({ x: e.clientX, y: e.clientY, url })
+        return
+      }
       if (!settingsRef.current.rightClickPaste) return
       e.preventDefault()
       pasteFromClipboard()
@@ -1267,6 +1316,15 @@ export function Terminal({
         e.preventDefault()
         e.stopPropagation()
         term.toggleMarkMode?.()
+      } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
+        // Opening a link with the keyboard, beside mark mode's Ctrl+Shift+M so
+        // the two read as a family. Like the bindings above it maps to no
+        // terminal sequence, so consuming it costs nothing on the wire — and
+        // it is the only link gesture that works while a full-screen program
+        // is holding the mouse.
+        e.preventDefault()
+        e.stopPropagation()
+        term.toggleHintMode?.()
       }
       // Escape is not handled here. Closing search runs through the shared
       // dismiss stack instead, so it competes properly with anything else
@@ -1385,6 +1443,8 @@ export function Terminal({
       selectionListener.dispose()
       copyListener?.dispose()
       markModeListener?.dispose()
+      hintModeListener?.dispose()
+      linkListener?.dispose()
       dataListener.dispose()
       inputListener.dispose()
       scrollListener.dispose()
@@ -1533,6 +1593,56 @@ export function Terminal({
           <span className="font-medium">Mark</span>
           <span className="text-white/40">Shift+arrows select · Enter copies · Esc exits</span>
         </div>
+      )}
+      {hintMode && (
+        // Beside mark mode's indicator and worded the same way: the mode has
+        // taken the keyboard, so it has to say what the keys do now and how to
+        // get out. An empty screen of labels means there were no links, which
+        // this leaves visible rather than explaining away.
+        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs text-white/70 shadow-xl duration-fast ease-swift">
+          <ExternalLink size={13} className="text-amber-400" />
+          <span className="font-medium">Links</span>
+          <span className="text-white/40">Type a label to open · Esc exits</span>
+        </div>
+      )}
+      {linkMenu && (
+        // Fixed to the pointer, like the tab strip's own menu. The URL is
+        // shown in full rather than only acted on: the destination is the one
+        // thing worth seeing before a browser opens on it, and it is the same
+        // disclosure an OSC 8 link will need when that arrives, where the text
+        // on screen and the target need not agree at all.
+        <>
+          {/* A click anywhere else closes it, including a click meant for the
+              grid — which would otherwise land in the terminal underneath
+              while the menu stayed up. */}
+          <div className="fixed inset-0 z-40" onMouseDown={() => setLinkMenu(null)} />
+          <div
+            className="animate-in fade-in zoom-in-95 fixed z-50 max-w-xs origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs text-white/80 shadow-xl duration-100"
+            style={{ left: linkMenu.x, top: linkMenu.y }}
+          >
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
+              onClick={() => {
+                termRef.current?.openLink?.(linkMenu.url)
+                setLinkMenu(null)
+              }}
+            >
+              <ExternalLink size={13} /> Open link
+            </button>
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
+              onClick={() => {
+                writeText(linkMenu.url).catch(() => {})
+                setLinkMenu(null)
+              }}
+            >
+              <Copy size={13} /> Copy link
+            </button>
+            <div className="mt-1 break-all border-t border-white/10 px-3 pt-1.5 text-[11px] text-white/40">
+              {linkMenu.url}
+            </div>
+          </div>
+        </>
       )}
       {searchOpen && (
         <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-fast ease-swift">

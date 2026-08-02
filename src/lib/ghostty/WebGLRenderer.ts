@@ -28,6 +28,7 @@ import {
   type GhosttyWasm,
   CELL2_UNDERLINE_MASK,
   CELL2_OVERLINE,
+  UNDERLINE_DOTTED,
   CURSOR_STYLE_BLOCK,
   CURSOR_STYLE_BAR,
   CURSOR_STYLE_UNDERLINE,
@@ -142,6 +143,11 @@ export interface SearchHighlight {
 const SEARCH_MATCH_BG = [0x5c, 0x4a, 0x1c]
 const SEARCH_ACTIVE_BG = [0xd9, 0xa4, 0x41]
 
+/** Hint labels: dark on amber, so a label cannot be mistaken for output
+ *  whatever the theme or the program underneath it is painting. */
+const HINT_FG = [0x1a, 0x1a, 0x1a]
+const HINT_BG = [0xf5, 0xc2, 0x42]
+
 export interface CursorState {
   /** Viewport coordinates — the row as currently displayed, not absolute. */
   col: number
@@ -225,6 +231,44 @@ export class WebGLRenderer {
    * row's hits, which is almost always none.
    */
   searchHighlights: Map<number, SearchHighlight[]> | null = null
+
+  /**
+   * The link under the pointer, as the rows and columns it covers, or null.
+   *
+   * A flat list rather than a map by row: there is at most one hovered link
+   * and it covers one row, or a handful when it wraps, so the lookup per row
+   * is a walk of two or three entries — the grouping `searchHighlights` needs
+   * would cost more than it saves here.
+   *
+   * Feedback is a style bit on the covered cells rather than new geometry: the
+   * renderer already folds `CELL_UNDERLINE` into the atlas key, so an
+   * underlined link costs at most one extra atlas entry per glyph, bounded by
+   * the link's own text.
+   */
+  linkHighlight: { row: number; from: number; to: number }[] | null = null
+
+  /**
+   * Every link on screen, whether or not the pointer is on one.
+   *
+   * These are drawn with a dotted underline and the hovered one with a solid
+   * one, which is what makes a link *discoverable*: underlining only under the
+   * pointer means a link is invisible until you happen to hold Ctrl over it,
+   * and nobody holds Ctrl over text they have no reason to think is a link.
+   * Two distinct rules rather than a colour change, so nothing here has to
+   * argue with the theme or with whatever colour the program chose for its own
+   * output.
+   */
+  linkRanges: { row: number; from: number; to: number }[] | null = null
+
+  /**
+   * Hint-mode labels to paint over the grid, or null when the mode is off.
+   *
+   * Drawn as cells rather than as an overlay: a label is a character in a
+   * cell, which is exactly what this loop already draws, so it costs the
+   * colours and nothing else. Absolute rows, so a label stays on its link as
+   * output scrolls the screen underneath it.
+   */
+  hintLabels: { row: number; col: number; text: string }[] | null = null
 
   private cursorR = 255
   private cursorG = 255
@@ -694,6 +738,9 @@ export class WebGLRenderer {
       let cursorOnWide: boolean = false
 
       const rowHighlights = this.searchHighlights?.get(absRow)
+      const rowLink = this.linkHighlight?.find((s) => s.row === absRow) ?? null
+      const rowLinks = this.linkRanges?.filter((s) => s.row === absRow) ?? null
+      const rowHints = this.hintLabels?.filter((h) => h.row === absRow) ?? null
 
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
@@ -747,6 +794,29 @@ export class WebGLRenderer {
           }
         }
 
+        // A hint label replaces whatever the cell held, in colours chosen to be
+        // unmistakably not the program's output. Applied after the cell is read
+        // so it wins outright, and before the glyph is chosen so the label is
+        // what gets rasterized. A label never sits on a wide character's
+        // spacer: overriding the width to 1 leaves nothing pending, and the
+        // spacer beside it simply draws blank.
+        if (rowHints !== null) {
+          for (let i = 0; i < rowHints.length; i++) {
+            const hint = rowHints[i]
+            const at = c - hint.col
+            if (at < 0 || at >= hint.text.length) continue
+            codepoint = hint.text.charCodeAt(at)
+            flags = CELL_BOLD
+            attrs2 = 0
+            cellWidth = 1
+            graphemeLen = 0
+            finalFgR = HINT_FG[0]; finalFgG = HINT_FG[1]; finalFgB = HINT_FG[2]
+            finalBgR = HINT_BG[0]; finalBgG = HINT_BG[1]; finalBgB = HINT_BG[2]
+            bgIsDefault = false
+            break
+          }
+        }
+
         // Faint is a foreground effect, not a glyph one, so it stays out of the
         // atlas key — otherwise every dimmed character would cost a second
         // raster identical to the one already cached.
@@ -776,6 +846,14 @@ export class WebGLRenderer {
             // The bit says underlined; attrs2 says which of the five, and is
             // folded into the glyph key so each shape is its own raster.
             style |= GLYPH_UNDERLINE | ((attrs2 & CELL2_UNDERLINE_MASK) << GLYPH_UL_SHIFT)
+          } else if (rowLink !== null && c >= rowLink.from && c <= rowLink.to) {
+            // The link under the pointer: a solid rule, so it stands out from
+            // the dotted one every other link on screen carries.
+            style |= GLYPH_UNDERLINE
+          } else if (rowLinks !== null && rowLinks.some((s) => c >= s.from && c <= s.to)) {
+            // Every other link: dotted, which reads as "this is clickable"
+            // without competing with an underline the program asked for.
+            style |= GLYPH_UNDERLINE | (UNDERLINE_DOTTED << GLYPH_UL_SHIFT)
           }
           if (attrs2 & CELL2_OVERLINE) style |= GLYPH_OVERLINE
           if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
