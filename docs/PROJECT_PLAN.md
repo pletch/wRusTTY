@@ -7,7 +7,7 @@ over SFTP have since landed — files and whole folders move in both directions,
 streamed, with progress and cancellation; rename, delete, new folder and chmod
 are in the panel's context menu; and a save can no longer quietly overwrite a
 remote file that changed underneath it. What Phase 6 still holds is what happens
-when a transfer *stops*: retry, resume, and an SCP fallback.
+when a transfer *stops*, and an SCP fallback for hosts with no SFTP subsystem.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -564,8 +564,27 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
    them properly means deciding what a link means on the other side, and for a
    *download* the answer is usually "nothing" — a target path that only resolves
    on the host it came from. Worth doing for upload before download.
-5. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
+5. **SCP fallback** for hosts with the SFTP subsystem disabled — common on
    network appliances, which is squarely this app's audience.
+
+   **Scope it before building it: SCP has no directory listing.** The protocol
+   is "send me this path" and "receive this path", nothing else. So a fallback
+   cannot make the Files panel work on an SFTP-less host — it can only serve
+   transfers whose paths are already known, which in practice means drag-and-drop
+   upload onto a pane (the destination comes from the reported cwd, not from a
+   listing) and a download to or from a typed path. That is still the appliance
+   case, and worth having; it is just not "the app works the same without SFTP",
+   and planning it as though it were is how it ends up half-built.
+
+   Making the panel work anyway would mean running `ls -l` over an exec channel
+   and parsing it, which is a different and much more fragile feature: the
+   output differs between GNU, BusyBox and vendor shells, is locale-dependent,
+   has no machine-readable form, and is genuinely ambiguous for names containing
+   spaces or newlines. It would work on most Linux hosts and misbehave on
+   exactly the appliances it exists for.
+
+   Worth building against a real host that forces the issue, so the protocol
+   work can be verified as it is written rather than after.
 6. **`chmod` is per-entry only** — no recursive apply, and no way to set the
    permissions a recursive *upload* lands with (they come out as whatever the
    server's umask says, not what they were locally).
