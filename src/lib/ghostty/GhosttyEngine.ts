@@ -1,8 +1,9 @@
-import type {
-  IDisposable,
-  SearchOptions,
-  SearchResult,
-  TerminalEngine,
+import {
+  SCROLLBAR_GUTTER_PX,
+  type IDisposable,
+  type SearchOptions,
+  type SearchResult,
+  type TerminalEngine,
 } from '../terminalEngine'
 import { SearchController } from './SearchController'
 import { MouseReporter } from './MouseReporter'
@@ -173,6 +174,35 @@ export function shouldRestoreCursor(resetAt: number, styleAt: number): boolean {
   // its own, which outranks a preference. Common: a TUI resets and then asks
   // for the cursor it wants, both inside one write.
   return styleAt <= resetAt
+}
+
+/**
+ * Grid that fits a container box, in cells.
+ *
+ * The gutter is the whole subtlety. The custom scrollbar is an overlay
+ * anchored to the container's right edge and painted over the canvas
+ * (`.term-scrollbar`, z-index 20), not a sibling the layout makes room for —
+ * so a grid derived from the *full* width runs underneath it. What was left
+ * between the canvas's right edge and the container's was only
+ * `width % cellWidth`, and whenever that remainder came out under the
+ * scrollbar's width the overlay covered the last column and clipped its
+ * glyph. Which widths that hit depended on the font size and the pane's exact
+ * pixel width, so the last character on a row appeared to vanish only
+ * sometimes. Reserving the gutter here is what xterm's FitAddon does for its
+ * own scrollbar.
+ *
+ * Pure, so the arithmetic can be tested without a DOM, a renderer or a core.
+ */
+export function fitGrid(
+  box: { width: number; height: number },
+  cell: { width: number; height: number },
+  gutterPx: number,
+): { cols: number; rows: number } {
+  if (!(cell.width > 0) || !(cell.height > 0)) return { cols: 0, rows: 0 }
+  return {
+    cols: Math.max(0, Math.floor((box.width - gutterPx) / cell.width)),
+    rows: Math.max(0, Math.floor(box.height / cell.height)),
+  }
 }
 
 export class GhosttyEngine implements TerminalEngine {
@@ -1577,8 +1607,11 @@ export class GhosttyEngine implements TerminalEngine {
     }
 
     const rect = this.container.getBoundingClientRect()
-    const c = Math.floor(rect.width / cellWidth)
-    const r = Math.floor(rect.height / cellHeight)
+    const { cols: c, rows: r } = fitGrid(
+      rect,
+      { width: cellWidth, height: cellHeight },
+      SCROLLBAR_GUTTER_PX,
+    )
     if (c > 0 && r > 0) {
       this.resize(c, r, force)
     }

@@ -12,6 +12,18 @@ export interface IDisposable {
   dispose(): void
 }
 
+/**
+ * Width of the custom scrollbar's visible controls, matching
+ * `.term-scrollbar-inner` in index.css.
+ *
+ * Here rather than in either place that uses it, because both have to agree
+ * and they sit in different layers: `Terminal.tsx` sizes the overlay that
+ * masks the gutter, and an engine deriving its own column count has to
+ * reserve that gutter (see `fitGrid`). While only the overlay knew the
+ * number, the Ghostty grid ran underneath it and lost its last column.
+ */
+export const SCROLLBAR_GUTTER_PX = 8
+
 export interface SearchOptions {
   caseSensitive?: boolean
   regex?: boolean
