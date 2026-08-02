@@ -12,6 +12,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  KeyRound,
   RefreshCw,
   Trash2,
   Upload,
@@ -21,6 +22,7 @@ import * as sftp from '../lib/sftp'
 import type { RemoteEntry, SftpEvent } from '../lib/sftp'
 import { toast } from '../lib/toast'
 import { formatBytes } from '../lib/formatBytes'
+import { formatMode, formatOctal, parseOctal } from '../lib/fileMode'
 import {
   expandHome,
   nameError,
@@ -87,6 +89,10 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
   useDismissable(true, onClose, { within: '[data-files-panel], [data-files-toggle]' })
   const confirm = useConfirm()
+  // The channel's handler is built once and would otherwise hold the first
+  // render's `confirm` forever — the same reason Terminal.tsx keeps one.
+  const confirmRef = useRef(confirm)
+  confirmRef.current = confirm
   const [cwd, setCwd] = useState<string | null>(null)
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
@@ -103,7 +109,10 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
   // because two open at once would leave the user unsure which Enter they were
   // pressing.
   const [naming, setNaming] = useState<
-    { kind: 'rename'; original: string; draft: string } | { kind: 'mkdir'; draft: string } | null
+    | { kind: 'rename'; original: string; draft: string }
+    | { kind: 'chmod'; original: string; draft: string }
+    | { kind: 'mkdir'; draft: string }
+    | null
   >(null)
   // Read by `commitNaming` instead of the state it mirrors. The field commits
   // on blur, and a successful Enter clears it — so the blur that follows the
@@ -131,6 +140,32 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
         case 'uploadFailed':
           toast.error(`Failed to save ${event.remotePath}: ${event.error}`)
           break
+        case 'uploadConflict': {
+          // Nothing has been written at this point — the save stopped. So the
+          // dialog is offering to *make* the change, not to undo one, and the
+          // safe answer is the one you get by dismissing it.
+          const when = event.remoteModified
+            ? new Date(event.remoteModified * 1000).toLocaleString()
+            : null
+          void confirmRef
+            .current({
+              title: `${basename(event.remotePath)} changed on the host`,
+              body:
+                `Your save was not made. ${event.remotePath} was modified` +
+                `${when ? ` at ${when}` : ''} after you opened it — by another session, ` +
+                `by someone else, or by something running on the host.\n\n` +
+                `Overwriting replaces those changes with your copy. To keep them instead, ` +
+                `cancel, then stop watching the file and open it again.`,
+              confirmLabel: 'Overwrite',
+            })
+            .then((ok) => {
+              if (!ok) return
+              void sftp
+                .saveEdit(event.editId, true, getChannel())
+                .catch((err) => toast.error(String(err)))
+            })
+          break
+        }
         // An explicit transfer. Only the backend knows the total for these —
         // a download's from `stat`, a picked upload's from the file itself.
         case 'transferStarted':
@@ -355,6 +390,29 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
   async function commitNaming() {
     const current = namingRef.current
     if (!current || !cwd) return
+
+    if (current.kind === 'chmod') {
+      const mode = parseOctal(current.draft)
+      if (mode === null) {
+        // Left open, and deliberately not "corrected". A field that read `8` as
+        // something would set a permission the user did not ask for, and
+        // `chmod 000` on the wrong remote file is a bad afternoon.
+        toast.error('Permissions must be octal — 755, 644, 1777.')
+        return
+      }
+      namingRef.current = null
+      try {
+        await sftp.chmod(sessionId, join(cwd, current.original), mode)
+        toast.success(`${current.original} is now ${formatOctal(mode)}`)
+        setNaming(null)
+        load(cwd)
+      } catch (err) {
+        namingRef.current = current
+        toast.error(String(err))
+      }
+      return
+    }
+
     const draft = current.draft.trim()
     if (current.kind === 'rename' && draft === current.original) {
       setNaming(null)
@@ -586,7 +644,40 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
                     <File size={10} /> watching <X size={9} />
                   </button>
                 )}
-                {!entry.isDir && <span>{formatBytes(entry.size)}</span>}
+                {naming?.kind === 'chmod' && naming.original === entry.name ? (
+                  // The field takes the place of the column it edits, so the
+                  // before and after are in the same spot.
+                  <input
+                    autoFocus
+                    value={naming.draft}
+                    onChange={(e) =>
+                      setNaming({ kind: 'chmod', original: entry.name, draft: e.target.value })
+                    }
+                    onBlur={() => void commitNaming()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation()
+                      if (e.key === 'Enter') void commitNaming()
+                      if (e.key === 'Escape') setNaming(null)
+                    }}
+                    size={4}
+                    className="w-12 rounded border border-sky-400/40 bg-black/30 px-1 py-0.5 text-right font-mono text-white/90 outline-none"
+                  />
+                ) : (
+                  entry.mode !== null && (
+                    <span
+                      className="font-mono text-white/25"
+                      // The octal is what you type into the field and what
+                      // every chmod example is written in; the letters are what
+                      // you can scan a column of. Both, rather than a choice.
+                      title={`${formatOctal(entry.mode)}${
+                        entry.owner ? ` — ${entry.owner}${entry.group ? `:${entry.group}` : ''}` : ''
+                      }`}
+                    >
+                      {formatMode(entry.mode)}
+                    </span>
+                  )
+                )}
+                {!entry.isDir && <span className="w-16 text-right">{formatBytes(entry.size)}</span>}
               </span>
             </li>
           )
@@ -680,6 +771,27 @@ export function FilesPanel({ sessionId, startDir, onClose }: Props) {
             }
           >
             <FilePen size={13} /> Rename
+          </button>
+          <button
+            className={menuItem}
+            onClick={() =>
+              setNaming({
+                kind: 'chmod',
+                original: menu.entry.name,
+                // Prefilled with what it is now, so the common edit is one
+                // digit rather than four. A server that reported nothing leaves
+                // an empty field rather than a guess at a default.
+                draft: menu.entry.mode !== null ? formatOctal(menu.entry.mode) : '',
+              })
+            }
+            disabled={menu.entry.mode === null}
+            title={
+              menu.entry.mode === null
+                ? 'This host did not report permissions for it'
+                : 'Change the permission bits'
+            }
+          >
+            <KeyRound size={13} /> Permissions…
           </button>
           <button
             className={`${menuItem} text-red-300`}

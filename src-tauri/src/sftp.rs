@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 use wr_sftp::RemoteEntry;
 
+use crate::session_registry::Slot;
 use crate::ssh::SshState;
 
 #[derive(Clone, Serialize)]
@@ -42,6 +43,18 @@ pub enum SftpEvent {
         edit_id: String,
         remote_path: String,
         error: String,
+    },
+    /// The remote file changed under an edit, and the save was **not** made.
+    ///
+    /// Nothing has been written when this arrives — the point is that the save
+    /// stopped. The frontend asks; `sftp_save_edit` with `force` is how the
+    /// user says to overwrite anyway.
+    UploadConflict {
+        edit_id: String,
+        remote_path: String,
+        /// Unix seconds, for a message that can say *when* rather than only
+        /// that it happened. `None` if the server stopped reporting one.
+        remote_modified: Option<i64>,
     },
     /// The `Transfer*` variants belong to an explicit transfer in either
     /// direction — a dropped file, a picked file, a download; the three
@@ -94,6 +107,15 @@ struct EditEntry {
     session_id: String,
     remote_path: String,
     local_path: PathBuf,
+    /// The remote mtime this edit's local copy was taken from, and what a save
+    /// checks against before it writes.
+    ///
+    /// Shared with the watcher rather than read out of the map, because the
+    /// watcher's callback has no handle on `SftpState` — and updated after every
+    /// successful save, so the *next* save compares against what this edit just
+    /// wrote rather than against a value that is now two saves old and conflicts
+    /// with itself.
+    expected_mtime: Arc<TokioMutex<Option<i64>>>,
     // Held only for their Drop impls: dropping the debouncer stops the
     // watcher thread, and dropping the TempDir deletes the directory (and
     // the file inside it) from disk.
@@ -458,6 +480,14 @@ pub async fn sftp_edit_file(
     sftp.download(&remote_path, file, |_| true)
         .await
         .map_err(|e| e.to_string())?;
+    // Taken *after* the download, not before: the window that matters runs from
+    // the moment this copy stopped reading to the moment it is written back, so
+    // anchoring at the end of the read is what makes "changed since" mean
+    // "changed since I looked". A stat that fails leaves `None`, which disables
+    // the check rather than blocking every save — see `save_edit`.
+    let expected_mtime = Arc::new(TokioMutex::new(
+        sftp.stat(&remote_path).await.ok().and_then(|s| s.modified),
+    ));
 
     // Downloaded and watched either way — declining only means the file
     // isn't handed to the OS opener. The user can still reach it from the
@@ -470,6 +500,7 @@ pub async fn sftp_edit_file(
     }
 
     let edit_id = sftp_state.next_edit_id();
+    let watch_expected = expected_mtime.clone();
     let watch_path = local_path.clone();
     let watch_remote_path = remote_path.clone();
     let watch_edit_id = edit_id.clone();
@@ -492,39 +523,22 @@ pub async fn sftp_edit_file(
             let edit_id = watch_edit_id.clone();
             let session = watch_session.clone();
             let channel = channel.clone();
+            let expected = watch_expected.clone();
             rt_handle.spawn(async move {
-                let _ = channel.send(SftpEvent::Uploading {
-                    edit_id: edit_id.clone(),
-                    remote_path: remote_path.clone(),
-                });
-                let result: Result<(), String> = async {
-                    let bytes = tokio::fs::read(&local_path)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let sftp = session
-                        .lock()
-                        .await
-                        .ready()?
-                        .get_or_open_sftp()
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    sftp.write(&remote_path, &bytes)
-                        .await
-                        .map_err(|e| e.to_string())
-                }
+                // Never forced. A save the *watcher* noticed is the one that
+                // has to ask — the user pressed Ctrl-S in an editor and has no
+                // idea anything else touched the file. Forcing is a separate,
+                // deliberate answer to the question this may raise.
+                save_edit(
+                    session,
+                    edit_id,
+                    remote_path,
+                    local_path,
+                    expected,
+                    false,
+                    channel,
+                )
                 .await;
-                let event = match result {
-                    Ok(()) => SftpEvent::Uploaded {
-                        edit_id,
-                        remote_path,
-                    },
-                    Err(error) => SftpEvent::UploadFailed {
-                        edit_id,
-                        remote_path,
-                        error,
-                    },
-                };
-                let _ = channel.send(event);
             });
         },
     )
@@ -545,12 +559,152 @@ pub async fn sftp_edit_file(
             session_id,
             remote_path,
             local_path,
+            expected_mtime,
             _debouncer: debouncer,
             _temp_dir: temp_dir,
         },
     );
 
     Ok(edit_id)
+}
+
+/// Writes an edit's local copy back to the host, unless the host's copy moved
+/// underneath it.
+///
+/// **The check is the point.** `write` is `CREATE | TRUNCATE`, so without it a
+/// remote file that changed between download and save is replaced with no
+/// warning and no trace — a colleague's edit, a config-management run, or the
+/// user's own other session, gone, while the panel says "Saved". Comparing the
+/// mtime is cheap and catches all three.
+///
+/// It is deliberately advisory, not a lock:
+///
+/// - **A one-second mtime is all SFTP v3 offers**, so two writes inside the same
+///   second are indistinguishable. That is a narrow window and it is the one
+///   this cannot close; a real answer needs a hash or a server-side lock, and
+///   neither is worth the round trips for a feature whose job is to catch the
+///   colleague who edited it this morning.
+/// - **A server that reports no mtime disables the check** rather than blocking
+///   every save. Refusing to save to a host that will not answer the question
+///   would make the file uneditable, which is a worse failure than the one being
+///   guarded against.
+/// - **`force` skips it entirely**, which is what the user chose when they
+///   answered the prompt.
+///
+/// On success the expectation is advanced to what was just written, so the next
+/// save compares against this save rather than conflicting with itself forever.
+async fn save_edit(
+    session: Arc<TokioMutex<Slot<wr_ssh::SshSession>>>,
+    edit_id: String,
+    remote_path: String,
+    local_path: PathBuf,
+    expected_mtime: Arc<TokioMutex<Option<i64>>>,
+    force: bool,
+    channel: Channel<SftpEvent>,
+) {
+    let _ = channel.send(SftpEvent::Uploading {
+        edit_id: edit_id.clone(),
+        remote_path: remote_path.clone(),
+    });
+
+    let outcome: Result<Option<i64>, String> = async {
+        let bytes = tokio::fs::read(&local_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        let sftp = session
+            .lock()
+            .await
+            .ready()?
+            .get_or_open_sftp()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !force {
+            let expected = *expected_mtime.lock().await;
+            // Both sides have to be known for a mismatch to mean anything. A
+            // file that has since been deleted also lands here (the stat
+            // fails) — and re-creating it is the reasonable reading of a save,
+            // so that is not treated as a conflict.
+            if let (Some(expected), Ok(current)) = (expected, sftp.stat(&remote_path).await) {
+                if current.modified.is_some_and(|m| m != expected) {
+                    return Ok(Some(current.modified.unwrap_or_default()));
+                }
+            }
+        }
+
+        sftp.write(&remote_path, &bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Re-stat rather than assume: the mtime the server recorded is the one
+        // the next save has to match, and it is the server's clock that decides
+        // it, not this machine's.
+        *expected_mtime.lock().await = sftp.stat(&remote_path).await.ok().and_then(|s| s.modified);
+        Ok(None)
+    }
+    .await;
+
+    let event = match outcome {
+        Ok(None) => SftpEvent::Uploaded {
+            edit_id,
+            remote_path,
+        },
+        Ok(Some(remote_modified)) => SftpEvent::UploadConflict {
+            edit_id,
+            remote_path,
+            remote_modified: Some(remote_modified),
+        },
+        Err(error) => SftpEvent::UploadFailed {
+            edit_id,
+            remote_path,
+            error,
+        },
+    };
+    let _ = channel.send(event);
+}
+
+/// Saves a watched edit on demand — the answer to a conflict prompt.
+///
+/// `force: true` is the user saying "overwrite it anyway", having been told
+/// what they would be overwriting. `force: false` re-runs the same check the
+/// watcher does, which is what makes this usable as a plain "try that save
+/// again" after a failure.
+///
+/// The channel is taken as an argument rather than remembered from
+/// `sftp_edit_file`: watches outlive the panel that started them, so the panel
+/// asking this question is not necessarily the one that opened the file, and
+/// the reply has to go to whoever is listening now.
+#[tauri::command]
+pub async fn sftp_save_edit(
+    edit_id: String,
+    force: bool,
+    channel: Channel<SftpEvent>,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    let (session_id, remote_path, local_path, expected_mtime) = {
+        let edits = sftp_state.edits.lock().await;
+        let entry = edits
+            .get(&edit_id)
+            .ok_or("that file is no longer being watched")?;
+        (
+            entry.session_id.clone(),
+            entry.remote_path.clone(),
+            entry.local_path.clone(),
+            entry.expected_mtime.clone(),
+        )
+    };
+    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
+    save_edit(
+        session,
+        edit_id,
+        remote_path,
+        local_path,
+        expected_mtime,
+        force,
+        channel,
+    )
+    .await;
+    Ok(())
 }
 
 /// Every edit currently being watched for a session.
@@ -734,6 +888,31 @@ pub async fn sftp_remove(
             .await
             .map_err(|e| format!("could not delete {path}: {e}"))
     }
+}
+
+/// Sets the permission bits on a remote path.
+///
+/// The mode arrives as a number the frontend parsed from octal, not as a
+/// string: "what does `755` mean" is a question with one answer, and parsing it
+/// in two places is how the two come to disagree. Anything outside the
+/// permission bits is refused here rather than silently masked, because a
+/// caller sending `100755` has misunderstood something and quietly turning it
+/// into `755` would hide that.
+#[tauri::command]
+pub async fn sftp_chmod(
+    session_id: String,
+    path: String,
+    mode: u32,
+    ssh_state: State<'_, SshState>,
+) -> Result<(), String> {
+    if mode > 0o7777 {
+        return Err(format!("{mode:o} is not a permission mode"));
+    }
+    browse_client(&ssh_state, &session_id)
+        .await?
+        .chmod(&path, mode)
+        .await
+        .map_err(|e| format!("could not change permissions on {path}: {e}"))
 }
 
 /// Creates a directory inside `parent`.

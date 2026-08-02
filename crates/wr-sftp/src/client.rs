@@ -37,6 +37,22 @@ pub struct RemoteEntry {
     pub size: u64,
     /// Unix seconds; `None` if the server didn't report an mtime for this entry.
     pub modified: Option<i64>,
+    /// The permission bits alone — `0o755`, not the raw mode.
+    ///
+    /// The file-type bits are masked off because the type is already carried by
+    /// `is_dir`/`is_symlink`, and leaving them in makes every consumer either
+    /// mask again or accidentally render `100755`. `None` if the server didn't
+    /// report permissions, which is rarer than a missing mtime but not
+    /// impossible — several appliance SFTP servers report almost nothing.
+    pub mode: Option<u32>,
+    /// The owner and group *names*, when the server sends them.
+    ///
+    /// Only the numeric uid/gid are guaranteed by the protocol, and a bare `0`
+    /// tells the user nothing they can act on — so these are the names or
+    /// nothing. Populated from the same attribute block as everything else, at
+    /// no extra round trip.
+    pub owner: Option<String>,
+    pub group: Option<String>,
 }
 
 /// What a `stat` on one remote file says. The same two facts `RemoteEntry`
@@ -56,7 +72,16 @@ pub struct RemoteStat {
     /// have taken minutes ago — and because opening a directory as a file is
     /// a failure each server words differently.
     pub is_dir: bool,
+    /// Permission bits alone, as on [`RemoteEntry`].
+    pub mode: Option<u32>,
 }
+
+/// The permission bits of a raw mode, with the file-type bits removed.
+///
+/// `0o7777` rather than `0o777`: setuid, setgid and the sticky bit are real
+/// permissions a user may need to see and set — `/tmp` is `1777` and dropping
+/// the leading `1` would make this panel quietly misreport it.
+const PERMISSION_BITS: u32 = 0o7777;
 
 /// Thin wrapper around `russh_sftp`'s high-level client, generic over
 /// whatever byte stream carries the SFTP subsystem channel — this crate
@@ -90,6 +115,9 @@ impl SftpClient {
                         .ok()
                         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                         .map(|d| d.as_secs() as i64),
+                    mode: metadata.permissions.map(|p| p & PERMISSION_BITS),
+                    owner: metadata.user.clone(),
+                    group: metadata.group.clone(),
                 }
             })
             .collect())
@@ -107,6 +135,7 @@ impl SftpClient {
         Ok(RemoteStat {
             size: metadata.len(),
             is_dir: metadata.is_dir(),
+            mode: metadata.permissions.map(|p| p & PERMISSION_BITS),
             modified: metadata
                 .modified()
                 .ok()
@@ -160,6 +189,26 @@ impl SftpClient {
 
     pub async fn create_dir(&self, path: &str) -> Result<(), SftpError> {
         Ok(self.inner.create_dir(path).await?)
+    }
+
+    /// Sets the permission bits on a remote path.
+    ///
+    /// `mode` is masked to the permission bits before it goes out. SFTP's
+    /// `SETSTAT` carries the same `permissions` field a `STAT` returns — which
+    /// includes the file-type bits — so a caller round-tripping a raw mode
+    /// could otherwise ask the server to change what *kind* of thing the file
+    /// is. OpenSSH masks it again on arrival; plenty of other servers do not,
+    /// and the ones this app is aimed at are exactly the unusual ones.
+    ///
+    /// Every other attribute is left unset, which is what keeps this a `chmod`
+    /// rather than a truncate: `size` is in the same structure, and a `Metadata`
+    /// built from a stat and sent back wholesale would carry it.
+    pub async fn chmod(&self, path: &str, mode: u32) -> Result<(), SftpError> {
+        let attrs = russh_sftp::protocol::FileAttributes {
+            permissions: Some(mode & PERMISSION_BITS),
+            ..Default::default()
+        };
+        Ok(self.inner.set_metadata(path, attrs).await?)
     }
 
     /// SFTP v3's rename does **not** replace an existing target — several

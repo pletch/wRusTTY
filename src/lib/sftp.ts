@@ -6,6 +6,14 @@ export interface RemoteEntry {
   isSymlink: boolean
   size: number
   modified: number | null
+  /** Permission bits alone (`0o755`), never the raw mode — the type is already
+   *  in `isDir`/`isSymlink`. Null if the server reported none, which some
+   *  appliance SFTP servers do. */
+  mode: number | null
+  /** Owner and group *names*, when the server sends them. The protocol only
+   *  guarantees numeric ids, and a bare `0` tells the user nothing. */
+  owner: string | null
+  group: string | null
 }
 
 export type SftpEvent =
@@ -13,6 +21,15 @@ export type SftpEvent =
   | { type: 'uploading'; editId: string; remotePath: string }
   | { type: 'uploaded'; editId: string; remotePath: string }
   | { type: 'uploadFailed'; editId: string; remotePath: string; error: string }
+  // The remote file changed under an edit and the save was *not* made. Nothing
+  // has been written when this arrives; `saveEdit(editId, true)` is how the
+  // user says to overwrite anyway.
+  | {
+      type: 'uploadConflict'
+      editId: string
+      remotePath: string
+      remoteModified: number | null
+    }
   // An explicit transfer, in either direction: a dropped file, a picked file,
   // a download. Direction is not on the wire — whatever started the transfer
   // already knows which way it goes, and it holds the id.
@@ -49,6 +66,21 @@ export function editFile(sessionId: string, remotePath: string, channel: Channel
  * forgets watches that are still running (and still uploading on save). */
 export function listEdits(sessionId: string) {
   return invoke<ActiveEdit[]>('sftp_list_edits', { sessionId })
+}
+
+/**
+ * Saves a watched edit on demand — the answer to a conflict prompt.
+ *
+ * `force` is the user saying "overwrite it anyway" having been told what they
+ * would be overwriting. Without it this re-runs the same mtime check the
+ * watcher does, which makes it a plain "try that save again" after a failure.
+ *
+ * Takes a channel because watches outlive the panel that started them: the
+ * panel asking is not necessarily the one that opened the file, and the reply
+ * has to reach whoever is listening now.
+ */
+export function saveEdit(editId: string, force: boolean, channel: Channel<SftpEvent>) {
+  return invoke<void>('sftp_save_edit', { editId, force, channel })
 }
 
 export function stopWatching(editId: string) {
@@ -189,6 +221,12 @@ export function rename(sessionId: string, path: string, newName: string) {
  */
 export function remove(sessionId: string, path: string) {
   return invoke<void>('sftp_remove', { sessionId, path })
+}
+
+/** Sets the permission bits on a remote path. `mode` is a number — parse the
+ *  user's octal with `parseOctal` so display and input agree on what a mode is. */
+export function chmod(sessionId: string, path: string, mode: number) {
+  return invoke<void>('sftp_chmod', { sessionId, path, mode })
 }
 
 /** Creates a directory inside `parent`, returning its full path. */
