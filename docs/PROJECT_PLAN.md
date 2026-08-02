@@ -101,7 +101,8 @@ mosh, RDP) means adding a crate, not touching the UI.
   a long command finishes with the window in the background **(shipped — see
   `docs/SHELL_INTEGRATION.md`)**
 - True color, Unicode 11, font/ligature configuration, cursor styles
-- URL detection (web-links addon)
+- URL detection — Ctrl+click to open, plus a keyboard hint mode for when a
+  program has the mouse **(not built — plan in `docs/URL_LINKS_PLAN.md`)**
 - Session logging to file (timestamped, per-session toggle) — network/serial
   engineers rely on this constantly **(shipped)**
 - Named color themes (import iTerm/VS Code schemes), light/dark following OS
