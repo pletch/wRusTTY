@@ -28,7 +28,7 @@ features were still marked as ideas.
 | Frontend | React + TypeScript + Vite + Tailwind | Matches r-shell; large ecosystem; fast iteration |
 | Terminal | **Vendored Ghostty VT core (WASM) + an in-house WebGL renderer** | Superseded the original xterm.js choice. xterm's addons (search, fit, links, unicode) all had to be reimplemented as a consequence — see `SearchController`, `fitGrid`, `LinkController`. xterm survives only as the benchmark harness's comparison engine (`src/bench`, `lib/xtermEngine.ts`); `src/lib` no longer depends on it |
 | SSH | `russh` + `russh-keys` | Pure Rust (memory-safe crypto surface), async, actively maintained, proven in r-shell |
-| SFTP | `russh-sftp` | Same ecosystem. In use: browsing and whole-file read/write ship; streaming transfer does not (Phase 6) |
+| SFTP | `russh-sftp` | Same ecosystem. In use: browsing, editing and streaming upload ship; download still reads whole files (Phase 6) |
 | Serial | `serialport` crate | Cross-platform, COM enumeration, USB hotplug |
 | Telnet | Hand-rolled over `tokio` TCP (option negotiation is small) or `libtelnet-rs` | Protocol is tiny; keep dependency surface low |
 | Vault crypto | `argon2` (KDF) + `chacha20poly1305` (AEAD) + `zeroize` | Modern, misuse-resistant; master password → key |
@@ -47,7 +47,7 @@ wrustty/
 │   ├── wr-telnet/        # Telnet transport + option negotiation
 │   ├── wr-serial/        # Serial transport + port enumeration
 │   ├── wr-vault/         # Encrypted vault: KDF, AEAD, import/export, zeroize
-│   ├── wr-sftp/          # SFTP operations (browse + whole-file read/write)
+│   ├── wr-sftp/          # SFTP operations (browse, read/write, streaming upload)
 │   └── wr-fs/            # Atomic file writes, shared by every on-disk store
 └── src/                  # React frontend
     ├── components/       #   terminal view, tabs, session tree, dialogs, settings
@@ -138,27 +138,32 @@ mosh, RDP) means adding a crate, not touching the UI.
   keyboard hint mode (Ctrl+Shift+U) for when a program has the mouse
   **(shipped — see `docs/URL_LINKS_PLAN.md`)**
 - **Drag-and-drop upload** — drop a file on a pane and it goes to the host over
-  SFTP, into the directory that pane is sitting in. Most of the parts exist:
-  the SFTP channel and its upload path (`wr-sftp`, `src/lib/sftp.ts`), and OSC 7
-  already tells us the remote working directory (`parseCwd` in
-  `remoteIdentity.ts`). What is new is the drop target, a progress affordance,
-  and the awkward cases, which are where this feature is actually decided:
+  SFTP, into the directory that pane is sitting in **(shipped)**. The rules that
+  decide the feature live in `lib/dropUpload.ts`, where they can be read and
+  tested rather than inferred from a drag handler:
   - **No OSC 7, no destination.** A shell without shell integration never says
     where it is, and guessing (`~`, or scraping the prompt) puts a file
-    somewhere the user did not ask for. The honest fallback is to ask for the
-    path, prefilled with the last known one, rather than to silently pick.
-  - **Only an SSH pane can accept a drop.** Serial and telnet have no file
-    transfer at all, and the drop must be visibly refused there rather than
-    appearing to work. Same for a pane whose session has dropped.
-  - **Overwrite is a decision, not a default.** Existing remote file → prompt,
-    with rename as an option.
-  - **Directories and multi-file drops** are a recursive upload with a
-    cancellable queue; worth deferring to the second cut, but the drop handler
-    should recognise and refuse them clearly until then rather than uploading
-    the first entry.
-  - Drag-and-drop in Tauri is a *window*-level event, not a DOM one, so the
-    pane under the pointer has to be resolved from the drop position — the
-    same hit-test the pane grid already does for tab drags.
+    somewhere the user did not ask for — so the pane asks, prefilled with
+    whatever was typed last.
+  - **Only an SSH pane can accept a drop.** Telnet and serial have no file
+    transfer at all, and a pane whose session has gone has nowhere to send.
+    Both are refused out loud: a drop that silently does nothing is worse than
+    one that explains itself, because the user walks away believing the file
+    arrived.
+  - **Overwrite is a decision, not a default**, and the existing file survives
+    a failed attempt — the transfer lands under `.wrustty-part` and is renamed
+    into place only on success.
+  - **Directories and multi-file drops** are refused clearly, pending the
+    recursive upload with a cancellable queue they actually need.
+  - **The drop is a DOM event, not Tauri's.** This plan previously assumed the
+    window-level `onDragDropEvent`; that path is closed here. Tauri's native
+    drag-drop intercepts OS drags on WebView2 and thereby breaks the page's own
+    HTML5 events, which tab-to-pane dragging is built on — it was diagnosed and
+    switched off in `ef8e828`. So the webview holds a `File` with no path on it
+    and the bytes travel over IPC, sliced by the frontend and streamed straight
+    into the SFTP write. Nothing is held whole on either side, and a bounded
+    queue in the backend is what stops a fast local disk racing ahead of a slow
+    network.
 - Session logging to file (timestamped, per-session toggle) — network/serial
   engineers rely on this constantly **(shipped)**
 - Named colour themes **(partial — five built in, and a per-pane background
@@ -304,7 +309,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   signing **not built** — the two that have to be settled before any public
   release
 
-### Phase 6 — Files (extended capability) — **started; the edit path shipped, transfer did not**
+### Phase 6 — Files (extended capability) — **partial: browse, edit and upload ship; download and mutations do not**
 
 #### What is built
 
@@ -312,11 +317,16 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   first use and held for the connection's lifetime (`get_or_open_sftp`, a
   `OnceCell`). Every command below shares it. SSH only — telnet and serial have
   no file transfer and never will.
-- **`wr-sftp`** is four operations in 85 lines: `list_dir`, `read`, `write`,
-  `canonicalize`. `write` is `CREATE | TRUNCATE | WRITE` plus `sync_all`,
+- **`wr-sftp`** is a thin transport: `list_dir`, `read`, `write`,
+  `canonicalize`, `try_exists`, `remove_file`, `rename`, and a streaming
+  `upload`. `write` is `CREATE | TRUNCATE | WRITE` plus `sync_all`,
   deliberately not `russh_sftp`'s own `write`, which leaves the tail of a
   longer previous file stranded past the end of the new data and reports
   nothing.
+- **Upload streams**, chunk by chunk, with progress and cancellation — and
+  never writes over the destination until the whole file has arrived. Reads do
+  not stream yet; see below.
+- **Drag-and-drop upload onto a pane** (see terminal & UX for the rules).
 - **Browsing** — the Files panel: breadcrumb, up, refresh, and entries with
   type, name and size. `canonicalize` resolves the remote home so the panel
   opens somewhere sensible rather than guessing `/home/<user>`.
@@ -337,25 +347,27 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 #### What is not, roughly in the order it matters
 
-1. **Streaming — the blocker everything else waits on.** Both directions buffer
-   the whole file in memory: `read` returns a `Vec<u8>`, `write` takes a
-   `&[u8]`. So there is no progress, no cancellation, and a large file is an
-   unbounded memory spike plus a silent stall. Progress bars are not a UI task
-   here; they need a streaming API in the crate first, with per-transfer
-   events — `SftpEvent` is already the right shape to carry them. Decide this
-   before building any of items 3-5 on top of the current primitives.
+1. **Streaming, in the download direction.** Uploads stream (that was the
+   blocker, and it is gone); `read` still returns a `Vec<u8>`, so a download —
+   including the one behind every remote *edit* — holds the whole file in
+   memory with no progress and no way to stop. The upload side is the pattern
+   to follow: a chunk loop, a bounded queue, a progress callback that doubles
+   as the cancellation check.
 2. **Conflict detection — the cheapest real fix in the list.** The save path
    writes `CREATE | TRUNCATE` with no check, so a remote file that changed
    between download and save is silently clobbered. `list_dir` already returns
    an mtime, so remembering it at download and prompting on a mismatch is a
    small change. This plan filed it under the Monaco editor; it belongs to the
    external-editor flow that actually shipped.
-3. **Plain download and upload.** No "save as" to a chosen local path, and no
-   way to upload an arbitrary local file — browse-and-edit is the only route to
-   a byte in either direction. Drag-and-drop (under terminal & UX) is a third
-   entry point needing the same upload primitive, which is the argument for
-   building the primitive rather than the gesture first.
-4. **Mutations: rename, delete, mkdir, chmod.** None exist. Note `RemoteEntry`
+3. **Download, and upload from somewhere other than a drop.** No "save as" to
+   a chosen local path; no file picker for uploading, which is the route for
+   anyone who would rather not drag. The upload half of the machinery now
+   exists, so a picker is a small command over `sftp_upload_begin` — and one
+   that could hand over a *path* rather than bytes, since the dialog plugin
+   gives one.
+4. **Mutations: rename, delete, mkdir, chmod.** None are exposed — the crate
+   has `rename` and `remove_file` now, but only the upload's own replace uses
+   them. Note `RemoteEntry`
    carries name, isDir, isSymlink, size and modified — no mode and no owner —
    so chmod needs metadata plumbed through the crate before it needs a UI, and
    a permissions column is worth having on its own.
