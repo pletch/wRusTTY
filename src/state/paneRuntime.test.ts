@@ -11,6 +11,8 @@ import {
   sessionIdByPaneOf,
   activityByPaneOf,
   attentionPanesOf,
+  titleByPaneOf,
+  cwdByPaneOf,
   dimensionsByPaneOf,
   scrollbackBudgetByPaneOf,
 } from './paneRuntime'
@@ -295,5 +297,66 @@ describe('scrollbackBudgetSet', () => {
       budgetBytes: 4096,
     })
     expect(scrollbackBudgetByPaneOf(withBudget)).toEqual({ p1: 4096 })
+  })
+})
+
+/**
+ * Title and working directory from the far end.
+ *
+ * The identity checks are the substance here, not a nicety. Both arrive on the
+ * output hot path — a shell that sets its title from PROMPT_COMMAND emits one
+ * per prompt, and reports the same directory for every command run in it — and
+ * a new state object from each one re-renders App and with it every pane.
+ */
+describe('titleChanged / cwdChanged', () => {
+  it('records what the host reported', () => {
+    let state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'tim@build01' })
+    state = paneRuntimeReducer(state, { type: 'cwdChanged', paneId: 'p1', cwd: '/etc/frr' })
+    expect(state.p1.title).toBe('tim@build01')
+    expect(state.p1.cwd).toBe('/etc/frr')
+  })
+
+  it('returns the same state for an unchanged title', () => {
+    const state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'same' })
+    expect(paneRuntimeReducer(state, { type: 'titleChanged', paneId: 'p1', title: 'same' })).toBe(state)
+  })
+
+  it('returns the same state for an unchanged directory', () => {
+    const state = paneRuntimeReducer(EMPTY, { type: 'cwdChanged', paneId: 'p1', cwd: '/srv' })
+    expect(paneRuntimeReducer(state, { type: 'cwdChanged', paneId: 'p1', cwd: '/srv' })).toBe(state)
+  })
+
+  it('returns the same state when a pane with no title is told there is none', () => {
+    // A host clearing a title it never set, which is what an empty OSC 2 from
+    // a fresh shell is.
+    expect(paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: null })).toBe(EMPTY)
+  })
+
+  it('clears a title the host withdrew', () => {
+    let state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'gone soon' })
+    state = paneRuntimeReducer(state, { type: 'titleChanged', paneId: 'p1', title: null })
+    expect(state.p1.title).toBeNull()
+  })
+
+  it('leaves both out of the derived views for a pane that reported neither', () => {
+    // The read sites treat a missing entry as "nothing to show"; a null in the
+    // map would render as an empty slot instead.
+    const state = paneRuntimeReducer(EMPTY, { type: 'statusChanged', paneId: 'p1', status: 'connected', now: 1 })
+    expect(titleByPaneOf(state)).toEqual({})
+    expect(cwdByPaneOf(state)).toEqual({})
+  })
+
+  it('exposes them per pane once reported', () => {
+    let state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'one' })
+    state = paneRuntimeReducer(state, { type: 'cwdChanged', paneId: 'p2', cwd: '/two' })
+    expect(titleByPaneOf(state)).toEqual({ p1: 'one' })
+    expect(cwdByPaneOf(state)).toEqual({ p2: '/two' })
+  })
+
+  it('drops both when the pane closes', () => {
+    let state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'one' })
+    state = paneRuntimeReducer(state, { type: 'cwdChanged', paneId: 'p1', cwd: '/two' })
+    state = paneRuntimeReducer(state, { type: 'paneClosed', paneId: 'p1' })
+    expect(state.p1).toBeUndefined()
   })
 })

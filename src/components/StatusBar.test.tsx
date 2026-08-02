@@ -22,6 +22,8 @@ const base = {
   status: 'connected',
   connectedAt: null,
   logging: false,
+  remoteTitle: null as string | null,
+  remoteCwd: null as string | null,
   dimensions: null as { cols: number; rows: number } | null,
   scrollbackBudgetBytes: null as number | null,
   paneIndex: 1,
@@ -112,5 +114,48 @@ describe('StatusBar scrollback estimate', () => {
     expect(title).toMatch(/80 columns/)
     expect(title).toMatch(/Scrollback/)
     expect(title).toMatch(/wider pane holds fewer/)
+  })
+})
+
+/**
+ * What the far end says about itself.
+ *
+ * The cases worth pinning are the absent ones and the precedence one: this is
+ * remote-supplied text sitting in the same bar as the fields that say what you
+ * are actually connected to, so it must never displace them or appear when the
+ * host never sent it.
+ */
+describe('StatusBar remote title and directory', () => {
+  it('shows neither until the host reports them', () => {
+    const { container } = render(<StatusBar {...base} />)
+    expect(container.textContent).toContain('admin@router.example.net')
+    expect(container.textContent).toBe(
+      render(<StatusBar {...base} remoteTitle={null} remoteCwd={null} />).container.textContent,
+    )
+  })
+
+  it('shows the reported directory', () => {
+    render(<StatusBar {...base} remoteCwd="/etc/frr" />)
+    expect(screen.getByText('/etc/frr')).toBeTruthy()
+  })
+
+  it('shows the reported title', () => {
+    render(<StatusBar {...base} remoteTitle="tim@build01: ~/src" />)
+    expect(screen.getByText('tim@build01: ~/src')).toBeTruthy()
+  })
+
+  it('keeps the connection target alongside them, not replaced by them', () => {
+    // The failure this guards is a remote title that reads as the answer to
+    // "what am I connected to" — the bar has exactly one such field and the
+    // host does not get to be it.
+    render(<StatusBar {...base} remoteTitle="prod-db-primary" remoteCwd="/" />)
+    expect(screen.getByText('admin@router.example.net')).toBeTruthy()
+    expect(screen.getByText('prod-db-primary')).toBeTruthy()
+  })
+
+  it('says whose words they are, in the tooltip', () => {
+    render(<StatusBar {...base} remoteTitle="prod-db-primary" />)
+    const title = screen.getByText('prod-db-primary').getAttribute('title') ?? ''
+    expect(title).toMatch(/remote host/i)
   })
 })

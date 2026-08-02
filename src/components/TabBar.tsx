@@ -36,6 +36,12 @@ interface Props {
    * command finished, while the tab was in the background. Keyed by pane, not
    * tab, so the marker can sit on the segment of the pane it happened in. */
   attentionPanes: Record<string, true>
+  /** Titles the far ends set for themselves (OSC 0/2), for panes that have
+   * one. Used only for the tab's tooltip: the visible label stays the
+   * connection's, so a shell that retitles itself on every prompt can't
+   * rename what you are looking at — or reflow the strip, since tab width is
+   * content-driven. See lib/remoteIdentity.ts. */
+  titleByPane: Record<string, string>
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
@@ -247,6 +253,7 @@ export function TabBar({
   activityByPane,
   progressByPane,
   attentionPanes,
+  titleByPane,
   onSelect,
   onClose,
   onNew,
@@ -379,9 +386,11 @@ export function TabBar({
           const attentionPaneIds = new Set(leaves.filter((l) => attentionPanes[l.id]).map((l) => l.id))
           const running = runningPaneIds.size > 0
           const attention = attentionPaneIds.size > 0
+          const remoteTitle = leaf ? titleByPane[leaf.id] : undefined
           return (
             <div
               key={tab.id}
+              title={remoteTitle ? `${tab.title} — ${remoteTitle}` : tab.title}
               draggable
               onClick={() => onSelect(tab.id)}
               onContextMenu={(e) => {

@@ -75,6 +75,8 @@ import {
   sessionIdByPaneOf,
   activityByPaneOf,
   progressByPaneOf,
+  titleByPaneOf,
+  cwdByPaneOf,
   attentionPanesOf,
   dimensionsByPaneOf,
   scrollbackBudgetByPaneOf,
@@ -203,6 +205,8 @@ function App() {
   const sessionIdByPane = useMemo(() => sessionIdByPaneOf(paneRuntime), [paneRuntime])
   const activityByPane = useMemo(() => activityByPaneOf(paneRuntime), [paneRuntime])
   const progressByPane = useMemo(() => progressByPaneOf(paneRuntime), [paneRuntime])
+  const titleByPane = useMemo(() => titleByPaneOf(paneRuntime), [paneRuntime])
+  const cwdByPane = useMemo(() => cwdByPaneOf(paneRuntime), [paneRuntime])
   const attentionPanes = useMemo(() => attentionPanesOf(paneRuntime), [paneRuntime])
   const dimensionsByPane = useMemo(() => dimensionsByPaneOf(paneRuntime), [paneRuntime])
   const scrollbackBudgetByPane = useMemo(() => scrollbackBudgetByPaneOf(paneRuntime), [paneRuntime])
@@ -1063,6 +1067,7 @@ function App() {
           activityByPane={activityByPane}
           progressByPane={progressByPane}
           attentionPanes={attentionPanes}
+          titleByPane={titleByPane}
           onSelect={selectTab}
           onClose={closeTab}
           onNew={newTab}
@@ -1390,6 +1395,12 @@ function App() {
                     // it goes through onRemoteNotify below.
                     if (!document.hasFocus()) void flashWindow()
                   }}
+                  onRemoteTitle={(title) =>
+                    dispatchPaneRuntime({ type: 'titleChanged', paneId: leaf.id, title })
+                  }
+                  onRemoteCwd={(cwd) =>
+                    dispatchPaneRuntime({ type: 'cwdChanged', paneId: leaf.id, cwd })
+                  }
                   onRemoteNotify={(notification) => {
                     if (!terminalSettings.remoteNotifications) return
                     // The pane's name is prepended rather than used as the
@@ -1504,6 +1515,8 @@ function App() {
           status={activePaneId ? statusByPane[activePaneId] : undefined}
           connectedAt={activePaneId ? (connectedAtByPane[activePaneId] ?? null) : null}
           logging={activePaneId ? (loggingByPane[activePaneId] ?? false) : false}
+          remoteTitle={activePaneId ? (titleByPane[activePaneId] ?? null) : null}
+          remoteCwd={activePaneId ? (cwdByPane[activePaneId] ?? null) : null}
           dimensions={activePaneId ? (dimensionsByPane[activePaneId] ?? null) : null}
           scrollbackBudgetBytes={activePaneId ? (scrollbackBudgetByPane[activePaneId] ?? null) : null}
           paneIndex={activePaneIndex}

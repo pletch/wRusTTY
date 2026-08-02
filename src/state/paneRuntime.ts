@@ -32,6 +32,13 @@ export interface PaneRuntime {
    * shell and deliberately goes quiet while a full-screen program owns the
    * screen, which is exactly when this one speaks up. See lib/appProgress.ts. */
   progress: AppProgress | null
+  /** What the far end calls itself, via OSC 0/2 — null until it says.
+   *
+   * Never the tab's label: that is the connection's, chosen by the user, and
+   * many shells rewrite their title on every prompt. See lib/remoteIdentity.ts. */
+  title: string | null
+  /** The far end's working directory, via OSC 7 — null until it reports one. */
+  cwd: string | null
   /** Something you haven't seen: a bell rang, or a long command finished,
    * while this pane wasn't in view. */
   attention: boolean
@@ -60,6 +67,8 @@ const DEFAULT_RUNTIME: PaneRuntime = {
   filesOpen: false,
   activity: IDLE,
   progress: null,
+  title: null,
+  cwd: null,
   attention: false,
   dimensions: null,
   scrollbackBudgetBytes: null,
@@ -77,6 +86,8 @@ export type PaneRuntimeAction =
   | { type: 'panelSet'; paneId: string; panel: 'forwards' | 'files'; open: boolean }
   | { type: 'activityChanged'; paneId: string; activity: CommandActivity }
   | { type: 'progressChanged'; paneId: string; progress: AppProgress | null }
+  | { type: 'titleChanged'; paneId: string; title: string | null }
+  | { type: 'cwdChanged'; paneId: string; cwd: string }
   | { type: 'attentionRaised'; paneId: string }
   | { type: 'attentionCleared'; paneId: string }
   | { type: 'dimensionsChanged'; paneId: string; cols: number; rows: number }
@@ -161,6 +172,23 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
       if (now === next) return state
       if (now && next && now.state === next.state && now.percent === next.percent) return state
       return { ...state, [action.paneId]: { ...(current ?? DEFAULT_RUNTIME), progress: next } }
+    }
+
+    case 'titleChanged': {
+      const current = state[action.paneId]
+      // Both of these arrive on the output hot path — a shell that sets its
+      // title from PROMPT_COMMAND sends one per prompt, and one that reports
+      // its directory sends the same path for every command run in it. Bailing
+      // on an unchanged value keeps a busy pane from re-rendering App, and with
+      // it every other pane, to say nothing has changed.
+      if ((current?.title ?? null) === action.title) return state
+      return { ...state, [action.paneId]: { ...(current ?? DEFAULT_RUNTIME), title: action.title } }
+    }
+
+    case 'cwdChanged': {
+      const current = state[action.paneId]
+      if (current?.cwd === action.cwd) return state
+      return { ...state, [action.paneId]: { ...(current ?? DEFAULT_RUNTIME), cwd: action.cwd } }
     }
 
     case 'attentionRaised':
@@ -262,6 +290,25 @@ export function progressByPaneOf(state: PaneRuntimeState): Record<string, AppPro
   for (const id in state) {
     const progress = state[id].progress
     if (progress !== null) out[id] = progress
+  }
+  return out
+}
+
+/** Absent rather than null for a pane that has reported no title, matching
+ *  the other maps that leave a pane out entirely — the read sites treat a
+ *  missing entry as "nothing to show". */
+export function titleByPaneOf(state: PaneRuntimeState): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [id, pane] of Object.entries(state)) {
+    if (pane.title !== null) out[id] = pane.title
+  }
+  return out
+}
+
+export function cwdByPaneOf(state: PaneRuntimeState): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [id, pane] of Object.entries(state)) {
+    if (pane.cwd !== null) out[id] = pane.cwd
   }
   return out
 }

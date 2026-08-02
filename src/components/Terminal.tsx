@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { TerminalEngine } from '../lib/terminalEngine'
+import { SCROLLBAR_GUTTER_PX, type TerminalEngine } from '../lib/terminalEngine'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import {
   Search,
@@ -31,13 +31,11 @@ import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 import { parseOsc9, parseOsc777, ProgressTracker } from '../lib/appProgress'
+import { parseWindowTitle, parseCwd } from '../lib/remoteIdentity'
 import type { AppProgress, RemoteNotification } from '../lib/appProgress'
 import { applyOsc52 } from '../lib/osc52'
 import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
-
-/** Matches .term-scrollbar-inner's width in index.css. */
-const SCROLLBAR_WIDTH = 8
 
 /**
  * Bytes to write before telling the backend it may send more.
@@ -130,6 +128,11 @@ interface Props {
   /** The far end asked for a desktop notification by name (OSC 9 / OSC 777),
    * rather than this app inferring one from a command's exit. */
   onRemoteNotify?: (notification: RemoteNotification) => void
+  /** The far end set a window title (OSC 0/2), or cleared it (null). Advisory:
+   * the pane's own label still names the tab. See lib/remoteIdentity.ts. */
+  onRemoteTitle?: (title: string | null) => void
+  /** The far end reported its working directory (OSC 7). */
+  onRemoteCwd?: (cwd: string) => void
   /** A command finished, with its exit code and how long it took. */
   onCommandComplete?: (result: CommandResult) => void
   /** The far end rang the terminal bell (BEL, 0x07) — the oldest and most
@@ -179,6 +182,8 @@ export function Terminal({
   onProgress,
   onProgressComplete,
   onRemoteNotify,
+  onRemoteTitle,
+  onRemoteCwd,
   onCommandComplete,
   onBell,
   onBackToConnect,
@@ -355,6 +360,12 @@ export function Terminal({
 
   const onRemoteNotifyRef = useRef(onRemoteNotify)
   onRemoteNotifyRef.current = onRemoteNotify
+
+  const onRemoteTitleRef = useRef(onRemoteTitle)
+  onRemoteTitleRef.current = onRemoteTitle
+
+  const onRemoteCwdRef = useRef(onRemoteCwd)
+  onRemoteCwdRef.current = onRemoteCwd
 
   const onBellRef = useRef(onBell)
   onBellRef.current = onBell
@@ -643,7 +654,7 @@ export function Terminal({
       // leaves a sliver of gutter in the wrong shade, too wide hides the
       // terminal. The area legitimately needing masking is one partial column
       // plus the gutter, so anything beyond that is a stale measurement.
-      const width = Math.min(Math.max(gap, SCROLLBAR_WIDTH), SCROLLBAR_WIDTH * 8)
+      const width = Math.min(Math.max(gap, SCROLLBAR_GUTTER_PX), SCROLLBAR_GUTTER_PX * 8)
       scrollbarEl.style.width = `${width}px`
     }
 
@@ -852,6 +863,31 @@ export function Terminal({
         // `notify` that this doesn't implement, and swallowing them would
         // silently block a later handler that does.
         return notification !== null
+      }),
+    )
+    // What the far end says it is and where it is. Like the progress
+    // sequences above, these come from whatever is running rather than from
+    // the shell's prompt markers, so they work with no integration set up and
+    // keep reporting through a full-screen program. Neither renames the tab —
+    // see lib/remoteIdentity.ts.
+    oscListeners.push(
+      // OSC 0 sets the icon name and the title together; OSC 2 the title
+      // alone. Not claimed: OSC 0's icon-name half is a real part of the
+      // sequence that this doesn't implement, and the engine keeps its own
+      // notion of the title from the same bytes.
+      ...[0, 2].map((ident) =>
+        term.registerOscHandler(ident, (data) => {
+          onRemoteTitleRef.current?.(parseWindowTitle(data))
+          return false
+        }),
+      ),
+      term.registerOscHandler(7, (data) => {
+        const cwd = parseCwd(data)
+        if (cwd) onRemoteCwdRef.current?.(cwd)
+        // Claimed only when it parsed. A payload that isn't a directory is
+        // something else using the number, and swallowing it would silently
+        // block a handler that understands it.
+        return cwd !== null
       }),
     )
     // OSC 52 is the only copy path a program on the far end of a session has:

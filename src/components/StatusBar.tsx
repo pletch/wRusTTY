@@ -62,6 +62,16 @@ interface Props {
    * live uptime readout. */
   connectedAt: number | null
   logging: boolean
+  /** What the active pane's far end calls itself (OSC 0/2), and the directory
+   * it last reported (OSC 7) — null until it says, which is the resting state
+   * for anything that never does.
+   *
+   * Shown beside the connection's own identifiers rather than in place of
+   * them, and styled below them: this is text the remote end chose, sharing a
+   * bar with the fields that say what you are actually connected to. It must
+   * not be able to pass itself off as one of those. See lib/remoteIdentity.ts. */
+  remoteTitle: string | null
+  remoteCwd: string | null
   /** The active pane's grid in cells, or null before its engine has fitted.
    *
    * Worth a permanent slot rather than a transient overlay on resize (the
@@ -94,6 +104,8 @@ export function StatusBar({
   status,
   connectedAt,
   logging,
+  remoteTitle,
+  remoteCwd,
   dimensions,
   scrollbackBudgetBytes,
   paneIndex,
@@ -172,6 +184,27 @@ export function StatusBar({
         </span>
       )}
       <span className="shrink-0">{statusLabel(status)}</span>
+
+      {/* Both absent for any host that reports neither, so the bar reads
+          exactly as it always did until one opts in. `shrink` rather than
+          `shrink-0`: these are the first things that should give up room when
+          the bar is tight, ahead of anything the app itself is saying. */}
+      {remoteCwd && (
+        <span
+          className="min-w-0 shrink truncate border-l border-white/10 pl-2 text-white/50"
+          title={`Working directory reported by the remote host: ${remoteCwd}`}
+        >
+          {remoteCwd}
+        </span>
+      )}
+      {remoteTitle && (
+        <span
+          className="min-w-0 shrink truncate text-white/40"
+          title={`Title set by the remote host: ${remoteTitle}`}
+        >
+          {remoteTitle}
+        </span>
+      )}
 
       {/* Serial line controls. Placed here rather than in a menu because on a
           console cable these are used mid-session, often urgently — a break
