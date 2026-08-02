@@ -4,15 +4,20 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, FileIdMap};
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
+use tokio::io::{AsyncRead, ReadBuf};
+use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 use wr_sftp::RemoteEntry;
 
@@ -35,6 +40,28 @@ pub enum SftpEvent {
     },
     UploadFailed {
         edit_id: String,
+        remote_path: String,
+        error: String,
+    },
+    /// The four `Transfer*` variants belong to an explicit upload (a dropped
+    /// file); the three `Upload*` ones above belong to an edit being saved.
+    /// Deliberately not merged: an edit's re-upload has no progress, nothing
+    /// to cancel, and is keyed by the edit it belongs to rather than by a
+    /// transfer. There is no `TransferStarted` — `sftp_upload_begin` returns
+    /// the id, so it is in the caller's hands before the first chunk goes.
+    TransferProgress {
+        transfer_id: String,
+        sent: u64,
+    },
+    TransferDone {
+        transfer_id: String,
+        remote_path: String,
+    },
+    TransferCancelled {
+        transfer_id: String,
+    },
+    TransferFailed {
+        transfer_id: String,
         remote_path: String,
         error: String,
     },
@@ -62,12 +89,23 @@ struct EditEntry {
 #[derive(Default)]
 pub struct SftpState {
     edits: TokioMutex<HashMap<String, EditEntry>>,
+    /// Cancellation flags for uploads in flight, by transfer id. An entry
+    /// exists only while its transfer does — the upload removes its own on
+    /// every path out — so a cancel arriving late finds nothing and does
+    /// nothing, which is the right outcome rather than a missing case.
+    transfers: TokioMutex<HashMap<String, TransferEntry>>,
     next_id: AtomicU64,
 }
 
 impl SftpState {
     fn next_edit_id(&self) -> String {
         format!("edit-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Shares the counter with `next_edit_id` on purpose: the two id spaces
+    /// never have to be distinct, and one counter cannot hand out a duplicate.
+    fn next_transfer_id(&self) -> String {
+        format!("transfer-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -490,6 +528,360 @@ pub async fn sftp_stop_watching(
     Ok(())
 }
 
+/// Whether a remote path is already taken, so the frontend can ask before an
+/// upload replaces something.
+///
+/// Advisory only: the answer is stale the moment it is given, and the upload
+/// below re-checks under the same `overwrite` flag. This exists so the
+/// *question* can be asked before the transfer starts rather than after it has
+/// spent a minute pushing bytes.
+#[tauri::command]
+pub async fn sftp_exists(
+    session_id: String,
+    path: String,
+    ssh_state: State<'_, SshState>,
+) -> Result<bool, String> {
+    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
+    let sftp = session
+        .lock()
+        .await
+        .ready()?
+        .get_or_open_sftp()
+        .await
+        .map_err(|e| e.to_string())?;
+    sftp.try_exists(&path).await.map_err(|e| e.to_string())
+}
+
+/// The suffix an upload lands under before it is put in place.
+const PART_SUFFIX: &str = ".wrustty-part";
+
+/// A file arriving from the webview, chunk by chunk, as an `AsyncRead`.
+///
+/// **Why the bytes come through the webview at all.** Tauri's own drag-drop
+/// handler would hand us a local path, and this would be a `File::open`. It is
+/// off deliberately (`dragDropEnabled: false` in tauri.conf.json): on WebView2
+/// it intercepts OS drag-and-drop and thereby breaks the page's own HTML5
+/// events, which is what tab-to-pane dragging is built on. That was diagnosed
+/// and fixed once already, so a file drop here is a DOM event, the webview
+/// holds a `File` with no path anywhere on it, and the only route to the bytes
+/// is IPC.
+///
+/// So they are streamed rather than handed over whole: the frontend slices the
+/// file, each chunk goes straight into the SFTP write, and a file of any size
+/// costs one chunk of memory on each side. The bounded channel is the
+/// backpressure — without it a webview reading from a fast local disk would
+/// queue the entire file in memory ahead of a slow network.
+struct ChunkReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    current: Vec<u8>,
+    pos: usize,
+}
+
+impl AsyncRead for ChunkReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // Loops rather than taking one chunk per poll because an empty chunk
+        // would otherwise read as end-of-file and silently truncate the
+        // upload. The frontend does not send them; this is why it cannot.
+        while self.pos >= self.current.len() {
+            match self.rx.poll_recv(cx) {
+                Poll::Ready(Some(chunk)) => {
+                    self.current = chunk;
+                    self.pos = 0;
+                }
+                // Every sender dropped: the transfer was finished or cancelled.
+                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        let n = std::cmp::min(buf.remaining(), self.current.len() - self.pos);
+        buf.put_slice(&self.current[self.pos..self.pos + n]);
+        self.pos += n;
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Whether a dropped file's name can be joined onto a remote directory.
+///
+/// The name comes from a `File` in the webview and is therefore already a bare
+/// filename — this is the boundary saying so rather than assuming it. A name
+/// carrying a separator or a `..` would write outside the directory the user
+/// dropped on, which is the whole of what they chose by dropping there.
+///
+/// Deliberately narrower than the remote-name checks further up this file:
+/// those guard a remote-chosen name being written to *local* disk, where
+/// Windows device names and alternate data streams are the hazard. This guards
+/// a local name being written to a *POSIX* host, where the hazard is the path
+/// separator and nothing else.
+fn is_usable_upload_name(name: &str) -> bool {
+    !(name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0'))
+}
+
+/// One upload in flight.
+struct TransferEntry {
+    /// Dropping this is what tells the reader the file has ended — so
+    /// finishing and cancelling are both "take the entry out of the map",
+    /// and differ only in whether the flag was set on the way.
+    tx: mpsc::Sender<Vec<u8>>,
+    cancel: Arc<AtomicBool>,
+}
+
+/// How many chunks may be queued ahead of the network. Four is enough to keep
+/// the writer fed across one round trip and small enough that a fast local
+/// read cannot build a queue worth measuring.
+const CHUNK_QUEUE: usize = 4;
+
+/// Starts an upload and returns its transfer id.
+///
+/// **Nothing at the destination is touched until the whole file has arrived.**
+/// The transfer goes to `<name>.wrustty-part` and is renamed into place only on
+/// success, so a cancelled or failed upload — a dropped connection, a full
+/// disk, a closed lid — leaves whatever was already there untouched rather
+/// than truncated to however much got through. That is the promise `wr-fs`
+/// makes for local stores, and it matters more here: the file being replaced
+/// is on a machine the user may not be able to get back to easily.
+///
+/// The replace at the end is remove-then-rename because SFTP v3's rename will
+/// not overwrite. The window between the two is real but small, and it opens
+/// only once the new data is complete on the far side.
+// A Tauri command's arguments are its wire format; grouping them into a struct
+// to satisfy the lint would only move the same fields behind a name the
+// frontend then has to construct.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn sftp_upload_begin(
+    app: AppHandle,
+    session_id: String,
+    remote_dir: String,
+    name: String,
+    overwrite: bool,
+    channel: Channel<SftpEvent>,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<String, String> {
+    if !is_usable_upload_name(&name) {
+        return Err(format!("{name} is not a usable file name"));
+    }
+    // A remote directory is POSIX whatever the client is.
+    let dir = remote_dir.trim_end_matches('/');
+    let remote_path = format!("{dir}/{name}");
+    let part_path = format!("{remote_path}{PART_SUFFIX}");
+
+    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
+    let sftp = session
+        .lock()
+        .await
+        .ready()?
+        .get_or_open_sftp()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Re-checked here rather than trusted from the frontend's own `exists`
+    // call, which by then is several dialogs old.
+    let exists = sftp
+        .try_exists(&remote_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    if exists && !overwrite {
+        return Err(format!("{remote_path} already exists"));
+    }
+
+    let transfer_id = sftp_state.next_transfer_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(CHUNK_QUEUE);
+    sftp_state.transfers.lock().await.insert(
+        transfer_id.clone(),
+        TransferEntry {
+            tx,
+            cancel: cancel.clone(),
+        },
+    );
+
+    let reader = ChunkReader {
+        rx,
+        current: Vec::new(),
+        pos: 0,
+    };
+    let task_id = transfer_id.clone();
+    tokio::spawn(async move {
+        run_upload(
+            app,
+            sftp,
+            reader,
+            part_path,
+            remote_path,
+            exists,
+            channel,
+            task_id,
+            cancel,
+        )
+        .await
+    });
+
+    Ok(transfer_id)
+}
+
+/// Drives one upload to its end and reports which end it was.
+#[allow(clippy::too_many_arguments)]
+async fn run_upload(
+    app: AppHandle,
+    sftp: std::sync::Arc<wr_sftp::SftpClient>,
+    reader: ChunkReader,
+    part_path: String,
+    remote_path: String,
+    replacing: bool,
+    channel: Channel<SftpEvent>,
+    transfer_id: String,
+    cancel: Arc<AtomicBool>,
+) {
+    let progress_channel = channel.clone();
+    let progress_id = transfer_id.clone();
+    let progress_cancel = cancel.clone();
+    let outcome = sftp
+        .upload(&part_path, reader, move |sent| {
+            let _ = progress_channel.send(SftpEvent::TransferProgress {
+                transfer_id: progress_id.clone(),
+                sent,
+            });
+            !progress_cancel.load(Ordering::Relaxed)
+        })
+        .await;
+
+    // Cancelling drops the sender, which the reader sees as a clean
+    // end-of-file — so a cancel that lands between the last chunk and the end
+    // arrives as `Complete`. The flag is what tells the two apart, and it has
+    // to be read after the transfer rather than only inside the callback.
+    let cancelled = cancel.load(Ordering::Relaxed);
+
+    let result: Result<bool, String> = match outcome {
+        Err(e) => {
+            let _ = sftp.remove_file(&part_path).await;
+            Err(e.to_string())
+        }
+        Ok(_) if cancelled => {
+            let _ = sftp.remove_file(&part_path).await;
+            Ok(false)
+        }
+        Ok(wr_sftp::Transferred::Cancelled) => {
+            let _ = sftp.remove_file(&part_path).await;
+            Ok(false)
+        }
+        Ok(wr_sftp::Transferred::Complete) => {
+            let placed = async {
+                if replacing {
+                    sftp.remove_file(&remote_path)
+                        .await
+                        .map_err(|e| format!("could not replace {remote_path}: {e}"))?;
+                }
+                sftp.rename(&part_path, &remote_path).await.map_err(|e| {
+                    format!("uploaded, but could not move it into place as {remote_path}: {e}")
+                })
+            }
+            .await;
+            match placed {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    // The bytes are all there under the part name; leaving it
+                    // would be litter the user cannot see from the terminal.
+                    let _ = sftp.remove_file(&part_path).await;
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    let _ = match result {
+        Ok(true) => channel.send(SftpEvent::TransferDone {
+            transfer_id: transfer_id.clone(),
+            remote_path,
+        }),
+        Ok(false) => channel.send(SftpEvent::TransferCancelled {
+            transfer_id: transfer_id.clone(),
+        }),
+        Err(error) => channel.send(SftpEvent::TransferFailed {
+            transfer_id: transfer_id.clone(),
+            remote_path,
+            error,
+        }),
+    };
+
+    // The frontend removes the entry when it finishes or cancels; this covers
+    // the transfer that ended on its own — a failure, or a webview that walked
+    // away — so a dead transfer cannot hold its id forever.
+    app.state::<SftpState>()
+        .transfers
+        .lock()
+        .await
+        .remove(&transfer_id);
+}
+
+/// One chunk of a file being uploaded.
+///
+/// Takes the bytes as the request's raw body rather than as a command
+/// argument: an argument is serialized as a JSON array of numbers, which for a
+/// quarter-megabyte chunk is roughly a megabyte of text to build, send and
+/// parse. The transfer id rides in a header because the body is the file.
+#[tauri::command]
+pub async fn sftp_upload_chunk(
+    request: tauri::ipc::Request<'_>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    let transfer_id = request
+        .headers()
+        .get("transfer-id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("upload chunk arrived with no transfer id")?
+        .to_string();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("upload chunk arrived as something other than bytes".into());
+    };
+
+    // The sender is cloned out and the lock released before the send, which
+    // may block on the queue being full — holding the map's lock for the
+    // length of a network round trip would stall every other transfer.
+    let tx = {
+        let transfers = sftp_state.transfers.lock().await;
+        transfers.get(&transfer_id).map(|e| e.tx.clone())
+    }
+    .ok_or("that upload is no longer running")?;
+
+    tx.send(bytes.clone())
+        .await
+        .map_err(|_| "that upload is no longer running".to_string())
+}
+
+/// The file has no more chunks. Drops the sender, which the reader sees as
+/// end-of-file; the transfer's own task reports how it went.
+#[tauri::command]
+pub async fn sftp_upload_finish(
+    transfer_id: String,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    sftp_state.transfers.lock().await.remove(&transfer_id);
+    Ok(())
+}
+
+/// Asks a running upload to stop. Sets the flag *before* dropping the sender,
+/// so the task can tell a cancellation from a file that simply ended.
+#[tauri::command]
+pub async fn sftp_cancel_upload(
+    transfer_id: String,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    if let Some(entry) = sftp_state.transfers.lock().await.remove(&transfer_id) {
+        entry.cancel.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 /// Removes every edit watch tied to a session that just disconnected —
 /// called from `ssh::ssh_disconnect`.
 pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &str) {
@@ -508,7 +900,8 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{is_inert_to_open, is_unsafe_windows_filename};
+    use super::{is_inert_to_open, is_unsafe_windows_filename, is_usable_upload_name, ChunkReader};
+    use tokio::sync::mpsc;
 
     /// The device-name half is the one with teeth: without it a remote file
     /// called `NUL` is written to the null device, and every later edit is
@@ -616,5 +1009,73 @@ mod tests {
     fn double_extension_is_judged_by_the_last_one() {
         assert!(!is_inert_to_open("invoice.txt.exe"));
         assert!(is_inert_to_open("archive.tar.md"));
+    }
+
+    /// A dropped name is joined onto the directory the user dropped on, so
+    /// anything that could climb out of it has to be refused there.
+    #[test]
+    fn upload_names_that_would_escape_the_directory_are_refused() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../etc/passwd",
+            "a/b.txt",
+            "a\\b.txt",
+            "nul\0.txt",
+        ] {
+            assert!(!is_usable_upload_name(name), "{name:?} should be refused");
+        }
+        for name in [
+            "notes.txt",
+            "archive.tar.gz",
+            ".bashrc",
+            "a file with spaces.log",
+        ] {
+            assert!(is_usable_upload_name(name), "{name:?} should be accepted");
+        }
+    }
+
+    /// The reader an upload streams from. The empty-chunk case is the one that
+    /// matters: read as end-of-file it would truncate the upload silently, and
+    /// the file would land looking complete.
+    #[tokio::test]
+    async fn chunk_reader_reassembles_the_stream() {
+        use tokio::io::AsyncReadExt;
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
+        tokio::spawn(async move {
+            tx.send(b"hello ".to_vec()).await.unwrap();
+            tx.send(Vec::new()).await.unwrap();
+            tx.send(b"world".to_vec()).await.unwrap();
+            // Dropping the sender is what ends the file.
+        });
+
+        let mut reader = ChunkReader {
+            rx,
+            current: Vec::new(),
+            pos: 0,
+        };
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).await.unwrap();
+        assert_eq!(out, b"hello world");
+    }
+
+    /// A file that was never written to is still a file: an upload of zero
+    /// bytes has to end cleanly rather than hang waiting for a chunk.
+    #[tokio::test]
+    async fn chunk_reader_ends_on_an_empty_stream() {
+        use tokio::io::AsyncReadExt;
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(1);
+        drop(tx);
+        let mut reader = ChunkReader {
+            rx,
+            current: Vec::new(),
+            pos: 0,
+        };
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).await.unwrap();
+        assert!(out.is_empty());
     }
 }

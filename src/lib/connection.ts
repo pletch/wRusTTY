@@ -94,7 +94,7 @@ export function connect(
  * ternaries defaulting to `ssh_*`, which meant every new source variant
  * silently routed its writes and disconnects to the SSH commands until someone
  * noticed. */
-function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'serial' {
+export function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'serial' {
   switch (source.protocol) {
     case 'telnet':
       return 'telnet'

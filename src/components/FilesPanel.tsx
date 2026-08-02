@@ -4,6 +4,7 @@ import { ArrowUp, File, FileText, Folder, RefreshCw, X } from 'lucide-react'
 import * as sftp from '../lib/sftp'
 import type { RemoteEntry, SftpEvent } from '../lib/sftp'
 import { toast } from '../lib/toast'
+import { formatBytes } from '../lib/formatBytes'
 import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
@@ -23,17 +24,6 @@ function join(dir: string, name: string): string {
   return `${dir}/${name}`
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let i = 0
-  while (value >= 1024 && i < units.length - 1) {
-    value /= 1024
-    i++
-  }
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`
-}
 
 export function FilesPanel({ sessionId, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
@@ -213,7 +203,7 @@ export function FilesPanel({ sessionId, onClose }: Props) {
                     <File size={10} /> watching <X size={9} />
                   </button>
                 )}
-                {!entry.isDir && <span>{formatSize(entry.size)}</span>}
+                {!entry.isDir && <span>{formatBytes(entry.size)}</span>}
               </span>
             </li>
           )
