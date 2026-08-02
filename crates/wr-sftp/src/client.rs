@@ -1,9 +1,27 @@
 use std::time::UNIX_EPOCH;
 
 use russh_sftp::client::SftpSession;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::error::SftpError;
+
+/// How much of a file goes out in one SFTP write.
+///
+/// 32 KiB because that is the packet size the protocol's own read limit is
+/// built around and what servers reliably accept; larger writes are legal but
+/// not universally honoured, and this is the size at which the round trips
+/// stop dominating anyway.
+const UPLOAD_CHUNK: usize = 32 * 1024;
+
+/// Why an upload stopped. A cancelled transfer is not an error — the user
+/// asked — but it is emphatically not a completed one either, and a caller
+/// that cannot tell them apart will leave a partial file lying around
+/// claiming to be the real thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transferred {
+    Complete,
+    Cancelled,
+}
 
 /// A single remote directory entry, ready to hand to the frontend.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -81,5 +99,63 @@ impl SftpClient {
 
     pub async fn canonicalize(&self, path: &str) -> Result<String, SftpError> {
         Ok(self.inner.canonicalize(path).await?)
+    }
+
+    pub async fn try_exists(&self, path: &str) -> Result<bool, SftpError> {
+        Ok(self.inner.try_exists(path).await?)
+    }
+
+    pub async fn remove_file(&self, path: &str) -> Result<(), SftpError> {
+        Ok(self.inner.remove_file(path).await?)
+    }
+
+    /// SFTP v3's rename does **not** replace an existing target — several
+    /// servers refuse outright rather than overwriting, so a caller that means
+    /// "replace" has to remove the target itself first.
+    pub async fn rename(&self, from: &str, to: &str) -> Result<(), SftpError> {
+        Ok(self.inner.rename(from, to).await?)
+    }
+
+    /// Streams `src` into a remote file, chunk by chunk.
+    ///
+    /// Deliberately not `write`, which takes the whole file as a `&[u8]`: that
+    /// is fine for the few kilobytes of a config file being edited and wrong
+    /// for anything a user drops on a pane, where it means the file is held in
+    /// memory twice over with no way to report progress and no way to stop.
+    ///
+    /// `progress` is called with the running byte count after each chunk and
+    /// returns whether to keep going, which is the whole of the cancellation
+    /// mechanism — a transfer can only stop between chunks, so cancelling is
+    /// bounded by one chunk's round trip rather than by the size of the file.
+    pub async fn upload<R>(
+        &self,
+        remote: &str,
+        mut src: R,
+        mut progress: impl FnMut(u64) -> bool,
+    ) -> Result<Transferred, SftpError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut file = self.inner.create(remote).await?;
+        let mut buf = vec![0u8; UPLOAD_CHUNK];
+        let mut sent = 0u64;
+        loop {
+            let n = src.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n]).await?;
+            sent += n as u64;
+            if !progress(sent) {
+                // The handle is dropped without `sync_all`; whatever reached
+                // the server is the caller's to clean up, which is why this
+                // writes to a temporary name.
+                return Ok(Transferred::Cancelled);
+            }
+        }
+        // Same reasoning as `write`: close explicitly so a server-side error
+        // surfaces here rather than being swallowed by a silent teardown.
+        file.sync_all().await?;
+        Ok(Transferred::Complete)
     }
 }

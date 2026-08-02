@@ -4,5 +4,5 @@
 mod client;
 mod error;
 
-pub use client::{RemoteEntry, SftpClient};
+pub use client::{RemoteEntry, SftpClient, Transferred};
 pub use error::SftpError;
