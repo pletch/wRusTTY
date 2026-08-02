@@ -1263,6 +1263,8 @@ function App() {
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 forwardsOpenByPane={forwardsOpenByPane}
                 filesOpenByPane={filesOpenByPane}
+                cwdByPane={cwdByPane}
+                titleByPane={titleByPane}
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
                 workspaces={savedWorkspaces}

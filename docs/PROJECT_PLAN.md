@@ -2,9 +2,11 @@
 
 A lightweight, security-focused SSH / Telnet / Serial client for Windows 11 with a
 modern GUI, tabbed session management, an encrypted credential vault, and
-GPU-accelerated terminal rendering. Remote file browsing and editing over SFTP
-have since landed; file *transfer* — download, upload, progress — has not, and
-is the bulk of what Phase 6 still holds.
+GPU-accelerated terminal rendering. Remote file browsing, editing and transfer
+over SFTP have since landed — upload and download both stream, with progress and
+cancellation, and rename, delete and new folder are in the panel's context menu.
+What Phase 6 still holds is what needs a queue or a permission bit: recursive
+folder transfers, `chmod`, conflict detection and retry.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -28,7 +30,7 @@ features were still marked as ideas.
 | Frontend | React + TypeScript + Vite + Tailwind | Matches r-shell; large ecosystem; fast iteration |
 | Terminal | **Vendored Ghostty VT core (WASM) + an in-house WebGL renderer** | Superseded the original xterm.js choice. xterm's addons (search, fit, links, unicode) all had to be reimplemented as a consequence — see `SearchController`, `fitGrid`, `LinkController`. xterm survives only as the benchmark harness's comparison engine (`src/bench`, `lib/xtermEngine.ts`); `src/lib` no longer depends on it |
 | SSH | `russh` + `russh-keys` | Pure Rust (memory-safe crypto surface), async, actively maintained, proven in r-shell |
-| SFTP | `russh-sftp` | Same ecosystem. In use: browsing, editing and streaming upload ship; download still reads whole files (Phase 6) |
+| SFTP | `russh-sftp` | Same ecosystem. In use: browsing, editing, and streaming transfer in both directions. Two subsystem channels per session — one for browsing, one for bulk transfers, so a long download doesn't freeze the panel showing its progress |
 | Serial | `serialport` crate | Cross-platform, COM enumeration, USB hotplug |
 | Telnet | Hand-rolled over `tokio` TCP (option negotiation is small) or `libtelnet-rs` | Protocol is tiny; keep dependency surface low |
 | Vault crypto | `argon2` (KDF) + `chacha20poly1305` (AEAD) + `zeroize` | Modern, misuse-resistant; master password → key |
@@ -47,7 +49,7 @@ wrustty/
 │   ├── wr-telnet/        # Telnet transport + option negotiation
 │   ├── wr-serial/        # Serial transport + port enumeration
 │   ├── wr-vault/         # Encrypted vault: KDF, AEAD, import/export, zeroize
-│   ├── wr-sftp/          # SFTP operations (browse, read/write, streaming upload)
+│   ├── wr-sftp/          # SFTP operations (browse, write, streaming upload + download)
 │   └── wr-fs/            # Atomic file writes, shared by every on-disk store
 └── src/                  # React frontend
     ├── components/       #   terminal view, tabs, session tree, dialogs, settings
@@ -164,6 +166,37 @@ mosh, RDP) means adding a crate, not touching the UI.
     into the SFTP write. Nothing is held whole on either side, and a bounded
     queue in the backend is what stops a fast local disk racing ahead of a slow
     network.
+- **Download, and upload without dragging** — a right-click context menu on any
+  entry in the Files panel (Edit/Open, Download…, Copy path) and an upload
+  button in its toolbar **(shipped)**. The rules live in `lib/fileActions.ts`,
+  beside `dropUpload.ts` and ordered the same way.
+  - **Dragging a file *out* of the panel was considered and rejected.** It looks
+    like the symmetric counterpart to the drop, and it is not. The web API for
+    it (`dataTransfer.setData('DownloadURL', …)`) is Chromium-only, needs a URL
+    the engine can fetch itself, and delivers to the *browser's* download
+    directory rather than where the file was dropped — WebView2 under Tauri has
+    no download manager wired up for any of it. The native alternative
+    (`drag-rs`) needs a file that already exists on local disk, so the whole
+    download would have to finish *before* the drag starts: no progress, no
+    cancel, and still no way to know the drop target. It would also mean
+    switching Tauri's native drag-drop back on, which is what broke tab dragging
+    in `ef8e828`. A menu item and a save dialog have none of these problems.
+  - **A save dialog is better than a drag, not a consolation for it.** The path
+    it returns means the bytes never cross IPC in this direction: the backend
+    reads the SFTP stream and writes straight to disk. The same is true of the
+    upload picker, which is why it is cheaper than the drop it supplements.
+  - **The remote name is sanitised before it is suggested, and refused if it is
+    still not a file.** `safeSuggestedName` opens the dialog on something the
+    user can accept; the backend independently rejects what it must, because a
+    download saved as `NUL` writes to the null device and reports success.
+  - **The destination survives a failed download**, the same promise the upload
+    makes remotely: it lands beside the target under `.wrustty-part` and is
+    renamed over it only on success, through `wr_fs::replace_atomic` so the
+    Windows retry ladder isn't reinvented at the one step where every byte has
+    already crossed the network.
+  - **Folders are refused in both directions**, still pending the recursive
+    queue, and the menu item greys out rather than disappearing — a menu whose
+    items move between entries is harder to learn than one where they dim.
 - Session logging to file (timestamped, per-session toggle) — network/serial
   engineers rely on this constantly **(shipped)**
 - Named colour themes **(partial — five built in, and a per-pane background
@@ -309,29 +342,92 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   signing **not built** — the two that have to be settled before any public
   release
 
-### Phase 6 — Files (extended capability) — **partial: browse, edit and upload ship; download and mutations do not**
+### Phase 6 — Files (extended capability) — **partial: browse, edit, transfer and mutations ship; folders and `chmod` do not**
 
 #### What is built
 
-- **Transport.** One SFTP subsystem channel per SSH session, opened lazily on
-  first use and held for the connection's lifetime (`get_or_open_sftp`, a
-  `OnceCell`). Every command below shares it. SSH only — telnet and serial have
-  no file transfer and never will.
-- **`wr-sftp`** is a thin transport: `list_dir`, `read`, `write`,
-  `canonicalize`, `try_exists`, `remove_file`, `rename`, and a streaming
-  `upload`. `write` is `CREATE | TRUNCATE | WRITE` plus `sync_all`,
+- **Transport.** *Two* SFTP subsystem channels per SSH session, each opened
+  lazily on first use and held for the connection's lifetime
+  (`get_or_open_sftp` and `get_or_open_transfer_sftp`, both `OnceCell`s). This
+  plan flagged the single-channel design as the structural decision to take
+  early, and it was taken: one client serialises everything asked of it, so a
+  download running for a minute would hold up every directory listing behind
+  it — the panel would freeze for exactly as long as the transfer it is showing
+  progress for. Browsing and editing use the first; anything with a progress bar
+  uses the second (`browse_client` / `transfer_client` name the choice at each
+  call site). A session that never transfers anything never opens the second.
+  SSH only — telnet and serial have no file transfer and never will.
+- **`wr-sftp`** is a thin transport: `list_dir`, `stat`, `write`,
+  `canonicalize`, `try_exists`, `remove_file`, `remove_dir`, `create_dir`,
+  `rename`, and streaming `upload` and `download`. `write` is `CREATE | TRUNCATE | WRITE` plus `sync_all`,
   deliberately not `russh_sftp`'s own `write`, which leaves the tail of a
   longer previous file stranded past the end of the new data and reports
-  nothing.
-- **Upload streams**, chunk by chunk, with progress and cancellation — and
-  never writes over the destination until the whole file has arrived. Reads do
-  not stream yet; see below.
-- **Drag-and-drop upload onto a pane** (see terminal & UX for the rules).
+  nothing. There is deliberately no `read`: returning a whole file as a
+  `Vec<u8>` was the thing that made every download unbounded in memory, and
+  deleting it is what stops the next caller reaching for it.
+- **Both directions stream**, chunk by chunk, with progress and cancellation,
+  and neither writes over its destination until the whole file has arrived —
+  `.wrustty-part` remotely, a sibling part file plus `wr_fs::replace_atomic`
+  locally. Cancellation is the progress callback's return value in both, so a
+  transfer stops within one chunk rather than one file.
+- **Drag-and-drop upload onto a pane**, and **the Files panel's context menu and
+  upload button** (see terminal & UX for the rules of both, including why
+  dragging a file *out* is not the counterpart it appears to be).
 - **Browsing** — the Files panel: breadcrumb, up, refresh, and entries with
-  type, name and size. `canonicalize` resolves the remote home so the panel
-  opens somewhere sensible rather than guessing `/home/<user>`.
+  type, name and size. **It opens where the pane is standing** — the directory
+  the host last reported, the same one a file dropped on that pane would land
+  in. The two used to disagree: you could drop a file onto a pane sitting in
+  `/etc/nginx`, open the panel to check it arrived, and be looking at
+  `/home/tim`. The reported directory already existed in `cwdByPane` for the
+  status bar; the panel simply wasn't given it.
+  - Read **once, at mount**. Following it afterwards would yank the listing out
+    from under someone who had navigated elsewhere in the panel, every time they
+    ran `cd` in the terminal behind it. The panel is somewhere you browse, not a
+    mirror of the prompt.
+  - **It takes the window-title guess where the drop will not** (`startDirFor`).
+    Wiring only the *reported* directory fixed nothing for the most common host
+    there is: a stock bash on Debian or RHEL sets `\[\e]0;\u@\h: \w\a\]` and no
+    OSC 7 at all, so the panel still opened at home however plainly the title
+    said `/tmp`. The drop refuses to act on a title — it prefills a prompt and
+    makes the user confirm, because putting a file somewhere they did not choose
+    is not undoable. Browsing has no such asymmetry: landing in the wrong
+    directory costs one click of the up arrow. That difference is why the two
+    do not share one rule.
+  - **A leading `~` is resolved first** (`expandHome`). `\w` renders the home
+    directory as `~`, so these titles are full of them, and SFTP has no tilde
+    expansion — sent as-is, `~/src` asks for a directory literally called `~`.
+  - **Falls back to the remote home** (`canonicalize`, which beats guessing
+    `/home/<user>`) when there is nothing to go on, and also when what it was
+    aimed at does not list — a report is not a promise, and a guess is even
+    less of one.
+- **Mutations: rename, delete, new folder.** Rename and delete live in the
+  context menu below a divider, delete last and coloured; new folder is a
+  toolbar button. Rename and mkdir share one inline text field, committed on
+  Enter or blur and left open on failure, since the usual failure is a name
+  collision the user fixes by typing. Four rules carry the feature, all of them
+  enforced in the backend and mirrored in `lib/fileActions.ts` so the menu can
+  grey an item out with the reason attached rather than offering it and then
+  refusing:
+  - **A rename cannot become a move.** `rename_target` builds the destination
+    from the *source's* parent plus a name that is rejected if it carries a
+    separator, so there is no argument that could redirect it. A file that has
+    silently moved is far harder to notice than one that failed to rename.
+  - **Neither touches a file an edit watch is pointing at.** The watch holds the
+    old remote path and nothing re-targets it, so renaming a watched file leaves
+    the next save recreating the old name beside the new one, and deleting one
+    leaves the next save bringing it back — minutes later, on a keystroke the
+    user believes is saving something else, reported as a success. Refusing is
+    the honest fix; re-targeting on rename would be better but has no
+    counterpart for delete, and one rule covering both is easier to rely on.
+  - **Directory-ness is settled by `stat`, not by the listing.** The frontend's
+    answer may be minutes old, and being wrong means `rmdir` on a file or
+    `unlink` on a directory — both fail, neither says why.
+  - **A non-empty directory is refused.** SFTP has no recursive delete, so
+    honouring one would mean walking the tree — the queue recursive transfer
+    needs, and much too sharp an edge to grow implicitly out of a menu item
+    labelled "Delete".
 - **Remote editing, in a different shape than this plan first described.** A
-  file downloads to an OS temp directory with its basename preserved, opens in
+  file streams to an OS temp directory with its basename preserved, opens in
   *the user's own* default application, and the containing directory is watched
   — every save re-uploads, with `uploading`/`uploaded`/`uploadFailed` driving
   the panel's "watching" chip. Watches outlive the panel on purpose: there is
@@ -347,53 +443,65 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 #### What is not, roughly in the order it matters
 
-1. **Streaming, in the download direction.** Uploads stream (that was the
-   blocker, and it is gone); `read` still returns a `Vec<u8>`, so a download —
-   including the one behind every remote *edit* — holds the whole file in
-   memory with no progress and no way to stop. The upload side is the pattern
-   to follow: a chunk loop, a bounded queue, a progress callback that doubles
-   as the cancellation check.
-2. **Conflict detection — the cheapest real fix in the list.** The save path
+1. **Conflict detection — now the cheapest real fix in the list.** The save path
    writes `CREATE | TRUNCATE` with no check, so a remote file that changed
-   between download and save is silently clobbered. `list_dir` already returns
-   an mtime, so remembering it at download and prompting on a mismatch is a
-   small change. This plan filed it under the Monaco editor; it belongs to the
-   external-editor flow that actually shipped.
-3. **Download, and upload from somewhere other than a drop.** No "save as" to
-   a chosen local path; no file picker for uploading, which is the route for
-   anyone who would rather not drag. The upload half of the machinery now
-   exists, so a picker is a small command over `sftp_upload_begin` — and one
-   that could hand over a *path* rather than bytes, since the dialog plugin
-   gives one.
-4. **Mutations: rename, delete, mkdir, chmod.** None are exposed — the crate
-   has `rename` and `remove_file` now, but only the upload's own replace uses
-   them. Note `RemoteEntry`
-   carries name, isDir, isSymlink, size and modified — no mode and no owner —
-   so chmod needs metadata plumbed through the crate before it needs a UI, and
-   a permissions column is worth having on its own.
-5. **Retry after a dropped connection.** An upload that fails mid-save reports
-   `uploadFailed` and stops. Nothing is lost (the temp file survives), but
-   there is no retry and no queue — which starts to matter exactly when
-   transfers are large enough to span a reconnect.
-6. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
+   between download and save is silently clobbered. `stat` exists and returns an
+   mtime for exactly this reason: remember it when the edit's copy is fetched
+   and prompt on a mismatch. This plan filed it under the Monaco editor; it
+   belongs to the external-editor flow that actually shipped.
+2. **Recursive folder transfer.** The single hole both directions still share,
+   and the reason a folder is refused out loud in each. It needs a cancellable
+   queue and a progress model over *n* files rather than one — the per-file
+   machinery is now complete on both sides, so this is a layer above it rather
+   than a change to it.
+3. **`chmod`, and a permissions column** — the one mutation still missing.
+   Rename, delete and mkdir ship (see below); `chmod` does not, because
+   `RemoteEntry` carries name, isDir, isSymlink, size and modified — no mode and
+   no owner. So it needs metadata plumbed through the crate before it needs a
+   UI, and the column is worth having on its own: "why is this script not
+   running" is a routine question this panel currently cannot answer.
+4. **Retry after a dropped connection.** A transfer that fails partway reports
+   `transferFailed` and stops. Nothing is corrupted (the part file is removed,
+   the destination untouched), but there is no retry and no queue — which starts
+   to matter exactly when transfers are large enough to span a reconnect.
+5. **The edit save still reads its local file whole.** The download half of that
+   round trip streams now; the re-upload on save calls `write` with a `Vec<u8>`
+   read from the temp copy. Bounded by whatever the user just saved rather than
+   by a remote host's word, so it is a much smaller version of the problem
+   item 1 of the previous revision described — but it is the same shape, and
+   `upload` is right there.
+6. **More than one transfer at a time.** Both the pane and the panel refuse a
+   second while one runs. The backend does not require this — `transfers` is a
+   map and always was — it is the UI that has one progress row. A queue is the
+   real answer, and it is the same queue item 2 needs.
+7. **SCP fallback** for hosts with the SFTP subsystem disabled. Common on
    network appliances, which is squarely this app's audience.
-7. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
+8. **Panel affordances**: multi-select, sort, filter, hidden-file toggle, and
    the optional dual-pane manager view (r-shell has a reference
    implementation).
-8. **The in-app Monaco editor is now a decision, not a task.** The external
+9. **The in-app Monaco editor is now a decision, not a task.** The external
    editor route is arguably the better feature — a real editor, real
    keybindings, no bundled editor weight — and Monaco would mainly buy in-app
-   diff and conflict UI, most of which item 2 delivers without it. Schedule it
+   diff and conflict UI, most of which item 1 delivers without it. Schedule it
    deliberately or kill it; leaving it on the list implies the edit flow is
    unfinished when it is not.
 
-#### One structural decision to take early
+#### The structural decision, taken
 
-The single shared channel means a large transfer blocks browsing and every
-other SFTP operation on that session, since they queue behind it. Opening a
-second channel for transfers is cheap now (`channel_open_session` +
-`request_subsystem`) and much harder to retrofit once the UI assumes it can do
-two things at once.
+*Kept for the reasoning, which still applies to anything added here.* The single
+shared channel meant a large transfer blocked browsing and every other SFTP
+operation on that session, since they queue behind it. Opening a second channel
+for transfers is cheap (`channel_open_session` + `request_subsystem`) and much
+harder to retrofit once the UI assumes it can do two things at once — so it was
+opened in the same change that gave the UI a reason to want it.
+
+One deliberate exception: **the edit flow stays entirely on the browsing
+channel**, both its initial download and the re-upload on every save. Splitting
+it would let a save queue behind an unrelated download while the user waits,
+having pressed Ctrl-S and been told nothing. The cost is that opening a very
+large file for editing does hold up browsing for its duration — a worse trade in
+the abstract, a better one for the flow that actually exists, which has no
+progress UI to put on the other channel anyway.
 
 ---
 

@@ -109,6 +109,25 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Moves `from` over `to`, with the same backoff ladder [`write_atomic`] uses.
+///
+/// For contents too large to hold in memory, which is what `write_atomic`'s
+/// `&[u8]` assumes: a streamed download writes its own part file and needs
+/// only this last step, the atomic swap into place. Both files must already be
+/// in the same directory — a rename across filesystems isn't atomic and
+/// degrades to a copy.
+///
+/// Exists as a public function rather than as a fifth open-coded `fs::rename`
+/// because the Windows retry is the part everyone forgets, and forgetting it
+/// here means a download that occasionally fails at the last step, after every
+/// byte has already crossed the network.
+///
+/// Blocks for up to the length of the ladder (~150 ms), so an async caller
+/// should hand it to `spawn_blocking`.
+pub fn replace_atomic(from: &Path, to: &Path) -> std::io::Result<()> {
+    with_persist_retry((), |()| std::fs::rename(from, to).map_err(|e| (e, ())))
+}
+
 /// `persist`, with a short backoff ladder for the transient Windows failures
 /// described on [`is_transient_persist_error`].
 ///
@@ -116,17 +135,30 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// makes this cheap: the contents don't have to be written again, only the
 /// rename retried.
 fn persist_with_retry(tmp: tempfile::NamedTempFile, path: &Path) -> std::io::Result<()> {
-    let mut tmp = tmp;
+    with_persist_retry(tmp, |tmp| {
+        tmp.persist(path).map(|_| ()).map_err(|e| (e.error, e.file))
+    })
+}
+
+/// The ladder itself, over anything that can be tried again.
+///
+/// `attempt` hands its state back with the error so a failed `persist` can be
+/// retried without rewriting the file it already wrote; a caller with no state
+/// to carry passes `()`.
+fn with_persist_retry<S>(
+    mut state: S,
+    mut attempt: impl FnMut(S) -> Result<(), (std::io::Error, S)>,
+) -> std::io::Result<()> {
     let mut delay = PERSIST_BACKOFF;
-    for attempt in 0..PERSIST_ATTEMPTS {
-        match tmp.persist(path) {
-            Ok(_) => return Ok(()),
-            Err(e) if attempt + 1 < PERSIST_ATTEMPTS && is_transient_persist_error(&e.error) => {
-                tmp = e.file;
+    for i in 0..PERSIST_ATTEMPTS {
+        match attempt(state) {
+            Ok(()) => return Ok(()),
+            Err((e, back)) if i + 1 < PERSIST_ATTEMPTS && is_transient_persist_error(&e) => {
+                state = back;
                 std::thread::sleep(delay);
                 delay *= 2;
             }
-            Err(e) => return Err(e.error),
+            Err((e, _)) => return Err(e),
         }
     }
     unreachable!("the last attempt always returns")
@@ -165,6 +197,36 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(entries, vec![std::ffi::OsString::from("store.json")]);
+    }
+
+    /// The step a streamed download ends on. Windows' `rename` refuses a
+    /// destination that exists under some APIs, and a download that fell over
+    /// at the last step — after every byte had crossed the network — would be
+    /// the most expensive possible place to fail.
+    #[test]
+    fn replace_atomic_puts_a_part_file_over_an_existing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("report.log");
+        let part = dir.path().join("report.log.wrustty-part");
+        std::fs::write(&target, b"the copy already here").unwrap();
+        std::fs::write(&part, b"freshly downloaded").unwrap();
+
+        replace_atomic(&part, &target).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "freshly downloaded");
+        assert!(!part.exists(), "the part file must not survive the rename");
+    }
+
+    #[test]
+    fn replace_atomic_creates_a_target_that_was_not_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("new.log");
+        let part = dir.path().join("new.log.wrustty-part");
+        std::fs::write(&part, b"contents").unwrap();
+
+        replace_atomic(&part, &target).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "contents");
     }
 
     /// A failure that will never clear must not spend the backoff ladder

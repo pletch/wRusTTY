@@ -50,6 +50,9 @@ pub struct SshSession {
     // a `OnceCell` keeps this on a shared `&self`, matching `add_forward`'s
     // shape, rather than requiring `&mut self` everywhere SFTP is touched.
     sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
+    // A second, identical channel used only by bulk transfers. See
+    // `get_or_open_transfer_sftp` for why there are two.
+    transfer_sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
 }
 
 impl SshConnector {
@@ -80,22 +83,47 @@ impl SshSession {
         forward::start(handle, self.remote_forwards.clone(), spec).await
     }
 
-    /// Returns the shared SFTP client for this connection, opening the
-    /// subsystem channel on first use. Mirrors the existing
-    /// `request_pty`/`request_shell` sequence in `connect_inner` — a fresh
-    /// independent channel off the same live connection, requesting a
-    /// subsystem instead of a shell.
+    /// Returns the SFTP client for browsing and editing, opening the subsystem
+    /// channel on first use.
     pub async fn get_or_open_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
-        self.sftp
-            .get_or_try_init(|| async {
-                let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
-                let channel = handle.channel_open_session().await?;
-                channel.request_subsystem(true, "sftp").await?;
-                let client = wr_sftp::SftpClient::new(channel.into_stream()).await?;
-                Ok::<_, SshError>(Arc::new(client))
-            })
-            .await
-            .cloned()
+        Self::get_or_open(&self.sftp, self.handle.clone()).await
+    }
+
+    /// The same thing again, on a channel of its own, for bulk transfers.
+    ///
+    /// One SFTP client serialises everything asked of it: requests queue behind
+    /// whatever is in flight. That is invisible while every operation is a
+    /// directory listing or a few-kilobyte config file, and intolerable the
+    /// moment a download runs for a minute — the Files panel would stop
+    /// responding for the length of the transfer, including the cancel button's
+    /// own refresh afterwards.
+    ///
+    /// So browsing and editing keep `get_or_open_sftp`, and anything with a
+    /// progress bar comes here. Both are lazy, so a session that never
+    /// transfers anything never pays for the second channel. Opening one is a
+    /// `channel_open_session` plus a subsystem request on the connection that
+    /// is already up — cheap now, and much harder to retrofit once the UI
+    /// assumes it can browse mid-transfer.
+    pub async fn get_or_open_transfer_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
+        Self::get_or_open(&self.transfer_sftp, self.handle.clone()).await
+    }
+
+    async fn get_or_open(
+        cell: &tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
+        handle: Option<Arc<client::Handle<ClientHandler>>>,
+    ) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
+        cell.get_or_try_init(|| async {
+            // Mirrors the existing `request_pty`/`request_shell` sequence in
+            // `connect_inner` — a fresh independent channel off the same live
+            // connection, requesting a subsystem instead of a shell.
+            let handle = handle.ok_or(SshError::NotConnected)?;
+            let channel = handle.channel_open_session().await?;
+            channel.request_subsystem(true, "sftp").await?;
+            let client = wr_sftp::SftpClient::new(channel.into_stream()).await?;
+            Ok::<_, SshError>(Arc::new(client))
+        })
+        .await
+        .cloned()
     }
 }
 
@@ -325,6 +353,7 @@ impl SshConnector {
             resize_tx: Some(resize_tx),
             remote_forwards: self.remote_forwards,
             sftp: tokio::sync::OnceCell::new(),
+            transfer_sftp: tokio::sync::OnceCell::new(),
         })
     }
 }

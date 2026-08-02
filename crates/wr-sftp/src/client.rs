@@ -13,7 +13,11 @@ use crate::error::SftpError;
 /// stop dominating anyway.
 const UPLOAD_CHUNK: usize = 32 * 1024;
 
-/// Why an upload stopped. A cancelled transfer is not an error — the user
+/// How much of a file comes back in one SFTP read. Same size and the same
+/// reasoning as `UPLOAD_CHUNK`, in the other direction.
+const DOWNLOAD_CHUNK: usize = 32 * 1024;
+
+/// Why a transfer stopped. A cancelled transfer is not an error — the user
 /// asked — but it is emphatically not a completed one either, and a caller
 /// that cannot tell them apart will leave a partial file lying around
 /// claiming to be the real thing.
@@ -33,6 +37,25 @@ pub struct RemoteEntry {
     pub size: u64,
     /// Unix seconds; `None` if the server didn't report an mtime for this entry.
     pub modified: Option<i64>,
+}
+
+/// What a `stat` on one remote file says. The same two facts `RemoteEntry`
+/// carries, without the name — asked about a path the caller already has.
+///
+/// `size` is a transfer's total, which is the difference between a progress
+/// bar and a spinner. `modified` is what conflict detection will compare
+/// against on the way back up: remember it at download, and a remote file that
+/// changed underneath an edit can be noticed instead of silently clobbered.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteStat {
+    pub size: u64,
+    /// Unix seconds; `None` if the server didn't report an mtime.
+    pub modified: Option<i64>,
+    /// Asking here rather than trusting a directory listing the caller may
+    /// have taken minutes ago — and because opening a directory as a file is
+    /// a failure each server words differently.
+    pub is_dir: bool,
 }
 
 /// Thin wrapper around `russh_sftp`'s high-level client, generic over
@@ -72,8 +95,24 @@ impl SftpClient {
             .collect())
     }
 
-    pub async fn read(&self, path: &str) -> Result<Vec<u8>, SftpError> {
-        Ok(self.inner.read(path).await?)
+    // There is deliberately no `read`. It returned the whole file as a
+    // `Vec<u8>`, which meant every download — including the one behind each
+    // remote *edit* — was held in memory, reported no progress and could not be
+    // stopped, for a file whose size is whatever the remote host says it is.
+    // `download` replaced its last caller; leaving it here would only be
+    // somewhere for the next one to land.
+
+    pub async fn stat(&self, path: &str) -> Result<RemoteStat, SftpError> {
+        let metadata = self.inner.metadata(path).await?;
+        Ok(RemoteStat {
+            size: metadata.len(),
+            is_dir: metadata.is_dir(),
+            modified: metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64),
+        })
     }
 
     /// Replaces a remote file's contents outright.
@@ -107,6 +146,20 @@ impl SftpClient {
 
     pub async fn remove_file(&self, path: &str) -> Result<(), SftpError> {
         Ok(self.inner.remove_file(path).await?)
+    }
+
+    /// Removes an **empty** directory. SFTP's `rmdir` is POSIX's: it will not
+    /// touch a directory with anything in it, and there is no recursive form.
+    /// A caller that means "delete this tree" has to walk it, which is the
+    /// recursive queue that does not exist yet — so for now a non-empty
+    /// directory comes back as the server's own error, which is the honest
+    /// answer rather than a silent no-op.
+    pub async fn remove_dir(&self, path: &str) -> Result<(), SftpError> {
+        Ok(self.inner.remove_dir(path).await?)
+    }
+
+    pub async fn create_dir(&self, path: &str) -> Result<(), SftpError> {
+        Ok(self.inner.create_dir(path).await?)
     }
 
     /// SFTP v3's rename does **not** replace an existing target — several
@@ -156,6 +209,52 @@ impl SftpClient {
         // Same reasoning as `write`: close explicitly so a server-side error
         // surfaces here rather than being swallowed by a silent teardown.
         file.sync_all().await?;
+        Ok(Transferred::Complete)
+    }
+
+    /// Streams a remote file into `dst`, chunk by chunk — `upload` in reverse,
+    /// and deliberately the same shape.
+    ///
+    /// The counterpart to `read`, which returns a `Vec<u8>`: that means a
+    /// download is held whole in memory, reports no progress, and cannot be
+    /// stopped once it has started. Tolerable for the config file behind an
+    /// edit; not for the log file someone asks to save, which is exactly the
+    /// case where the size is unknown until it is too late.
+    ///
+    /// `progress` is called with the running byte count after each chunk and
+    /// returns whether to keep going — the whole of the cancellation
+    /// mechanism, bounded by one chunk rather than by what is left of the file.
+    ///
+    /// `dst` is flushed but not synced: durability belongs to the caller, who
+    /// owns the handle and knows whether the bytes are going to a file worth
+    /// `sync_all`ing or somewhere that has no such notion.
+    pub async fn download<W>(
+        &self,
+        remote: &str,
+        mut dst: W,
+        mut progress: impl FnMut(u64) -> bool,
+    ) -> Result<Transferred, SftpError>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut file = self.inner.open(remote).await?;
+        let mut buf = vec![0u8; DOWNLOAD_CHUNK];
+        let mut received = 0u64;
+        loop {
+            let n = file.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            dst.write_all(&buf[..n]).await?;
+            received += n as u64;
+            if !progress(received) {
+                // Whatever reached `dst` is the caller's to clean up, which is
+                // why this writes to a temporary name too.
+                dst.flush().await?;
+                return Ok(Transferred::Cancelled);
+            }
+        }
+        dst.flush().await?;
         Ok(Transferred::Complete)
     }
 }

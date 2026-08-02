@@ -43,15 +43,30 @@ pub enum SftpEvent {
         remote_path: String,
         error: String,
     },
-    /// The four `Transfer*` variants belong to an explicit upload (a dropped
-    /// file); the three `Upload*` ones above belong to an edit being saved.
-    /// Deliberately not merged: an edit's re-upload has no progress, nothing
-    /// to cancel, and is keyed by the edit it belongs to rather than by a
-    /// transfer. There is no `TransferStarted` — `sftp_upload_begin` returns
-    /// the id, so it is in the caller's hands before the first chunk goes.
+    /// The `Transfer*` variants belong to an explicit transfer in either
+    /// direction — a dropped file, a picked file, a download; the three
+    /// `Upload*` ones above belong to an edit being saved. Deliberately not
+    /// merged: an edit's re-upload has no progress, nothing to cancel, and is
+    /// keyed by the edit it belongs to rather than by a transfer.
+    ///
+    /// Direction is not on the wire. Every transfer is started by a frontend
+    /// call that already knows which way it goes, and the id comes back from
+    /// that call — so a field saying so would only be something to keep in
+    /// sync.
+    ///
+    /// Sent only when the *backend* is the one that learned the total: a
+    /// download (from `stat`) and an upload from a local path (from the file's
+    /// own metadata). A dropped file is sized by the webview before the
+    /// transfer exists, so there is nothing to report.
+    TransferStarted {
+        transfer_id: String,
+        remote_path: String,
+        total: u64,
+    },
     TransferProgress {
         transfer_id: String,
-        sent: u64,
+        /// Bytes moved so far, whichever way they were going.
+        transferred: u64,
     },
     TransferDone {
         transfer_id: String,
@@ -89,10 +104,10 @@ struct EditEntry {
 #[derive(Default)]
 pub struct SftpState {
     edits: TokioMutex<HashMap<String, EditEntry>>,
-    /// Cancellation flags for uploads in flight, by transfer id. An entry
-    /// exists only while its transfer does — the upload removes its own on
-    /// every path out — so a cancel arriving late finds nothing and does
-    /// nothing, which is the right outcome rather than a missing case.
+    /// Transfers in flight, either direction, by transfer id. An entry exists
+    /// only while its transfer does — every path out removes its own — so a
+    /// cancel arriving late finds nothing and does nothing, which is the right
+    /// outcome rather than a missing case.
     transfers: TokioMutex<HashMap<String, TransferEntry>>,
     next_id: AtomicU64,
 }
@@ -109,13 +124,13 @@ impl SftpState {
     }
 }
 
-#[tauri::command]
-pub async fn sftp_list_dir(
-    session_id: String,
-    path: String,
-    ssh_state: State<'_, SshState>,
-) -> Result<Vec<RemoteEntry>, String> {
-    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
+/// The SFTP client for browsing and editing — small, frequent operations that
+/// have to stay responsive.
+async fn browse_client(
+    ssh_state: &State<'_, SshState>,
+    session_id: &str,
+) -> Result<Arc<wr_sftp::SftpClient>, String> {
+    let session = crate::ssh::lookup(ssh_state, session_id).await?;
     let sftp = session
         .lock()
         .await
@@ -123,7 +138,42 @@ pub async fn sftp_list_dir(
         .get_or_open_sftp()
         .await
         .map_err(|e| e.to_string())?;
-    sftp.list_dir(&path).await.map_err(|e| e.to_string())
+    Ok(sftp)
+}
+
+/// The SFTP client for bulk transfers, on a channel of its own.
+///
+/// One client serialises everything asked of it, so a download running for a
+/// minute would otherwise hold up every directory listing behind it — the
+/// panel would freeze for the length of the transfer it is showing progress
+/// for. Anything with a progress bar comes here; everything else uses
+/// `browse_client`.
+async fn transfer_client(
+    ssh_state: &State<'_, SshState>,
+    session_id: &str,
+) -> Result<Arc<wr_sftp::SftpClient>, String> {
+    let session = crate::ssh::lookup(ssh_state, session_id).await?;
+    let sftp = session
+        .lock()
+        .await
+        .ready()?
+        .get_or_open_transfer_sftp()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(sftp)
+}
+
+#[tauri::command]
+pub async fn sftp_list_dir(
+    session_id: String,
+    path: String,
+    ssh_state: State<'_, SshState>,
+) -> Result<Vec<RemoteEntry>, String> {
+    browse_client(&ssh_state, &session_id)
+        .await?
+        .list_dir(&path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Resolves `.`/`""` to the real remote home directory, so the file browser
@@ -134,15 +184,11 @@ pub async fn sftp_canonicalize(
     path: String,
     ssh_state: State<'_, SshState>,
 ) -> Result<String, String> {
-    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
-    let sftp = session
-        .lock()
+    browse_client(&ssh_state, &session_id)
+        .await?
+        .canonicalize(&path)
         .await
-        .ready()?
-        .get_or_open_sftp()
-        .await
-        .map_err(|e| e.to_string())?;
-    sftp.canonicalize(&path).await.map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Extensions handed to the OS opener without asking first.
@@ -353,14 +399,14 @@ pub async fn sftp_edit_file(
     }
 
     let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
-    let sftp = session
-        .lock()
-        .await
-        .ready()?
-        .get_or_open_sftp()
-        .await
-        .map_err(|e| e.to_string())?;
-    let bytes = sftp.read(&remote_path).await.map_err(|e| e.to_string())?;
+    // On the browsing channel rather than the transfer one, deliberately.
+    // Editing is a round trip — this download and the re-upload on every save —
+    // and putting the two halves on different channels would let a save queue
+    // behind an unrelated download while the user waits, having pressed Ctrl-S
+    // and been told nothing. A large file opened for editing does hold up
+    // browsing for its duration, which is the cost of that choice; the panel
+    // says "Opening" while it happens.
+    let sftp = browse_client(&ssh_state, &session_id).await?;
 
     // Lands under the OS temp dir, not app-private storage — external
     // editors expect a normal-looking path, and the basename is preserved
@@ -396,7 +442,22 @@ pub async fn sftp_edit_file(
         .tempdir()
         .map_err(|e| e.to_string())?;
     let local_path = temp_dir.path().join(basename);
-    std::fs::write(&local_path, &bytes).map_err(|e| e.to_string())?;
+    // Streamed into the temp file rather than read whole and written whole.
+    // Nothing here needs the bytes in memory, and `read` would hold the file
+    // twice over — once returned, once written — for a file whose size is
+    // whatever the remote host says it is. No progress and no cancellation:
+    // an edit has no UI for either, and the callback exists only because
+    // `download` reports through it.
+    //
+    // Ordered after the filename checks on purpose. It used to run before
+    // them, which meant a file the panel was never going to be able to open
+    // was downloaded in full first.
+    let file = tokio::fs::File::create(&local_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    sftp.download(&remote_path, file, |_| true)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Downloaded and watched either way — declining only means the file
     // isn't handed to the OS opener. The user can still reach it from the
@@ -541,15 +602,164 @@ pub async fn sftp_exists(
     path: String,
     ssh_state: State<'_, SshState>,
 ) -> Result<bool, String> {
-    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
-    let sftp = session
-        .lock()
+    browse_client(&ssh_state, &session_id)
+        .await?
+        .try_exists(&path)
         .await
-        .ready()?
-        .get_or_open_sftp()
+        .map_err(|e| e.to_string())
+}
+
+/// Refuses to touch a path that an edit watch is still pointing at.
+///
+/// A watch holds the remote path it re-uploads to, and nothing renames or
+/// re-targets it. So renaming a watched file means the next save recreates the
+/// *old* name beside the new one, and deleting a watched file means the next
+/// save brings it back — in both cases minutes later, triggered by the user
+/// saving in an editor they have every reason to think is still pointed at the
+/// right file. Neither reports an error; both look like the app undoing what
+/// the user just did.
+///
+/// Refusing is the honest fix. Re-targeting the watch on rename is the better
+/// one and is not hard, but the delete case has no such answer, and one rule
+/// covering both is easier to rely on than two that differ.
+async fn refuse_if_being_edited(
+    sftp_state: &State<'_, SftpState>,
+    session_id: &str,
+    path: &str,
+) -> Result<(), String> {
+    let edits = sftp_state.edits.lock().await;
+    let watched = edits
+        .values()
+        .any(|e| e.session_id == session_id && e.remote_path == path);
+    if watched {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        return Err(format!(
+            "{name} is open for editing. Stop watching it first — otherwise the next save \
+             would write it back."
+        ));
+    }
+    Ok(())
+}
+
+/// Where a rename lands: the source's own parent, plus a validated bare name.
+///
+/// This is the whole of the guarantee that a rename cannot become a move. The
+/// new name never contributes a directory component — `is_usable_remote_name`
+/// refuses a separator — and the parent comes from the path being renamed
+/// rather than from anything the caller said, so there is no argument that
+/// could redirect it.
+fn rename_target(path: &str, new_name: &str) -> Result<String, String> {
+    if !is_usable_remote_name(new_name) {
+        return Err(format!("{new_name} is not a usable file name"));
+    }
+    // A remote path is absolute in practice — the panel starts from
+    // `canonicalize` — and a relative one has no parent to put the result
+    // beside. Rooting it would silently rename into `/`, which is the one
+    // outcome worth refusing outright rather than guessing at.
+    let (parent, _) = path
+        .rsplit_once('/')
+        .ok_or_else(|| format!("{path} has no directory to rename within"))?;
+    Ok(format!("{parent}/{new_name}"))
+}
+
+/// Renames a remote entry within its own directory.
+///
+/// The destination is built from the *source's* parent plus a validated bare
+/// name, so this cannot move anything: renaming `passwd` to `../../etc/passwd`
+/// renames it to a file called `..`-something in the same directory, or is
+/// refused outright. A move is a different feature with a different UI, and
+/// having "rename" quietly be one is how a user loses track of a file.
+#[tauri::command]
+pub async fn sftp_rename(
+    session_id: String,
+    path: String,
+    new_name: String,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<String, String> {
+    let target = rename_target(&path, &new_name)?;
+    refuse_if_being_edited(&sftp_state, &session_id, &path).await?;
+    if target == path {
+        return Ok(target);
+    }
+
+    let sftp = browse_client(&ssh_state, &session_id).await?;
+    // SFTP v3's rename does not replace, and servers disagree about how they
+    // say so — several return a bare "failure". Checking first turns that into
+    // a sentence naming the file. It is advisory (something could appear in the
+    // gap) but the server still refuses in that case, so the race costs a
+    // confusing message rather than a lost file.
+    if sftp
+        .try_exists(&target)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(format!("{new_name} already exists here."));
+    }
+    sftp.rename(&path, &target)
         .await
         .map_err(|e| e.to_string())?;
-    sftp.try_exists(&path).await.map_err(|e| e.to_string())
+    Ok(target)
+}
+
+/// Deletes a remote file, or an empty directory.
+///
+/// Whether it is a directory is settled here by `stat` rather than taken from
+/// the caller: the frontend's answer comes from a listing that may be minutes
+/// old, and getting it wrong means calling `rmdir` on a file (which fails
+/// confusingly) or `unlink` on a directory (likewise). One round trip buys the
+/// right verb and the right error.
+///
+/// A non-empty directory is left to the server to refuse. SFTP has no recursive
+/// delete, so honouring one here would mean walking the tree — the same queue
+/// recursive transfer needs, and far too sharp an edge to grow implicitly out
+/// of a menu item labelled "Delete".
+#[tauri::command]
+pub async fn sftp_remove(
+    session_id: String,
+    path: String,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    refuse_if_being_edited(&sftp_state, &session_id, &path).await?;
+
+    let sftp = browse_client(&ssh_state, &session_id).await?;
+    let stat = sftp.stat(&path).await.map_err(|e| e.to_string())?;
+    if stat.is_dir {
+        sftp.remove_dir(&path).await.map_err(|e| {
+            format!("could not delete {path}: {e} (a directory has to be empty first)")
+        })
+    } else {
+        sftp.remove_file(&path)
+            .await
+            .map_err(|e| format!("could not delete {path}: {e}"))
+    }
+}
+
+/// Creates a directory inside `parent`.
+#[tauri::command]
+pub async fn sftp_mkdir(
+    session_id: String,
+    parent: String,
+    name: String,
+    ssh_state: State<'_, SshState>,
+) -> Result<String, String> {
+    if !is_usable_remote_name(&name) {
+        return Err(format!("{name} is not a usable directory name"));
+    }
+    let dir = parent.trim_end_matches('/');
+    let path = format!("{dir}/{name}");
+
+    let sftp = browse_client(&ssh_state, &session_id).await?;
+    // Same reasoning as the rename: `mkdir` on an existing path fails, and the
+    // server's word for it is rarely "that already exists".
+    if sftp.try_exists(&path).await.map_err(|e| e.to_string())? {
+        return Err(format!("{name} already exists here."));
+    }
+    sftp.create_dir(&path)
+        .await
+        .map_err(|e| format!("could not create {path}: {e}"))?;
+    Ok(path)
 }
 
 /// The suffix an upload lands under before it is put in place.
@@ -604,19 +814,21 @@ impl AsyncRead for ChunkReader {
     }
 }
 
-/// Whether a dropped file's name can be joined onto a remote directory.
+/// Whether a name can be joined onto a remote directory.
 ///
-/// The name comes from a `File` in the webview and is therefore already a bare
-/// filename — this is the boundary saying so rather than assuming it. A name
-/// carrying a separator or a `..` would write outside the directory the user
-/// dropped on, which is the whole of what they chose by dropping there.
+/// Guards every path where the app builds a remote path out of a directory the
+/// user chose and a name that came from somewhere else: an upload's filename, a
+/// rename's new name, a new directory's name. In each case the directory *is*
+/// the user's choice, and a name carrying a separator or a `..` would silently
+/// act somewhere else — the difference between renaming a file and moving it
+/// into `/etc`.
 ///
 /// Deliberately narrower than the remote-name checks further up this file:
 /// those guard a remote-chosen name being written to *local* disk, where
 /// Windows device names and alternate data streams are the hazard. This guards
-/// a local name being written to a *POSIX* host, where the hazard is the path
+/// a name being acted on over a *POSIX* host, where the hazard is the path
 /// separator and nothing else.
-fn is_usable_upload_name(name: &str) -> bool {
+fn is_usable_remote_name(name: &str) -> bool {
     !(name.is_empty()
         || name == "."
         || name == ".."
@@ -625,12 +837,17 @@ fn is_usable_upload_name(name: &str) -> bool {
         || name.contains('\0'))
 }
 
-/// One upload in flight.
+/// One transfer in flight.
 struct TransferEntry {
-    /// Dropping this is what tells the reader the file has ended — so
-    /// finishing and cancelling are both "take the entry out of the map",
-    /// and differ only in whether the flag was set on the way.
-    tx: mpsc::Sender<Vec<u8>>,
+    /// The chunk sender, for an upload whose bytes arrive from the webview.
+    /// Dropping it is what tells the reader the file has ended — so finishing
+    /// and cancelling are both "take the entry out of the map", and differ
+    /// only in whether the flag was set on the way.
+    ///
+    /// `None` for every transfer the backend reads for itself: a download, and
+    /// an upload from a local path. Those have no chunks coming and end when
+    /// the file does, so the flag below is the whole of their control.
+    tx: Option<mpsc::Sender<Vec<u8>>>,
     cancel: Arc<AtomicBool>,
 }
 
@@ -667,32 +884,8 @@ pub async fn sftp_upload_begin(
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<String, String> {
-    if !is_usable_upload_name(&name) {
-        return Err(format!("{name} is not a usable file name"));
-    }
-    // A remote directory is POSIX whatever the client is.
-    let dir = remote_dir.trim_end_matches('/');
-    let remote_path = format!("{dir}/{name}");
-    let part_path = format!("{remote_path}{PART_SUFFIX}");
-
-    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
-    let sftp = session
-        .lock()
-        .await
-        .ready()?
-        .get_or_open_sftp()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Re-checked here rather than trusted from the frontend's own `exists`
-    // call, which by then is several dialogs old.
-    let exists = sftp
-        .try_exists(&remote_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    if exists && !overwrite {
-        return Err(format!("{remote_path} already exists"));
-    }
+    let (sftp, remote_path, part_path, exists) =
+        prepare_upload(&ssh_state, &session_id, &remote_dir, &name, overwrite).await?;
 
     let transfer_id = sftp_state.next_transfer_id();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -700,7 +893,7 @@ pub async fn sftp_upload_begin(
     sftp_state.transfers.lock().await.insert(
         transfer_id.clone(),
         TransferEntry {
-            tx,
+            tx: Some(tx),
             cancel: cancel.clone(),
         },
     );
@@ -729,27 +922,137 @@ pub async fn sftp_upload_begin(
     Ok(transfer_id)
 }
 
-/// Drives one upload to its end and reports which end it was.
+/// Uploads a file the user picked from a dialog, streaming it straight off
+/// local disk.
+///
+/// The other route exists because a *dropped* file reaches the webview as a
+/// `File` with no path on it, so its bytes have to travel over IPC. A picker
+/// hands over a path, so they don't: this opens the file in Rust and the
+/// webview never touches a byte. Same destination guarantees as the drop —
+/// part file, rename into place — and the same cancellation.
+///
+/// The name is taken from the path rather than accepted as an argument. It is
+/// the one the user saw in the dialog, and a second argument would only be
+/// somewhere for the two to disagree.
 #[allow(clippy::too_many_arguments)]
-async fn run_upload(
+#[tauri::command]
+pub async fn sftp_upload_path(
+    app: AppHandle,
+    session_id: String,
+    remote_dir: String,
+    local_path: String,
+    overwrite: bool,
+    channel: Channel<SftpEvent>,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<String, String> {
+    let name = std::path::Path::new(&local_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{local_path} has no file name"))?;
+
+    // Opened before the destination is prepared: a file that cannot be read is
+    // the user's own pick and the fastest thing to find out about, and doing it
+    // first means nothing has been created on the far side to clean up.
+    let file = tokio::fs::File::open(&local_path)
+        .await
+        .map_err(|e| format!("could not open {local_path}: {e}"))?;
+    let total = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+
+    let (sftp, remote_path, part_path, exists) =
+        prepare_upload(&ssh_state, &session_id, &remote_dir, &name, overwrite).await?;
+
+    let transfer_id = sftp_state.next_transfer_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    // No chunk sender: the bytes are read here, not sent in. The flag is the
+    // whole of this transfer's control.
+    sftp_state.transfers.lock().await.insert(
+        transfer_id.clone(),
+        TransferEntry {
+            tx: None,
+            cancel: cancel.clone(),
+        },
+    );
+
+    let _ = channel.send(SftpEvent::TransferStarted {
+        transfer_id: transfer_id.clone(),
+        remote_path: remote_path.clone(),
+        total,
+    });
+
+    let task_id = transfer_id.clone();
+    tokio::spawn(async move {
+        run_upload(
+            app, sftp, file, part_path, remote_path, exists, channel, task_id, cancel,
+        )
+        .await
+    });
+
+    Ok(transfer_id)
+}
+
+/// Everything both upload routes settle before a byte moves: the name is
+/// usable, the channel is open, and the destination is either free or the user
+/// has said to replace it. Returns the client, the destination, the part path
+/// it lands under first, and whether something is being replaced.
+async fn prepare_upload(
+    ssh_state: &State<'_, SshState>,
+    session_id: &str,
+    remote_dir: &str,
+    name: &str,
+    overwrite: bool,
+) -> Result<(Arc<wr_sftp::SftpClient>, String, String, bool), String> {
+    if !is_usable_remote_name(name) {
+        return Err(format!("{name} is not a usable file name"));
+    }
+    // A remote directory is POSIX whatever the client is.
+    let dir = remote_dir.trim_end_matches('/');
+    let remote_path = format!("{dir}/{name}");
+    let part_path = format!("{remote_path}{PART_SUFFIX}");
+
+    let sftp = transfer_client(ssh_state, session_id).await?;
+
+    // Re-checked here rather than trusted from the frontend's own `exists`
+    // call, which by then is several dialogs old.
+    let exists = sftp
+        .try_exists(&remote_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    if exists && !overwrite {
+        return Err(format!("{remote_path} already exists"));
+    }
+    Ok((sftp, remote_path, part_path, exists))
+}
+
+/// Drives one upload to its end and reports which end it was.
+///
+/// Generic over the source because there are two: a `ChunkReader` fed from the
+/// webview by a dropped file, and a plain `tokio::fs::File` for one picked
+/// from disk. Everything after the first byte — the part file, the progress,
+/// the cancellation, the rename into place — is identical, and this is the
+/// half worth having exactly once.
+#[allow(clippy::too_many_arguments)]
+async fn run_upload<R>(
     app: AppHandle,
     sftp: std::sync::Arc<wr_sftp::SftpClient>,
-    reader: ChunkReader,
+    reader: R,
     part_path: String,
     remote_path: String,
     replacing: bool,
     channel: Channel<SftpEvent>,
     transfer_id: String,
     cancel: Arc<AtomicBool>,
-) {
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let progress_channel = channel.clone();
     let progress_id = transfer_id.clone();
     let progress_cancel = cancel.clone();
     let outcome = sftp
-        .upload(&part_path, reader, move |sent| {
+        .upload(&part_path, reader, move |transferred| {
             let _ = progress_channel.send(SftpEvent::TransferProgress {
                 transfer_id: progress_id.clone(),
-                sent,
+                transferred,
             });
             !progress_cancel.load(Ordering::Relaxed)
         })
@@ -849,7 +1152,7 @@ pub async fn sftp_upload_chunk(
     // length of a network round trip would stall every other transfer.
     let tx = {
         let transfers = sftp_state.transfers.lock().await;
-        transfers.get(&transfer_id).map(|e| e.tx.clone())
+        transfers.get(&transfer_id).and_then(|e| e.tx.clone())
     }
     .ok_or("that upload is no longer running")?;
 
@@ -869,10 +1172,14 @@ pub async fn sftp_upload_finish(
     Ok(())
 }
 
-/// Asks a running upload to stop. Sets the flag *before* dropping the sender,
-/// so the task can tell a cancellation from a file that simply ended.
+/// Asks a running transfer to stop, in either direction. Sets the flag *before*
+/// dropping the entry — and with it any chunk sender — so the task can tell a
+/// cancellation from a file that simply ended.
+///
+/// Either way the transfer stops between chunks, so this is bounded by one
+/// chunk's round trip rather than by what is left of the file.
 #[tauri::command]
-pub async fn sftp_cancel_upload(
+pub async fn sftp_cancel_transfer(
     transfer_id: String,
     sftp_state: State<'_, SftpState>,
 ) -> Result<(), String> {
@@ -880,6 +1187,208 @@ pub async fn sftp_cancel_upload(
         entry.cancel.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// Where a download lands before it is put in place — and the check that the
+/// destination is somewhere it may land at all.
+///
+/// The name is checked because the save dialog's *suggestion* came from the
+/// remote host, and the user very likely accepted it: this is a remote-chosen
+/// name being written to local disk, so it inherits the rules every other such
+/// name does. Without the check, downloading a file called `NUL` writes to the
+/// null device and reports success — the user loses the file and is told it
+/// arrived.
+///
+/// The part file is a *sibling* of the destination, not a temp-directory entry.
+/// A rename across filesystems isn't atomic and degrades to a copy, which would
+/// undo the whole reason for staging the download in the first place.
+fn part_path_for(local: &std::path::Path) -> Result<PathBuf, String> {
+    let basename = local
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("{} has no file name", local.display()))?;
+    if is_unsafe_windows_filename(&basename) {
+        return Err(format!("unsafe local filename: {basename}"));
+    }
+    Ok(local.with_file_name(format!("{basename}{PART_SUFFIX}")))
+}
+
+/// Downloads a remote file to a local path the user chose, streaming it.
+///
+/// The mirror of `sftp_upload_path`, and asymmetric with the *drop* upload on
+/// purpose: a save dialog hands over a real local path, so the bytes never
+/// cross IPC in this direction — Rust reads the SFTP stream and writes
+/// straight to disk. There is no chunk command and no transfer-id header
+/// because there is nothing for the webview to carry.
+///
+/// **Nothing at the destination is touched until the whole file has arrived**,
+/// the same promise the upload makes: the download lands under
+/// `<name>.wrustty-part` beside its destination and is renamed over it only on
+/// success. Downloading a newer copy over a file and losing the connection
+/// halfway should not cost the user the copy they already had.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn sftp_download_begin(
+    app: AppHandle,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+    channel: Channel<SftpEvent>,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<String, String> {
+    let local = PathBuf::from(&local_path);
+    let part = part_path_for(&local)?;
+
+    let sftp = transfer_client(&ssh_state, &session_id).await?;
+
+    // Before creating anything locally, so a path that isn't there or is a
+    // directory fails with the remote's own words and leaves no debris.
+    let stat = sftp
+        .stat(&remote_path)
+        .await
+        .map_err(|e| format!("could not read {remote_path}: {e}"))?;
+    if stat.is_dir {
+        return Err(format!(
+            "{remote_path} is a directory — downloading a folder is not supported yet."
+        ));
+    }
+
+    let file = tokio::fs::File::create(&part)
+        .await
+        .map_err(|e| format!("could not write to {}: {e}", part.display()))?;
+
+    let transfer_id = sftp_state.next_transfer_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    sftp_state.transfers.lock().await.insert(
+        transfer_id.clone(),
+        TransferEntry {
+            tx: None,
+            cancel: cancel.clone(),
+        },
+    );
+
+    // Sent rather than returned because the total is something only this side
+    // knows, and a progress bar that has to wait for the first chunk to learn
+    // its own length starts life as a spinner for no reason.
+    let _ = channel.send(SftpEvent::TransferStarted {
+        transfer_id: transfer_id.clone(),
+        remote_path: remote_path.clone(),
+        total: stat.size,
+    });
+
+    let task_id = transfer_id.clone();
+    tokio::spawn(async move {
+        run_download(
+            app,
+            sftp,
+            file,
+            part,
+            local,
+            remote_path,
+            channel,
+            task_id,
+            cancel,
+        )
+        .await
+    });
+
+    Ok(transfer_id)
+}
+
+/// Drives one download to its end and reports which end it was.
+#[allow(clippy::too_many_arguments)]
+async fn run_download(
+    app: AppHandle,
+    sftp: std::sync::Arc<wr_sftp::SftpClient>,
+    mut file: tokio::fs::File,
+    part: PathBuf,
+    local: PathBuf,
+    remote_path: String,
+    channel: Channel<SftpEvent>,
+    transfer_id: String,
+    cancel: Arc<AtomicBool>,
+) {
+    let progress_channel = channel.clone();
+    let progress_id = transfer_id.clone();
+    let progress_cancel = cancel.clone();
+    let outcome = sftp
+        .download(&remote_path, &mut file, move |transferred| {
+            let _ = progress_channel.send(SftpEvent::TransferProgress {
+                transfer_id: progress_id.clone(),
+                transferred,
+            });
+            !progress_cancel.load(Ordering::Relaxed)
+        })
+        .await;
+
+    // Same reasoning as the upload: a cancel that lands after the last chunk
+    // arrives as `Complete`, and the flag is what tells the two apart.
+    let cancelled = cancel.load(Ordering::Relaxed);
+    let complete = matches!(outcome, Ok(wr_sftp::Transferred::Complete)) && !cancelled;
+
+    let result: Result<bool, String> = match outcome {
+        Err(e) => Err(e.to_string()),
+        Ok(_) if !complete => Ok(false),
+        Ok(_) => {
+            // Before the rename, not after: a rename that lands while the
+            // contents are still only in the page cache is exactly the
+            // truncated-file outcome the part file exists to prevent.
+            match file.sync_all().await {
+                Ok(()) => {
+                    // Dropped here so Windows isn't asked to rename a file it
+                    // still holds an open handle on.
+                    drop(file);
+                    let (from, to) = (part.clone(), local.clone());
+                    // `replace_atomic` sleeps through a backoff ladder on the
+                    // Windows failures that clear on their own, so it does not
+                    // belong on the runtime's thread.
+                    tokio::task::spawn_blocking(move || wr_fs::replace_atomic(&from, &to))
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r.map_err(|e| e.to_string()))
+                        .map(|()| true)
+                        .map_err(|e| {
+                            format!(
+                                "downloaded, but could not move it into place as {}: {e}",
+                                local.display()
+                            )
+                        })
+                }
+                Err(e) => Err(format!("could not finish writing {}: {e}", local.display())),
+            }
+        }
+    };
+
+    // Whatever happened, the part file must not outlive it — a failed download
+    // that leaves `report.log.wrustty-part` next to the real file is litter the
+    // user has to identify and clean up themselves. On success it is gone
+    // already, having been renamed; `remove_file` then finds nothing, which is
+    // why the error is dropped.
+    if !matches!(result, Ok(true)) {
+        let _ = tokio::fs::remove_file(&part).await;
+    }
+
+    let _ = match result {
+        Ok(true) => channel.send(SftpEvent::TransferDone {
+            transfer_id: transfer_id.clone(),
+            remote_path,
+        }),
+        Ok(false) => channel.send(SftpEvent::TransferCancelled {
+            transfer_id: transfer_id.clone(),
+        }),
+        Err(error) => channel.send(SftpEvent::TransferFailed {
+            transfer_id: transfer_id.clone(),
+            remote_path,
+            error,
+        }),
+    };
+
+    app.state::<SftpState>()
+        .transfers
+        .lock()
+        .await
+        .remove(&transfer_id);
 }
 
 /// Removes every edit watch tied to a session that just disconnected —
@@ -900,7 +1409,11 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{is_inert_to_open, is_unsafe_windows_filename, is_usable_upload_name, ChunkReader};
+    use super::{
+        is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name, part_path_for,
+        rename_target, ChunkReader,
+    };
+    use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
 
     /// The device-name half is the one with teeth: without it a remote file
@@ -1024,7 +1537,7 @@ mod tests {
             "a\\b.txt",
             "nul\0.txt",
         ] {
-            assert!(!is_usable_upload_name(name), "{name:?} should be refused");
+            assert!(!is_usable_remote_name(name), "{name:?} should be refused");
         }
         for name in [
             "notes.txt",
@@ -1032,8 +1545,78 @@ mod tests {
             ".bashrc",
             "a file with spaces.log",
         ] {
-            assert!(is_usable_upload_name(name), "{name:?} should be accepted");
+            assert!(is_usable_remote_name(name), "{name:?} should be accepted");
         }
+    }
+
+    /// The part file has to be a sibling of the destination: a rename across
+    /// filesystems is not atomic and degrades to a copy, which is exactly what
+    /// staging the download was meant to avoid.
+    #[test]
+    fn a_download_stages_beside_its_destination() {
+        let local = Path::new("C:/Users/tim/Downloads/report.log");
+        let part = part_path_for(local).unwrap();
+        assert_eq!(
+            part,
+            PathBuf::from("C:/Users/tim/Downloads/report.log.wrustty-part")
+        );
+        assert_eq!(part.parent(), local.parent());
+    }
+
+    /// The save dialog suggests the *remote* name and the user usually takes
+    /// it, so a hostile or merely odd one reaches local disk here. Accepting
+    /// `NUL` would write the download to the null device and report success.
+    #[test]
+    fn a_download_refuses_a_local_name_that_is_not_a_file() {
+        for name in ["NUL", "nul.txt", "COM1", "report.txt.", "notes.txt:stream"] {
+            assert!(
+                part_path_for(&PathBuf::from("/tmp").join(name)).is_err(),
+                "{name} should be refused before anything is created"
+            );
+        }
+    }
+
+    /// The guard has to stay narrow here too — a false positive is a download
+    /// the user simply cannot save.
+    #[test]
+    fn a_download_accepts_an_ordinary_local_name() {
+        for name in ["report.log", "my notes.txt", "archive.tar.gz", ".bashrc"] {
+            assert!(
+                part_path_for(&PathBuf::from("/tmp").join(name)).is_ok(),
+                "{name} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rename_stays_in_the_directory_it_started_in() {
+        assert_eq!(
+            rename_target("/etc/nginx/nginx.conf", "nginx.conf.bak").unwrap(),
+            "/etc/nginx/nginx.conf.bak"
+        );
+        // A file directly under the root still has a parent, and it is `/`.
+        assert_eq!(rename_target("/passwd", "shadow").unwrap(), "/shadow");
+    }
+
+    /// The guarantee that "rename" cannot quietly be "move". Every one of these
+    /// would otherwise put the file somewhere the user never chose — and a file
+    /// that has moved is much harder to notice than one that failed to rename.
+    #[test]
+    fn a_rename_cannot_climb_out_of_its_directory() {
+        for name in ["../passwd", "/etc/passwd", "a/b", "a\\b", "..", ".", ""] {
+            assert!(
+                rename_target("/home/tim/notes.txt", name).is_err(),
+                "{name:?} should be refused as a new name"
+            );
+        }
+    }
+
+    /// Nothing in the app produces one — the panel starts from `canonicalize` —
+    /// but rooting a relative path would rename into `/`, which is the single
+    /// outcome worth refusing rather than guessing at.
+    #[test]
+    fn a_rename_refuses_a_path_with_no_directory() {
+        assert!(rename_target("notes.txt", "other.txt").is_err());
     }
 
     /// The reader an upload streams from. The empty-chunk case is the one that

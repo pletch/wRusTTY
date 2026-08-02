@@ -13,11 +13,15 @@ export type SftpEvent =
   | { type: 'uploading'; editId: string; remotePath: string }
   | { type: 'uploaded'; editId: string; remotePath: string }
   | { type: 'uploadFailed'; editId: string; remotePath: string; error: string }
-  // An explicit upload. `transferStarted` is the only place the id appears —
-  // a cancel button has to exist from the moment the transfer does, so the id
-  // cannot wait for the command's promise to resolve.
+  // An explicit transfer, in either direction: a dropped file, a picked file,
+  // a download. Direction is not on the wire — whatever started the transfer
+  // already knows which way it goes, and it holds the id.
+  //
+  // `transferStarted` arrives only when the *backend* is the one that learned
+  // the total: a download, or an upload from a local path. A dropped file is
+  // sized by the webview before the transfer exists.
   | { type: 'transferStarted'; transferId: string; remotePath: string; total: number }
-  | { type: 'transferProgress'; transferId: string; sent: number }
+  | { type: 'transferProgress'; transferId: string; transferred: number }
   | { type: 'transferDone'; transferId: string; remotePath: string }
   | { type: 'transferCancelled'; transferId: string }
   | { type: 'transferFailed'; transferId: string; remotePath: string; error: string }
@@ -103,8 +107,91 @@ export function uploadFinish(transferId: string) {
   return invoke<void>('sftp_upload_finish', { transferId })
 }
 
-/** Asks a running upload to stop. It stops between chunks, so this is bounded
- *  by one round trip rather than by what is left of the file. */
-export function cancelUpload(transferId: string) {
-  return invoke<void>('sftp_cancel_upload', { transferId })
+/**
+ * Uploads a file the user picked from a dialog, by path.
+ *
+ * The route for anyone who would rather not drag — and the cheaper one. A
+ * dropped file arrives as a `File` with no path on it, so `uploadBegin` has to
+ * push its bytes through IPC a chunk at a time; a picked file has a path, so
+ * the backend opens it and the webview never touches a byte. Same destination
+ * guarantees either way.
+ *
+ * The remote name comes from the path's own basename, so ask `exists` about
+ * that before calling this with `overwrite`.
+ */
+export function uploadPath(
+  sessionId: string,
+  remoteDir: string,
+  localPath: string,
+  overwrite: boolean,
+  channel: Channel<SftpEvent>,
+) {
+  return invoke<string>('sftp_upload_path', {
+    sessionId,
+    remoteDir,
+    localPath,
+    overwrite,
+    channel,
+  })
+}
+
+/**
+ * Streams a remote file to `localPath` and returns the transfer id.
+ *
+ * Asymmetric with the drop upload on purpose: a save dialog hands over a real
+ * local path, so nothing crosses IPC in this direction — the backend reads the
+ * SFTP stream and writes straight to disk. There is no chunk call to make.
+ *
+ * `localPath` is not written until the whole file has arrived: the download
+ * lands beside it under `.wrustty-part` and is renamed over it only on success,
+ * so a failed download over an existing file costs nothing.
+ *
+ * Total size arrives on the channel as `transferStarted` — only the backend can
+ * know it, and it comes before the first chunk so a progress bar never has to
+ * begin life as a spinner.
+ */
+export function downloadBegin(
+  sessionId: string,
+  remotePath: string,
+  localPath: string,
+  channel: Channel<SftpEvent>,
+) {
+  return invoke<string>('sftp_download_begin', { sessionId, remotePath, localPath, channel })
+}
+
+/** Asks a running transfer to stop, either direction. It stops between chunks,
+ *  so this is bounded by one round trip rather than by what is left of the
+ *  file. */
+export function cancelTransfer(transferId: string) {
+  return invoke<void>('sftp_cancel_transfer', { transferId })
+}
+
+/**
+ * Renames an entry within its own directory, returning the new full path.
+ *
+ * Cannot move anything: the destination is built from the source's parent plus
+ * `newName`, which is rejected if it carries a separator. A rename that quietly
+ * turns out to be a move is how a user loses track of a file.
+ *
+ * Rejects if something is already called `newName`, because SFTP v3's rename
+ * does not replace and servers report that badly.
+ */
+export function rename(sessionId: string, path: string, newName: string) {
+  return invoke<string>('sftp_rename', { sessionId, path, newName })
+}
+
+/**
+ * Deletes a file, or an empty directory.
+ *
+ * Whether it is a directory is decided by the backend, not by what the listing
+ * last said. A non-empty directory is refused — SFTP has no recursive delete,
+ * and growing one implicitly out of a menu item is far too sharp an edge.
+ */
+export function remove(sessionId: string, path: string) {
+  return invoke<void>('sftp_remove', { sessionId, path })
+}
+
+/** Creates a directory inside `parent`, returning its full path. */
+export function mkdir(sessionId: string, parent: string, name: string) {
+  return invoke<string>('sftp_mkdir', { sessionId, parent, name })
 }

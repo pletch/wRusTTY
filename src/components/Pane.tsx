@@ -10,6 +10,7 @@ import type { SessionProfile } from '../lib/profiles'
 import type { Workspace } from '../lib/workspaces'
 import type { VaultSecret } from '../lib/vault'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
+import { startDirFor } from '../lib/fileActions'
 
 interface Props {
   node: PaneNode
@@ -27,6 +28,13 @@ interface Props {
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
   filesOpenByPane: Record<string, boolean>
+  /** The directory each pane's host last *reported*, where it reported one.
+   *  The Files panel opens there rather than at the remote home — the same
+   *  place a file dropped on that pane would land. */
+  cwdByPane: Record<string, string | null>
+  /** What each host set as its window title. Used here only to *guess* a
+   *  directory when nothing reported one — see `startDirFor`. */
+  titleByPane: Record<string, string | null>
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
   workspaces: Workspace[]
@@ -95,6 +103,8 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     vaultUnlocked,
     forwardsOpenByPane,
     filesOpenByPane,
+    cwdByPane,
+    titleByPane,
     sessionIdByPane,
     sessions,
     workspaces,
@@ -276,7 +286,11 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         <ForwardPanel sessionId={sessionId} onClose={() => onCloseForwards(node.id)} />
       )}
       {filesOpenByPane[node.id] && sessionId && (
-        <FilesPanel sessionId={sessionId} onClose={() => onCloseFiles(node.id)} />
+        <FilesPanel
+          sessionId={sessionId}
+          startDir={startDirFor(cwdByPane[node.id], titleByPane[node.id])}
+          onClose={() => onCloseFiles(node.id)}
+        />
       )}
     </div>
   )

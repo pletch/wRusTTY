@@ -616,7 +616,7 @@ export function Terminal({
     channel.onmessage = (event) => {
       switch (event.type) {
         case 'transferProgress':
-          setTransfer((t) => (t ? { ...t, sent: event.sent } : t))
+          setTransfer((t) => (t ? { ...t, sent: event.transferred } : t))
           break
         case 'transferDone':
           setTransfer(null)
@@ -654,7 +654,7 @@ export function Terminal({
       // the button, or failed on the far side. Both have reported themselves
       // through the channel already, so this only has to stop pushing and
       // make sure nothing is left half-written.
-      await sftp.cancelUpload(transferId).catch(() => {})
+      await sftp.cancelTransfer(transferId).catch(() => {})
     }
   }
 
@@ -1911,7 +1911,7 @@ export function Terminal({
             <span className="min-w-0 flex-1 truncate text-white/80">{transfer.name}</span>
             <button
               onClick={() => {
-                if (transfer.id) void sftp.cancelUpload(transfer.id).catch(() => {})
+                if (transfer.id) void sftp.cancelTransfer(transfer.id).catch(() => {})
               }}
               title="Cancel this upload"
               className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
