@@ -213,7 +213,10 @@ mod tests {
 
         replace_atomic(&part, &target).unwrap();
 
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "freshly downloaded");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "freshly downloaded"
+        );
         assert!(!part.exists(), "the part file must not survive the rename");
     }
 

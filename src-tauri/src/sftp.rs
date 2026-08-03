@@ -1070,11 +1070,7 @@ pub async fn sftp_rename(
     // a sentence naming the file. It is advisory (something could appear in the
     // gap) but the server still refuses in that case, so the race costs a
     // confusing message rather than a lost file.
-    if sftp
-        .try_exists(&target)
-        .await
-        .map_err(|e| e.to_string())?
-    {
+    if sftp.try_exists(&target).await.map_err(|e| e.to_string())? {
         return Err(format!("{new_name} already exists here."));
     }
     sftp.rename(&path, &target)
@@ -1793,7 +1789,15 @@ pub async fn sftp_upload_path(
     let task_id = transfer_id.clone();
     tokio::spawn(async move {
         run_upload(
-            app, sftp, file, part_path, remote_path, exists, channel, task_id, cancel,
+            app,
+            sftp,
+            file,
+            part_path,
+            remote_path,
+            exists,
+            channel,
+            task_id,
+            cancel,
         )
         .await
     });
@@ -2157,7 +2161,15 @@ pub async fn sftp_download_begin(
         match plan {
             Some(plan) => {
                 run_download_tree(
-                    app, sftp, remote_path, local, plan, resume, channel, task_id, cancel,
+                    app,
+                    sftp,
+                    remote_path,
+                    local,
+                    plan,
+                    resume,
+                    channel,
+                    task_id,
+                    cancel,
                 )
                 .await
             }
@@ -2184,9 +2196,9 @@ async fn download_one(
     progress: impl FnMut(u64) -> bool,
 ) -> Result<wr_sftp::Transferred, TransferFailure> {
     let part = part_path_for(local).map_err(TransferFailure::permanent)?;
-    let mut file = tokio::fs::File::create(&part)
-        .await
-        .map_err(|e| TransferFailure::permanent(format!("could not write to {}: {e}", part.display())))?;
+    let mut file = tokio::fs::File::create(&part).await.map_err(|e| {
+        TransferFailure::permanent(format!("could not write to {}: {e}", part.display()))
+    })?;
 
     let outcome = sftp.download(remote, &mut file, progress).await;
     let placed: Result<wr_sftp::Transferred, TransferFailure> = match outcome {
@@ -2278,10 +2290,12 @@ async fn upload_one(
     let placed: Result<wr_sftp::Transferred, TransferFailure> = match outcome {
         Err(e) => Err(TransferFailure::from_sftp(e)),
         Ok(wr_sftp::Transferred::Cancelled) => Ok(wr_sftp::Transferred::Cancelled),
-        Ok(wr_sftp::Transferred::Complete) => place_remote_part(sftp, &part_path, remote, replacing)
-            .await
-            .map(|()| wr_sftp::Transferred::Complete)
-            .map_err(TransferFailure::permanent),
+        Ok(wr_sftp::Transferred::Complete) => {
+            place_remote_part(sftp, &part_path, remote, replacing)
+                .await
+                .map(|()| wr_sftp::Transferred::Complete)
+                .map_err(TransferFailure::permanent)
+        }
     };
     if !matches!(placed, Ok(wr_sftp::Transferred::Complete)) {
         let _ = sftp.remove_file(&part_path).await;
@@ -2617,9 +2631,8 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
 #[cfg(test)]
 mod tests {
     use super::{
-        is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name, part_path_for,
-        TreePlan,
-        is_already_there, parse_editor_command, rename_target, ChunkReader,
+        is_already_there, is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name,
+        parse_editor_command, part_path_for, rename_target, ChunkReader, TreePlan,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
@@ -2891,8 +2904,7 @@ mod tests {
 
     #[test]
     fn an_editor_command_appends_the_path_when_there_is_no_placeholder() {
-        let (program, args) =
-            parse_editor_command("code --wait", Path::new("/tmp/a.txt")).unwrap();
+        let (program, args) = parse_editor_command("code --wait", Path::new("/tmp/a.txt")).unwrap();
         assert_eq!(program, "code");
         assert_eq!(args, ["--wait", "/tmp/a.txt"]);
     }
@@ -2906,8 +2918,7 @@ mod tests {
         assert_eq!(args, ["-f", "/tmp/a.txt", "+1"]);
 
         // Anywhere in an argument, not only as the whole of one.
-        let (_, args) =
-            parse_editor_command("ed --file={file}", Path::new("/tmp/a.txt")).unwrap();
+        let (_, args) = parse_editor_command("ed --file={file}", Path::new("/tmp/a.txt")).unwrap();
         assert_eq!(args, ["--file=/tmp/a.txt"]);
     }
 
@@ -2976,16 +2987,28 @@ mod tests {
     /// and the transfer says how many files it passed over either way.
     #[test]
     fn a_missing_mtime_falls_back_to_size_alone() {
-        assert!(is_already_there(&facts(1024, None), Some(&facts(1024, Some(1)))));
-        assert!(is_already_there(&facts(1024, Some(1)), Some(&facts(1024, None))));
-        assert!(!is_already_there(&facts(1024, None), Some(&facts(99, None))));
+        assert!(is_already_there(
+            &facts(1024, None),
+            Some(&facts(1024, Some(1)))
+        ));
+        assert!(is_already_there(
+            &facts(1024, Some(1)),
+            Some(&facts(1024, None))
+        ));
+        assert!(!is_already_there(
+            &facts(1024, None),
+            Some(&facts(99, None))
+        ));
     }
 
     /// An empty file is a file: zero-length on both sides is a match, not a
     /// missing destination.
     #[test]
     fn an_empty_file_counts_as_already_there() {
-        assert!(is_already_there(&facts(0, Some(5)), Some(&facts(0, Some(5)))));
+        assert!(is_already_there(
+            &facts(0, Some(5)),
+            Some(&facts(0, Some(5)))
+        ));
     }
 
     /// The reader an upload streams from. The empty-chunk case is the one that

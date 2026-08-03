@@ -36,6 +36,14 @@ jobs:
     permissions:
       contents: read
       checks: write
+      # The action opens an issue when it has findings to report, and without
+      # this it cannot — it fails with "Resource not accessible by
+      # integration" *after* the audit itself has passed. That is what turned
+      # this job red: not a vulnerability, but the first week the advisory
+      # database had informational warnings to say something about. A job that
+      # reports "no vulnerabilities were found" and then fails is worse than
+      # useless, because the next red build gets assumed to be the same thing.
+      issues: write
     steps:
       - uses: actions/checkout@v7
       # Pinned to v2.0.0 because that is the newest release; it targets Node

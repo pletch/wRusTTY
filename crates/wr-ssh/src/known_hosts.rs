@@ -606,7 +606,9 @@ mod tests {
         let path = dir.path().join("known_hosts");
 
         let mut connector_copy = KnownHostsStore::load(&path).unwrap();
-        connector_copy.learn("example.com", 22, &key(KEY_A)).unwrap();
+        connector_copy
+            .learn("example.com", 22, &key(KEY_A))
+            .unwrap();
 
         // Someone deletes it through the management UI, using its own store.
         let mut ui_copy = KnownHostsStore::load(&path).unwrap();
