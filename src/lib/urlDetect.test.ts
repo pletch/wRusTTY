@@ -42,6 +42,14 @@ describe('findUrls', () => {
     ['a scheme with no authority', 'https:// and https://?x', []],
     ['a Cyrillic homograph host', 'https://аpple.com/login', []],
     ['a non-ASCII host with an ASCII path', 'https://exämple.com/safe', []],
+    // The same homograph, percent-encoded: ASCII to every check here and
+    // Cyrillic once the browser has decoded it. Refusing only the raw spelling
+    // would be a defence against the example rather than the attack.
+    ['a percent-encoded homograph host', 'go to https://%D0%B0pple.com/id now', []],
+    // Userinfo — the link reads as `google.com` and resolves to
+    // `evil.example`. All ASCII, so nothing else here catches it.
+    ['userinfo naming a different site', 'see https://google.com@evil.example/login here', []],
+    ['userinfo with a password', 'https://www.paypal.com:x@10.0.0.5/', []],
   ]
 
   for (const [what, line, expected] of cases) {
@@ -108,7 +116,19 @@ describe('isOpenableUrl', () => {
     }
   })
 
+  /** Both new rejections are on the *authority* alone. A percent-encoded path
+   *  is ordinary — half the URLs anyone copies have one — and an `@` after the
+   *  first `/` is a path segment, not userinfo. This is also the gate an OSC 8
+   *  URI passes, so a false positive here is a link that cannot be opened at
+   *  all. */
+  it('leaves an encoded path and a path-level @ alone', () => {
+    expect(isOpenableUrl('https://x.example/a%20b?q=%7Bid%7D')).toBe(true)
+    expect(isOpenableUrl('https://github.com/x/y/blob/main/a@b.ts')).toBe(true)
+  })
+
   it('refuses a deceptive or malformed authority', () => {
+    expect(isOpenableUrl('https://%D0%B0pple.com/id')).toBe(false)
+    expect(isOpenableUrl('https://google.com@evil.example/login')).toBe(false)
     expect(isOpenableUrl('https://аpple.com')).toBe(false)
     expect(isOpenableUrl('https://')).toBe(false)
     expect(isOpenableUrl('https://example.com/\u0007x')).toBe(false)

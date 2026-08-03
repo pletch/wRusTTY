@@ -141,9 +141,26 @@ function authorityOf(url: string): string | null {
  * still sits in the buffer to be read and copied, which is the honest outcome
  * for a destination we cannot render unambiguously. Punycode (`xn--…`) reaches
  * here as ASCII and is offered, which is the same trade every browser makes.
+ *
+ * The two rejections above the loop are the ways an all-ASCII authority still
+ * reads as somewhere it isn't — see each.
  */
 function authorityIsSafe(authority: string | null): boolean {
   if (authority === null || authority.length === 0) return false
+  // Userinfo. `https://google.com@evil.example/login` is a link to
+  // `evil.example` whose first sixteen characters say otherwise, and reading
+  // past the `@` is precisely the thing nobody does — it is the oldest URL
+  // phishing trick there is. Showing the full URL in the link menu does not
+  // help, because the full URL is the misleading string. Userinfo is
+  // deprecated in http/https and every browser discards it, so refusing to
+  // linkify costs nothing that works anyway.
+  if (authority.includes('@')) return false
+  // Percent-encoding, which otherwise smuggles the very homoglyphs the loop
+  // below exists to reject: `%D0%B0pple.com` is plain ASCII here and Cyrillic
+  // `аpple.com` by the time the browser has decoded it and resolved the IDN.
+  // The raw form is already refused; without this the defence holds only
+  // against the spelling of the attack, not the attack.
+  if (authority.includes('%')) return false
   for (let i = 0; i < authority.length; i++) {
     if (authority.charCodeAt(i) > 0x7e || authority.charCodeAt(i) < 0x21) return false
   }
