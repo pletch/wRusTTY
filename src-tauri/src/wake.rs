@@ -7,14 +7,20 @@
 //! either: waking is a property of the host, not of SSH, so it belongs to the
 //! layer that already knows which host a session is for.
 //!
-//! What lives here is only the mechanism. Deciding *when* to wake — probe
-//! first, re-send while waiting, give up after so long — is the connect path's
-//! job and lands in `session_registry`.
+//! `wake_and_wait` is the whole policy: probe first so an already-awake host
+//! is never sent anything, re-send while waiting because a NIC coming out of
+//! deep sleep can miss the first packet, and give up on a deadline rather than
+//! leaving the connect path open indefinitely. What it doesn't own is
+//! cancellation — a pane closed mid-wake is `session_registry`'s to notice,
+//! since the registry is what knows the session is gone.
 
 use std::net::{Ipv4Addr, UdpSocket};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+use wr_core::{ConnectionEvent, ConnectionStatus};
 
 /// The port a magic packet is conventionally sent to. Nothing listens on it —
 /// the NIC's firmware matches the payload anywhere in the frame, so the port
@@ -150,6 +156,76 @@ pub async fn port_open(host: &str, port: u16, timeout: Duration) -> bool {
         tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await,
         Ok(Ok(_))
     )
+}
+
+/// How long a single reachability probe is given. Short: this runs before
+/// every wake-enabled connection, including the overwhelmingly common case of
+/// a host that's already up, and two seconds is far past a LAN round trip
+/// while still being under what anyone would notice.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Gap between magic packets while waiting. Each round re-sends rather than
+/// sending once and only polling: the first packet can land while the NIC is
+/// still in a state that ignores it, and a 102-byte broadcast every few
+/// seconds costs nothing worth economising on.
+const RETRY_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Wakes `host` if it needs waking, and doesn't return until it answers on
+/// `port` or the configured wait runs out.
+///
+/// The opening probe is the load-bearing part. Without it this would fire a
+/// magic packet at a machine that's already up on every single connection,
+/// which is both pointless traffic and — for anyone watching a switch — a
+/// puzzling thing to see. With it, leaving a MAC configured on a profile
+/// permanently costs one round trip and nothing else.
+///
+/// A wake that times out is an error, so the pane says "did not wake" rather
+/// than falling through to a TCP connect that will fail again a minute later
+/// with something far less informative.
+pub async fn wake_and_wait(
+    host: &str,
+    port: u16,
+    wake: &WakeOnLan,
+    events: &mpsc::Sender<ConnectionEvent>,
+) -> Result<(), String> {
+    // Up front, before the probe: a malformed MAC is a configuration mistake,
+    // and making the user wait two seconds to be told so would be strange.
+    parse_mac(&wake.mac)?;
+    wake.broadcast_addr()?;
+
+    if port_open(host, port, PROBE_TIMEOUT).await {
+        return Ok(());
+    }
+
+    // Only announced once we know we're actually going to wake something —
+    // the pane shouldn't flicker through "Waking" for a host that was up.
+    let _ = events
+        .send(ConnectionEvent::Status(ConnectionStatus::Waking))
+        .await;
+
+    let deadline = Instant::now() + wake.wait();
+    loop {
+        send(wake)?;
+
+        // A zero wait means "send it and get on with it" — the connect
+        // attempt that follows is then the thing that decides whether the
+        // host is there, which is the same answer this loop would give, just
+        // without the wait the user asked not to have.
+        if Instant::now() >= deadline {
+            return Ok(());
+        }
+
+        tokio::time::sleep(RETRY_INTERVAL).await;
+        if port_open(host, port, PROBE_TIMEOUT).await {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{host} did not answer on port {port} within {}s of being sent a magic packet",
+                wake.wait().as_secs()
+            ));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -303,5 +379,104 @@ mod tests {
         // 203.0.113.0/24 is TEST-NET-3: reserved for documentation, routed
         // nowhere, so this can only ever time out.
         assert!(!port_open("203.0.113.1", 22, Duration::from_millis(200)).await);
+    }
+
+    /// A UDP socket on loopback standing in for the target's NIC, so the wake
+    /// tests can assert what was sent without anything reaching the network.
+    fn packet_sink() -> (UdpSocket, WakeOnLan) {
+        let sink = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        sink.set_nonblocking(true).unwrap();
+        let port = sink.local_addr().unwrap().port();
+        let wake = WakeOnLan {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            broadcast: Some(Ipv4Addr::LOCALHOST.to_string()),
+            port: Some(port),
+            wait_seconds: None,
+        };
+        (sink, wake)
+    }
+
+    fn packets_received(sink: &UdpSocket) -> usize {
+        let mut buf = [0u8; 128];
+        std::iter::from_fn(|| sink.recv_from(&mut buf).ok()).count()
+    }
+
+    /// A port that nothing is listening on, by taking one and giving it back.
+    async fn closed_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// The reason a MAC can be left on a profile permanently: connecting to a
+    /// host that's already up sends nothing and says nothing.
+    #[tokio::test]
+    async fn an_already_awake_host_is_left_alone() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sink, wake) = packet_sink();
+        let (tx, mut rx) = mpsc::channel(8);
+
+        wake_and_wait("127.0.0.1", port, &wake, &tx).await.unwrap();
+
+        assert_eq!(packets_received(&sink), 0);
+        assert!(
+            rx.try_recv().is_err(),
+            "announced a wake that didn't happen"
+        );
+    }
+
+    /// The pane has to be told what the pause is for, or a minute of silence
+    /// looks like a hung client.
+    #[tokio::test(start_paused = true)]
+    async fn a_host_that_never_answers_is_announced_then_given_up_on() {
+        let port = closed_port().await;
+        let (sink, mut wake) = packet_sink();
+        wake.wait_seconds = Some(1);
+        let (tx, mut rx) = mpsc::channel(8);
+
+        let error = wake_and_wait("127.0.0.1", port, &wake, &tx)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("did not answer"), "{error}");
+        assert!(packets_received(&sink) >= 1, "gave up without sending one");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ConnectionEvent::Status(ConnectionStatus::Waking))
+        ));
+    }
+
+    /// See `wake_and_wait`: a zero wait is "send it and get on with it", not
+    /// an instant failure.
+    #[tokio::test]
+    async fn a_zero_wait_sends_the_packet_and_carries_on() {
+        let port = closed_port().await;
+        let (sink, mut wake) = packet_sink();
+        wake.wait_seconds = Some(0);
+        let (tx, _rx) = mpsc::channel(8);
+
+        wake_and_wait("127.0.0.1", port, &wake, &tx).await.unwrap();
+
+        assert_eq!(packets_received(&sink), 1);
+    }
+
+    /// Checked before the probe, so a typo'd MAC is reported at once rather
+    /// than after a wait the user then has to interpret.
+    #[tokio::test]
+    async fn a_config_that_cant_be_sent_fails_before_anything_is_probed() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let wake = WakeOnLan {
+            mac: "not a mac".into(),
+            broadcast: None,
+            port: None,
+            wait_seconds: None,
+        };
+
+        assert!(wake_and_wait("203.0.113.1", 22, &wake, &tx).await.is_err());
+        assert!(rx.try_recv().is_err());
     }
 }

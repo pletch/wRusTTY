@@ -65,6 +65,12 @@ tauri-plugin-window-state = "2.4.1"
 window-vibrancy = "0.6"
 tauri-plugin-notification = "2.3.3"
 
+[dev-dependencies]
+# `test-util` for the paused clock, which is what lets wake.rs test a
+# minute-long retry loop without a minute-long test. Same reason wr-ssh's
+# dev-dependencies enable it.
+tokio = { workspace = true, features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 # Pinned to match whatever version wr-ssh's russh/pageant dependency
 # pulls in on Windows (currently 0.62.x) rather than tauri's own version —

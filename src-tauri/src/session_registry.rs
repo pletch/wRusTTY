@@ -20,11 +20,12 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager};
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
 
 /// A session id's occupant.
@@ -162,6 +163,30 @@ async fn publish<S: Session>(slot: &SharedSlot<S>, mut session: S) -> Option<S> 
     *slot = Slot::Ready(session);
     None
 }
+
+/// How often the pre-connect step is checked for having been cancelled.
+///
+/// Polled rather than signalled because a per-slot notifier would be a channel
+/// on every session for the benefit of the one step slow enough to need it,
+/// and half a second of latency on an abort whose pane is already closed is
+/// not something anyone is waiting on.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Resolves once `session_id` is gone from the map — which is what closing a
+/// pane during the pre-connect step looks like from in here.
+async fn removed<S>(sessions: &SlotMap<S>, session_id: &str) {
+    loop {
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+        if !sessions.lock().await.contains_key(session_id) {
+            return;
+        }
+    }
+}
+
+/// The type `None` needs when there is no pre-connect step. Written out
+/// because `spawn_connect` has to name one, and the closure type a real caller
+/// passes can't be named at all.
+pub type NoPrepare = fn(mpsc::Sender<ConnectionEvent>) -> std::future::Ready<Result<(), String>>;
 
 /// One session id's slot, shared between the command layer and the connect
 /// task that fills it in.
@@ -304,6 +329,50 @@ impl<C: Connector> SessionRegistry<C> {
         E: Serialize + Clone + Send + 'static,
         F: Fn(&ConnectionStatus) -> E + Send + 'static,
     {
+        self.spawn_connect_prepared(
+            app,
+            session_id,
+            connector,
+            channel,
+            data_channel,
+            make_status,
+            None::<NoPrepare>,
+        )
+        .await
+    }
+
+    /// [`spawn_connect`](Self::spawn_connect), with a step that runs before
+    /// the handshake and can refuse it.
+    ///
+    /// The step exists for Wake-on-LAN, and the reason it sits *here* rather
+    /// than in the caller is the event channel: waking takes up to a minute,
+    /// and doing it in the `#[tauri::command]` before this is called would
+    /// block the IPC reply for that whole time with the pane showing nothing.
+    /// By this point the forwarder is already running, so the step gets the
+    /// same `Sender` the handshake uses and its progress reaches the UI the
+    /// same way.
+    ///
+    /// It also gets cancellation for free, which is the other half of why it
+    /// belongs here: only the registry knows the pane was closed.
+    // Eight arguments, one more than clippy's threshold, and the seventh is
+    // the one that earns it. Grouping them would mean a struct that exists
+    // only to be destructured immediately by the one function that takes it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_connect_prepared<E, F, P, Fut>(
+        &self,
+        app: AppHandle,
+        session_id: String,
+        connector: C,
+        channel: Channel<E>,
+        data_channel: Channel<InvokeResponseBody>,
+        make_status: F,
+        prepare: Option<P>,
+    ) where
+        E: Serialize + Clone + Send + 'static,
+        F: Fn(&ConnectionStatus) -> E + Send + 'static,
+        P: FnOnce(mpsc::Sender<ConnectionEvent>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), String>> + Send,
+    {
         let slot = Arc::new(TokioMutex::new(Slot::Connecting {
             input: Vec::new(),
             size: None,
@@ -336,6 +405,30 @@ impl<C: Connector> SessionRegistry<C> {
                     )
                 },
             ));
+
+            if let Some(prepare) = prepare {
+                let outcome = tokio::select! {
+                    outcome = prepare(tx.clone()) => outcome,
+                    // Closing the pane drops the step wherever it had got to.
+                    // The id is already out of the map by then — `disconnect`
+                    // removed it — so there is nothing here left to clean up.
+                    _ = removed(&sessions, &session_id) => {
+                        drop(forward);
+                        return;
+                    }
+                };
+                if let Err(message) = outcome {
+                    // Unlike a failed handshake, nothing has reported this
+                    // yet: the step never reached the transport, so the
+                    // transport never had a chance to say why.
+                    let _ = tx
+                        .send(ConnectionEvent::Status(ConnectionStatus::Failed(message)))
+                        .await;
+                    sessions.lock().await.remove(&session_id);
+                    drop(forward);
+                    return;
+                }
+            }
 
             // No lock held here. This is the whole point of the split: the
             // handshake can take as long as a human takes to read a

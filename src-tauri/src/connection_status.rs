@@ -4,6 +4,7 @@
 pub fn status_label(status: &wr_core::ConnectionStatus) -> String {
     use wr_core::ConnectionStatus;
     match status {
+        ConnectionStatus::Waking => "waking".to_string(),
         ConnectionStatus::Connecting => "connecting".to_string(),
         ConnectionStatus::Connected => "connected".to_string(),
         ConnectionStatus::Disconnected => "disconnected".to_string(),
