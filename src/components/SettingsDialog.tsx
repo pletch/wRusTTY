@@ -519,7 +519,7 @@ export function SettingsDialog({
                         checked={settings.remoteNotifications}
                         onChange={(v) => onChange({ ...settings, remoteNotifications: v })}
                         label="Programs may raise notifications"
-                        hint="A program on the far end can ask for a notification by name (OSC 9 / OSC 777) and choose its text. Works inside full-screen programs, where shell integration can't. Always shown under the pane's name."
+                        hint="A program on the far end can ask for a notification by name (OSC 9 / OSC 777) and choose its text. Works inside full-screen programs, where shell integration can't. Always shown under the pane's name, and the text it chose is shown only in the app — never on the lock screen."
                       />
                       <Toggle
                         checked={settings.bellSound}

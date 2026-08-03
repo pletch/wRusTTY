@@ -1428,7 +1428,19 @@ function App() {
                       toast.info(`${from} — ${notification.body}`)
                       return
                     }
-                    void notifyInBackground(from, notification.body)
+                    // The body is deliberately dropped on the native path, the
+                    // same call `describeCommandResultBriefly` makes and for a
+                    // stronger reason: this is 200 characters an attacker
+                    // chose, and the native branch fires precisely when nobody
+                    // is at the screen — on Windows that is the lock screen of
+                    // a machine the user has walked away from. Whoever walks up
+                    // to it is the person `session_lock.rs` exists for, and one
+                    // policy has to cover both channels.
+                    //
+                    // The pane name survives, because a notification whose job
+                    // is to bring you back to the window has to say which one.
+                    // The body is one alt-tab away in the toast path.
+                    void notifyInBackground(tab.title, 'sent a notification')
                   }}
                   onCommandComplete={(result) => {
                     if (!terminalSettings.notifyOnCommandComplete) return
