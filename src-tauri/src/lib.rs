@@ -14,6 +14,12 @@ mod sftp;
 mod ssh;
 mod telnet;
 mod vault;
+// Nothing calls into it yet — the connect path that does lands next, along
+// with the profile field that configures it. Remove this the moment it does;
+// CI runs clippy with `-D warnings`, so the alternative was landing the
+// mechanism and its callers as one unreviewable commit.
+#[allow(dead_code)]
+mod wake;
 #[cfg(target_os = "windows")]
 mod win_focus;
 mod window_effects;
