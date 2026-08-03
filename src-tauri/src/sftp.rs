@@ -1447,38 +1447,78 @@ async fn plan_remote_tree(sftp: &wr_sftp::SftpClient, root: &str) -> Result<Tree
             .list_dir(&dir)
             .await
             .map_err(|e| format!("could not read {dir}: {e}"))?;
-        for entry in entries {
-            let child = if rel.is_empty() {
-                entry.name.clone()
-            } else {
-                format!("{rel}/{}", entry.name)
-            };
-            // Checked before `is_dir`, which is true for a link *to* a
-            // directory and would otherwise send the walk straight into it.
-            if entry.is_symlink {
-                plan.skipped_links += 1;
-                continue;
-            }
-            if entry.is_dir {
-                plan.dirs.push(child.clone());
-                pending.push(child);
-            } else {
-                plan.total_bytes += entry.size;
-                plan.files.push(PlannedFile {
-                    relative: child,
-                    size: entry.size,
-                    modified: entry.modified,
-                });
-            }
-            if plan.is_oversized() {
-                return Err(format!(
-                    "{root} holds more than {MAX_TREE_ENTRIES} entries — too much to copy from \
-                     here. Archive it on the host first."
-                ));
-            }
-        }
+        absorb_listing(&mut plan, &rel, &dir, root, entries, &mut pending)?;
     }
     Ok(plan.sorted())
+}
+
+/// Folds one directory listing into the plan.
+///
+/// Split out from the walk above so the refusal below can be exercised without
+/// a server, because that refusal is the whole trust boundary of the download
+/// direction: every name here was chosen by the *remote host*, and the relative
+/// paths built from them are joined straight onto the local directory the user
+/// picked.
+fn absorb_listing(
+    plan: &mut TreePlan,
+    rel: &str,
+    dir: &str,
+    root: &str,
+    entries: Vec<wr_sftp::RemoteEntry>,
+    pending: &mut Vec<String>,
+) -> Result<(), String> {
+    for entry in entries {
+        // The mirror of the check `plan_local_tree` makes on names read off the
+        // local filesystem — and the more important of the two, because these
+        // names come from the other side of the connection.
+        //
+        // `PathBuf::join` neither normalises nor refuses: a `..` component
+        // survives to the OS, so a server answering with `..` walks the
+        // download one directory further up per level, and an *absolute* name
+        // discards the base path entirely — `local_root.join("C:\\…\\Startup\\
+        // evil.bat")` is that path and nothing else. `part_path_for` does not
+        // catch either, since it inspects only the basename and the traversal
+        // lives in the directory portion.
+        //
+        // The whole job is refused rather than the entry skipped, matching the
+        // local walk: a server sending `..` is not one whose remaining entries
+        // are worth trusting.
+        if !is_usable_remote_name(&entry.name) {
+            return Err(format!(
+                "{dir} contains a name this cannot copy: {}",
+                entry.name
+            ));
+        }
+        let child = if rel.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{rel}/{}", entry.name)
+        };
+        // Checked before `is_dir`, which is true for a link *to* a
+        // directory and would otherwise send the walk straight into it.
+        if entry.is_symlink {
+            plan.skipped_links += 1;
+            continue;
+        }
+        if entry.is_dir {
+            plan.dirs.push(child.clone());
+            pending.push(child);
+        } else {
+            plan.total_bytes += entry.size;
+            plan.files.push(PlannedFile {
+                relative: child,
+                size: entry.size,
+                modified: entry.modified,
+            });
+        }
+        if plan.is_oversized() {
+            return Err(format!(
+                "{root} holds more than {MAX_TREE_ENTRIES} entries — too much to copy from \
+                 here. Archive it on the host first."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Walks a local directory tree, for an upload.
@@ -2631,8 +2671,9 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
 #[cfg(test)]
 mod tests {
     use super::{
-        is_already_there, is_inert_to_open, is_unsafe_windows_filename, is_usable_remote_name,
-        parse_editor_command, part_path_for, rename_target, ChunkReader, TreePlan,
+        absorb_listing, is_already_there, is_inert_to_open, is_unsafe_windows_filename,
+        is_usable_remote_name, parse_editor_command, part_path_for, rename_target, ChunkReader,
+        TreePlan,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
@@ -2768,6 +2809,104 @@ mod tests {
         ] {
             assert!(is_usable_remote_name(name), "{name:?} should be accepted");
         }
+    }
+
+    fn remote_entry(name: &str, is_dir: bool) -> wr_sftp::RemoteEntry {
+        wr_sftp::RemoteEntry {
+            name: name.to_string(),
+            is_dir,
+            is_symlink: false,
+            size: 1,
+            modified: None,
+            mode: None,
+            owner: None,
+            group: None,
+        }
+    }
+
+    /// The download walk's trust boundary. Every name in a listing was chosen
+    /// by the server, and each becomes a relative path joined onto the local
+    /// directory the user picked — where `join` normalises nothing and drops
+    /// the base outright for an absolute path. `part_path_for` does not cover
+    /// this: it validates the basename, and the escape is in the directory
+    /// part.
+    ///
+    /// Asserted as "the plan is refused", not as "the write landed somewhere":
+    /// what matters is that no plan carrying one of these is ever built.
+    #[test]
+    fn a_download_refuses_a_listing_that_would_escape_the_destination() {
+        for name in [
+            "..",
+            ".",
+            "../..",
+            "../../etc/passwd",
+            "sub/dir",
+            "C:\\Users\\tim\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\evil.bat",
+            "/etc/cron.d/evil",
+            "nul\0.txt",
+            "",
+        ] {
+            let mut plan = TreePlan::default();
+            let mut pending = Vec::new();
+            let refused = absorb_listing(
+                &mut plan,
+                "",
+                "/srv/data",
+                "/srv/data",
+                vec![remote_entry(name, false)],
+                &mut pending,
+            );
+            assert!(
+                refused.is_err(),
+                "{name:?} should refuse the whole download"
+            );
+            assert!(plan.files.is_empty(), "{name:?} should reach no plan");
+        }
+        // A directory entry takes the same route to `create_dir_all`, so it is
+        // refused on the same terms rather than only when it holds a file.
+        let mut plan = TreePlan::default();
+        let mut pending = Vec::new();
+        assert!(absorb_listing(
+            &mut plan,
+            "logs",
+            "/srv/data/logs",
+            "/srv/data",
+            vec![remote_entry("..", true)],
+            &mut pending
+        )
+        .is_err());
+        assert!(plan.dirs.is_empty());
+        assert!(pending.is_empty());
+    }
+
+    /// The guard has to stay narrow: an ordinary listing must still walk, and
+    /// the relative paths it produces are what the transfer is made of.
+    #[test]
+    fn an_ordinary_listing_still_plans() {
+        let mut plan = TreePlan::default();
+        let mut pending = Vec::new();
+        absorb_listing(
+            &mut plan,
+            "logs",
+            "/srv/data/logs",
+            "/srv/data",
+            vec![
+                remote_entry("nginx.log", false),
+                remote_entry("archive", true),
+                remote_entry("a file with spaces.txt", false),
+            ],
+            &mut pending,
+        )
+        .unwrap();
+        assert_eq!(plan.dirs, ["logs/archive"]);
+        assert_eq!(pending, ["logs/archive"]);
+        assert_eq!(
+            plan.files
+                .iter()
+                .map(|f| f.relative.as_str())
+                .collect::<Vec<_>>(),
+            ["logs/nginx.log", "logs/a file with spaces.txt"]
+        );
     }
 
     /// The part file has to be a sibling of the destination: a rename across
