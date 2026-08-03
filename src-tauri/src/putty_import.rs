@@ -19,9 +19,10 @@
 //! testable on a Linux CI runner.
 //!
 //! Read-only. Nothing here writes to PuTTY's keys, and an import never removes
-//! or overwrites an existing wRusTTY profile — see [`import_sessions`].
+//! or overwrites an existing wRusTTY profile — see [`import_into`].
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -307,7 +308,7 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
 pub struct ImportSummary {
     /// Profiles added.
     pub imported: usize,
-    /// Sessions already present by label and host — see [`import_sessions`].
+    /// Sessions already present by label and host — see [`import_into`].
     pub skipped_duplicates: usize,
     /// Sessions this app can't represent (raw, rlogin, serial, hostless).
     pub skipped_unsupported: usize,
@@ -323,13 +324,15 @@ pub struct ImportSummary {
 /// to PuTTY's version of it. Matching on both fields rather than the label
 /// alone means an unrelated profile that happens to share a name doesn't block
 /// the import.
-pub fn import_sessions(app: &AppHandle) -> Result<ImportSummary, String> {
-    let sessions = read_sessions()?;
-    let path = crate::profiles::profiles_path(app)?;
-    let mut existing = crate::profiles::read_profiles(&path)?;
+/// The read-modify-write half, run under the profile lock by the command
+/// below — `next_id` and the duplicate check both depend on the list not
+/// changing underneath them, and the write would otherwise clobber a rename
+/// saved from the session browser in between.
+fn import_into(sessions: &[PuttySession], path: &PathBuf) -> Result<ImportSummary, String> {
+    let mut existing = crate::profiles::read_profiles(path)?;
 
     let mut summary = ImportSummary::default();
-    for session in &sessions {
+    for session in sessions {
         let id = next_id(&existing);
         let Some(profile) = to_profile(session, id) else {
             summary.skipped_unsupported += 1;
@@ -351,7 +354,7 @@ pub fn import_sessions(app: &AppHandle) -> Result<ImportSummary, String> {
     }
 
     if summary.imported > 0 {
-        crate::profiles::write_profiles(&path, &existing)?;
+        crate::profiles::write_profiles(path, &existing)?;
     }
     Ok(summary)
 }
@@ -570,8 +573,16 @@ pub async fn putty_sessions_available() -> Result<usize, String> {
 }
 
 #[tauri::command]
-pub async fn putty_import_sessions(app: AppHandle) -> Result<ImportSummary, String> {
-    import_sessions(&app)
+pub async fn putty_import_sessions(
+    app: AppHandle,
+    profile_state: tauri::State<'_, crate::profiles::ProfileState>,
+) -> Result<ImportSummary, String> {
+    // Reading PuTTY's own registry hive stays outside the lock: it touches
+    // nothing this app writes, and it is the slow half.
+    let sessions = read_sessions()?;
+    profile_state
+        .with_profiles(&app, |path| import_into(&sessions, path))
+        .await
 }
 
 #[cfg(test)]

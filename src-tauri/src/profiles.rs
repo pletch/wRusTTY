@@ -124,6 +124,34 @@ pub struct ProfileState {
     lock: Mutex<()>,
 }
 
+impl ProfileState {
+    /// Runs `f` with `sessions.json` held against every other writer.
+    ///
+    /// The commands below take the mutex directly. This is the same door for
+    /// everything *outside* this module that touches the same file — the PuTTY
+    /// import, the vault's `hasCredential` sweep, vault export and import —
+    /// several of which read, modify and write. Without it, running the PuTTY
+    /// import while the session browser saves a rename means one of the two
+    /// writes is silently lost: both read the same list, and the second to
+    /// finish writes its own copy over the other's.
+    ///
+    /// `f` is handed the profile path rather than the profiles, because the
+    /// callers differ in what they need — one only reads, one replaces the file
+    /// wholesale — and a read-modify-write is only safe if the *read* is inside
+    /// the lock too.
+    ///
+    /// Not re-entrant: the mutex is not, so calling a `#[tauri::command]` from
+    /// this module inside `f` deadlocks.
+    pub(crate) async fn with_profiles<R>(
+        &self,
+        app: &AppHandle,
+        f: impl FnOnce(&PathBuf) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let _guard = self.lock.lock().await;
+        f(&profiles_path(app)?)
+    }
+}
+
 pub(crate) fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()

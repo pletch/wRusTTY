@@ -351,13 +351,14 @@ pub async fn vault_unlock(
     app: AppHandle,
     master_password: String,
     state: State<'_, VaultState>,
+    profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<(), String> {
     let mut vault =
         Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
     if !vault.has_unlock_method(WrapperKind::OsKeyring) {
         let _ = forget_os_unlock_kek();
     }
-    prune_orphaned_credentials(&app, &mut vault);
+    prune_orphaned_credentials(&app, &profile_state, &mut vault).await;
     *state.vault.lock().await = Some(vault);
     Ok(())
 }
@@ -380,14 +381,24 @@ pub async fn vault_unlock(
 ///
 /// Failure to persist is logged and swallowed. An unlock that worked must not
 /// be reported as failed over housekeeping the next one will retry.
-fn prune_orphaned_credentials(app: &AppHandle, vault: &mut Vault) {
-    let Ok(path) = crate::profiles::profiles_path(app) else {
-        return;
-    };
-    if !path.exists() {
-        return;
-    }
-    let Ok(profiles) = crate::profiles::read_profiles(&path) else {
+async fn prune_orphaned_credentials(
+    app: &AppHandle,
+    profile_state: &crate::profiles::ProfileState,
+    vault: &mut Vault,
+) {
+    // Under the profile lock like every other reader of this file. A read of a
+    // list that is mid-rewrite decides which credentials to destroy, and that
+    // decision is not recoverable.
+    let read = profile_state
+        .with_profiles(app, |path| {
+            if !path.exists() {
+                // Absent means unknown, not empty — see above.
+                return Err("no session profile store yet".to_string());
+            }
+            crate::profiles::read_profiles(path)
+        })
+        .await;
+    let Ok(profiles) = read else {
         return;
     };
     let ids: std::collections::HashSet<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
@@ -411,7 +422,11 @@ pub async fn vault_lock(state: State<'_, VaultState>) -> Result<(), String> {
 /// gone — left set, the sidebar would keep offering to "unlock the vault"
 /// for credentials that no longer exist.
 #[tauri::command]
-pub async fn vault_delete(app: AppHandle, state: State<'_, VaultState>) -> Result<(), String> {
+pub async fn vault_delete(
+    app: AppHandle,
+    state: State<'_, VaultState>,
+    profile_state: State<'_, crate::profiles::ProfileState>,
+) -> Result<(), String> {
     *state.vault.lock().await = None;
     // The vault these protected is about to cease to exist, so both become
     // orphans — the TPM credential especially, which nothing else would ever
@@ -425,12 +440,18 @@ pub async fn vault_delete(app: AppHandle, state: State<'_, VaultState>) -> Resul
         Err(e) => return Err(e.to_string()),
     }
 
-    let profiles_path = crate::profiles::profiles_path(&app)?;
-    let mut profiles = crate::profiles::read_profiles(&profiles_path)?;
-    for profile in &mut profiles {
-        profile.has_credential = false;
-    }
-    crate::profiles::write_profiles(&profiles_path, &profiles)?;
+    // Read-modify-write, so it goes through the profile lock — a rename saved
+    // from the session browser in between would otherwise be written over by
+    // the copy this read before it.
+    profile_state
+        .with_profiles(&app, |path| {
+            let mut profiles = crate::profiles::read_profiles(path)?;
+            for profile in &mut profiles {
+                profile.has_credential = false;
+            }
+            crate::profiles::write_profiles(path, &profiles)
+        })
+        .await?;
 
     Ok(())
 }
@@ -639,6 +660,7 @@ pub async fn vault_disable_os_unlock(state: State<'_, VaultState>) -> Result<(),
 pub async fn vault_unlock_with_os(
     app: AppHandle,
     state: State<'_, VaultState>,
+    profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<(), String> {
     let kind = enrolled_passwordless_method(&app)?
         .ok_or("no passwordless unlock method is set up for this vault")?;
@@ -665,7 +687,7 @@ pub async fn vault_unlock_with_os(
             }
             Err(e) => return Err(e.to_string()),
         };
-        prune_orphaned_credentials(&for_prune, &mut vault);
+        prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
         *state.vault.lock().await = Some(vault);
         return Ok(());
     }
@@ -675,7 +697,7 @@ pub async fn vault_unlock_with_os(
     let mut vault = Vault::unlock_with(path, &OsKeyringProvider { app })
         .await
         .map_err(|e| e.to_string())?;
-    prune_orphaned_credentials(&for_prune, &mut vault);
+    prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
     *state.vault.lock().await = Some(vault);
     Ok(())
 }
@@ -820,14 +842,21 @@ async fn pick_bundle_path(app: &AppHandle, saving: bool) -> Option<std::path::Pa
 ///
 /// Returns `false` if the user dismissed the file dialog.
 #[tauri::command]
-pub async fn vault_export(app: AppHandle) -> Result<bool, String> {
+pub async fn vault_export(
+    app: AppHandle,
+    profile_state: State<'_, crate::profiles::ProfileState>,
+) -> Result<bool, String> {
     let Some(dest_path) = pick_bundle_path(&app, true).await else {
         return Ok(false);
     };
     let vault_contents = std::fs::read_to_string(vault_path(&app)?).map_err(|e| e.to_string())?;
     let vault: serde_json::Value =
         serde_json::from_str(&vault_contents).map_err(|e| e.to_string())?;
-    let sessions = crate::profiles::read_profiles(&crate::profiles::profiles_path(&app)?)?;
+    // A read, but still under the lock: a backup taken halfway through a write
+    // to `sessions.json` is a backup of a file nobody ever had.
+    let sessions = profile_state
+        .with_profiles(&app, crate::profiles::read_profiles)
+        .await?;
     let workspaces =
         crate::workspaces::read_workspaces(&crate::workspaces::workspaces_path(&app)?)?;
     let bundle = ExportBundle {
@@ -877,6 +906,7 @@ pub async fn vault_import(
     app: AppHandle,
     state: State<'_, VaultState>,
     workspace_state: State<'_, crate::workspaces::WorkspaceState>,
+    profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<bool, String> {
     let Some(src_path) = pick_bundle_path(&app, false).await else {
         return Ok(false);
@@ -907,8 +937,11 @@ pub async fn vault_import(
     // replace as the other two rather than a plain overwrite.
     crate::atomic_file::write_json_atomic(&vault_path(&app)?, &bundle.vault)?;
 
-    let profiles_dest = crate::profiles::profiles_path(&app)?;
-    crate::profiles::write_profiles(&profiles_dest, &bundle.sessions)?;
+    profile_state
+        .with_profiles(&app, |path| {
+            crate::profiles::write_profiles(path, &bundle.sessions)
+        })
+        .await?;
 
     crate::workspaces::replace_all(&app, &workspace_state, &bundle.workspaces).await?;
 
