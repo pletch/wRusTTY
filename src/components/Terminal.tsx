@@ -251,20 +251,32 @@ export function Terminal({
   /** A file is being dragged over this pane. */
   const [dropTarget, setDropTarget] = useState(false)
   /**
-   * A dropped file with nowhere to put it: the shell never reported a working
-   * directory, so the destination has to be asked for rather than guessed.
-   * Guessing `~`, or scraping it off the prompt, puts the file somewhere the
-   * user did not ask for and did not watch it go.
+   * A dropped file whose destination has to be agreed before it is sent —
+   * either because there is nowhere to put it, or because where it would go is
+   * a claim the host made. Guessing `~`, or scraping it off the prompt, puts
+   * the file somewhere the user did not ask for and did not watch it go.
    */
   const [dropDest, setDropDest] = useState<{
     file: File
     path: string
-    /** The prefill was read off the window title rather than reported, so the
-     *  prompt has to say so — it may be a directory the shell has since left. */
-    fromTitle: boolean
+    /** Where the prefill came from, which is the whole of what the prompt has
+     *  to explain — see the copy below. */
+    source: 'reported' | 'title' | 'unknown'
   } | null>(null)
   /** What was typed into that prompt last time, to prefill it the next. */
   const lastDestRef = useRef<string | null>(null)
+  /**
+   * The reported directory the user has already agreed to send to.
+   *
+   * OSC 7 (and the OSC 633/133/1337 spellings of it) is *reported* rather than
+   * guessed, but reported by the same untrusted party that chose the window
+   * title — a host emitting `OSC 7 ; file://h/var/www/html` redirects the next
+   * drop to a web root while the user believes it went to their working
+   * directory. So a reported path is confirmed once, and again whenever it
+   * changes; a drop into the directory already agreed goes straight out, which
+   * is what keeps dropping several files in a row from being a chore.
+   */
+  const confirmedDestRef = useRef<string | null>(null)
   /** The upload in flight, for the progress readout and its cancel button. */
   const [transfer, setTransfer] = useState<{
     id: string | null
@@ -577,6 +589,16 @@ export function Terminal({
    *  rather than by matching protocols here, so a new source variant cannot
    *  quietly become "not SSH" in one place and SSH in another. */
   const canUpload = conn.transportOf(source) === 'ssh'
+
+  /** The prompt's own Send: remembers the directory as agreed — so a second
+   *  drop into the same reported one goes straight out — and then uploads. */
+  function sendDropDest(dest: { file: File; path: string }) {
+    const path = dest.path.trim()
+    lastDestRef.current = path
+    confirmedDestRef.current = path
+    setDropDest(null)
+    void uploadFile(dest.file, path)
+  }
 
   /**
    * Sends one file to `remoteDir` on this pane's host, keeping its name.
@@ -1743,20 +1765,28 @@ export function Terminal({
         const file = fileFromDrop(e)
         if (!file) return
         const cwd = remoteCwdRef.current
+        // Already agreed, and still the same directory: the point of asking
+        // was that the host chose this path, and it has not chosen a new one
+        // since. See `confirmedDestRef`.
+        if (cwd && cwd === confirmedDestRef.current) {
+          void uploadFile(file, cwd)
+          return
+        }
         // No OSC 7 means the shell never said where it is. Asking is the only
         // honest option — guessing `~` puts the file somewhere the user did
         // not choose and did not watch it go.
-        if (!cwd) {
-          // Prefer a path read off the window title over the last one typed:
-          // it is at least this session's, and on a stock bash prompt it is
-          // usually exactly right — it just isn't *reported*, so it gets
-          // confirmed rather than used.
-          setDropDest({
-            file,
-            path: titleCwdRef.current ?? lastDestRef.current ?? '',
-            fromTitle: titleCwdRef.current !== null,
-          })
-        } else void uploadFile(file, cwd)
+        //
+        // With OSC 7 the prompt is a confirmation rather than a question: the
+        // path is filled in and one Enter sends it.
+        //
+        // Failing both, prefer a path read off the window title over the last
+        // one typed: it is at least this session's, and on a stock bash prompt
+        // it is usually exactly right — it just isn't reported at all.
+        setDropDest({
+          file,
+          path: cwd ?? titleCwdRef.current ?? lastDestRef.current ?? '',
+          source: cwd ? 'reported' : titleCwdRef.current ? 'title' : 'unknown',
+        })
       }}
     >
       {/* Deliberately loud, and on every pane in the group rather than only
@@ -1844,25 +1874,26 @@ export function Terminal({
         // prompt line is showing.
         <div className="pointer-events-none absolute inset-0 z-40 flex items-start justify-center rounded-sm bg-sky-400/5 ring-2 ring-inset ring-sky-400/70">
           <span className="mt-3 rounded-md border border-white/10 bg-[#1f2028] px-2 py-1 text-xs text-white/80 shadow-xl">
-            {remoteCwdRef.current
+            {remoteCwdRef.current && remoteCwdRef.current === confirmedDestRef.current
               ? `Send to ${remoteCwdRef.current}`
-              : titleCwdRef.current
-                ? `Send to ${titleCwdRef.current}? — you will be asked to confirm`
+              : (remoteCwdRef.current ?? titleCwdRef.current)
+                ? `Send to ${remoteCwdRef.current ?? titleCwdRef.current}? — you will be asked to confirm`
                 : 'Drop to send — you will be asked where'}
           </span>
         </div>
       )}
       {dropDest && (
-        // The fallback for a shell with no OSC 7. Prefilled with whatever was
-        // typed last rather than with a guess at the shell's own directory,
-        // which is the thing we just established we do not know.
+        // Where the destination is agreed rather than assumed: once per
+        // directory, and again whenever the reported one changes.
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-80 rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl">
             <p className="mb-1 font-medium text-white/90">Send {dropDest.file.name}</p>
             <p className="mb-2 text-white/40">
-              {dropDest.fromTitle
-                ? 'This session reports its directory only in the window title, so this is read from there rather than told to us — check it before sending.'
-                : 'This session has not reported a working directory, so there is nowhere to send it by default. Give a directory on the host.'}
+              {dropDest.source === 'reported'
+                ? 'This is the directory the host says it is in. Confirmed once, and again whenever it changes — a host can report any directory it likes, and a file sent to the wrong one is hard to notice.'
+                : dropDest.source === 'title'
+                  ? 'This session reports its directory only in the window title, so this is read from there rather than told to us — check it before sending.'
+                  : 'This session has not reported a working directory, so there is nowhere to send it by default. Give a directory on the host.'}
             </p>
             <input
               autoFocus
@@ -1870,10 +1901,7 @@ export function Terminal({
               onChange={(e) => setDropDest({ ...dropDest, path: e.target.value })}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && dropDest.path.trim()) {
-                  const path = dropDest.path.trim()
-                  lastDestRef.current = path
-                  setDropDest(null)
-                  void uploadFile(dropDest.file, path)
+                  sendDropDest(dropDest)
                 } else if (e.key === 'Escape') {
                   setDropDest(null)
                 }
@@ -1890,12 +1918,7 @@ export function Terminal({
               </button>
               <button
                 disabled={!dropDest.path.trim()}
-                onClick={() => {
-                  const path = dropDest.path.trim()
-                  lastDestRef.current = path
-                  setDropDest(null)
-                  void uploadFile(dropDest.file, path)
-                }}
+                onClick={() => sendDropDest(dropDest)}
                 className="rounded bg-sky-500/25 px-2 py-1 text-sky-100 transition-colors duration-100 hover:bg-sky-500/40 disabled:opacity-30"
               >
                 Send
