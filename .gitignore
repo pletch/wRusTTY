@@ -36,3 +36,8 @@ coverage
 # work.
 .claude/*
 !.claude/skills/
+
+# Comparison build of ghostty main, used only by the port's parity checks.
+# 5 MB artifact, never loaded by the app — see the README kept beside it.
+src/lib/ghostty/main/vendor-main/*.wasm
+src/lib/ghostty/main/vendor-main/*.h
