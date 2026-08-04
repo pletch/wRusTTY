@@ -88,6 +88,22 @@ None of these are derivable by reading the headers, and each fails *silently*.
   almost every neighbouring call. Processing failures come back out-of-band via
   `T_DATA_VT_PROCESSING_ERROR`. Wrapping it in an `expectOk`-style check
   compares `undefined` against 0 and throws on a write that worked.
+- **`row_iterator_next` and `row_cells_next` return bools**, not results, so a
+  result check around either inverts it exactly: a successful advance (1) reads
+  as failure and an exhausted iterator (0) reads as success.
+- **`GhosttyStyle` is read out of caller memory** — there is no `style_get` —
+  and its 72-byte layout is not what `style.h` reads as: the colour union is
+  8-aligned, putting the booleans at 56-63. `size` is versioned in both
+  directions; the callee writes back what it filled.
+- **`GhosttyColorRgb` is 3 packed bytes.** At stride 4 a palette of
+  `rgb(i, 100, 200)` resolves index 7 to `(100, 200, 0)` — shifted, plausible,
+  wrong.
+- **`terminal_set`'s `value` points *at* the data.** For a scalar that is a
+  pointer to the scalar; for `OPT_COLOR_PALETTE` it is the array pointer itself.
+  A pointer-to-pointer returns `SUCCESS` and leaves every colour black.
+- **Cells with no explicit colour report `INVALID_VALUE`**, not a colour. Our
+  ABI pre-resolves defaults on the far side of the boundary, so any reader has
+  to substitute the configured foreground/background itself.
 
 ## What each export becomes
 
@@ -154,14 +170,15 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
 - [x] `src/lib/ghostty/main/abi.ts` — constants and typed export surface
 - [x] `abi.parity.test.ts` — the constants driven against a real build at the
       pin. Six checks, green. Skips when no binary is provided, which is CI.
-- [ ] **Grid parity: identical bytes through both binaries, compared per cell.**
-      Half exists — `search.mjs check` does it for scrollback text and caught a
-      baseline that was reading blanks. What is missing is the *viewport*
-      equivalent covering colors, attributes and cursor, i.e. what
-      `gridSnapshot.test.ts` does for Ghostty vs xterm.js, pointed at the two
-      Ghostty builds instead. **Do this before touching `GhosttyEngine`** — it is
-      the only thing that can tell a correct port from a plausible one.
-- [ ] `GhosttyEngine` read path onto the iterator
+- [x] **Grid parity: identical bytes through both binaries, compared per cell.**
+      `src/bench/gridSnapshotMain.ts` + its test. Nine cases green: text and
+      cursor, all eight attributes, all five underline styles plus overline,
+      palette and rgb colors, default colors, wide glyphs, scrolling, and a
+      styled full screen. `search.mjs check` covers the scrollback half.
+- [x] `GhosttyStyle` mapped onto our `flags` / `attrs2` bytes
+- [ ] `GhosttyEngine` read path onto the iterator — **the oracle above is the
+      gate for this**; extend its cases rather than trusting the app to look
+      right, since everything that has gone wrong so far looked right
 - [ ] Responses onto `OPT_WRITE_PTY` (the silent-failure one — see above)
 - [ ] `#176` extracted as a standalone patch against the pin
 - [ ] Rebuild + `vendorIntegrity` hash + `gridSnapshot` green
