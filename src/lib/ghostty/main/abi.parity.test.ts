@@ -287,12 +287,37 @@ run('ghostty main ABI, against a build at the pin', () => {
     })
   })
 
-  it('still renders ESC k payloads, which is why #176 is still carried', () => {
+  /**
+   * Swallows `ESC k` payloads, which is what `#176` is for.
+   *
+   * This assertion was the other way round until the patch existed: against a
+   * stock `main` build `SCREENTITLE` reaches the grid, and that is how the fix
+   * was confirmed to still be needed. It is inverted now because the binary
+   * under `vendor-main/` is built **with** `patches/ghostty-main-esc-k.patch`.
+   *
+   * So this is the check that the patch actually applied, and it is a behaviour
+   * rather than `git apply`'s exit code. If it fails after a rebuild, the patch
+   * was skipped or silently no-op'd; if it fails against a build you believe is
+   * unpatched, `#176` has landed upstream and can be dropped from the recipe.
+   */
+  it('swallows ESC k payloads, which is what #176 is carried for', () => {
     const h = boot(moduleOnce())
     h.write('\x1bkSCREENTITLE\x1b\\')
-    // Not an assertion about what we want — it is a regression guard on the
-    // reason the patch exists. If a future pin makes this blank, #176 has
-    // landed upstream and can be dropped from the build recipe.
-    expect(readRow(h, abi.POINT_TAG_ACTIVE, 0)).toContain('SCREENTITLE')
+    expect(readRow(h, abi.POINT_TAG_ACTIVE, 0)).not.toContain('SCREENTITLE')
+  })
+
+  it('keeps printing text that follows an ESC k sequence', () => {
+    // The state has to exit, not just consume: a terminator that failed to
+    // return to ground would swallow the rest of the stream, and the assertion
+    // above would still pass.
+    const h = boot(moduleOnce())
+    h.write('\x1bktitle\x1b\\visible text')
+    expect(readRow(h, abi.POINT_TAG_ACTIVE, 0)).toBe('visible text')
+  })
+
+  it('exits an ESC k sequence terminated by BEL as well as ST', () => {
+    const h = boot(moduleOnce())
+    h.write('\x1bktitle\x07after bel')
+    expect(readRow(h, abi.POINT_TAG_ACTIVE, 0)).toBe('after bel')
   })
 })
