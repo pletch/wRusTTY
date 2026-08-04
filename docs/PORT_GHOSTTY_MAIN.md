@@ -104,6 +104,19 @@ None of these are derivable by reading the headers, and each fails *silently*.
 - **Cells with no explicit colour report `INVALID_VALUE`**, not a colour. Our
   ABI pre-resolves defaults on the far side of the boundary, so any reader has
   to substitute the configured foreground/background itself.
+- **The packed cell's payload is a union** — a codepoint, *or* a background
+  colour for a cell with no text. Unpacking it unconditionally turns a blank
+  painted by `ED`/`EL` into a control character: a cleared row with background
+  `0x445566` reads back as codepoint 1. Check the content tag first.
+- **`grid_ref` has no resolved-colour accessor.** The render iterator's
+  `FG_COLOR`/`BG_COLOR` keys flatten a cell's colour from its three sources;
+  `grid_ref` hands over the raw cell and the style and nothing else, so a reader
+  has to reproduce the rule — foreground from the style with palette indices
+  resolved, background from the cell's **content tag ahead of** the style. The
+  order only shows on cleared regions.
+- **`grid_ref_graphemes` does not answer a null-buffer length query.** Asked
+  with `buf = 0, len = 0` it reports nothing rather than the size required.
+  Give it a real buffer; it writes the needed length even when it has no room.
 
 ## What each export becomes
 
