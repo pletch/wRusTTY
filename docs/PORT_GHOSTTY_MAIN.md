@@ -117,6 +117,19 @@ None of these are derivable by reading the headers, and each fails *silently*.
 - **`grid_ref_graphemes` does not answer a null-buffer length query.** Asked
   with `buf = 0, len = 0` it reports nothing rather than the size required.
   Give it a real buffer; it writes the needed length even when it has no room.
+- **Callback options take the function pointer *itself* as `value`** — not a
+  pointer to it, unlike every scalar option. The wrong form returns
+  `GHOSTTY_SUCCESS` and then traps inside `vt_write` with "table index is out of
+  bounds", because the core used the address as a table index.
+- **A JS closure cannot be installed as a callback.** It is not a `funcref`;
+  `Table.set` rejects it and `WebAssembly.Function` is unavailable. An exported
+  wasm function is valid, so `effects.ts` carries a hand-assembled trampoline
+  module. The build exports `__indirect_function_table` and it is growable,
+  which is what makes this possible at all.
+- **Effect callbacks fire *during* `vt_write`, not after**, and must not
+  re-enter it on the same terminal. Buffer and hand over once the write returns.
+- **Replies are only valid for the duration of the callback.** Copy them; a view
+  over wasm memory is overwritten by the next write.
 
 ## What each export becomes
 
@@ -164,11 +177,13 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
 ### Changes model (4)
 
 - `terminal_has_response` / `terminal_read_response` → **`OPT_WRITE_PTY`**, a
-  registered callback, instead of polling a queue. **This is the one with a
-  correctness cliff**: `vt_write` by default *"only process sequences that
-  directly affect terminal state and ignores sequences that have side effect
-  behavior or require responses"*. Until effects are wired, everything renders
-  correctly and device-attribute/status queries silently go unanswered.
+  registered callback, instead of polling a queue. **Done** — `main/effects.ts`.
+  This was the one with a correctness cliff: `vt_write` by default *"only
+  process sequences that directly affect terminal state and ignores sequences
+  that have side effect behavior or require responses"*, so until effects are
+  wired everything renders correctly and device-attribute/status queries
+  silently go unanswered. A test pins that default so it stays a known fact
+  rather than a rediscovered one.
 - `terminal_last_reset_seq` / `terminal_last_cursor_style_seq` → **probably
   obsolete.** They exist because RIS discards a configured cursor and the host
   wants it back only if the application did not then set its own. `main` has
@@ -202,7 +217,10 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       `ViewportSource` names the shape.
 - [x] **Scrollback reads onto `grid_ref`** — `main/ScrollbackReader.ts`, also
       byte-identical, nine cases including cleared regions and clusters.
-- [ ] Responses onto `OPT_WRITE_PTY` (the silent-failure one — see above)
+- [x] **Responses onto `OPT_WRITE_PTY`** — `main/effects.ts`. Ten cases,
+      including a *negative* one pinning the silent default (no callback, no
+      replies) and a comparison against what the vendored queue answers for the
+      same queries.
 - [ ] `#176` extracted as a standalone patch against the pin
 - [ ] Rebuild + `vendorIntegrity` hash + `gridSnapshot` green
 
