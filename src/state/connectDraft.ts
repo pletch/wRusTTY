@@ -1,6 +1,7 @@
 import { defaultSerialConfig } from '../lib/serial'
 import { serialConfigFrom } from '../lib/profiles'
 import type { SerialConfig } from '../lib/serial'
+import type { WakeOnLan } from '../lib/profiles'
 import type { ConnectDialogInitial } from '../components/ConnectDialog'
 
 export type Protocol = 'ssh' | 'telnet' | 'serial'
@@ -48,6 +49,51 @@ export const TELNET_DEFAULT_TERM = 'vt100'
 /** Sentinel for the "+ New folder..." row in the folder <select>. */
 export const NEW_FOLDER_SENTINEL = '__new__'
 
+/** What the MAC field accepts, as a `pattern` for the input to enforce: the
+ * four ways an address gets written down (`aa:bb:cc:dd:ee:ff`, `aa-bb-...`,
+ * Cisco's `aabb.ccdd.eeff`, bare hex). Native validation rather than an error
+ * message of our own — the form already leans on `required` elsewhere, and an
+ * empty field is legitimately "don't wake this host", which `pattern` ignores
+ * exactly as we want. Rust re-parses it anyway (see wake::parse_mac); this is
+ * only here to catch a typo while the user can still see the field. */
+export const MAC_PATTERN =
+  '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|([0-9A-Fa-f]{4}\\.){2}[0-9A-Fa-f]{4}|[0-9A-Fa-f]{12}'
+
+/** The six bytes as `aa:bb:cc:dd:ee:ff`, or null if that isn't a MAC.
+ *
+ * Stored canonically rather than as typed so the same address saved from two
+ * machines — one copied out of ipconfig with hyphens, one off a switch with
+ * dots — reads as the same thing in the form afterwards. */
+export function normalizeMac(text: string): string | null {
+  const hex = text.replace(/[:.\-\s]/g, '')
+  if (!/^[0-9A-Fa-f]{12}$/.test(hex)) return null
+  return (hex.toLowerCase().match(/../g) ?? []).join(':')
+}
+
+/** The wake config a draft describes, or null for "don't wake this host".
+ *
+ * An empty MAC field is the off switch — everything else is optional detail
+ * about a wake that is already going to happen, so none of it means anything
+ * without one. A MAC that doesn't parse is also null: the input's `pattern`
+ * is what stops it reaching here, and silently saving something the backend
+ * will reject on every connect would be worse than saving nothing. */
+export function wakeOnLanFrom(draft: ConnectDraft): WakeOnLan | null {
+  const mac = normalizeMac(draft.wakeMac)
+  if (!mac) return null
+  return {
+    mac,
+    // '' means "use the default" for both, exactly as the keepalive field's
+    // blank does — null rather than a value we'd have to keep in step with
+    // the backend's own default.
+    broadcast: draft.wakeBroadcast.trim() || null,
+    // Not on the form: port 9 vs 7 is a property of unusual NIC firmware, and
+    // a profile that needs it can be edited in sessions.json until something
+    // turns up that actually does.
+    port: null,
+    waitSeconds: draft.wakeWait === '' ? null : Number(draft.wakeWait),
+  }
+}
+
 /** A public-key profile with no keyPath and an existing vault credential
  * means the key itself already lives in the vault. */
 export function isInitiallyVaulted(initial: ConnectDialogInitial | undefined): boolean {
@@ -65,6 +111,13 @@ export interface ConnectDraft {
    * '0' means off. Kept as a string like `port` is, so the field can be
    * cleared while being edited without snapping to a number. */
   keepalive: string
+  /** MAC to wake this host, as typed. '' is the off switch for the whole
+   * feature — see `wakeOnLanFrom`. */
+  wakeMac: string
+  /** Directed broadcast to send it to; '' is 255.255.255.255. */
+  wakeBroadcast: string
+  /** Seconds to wait for the host; '' is the backend's 60. */
+  wakeWait: string
   host: string
   port: string
   username: string
@@ -112,6 +165,10 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     isNewFolder: false,
     jumpProfileId: initial?.jumpProfileId ?? '',
     keepalive: initial?.keepaliveSeconds == null ? '' : String(initial.keepaliveSeconds),
+    wakeMac: initial?.wakeOnLan?.mac ?? '',
+    wakeBroadcast: initial?.wakeOnLan?.broadcast ?? '',
+    wakeWait:
+      initial?.wakeOnLan?.waitSeconds == null ? '' : String(initial.wakeOnLan.waitSeconds),
     // A saved serial session opens on its own stored line settings, same as a
     // saved SSH one opens on its host and user. `portName` here is the port
     // the adapter was last seen on — informational, since the actual port is

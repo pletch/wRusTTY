@@ -7,6 +7,9 @@ import {
   TERM_CUSTOM,
   TELNET_DEFAULT_TERM,
   NEW_FOLDER_SENTINEL,
+  MAC_PATTERN,
+  normalizeMac,
+  wakeOnLanFrom,
 } from './connectDraft'
 import type { ConnectDraft } from './connectDraft'
 
@@ -171,5 +174,87 @@ describe('fieldSet', () => {
     const base = initialConnectDraft(undefined)
     const next = connectDraftReducer(base, { type: 'fieldSet', field: 'saveProfile', value: true })
     expect(next.saveProfile).toBe(true)
+  })
+})
+
+describe('normalizeMac', () => {
+  it('accepts a MAC however it was written down', () => {
+    for (const text of ['aa:bb:cc:dd:ee:ff', 'AA-BB-CC-DD-EE-FF', 'aabb.ccdd.eeff', 'AABBCCDDEEFF']) {
+      expect(normalizeMac(text)).toBe('aa:bb:cc:dd:ee:ff')
+    }
+  })
+
+  it('rejects anything that isn\'t six bytes of hex', () => {
+    for (const text of ['', 'aa:bb:cc:dd:ee', 'aa:bb:cc:dd:ee:ff:00', 'aa:bb:cc:dd:ee:gg']) {
+      expect(normalizeMac(text)).toBeNull()
+    }
+  })
+
+  /** The pattern the input enforces has to agree with the parser behind it,
+   * or the form blocks something the backend would have accepted. */
+  it('agrees with the input pattern about what a MAC is', () => {
+    const pattern = new RegExp(`^(?:${MAC_PATTERN})$`)
+    for (const text of ['aa:bb:cc:dd:ee:ff', 'AA-BB-CC-DD-EE-FF', 'aabb.ccdd.eeff', 'AABBCCDDEEFF']) {
+      expect(pattern.test(text)).toBe(true)
+    }
+    for (const text of ['aa:bb:cc:dd:ee', 'aa:bb:cc:dd:ee:gg', 'nope']) {
+      expect(pattern.test(text)).toBe(false)
+    }
+  })
+})
+
+describe('wakeOnLanFrom', () => {
+  const withWake = (fields: Partial<ConnectDraft>): ConnectDraft => ({
+    ...initialConnectDraft(undefined),
+    ...fields,
+  })
+
+  /** An empty MAC field is the feature's off switch — nothing else in the
+   * group means anything without one. */
+  it('is null when no MAC was given', () => {
+    expect(wakeOnLanFrom(withWake({ wakeMac: '', wakeBroadcast: '192.168.1.255' }))).toBeNull()
+  })
+
+  it('stores the MAC canonically whatever form it was typed in', () => {
+    expect(wakeOnLanFrom(withWake({ wakeMac: 'AABB.CCDD.EEFF' }))?.mac).toBe('aa:bb:cc:dd:ee:ff')
+  })
+
+  /** Blank means "use the backend's default" for both, rather than a value
+   * here that would have to be kept in step with it. */
+  it('leaves the optional fields null when they were left blank', () => {
+    const wake = wakeOnLanFrom(withWake({ wakeMac: 'aa:bb:cc:dd:ee:ff' }))
+    expect(wake).toEqual({ mac: 'aa:bb:cc:dd:ee:ff', broadcast: null, port: null, waitSeconds: null })
+  })
+
+  it('carries a directed broadcast and a custom wait through', () => {
+    const wake = wakeOnLanFrom(
+      withWake({ wakeMac: 'aa:bb:cc:dd:ee:ff', wakeBroadcast: ' 192.168.1.255 ', wakeWait: '120' }),
+    )
+    expect(wake?.broadcast).toBe('192.168.1.255')
+    expect(wake?.waitSeconds).toBe(120)
+  })
+
+  /** The input's pattern is what stops this reaching here; saving something
+   * the backend rejects on every connect would be worse than saving nothing. */
+  it('is null for a MAC that never parsed', () => {
+    expect(wakeOnLanFrom(withWake({ wakeMac: 'the printer' }))).toBeNull()
+  })
+})
+
+describe('initialConnectDraft wake fields', () => {
+  it('opens a saved session on its stored wake settings', () => {
+    const draft = initialConnectDraft({
+      wakeOnLan: { mac: 'aa:bb:cc:dd:ee:ff', broadcast: '192.168.1.255', port: null, waitSeconds: 90 },
+    })
+    expect(draft.wakeMac).toBe('aa:bb:cc:dd:ee:ff')
+    expect(draft.wakeBroadcast).toBe('192.168.1.255')
+    expect(draft.wakeWait).toBe('90')
+  })
+
+  it('leaves the fields blank for a session that never waked anything', () => {
+    const draft = initialConnectDraft({ host: 'h' })
+    expect(draft.wakeMac).toBe('')
+    expect(draft.wakeBroadcast).toBe('')
+    expect(draft.wakeWait).toBe('')
   })
 })

@@ -18,6 +18,8 @@ import {
   TERM_CUSTOM,
   BACKSPACE_OPTIONS,
   NEW_FOLDER_SENTINEL,
+  MAC_PATTERN,
+  wakeOnLanFrom,
 } from '../state/connectDraft'
 import type { Protocol } from '../state/connectDraft'
 
@@ -160,6 +162,9 @@ export function ConnectDialog({
     isNewFolder,
     jumpProfileId,
     keepalive,
+    wakeMac,
+    wakeBroadcast,
+    wakeWait,
     serialConfig,
     logSession,
     saveProfile,
@@ -184,6 +189,10 @@ export function ConnectDialog({
   const setFolder = (v: string) => dispatch({ type: 'fieldSet', field: 'folder', value: v })
   const setJumpProfileId = (v: string) => dispatch({ type: 'fieldSet', field: 'jumpProfileId', value: v })
   const setKeepalive = (v: string) => dispatch({ type: 'fieldSet', field: 'keepalive', value: v })
+  const setWakeMac = (v: string) => dispatch({ type: 'fieldSet', field: 'wakeMac', value: v })
+  const setWakeBroadcast = (v: string) =>
+    dispatch({ type: 'fieldSet', field: 'wakeBroadcast', value: v })
+  const setWakeWait = (v: string) => dispatch({ type: 'fieldSet', field: 'wakeWait', value: v })
   const setSerialConfig = (v: typeof serialConfig) => dispatch({ type: 'fieldSet', field: 'serialConfig', value: v })
   const setLogSession = (v: boolean) => dispatch({ type: 'fieldSet', field: 'logSession', value: v })
   const setSaveProfile = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveProfile', value: v })
@@ -321,10 +330,11 @@ export function ConnectDialog({
           // '' means "use the default", which is null rather than 0 — 0 is
           // the distinct, deliberate "turn keepalives off".
           keepaliveSeconds: keepalive === '' ? null : Number(keepalive),
-          // No field on the form yet — preserved rather than defaulted to
-          // null, so an unrelated edit doesn't quietly drop a MAC someone
-          // saved.
-          wakeOnLan: initial?.wakeOnLan ?? null,
+          // A jump host hides the field rather than clearing it, so read the
+          // saved value back through in that case — otherwise selecting a
+          // jump host would silently delete a MAC that becomes relevant again
+          // the moment it's deselected.
+          wakeOnLan: jumpProfileId ? (initial?.wakeOnLan ?? null) : wakeOnLanFrom(draft),
           serial: null,
         })
 
@@ -355,6 +365,10 @@ export function ConnectDialog({
               keepalive_seconds: keepalive === '' ? null : Number(keepalive),
             },
             jumpProfileId: jumpProfileId || null,
+            // Applies to a one-off connection too, not only a saved session:
+            // the host being asleep is a fact about the host, and having to
+            // save a profile first to get past it would be a strange gate.
+            wake: wakeOnLanFrom(draft),
           },
           logSession,
           paneOptions,
@@ -703,6 +717,56 @@ export function ConnectDialog({
               title="How often to send a keepalive so an idle connection isn't dropped by a firewall or NAT. Blank uses 60 seconds; 0 turns keepalives off."
             />
           </label>
+        )}
+
+        {/* SSH only, matching where the connect path is wired. Hidden rather
+            than disabled when a jump host is selected: a magic packet is a
+            broadcast on this machine's local segment, and a host reached
+            through a jump isn't on it, so the backend skips waking entirely
+            in that case (see ssh.rs) and a live-looking field would be
+            promising something that won't happen. */}
+        {protocol === 'ssh' && !jumpProfileId && (
+          <div className="space-y-1">
+            <label className="block space-y-1">
+              <span className="text-xs text-white/40">Wake-on-LAN (MAC address)</span>
+              <input
+                className={`${inputClass} w-full`}
+                placeholder="blank — don't wake this host"
+                value={wakeMac}
+                onChange={(e) => setWakeMac(e.target.value)}
+                pattern={MAC_PATTERN}
+                title="The host's MAC address. Before connecting, wrustty checks whether it's already up and only sends a magic packet if it isn't. Leave blank unless this machine sleeps."
+              />
+            </label>
+            {/* Only once there's something to qualify — two more fields on
+                every SSH form would be noise for the majority of sessions,
+                which don't wake anything. */}
+            {wakeMac.trim() !== '' && (
+              <div className="flex gap-2">
+                <label className="block flex-1 space-y-1">
+                  <span className="text-xs text-white/40">Broadcast to</span>
+                  <input
+                    className={`${inputClass} w-full`}
+                    placeholder="255.255.255.255"
+                    value={wakeBroadcast}
+                    onChange={(e) => setWakeBroadcast(e.target.value)}
+                    title="Where to send the magic packet. The default reaches this machine's own network only. Give the target subnet's broadcast address (e.g. 192.168.1.255) to reach another one — or to pick which network card the packet leaves by, if this machine has several."
+                  />
+                </label>
+                <label className="block w-32 space-y-1">
+                  <span className="text-xs text-white/40">Wait (seconds)</span>
+                  <input
+                    className={`${inputClass} w-full`}
+                    inputMode="numeric"
+                    placeholder="60"
+                    value={wakeWait}
+                    onChange={(e) => setWakeWait(e.target.value.replace(/[^0-9]/g, ''))}
+                    title="How long to keep waiting for the host to finish booting before giving up. Raise it for a machine that's slow to start."
+                  />
+                </label>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Applies to every protocol: this is the local terminal choosing
