@@ -213,7 +213,13 @@ export class MainViewportReader implements ViewportSource {
     const hi = d.getUint32(this.scratch + 4, true)
     const raw = (BigInt(hi) << 32n) | BigInt(lo)
 
-    d.setUint32(at + OFF_CODEPOINT, abi.codepointOf(lo), true)
+    abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_CONTENT_TAG, this.scratch), 'cell_get CONTENT_TAG')
+    d = this.dv()
+    // The payload is a union — a codepoint, or a background colour for a cell
+    // with no text. Unpacking it unconditionally turns a blank painted by
+    // ED/EL into a control character.
+    const hasText = abi.cellHasText(d.getUint32(this.scratch, true))
+    d.setUint32(at + OFF_CODEPOINT, hasText ? abi.codepointOf(lo) : 0, true)
 
     abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_WIDE, this.scratch), 'cell_get WIDE')
     d = this.dv()

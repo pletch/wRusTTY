@@ -111,6 +111,20 @@ export const CELL_CONTENT_CODEPOINT_GRAPHEME = 1
 export const CELL_CONTENT_BG_COLOR_PALETTE = 2
 export const CELL_CONTENT_BG_COLOR_RGB = 3
 
+/**
+ * Whether the packed payload is a codepoint at all.
+ *
+ * The cell's content field is a **union**: a codepoint for a cell with text, or
+ * a background colour for one without. `codepointOf` is only meaningful when
+ * this is true — running it over a `BG_COLOR_*` cell yields whatever the low
+ * bits of the colour happen to be, which for `0x445566` is a plain `1`. A
+ * cleared row then reads as a row of control characters, and nothing about that
+ * looks wrong until the bytes are compared.
+ */
+export function cellHasText(contentTag: number): boolean {
+  return contentTag === CELL_CONTENT_CODEPOINT || contentTag === CELL_CONTENT_CODEPOINT_GRAPHEME
+}
+
 /** `GhosttyCellWide`. */
 export const CELL_WIDE_NARROW = 0
 export const CELL_WIDE_WIDE = 1

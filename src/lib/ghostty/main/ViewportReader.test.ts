@@ -163,7 +163,16 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
   it('matches on wide glyphs, including the spacer cell', () =>
     identical('wide', 'a世界b\r\n漢字テスト'))
 
-  it('matches on combining marks', () => identical('graphemes', 'é à ö done'))
+  // Written as explicit combining sequences: a literal é in source is the
+  // precomposed U+00E9, a single codepoint that exercises no cluster handling
+  // at all, and it passed while the grapheme mapping was still off by one.
+  it('matches on combining marks', () =>
+    identical('graphemes', 'é à ö ñ done'))
+
+  it('matches on cleared regions, where the payload is a colour not a codepoint', () =>
+    // EL/ED with a background set paint blanks whose colour lives in the cell's
+    // content union. Reading that as a codepoint yields a control character.
+    identical('cleared', '\x1b[44mtext\x1b[K\r\n\x1b[41mmore\x1b[K\x1b[0m'))
 
   it('matches after scrolling past the viewport', () => {
     let s = ''
