@@ -19,6 +19,7 @@ import {
   BACKSPACE_OPTIONS,
   NEW_FOLDER_SENTINEL,
   MAC_PATTERN,
+  MAX_WAKE_WAIT_SECONDS,
   wakeOnLanFrom,
 } from '../state/connectDraft'
 import type { Protocol } from '../state/connectDraft'
@@ -765,12 +766,24 @@ export function ConnectDialog({
                     placeholder="60"
                     value={wakeWait}
                     onChange={(e) => setWakeWait(e.target.value.replace(/[^0-9]/g, ''))}
-                    title="How long to keep waiting for the host to finish booting before giving up. Raise it for a machine that's slow to start."
+                    title={`How long to keep waiting for the host to finish booting before giving up. Raise it for a machine that's slow to start; ${MAX_WAKE_WAIT_SECONDS} seconds is the most it will wait.`}
                   />
                 </label>
               </div>
             )}
           </div>
+        )}
+
+        {/* The other half of hiding the fields: a profile that had a MAC keeps
+            it when a jump host is selected (see the wakeOnLan line in the save
+            path), and the backend then skips waking. Without saying so, that
+            profile silently stops waking and the only trace is a log line a
+            release build doesn't show. */}
+        {protocol === 'ssh' && jumpProfileId && initial?.wakeOnLan && (
+          <p className="text-xs text-white/40">
+            This session has a MAC saved, but it won't be woken while it goes through a jump host —
+            a magic packet is a broadcast on this machine's network, and this host isn't on it.
+          </p>
         )}
 
         {/* Applies to every protocol: this is the local terminal choosing

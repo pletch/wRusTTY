@@ -8,6 +8,7 @@ import {
   TELNET_DEFAULT_TERM,
   NEW_FOLDER_SENTINEL,
   MAC_PATTERN,
+  MAX_WAKE_WAIT_SECONDS,
   normalizeMac,
   wakeOnLanFrom,
 } from './connectDraft'
@@ -232,6 +233,14 @@ describe('wakeOnLanFrom', () => {
     )
     expect(wake?.broadcast).toBe('192.168.1.255')
     expect(wake?.waitSeconds).toBe(120)
+  })
+
+  /** The backend refuses a wait past its ceiling, so a form that could
+   * produce one would be a save failing for a reason nothing on screen
+   * explains. */
+  it('clamps a wait longer than the backend will honour', () => {
+    const wake = wakeOnLanFrom(withWake({ wakeMac: 'aa:bb:cc:dd:ee:ff', wakeWait: '31536000' }))
+    expect(wake?.waitSeconds).toBe(MAX_WAKE_WAIT_SECONDS)
   })
 
   /** The input's pattern is what stops this reaching here; saving something

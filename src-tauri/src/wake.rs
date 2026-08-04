@@ -40,6 +40,22 @@ pub const DEFAULT_BROADCAST: Ipv4Addr = Ipv4Addr::BROADCAST;
 /// to spare, and the caller can raise it per-profile for anything slower.
 pub const DEFAULT_WAIT_SECONDS: u64 = 60;
 
+/// The longest wait a stored profile can ask for. Ten minutes is already well
+/// past the S4-with-a-spinning-disk case `DEFAULT_WAIT_SECONDS` describes, so
+/// nothing legitimate is being refused.
+///
+/// The ceiling exists because the field is a number in a file: `sessions.json`
+/// is editable, and `vault_import`'s plaintext half deserialises straight into
+/// `SessionProfile`. Unbounded, it buys two things — a pane stuck "Waking" for
+/// a year while emitting a packet every `RETRY_INTERVAL`, and, at the top of
+/// the range, a panic: `Instant + Duration` is a `checked_add().expect(..)`,
+/// and a panic inside the connect task's prepare step leaves the session
+/// wedged in `Connecting`.
+///
+/// Clamped rather than rejected at use, so an imported profile stays usable;
+/// `validate` is the complement, so the person who typed it hears about it.
+pub const MAX_WAIT_SECONDS: u64 = 600;
+
 /// What to send, and where. `None` throughout means "use the default", so a
 /// profile that only fills in a MAC — which is nearly all of them — stores
 /// exactly that and nothing else.
@@ -67,8 +83,14 @@ impl WakeOnLan {
         self.port.unwrap_or(DEFAULT_PORT)
     }
 
+    /// Clamped to `MAX_WAIT_SECONDS` — see there for why a stored number
+    /// needs a ceiling at all.
     pub fn wait(&self) -> Duration {
-        Duration::from_secs(self.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS))
+        Duration::from_secs(
+            self.wait_seconds
+                .unwrap_or(DEFAULT_WAIT_SECONDS)
+                .min(MAX_WAIT_SECONDS),
+        )
     }
 
     /// The parsed broadcast target. An unparseable address is an error rather
@@ -76,14 +98,75 @@ impl WakeOnLan {
     /// broadcast that quietly becomes a limited one would look like it worked
     /// on the LAN and fail everywhere else, which is the worst way for this
     /// to be wrong.
+    ///
+    /// An address that parses but isn't somewhere a magic packet belongs is
+    /// the same kind of error — see `is_wakeable`.
     pub fn broadcast_addr(&self) -> Result<Ipv4Addr, String> {
-        match self.broadcast.as_deref().map(str::trim) {
-            None | Some("") => Ok(DEFAULT_BROADCAST),
+        let addr: Ipv4Addr = match self.broadcast.as_deref().map(str::trim) {
+            None | Some("") => return Ok(DEFAULT_BROADCAST),
             Some(text) => text
                 .parse()
-                .map_err(|_| format!("not a valid IPv4 broadcast address: {text}")),
+                .map_err(|_| format!("not a valid IPv4 broadcast address: {text}"))?,
+        };
+        if !is_wakeable(addr) {
+            return Err(format!(
+                "{addr} is not somewhere a magic packet belongs: use the limited broadcast \
+                 (255.255.255.255) or a private-range address such as 192.168.1.255"
+            ));
         }
+        Ok(addr)
     }
+
+    /// Everything about this config that can be checked without a network:
+    /// the MAC parses, and the target is one a packet may be sent to.
+    ///
+    /// Separate from `send` so the same answer can be given at the two places
+    /// a person can still act on it — saving a profile, and importing a
+    /// bundle of them. Before this existed, both checks happened only at
+    /// connect time, so a garbage MAC saved cleanly and failed a minute later
+    /// in a pane.
+    pub fn validate(&self) -> Result<(), String> {
+        parse_mac(&self.mac)?;
+        self.broadcast_addr()?;
+        if self.wait_seconds.is_some_and(|s| s > MAX_WAIT_SECONDS) {
+            return Err(format!(
+                "waiting longer than {MAX_WAIT_SECONDS}s for a host to wake isn't supported"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a magic packet may be sent to `addr`.
+///
+/// A wake target has to be somewhere a magic packet is meaningful: the
+/// limited broadcast, and the ranges a LAN or a routed internal segment
+/// actually uses — which covers every real use of this field, including
+/// waking a machine across a VPN into a private range.
+///
+/// Refused: public unicast, loopback, multicast. Not because a magic packet
+/// there would do damage, but because this field arrives from files —
+/// `sessions.json`, and `vault_import`'s plaintext half — and an
+/// unconstrained address plus an unconstrained port turns `send` into a UDP
+/// sender pointed wherever a planted bundle says. It is write-only and the
+/// payload is a fixed shape, so it's not much of a primitive; it is still the
+/// victim's network position offered to whoever wrote the file, every
+/// `RETRY_INTERVAL`, for the length of the wait.
+///
+/// The one legitimate case refused is a LAN on public address space — some
+/// universities and older allocations. If that ever comes up it wants an
+/// explicit setting, not a permissive default.
+fn is_wakeable(addr: Ipv4Addr) -> bool {
+    addr == Ipv4Addr::BROADCAST
+        || addr.is_private()    // 10/8, 172.16/12, 192.168/16
+        || addr.is_link_local() // 169.254/16
+        // Carrier-grade NAT, 100.64/10 — what Tailscale and similar hand out,
+        // so a wake across an overlay lands here rather than in RFC 1918.
+        || matches!(addr.octets(), [100, b, _, _] if (64..128).contains(&b))
+        // Loopback is refused above, which the tests would fail on: they send
+        // to a socket on 127.0.0.1 precisely so nothing leaves the machine.
+        // The alternative is a test that broadcasts for real, which is worse.
+        || (cfg!(test) && addr.is_loopback())
 }
 
 /// A MAC as its six bytes, from any of the ways one gets written down:
@@ -329,6 +412,99 @@ mod tests {
             wait_seconds: None,
         };
         assert!(wake.broadcast_addr().is_err());
+    }
+
+    /// The addresses this field is actually for: the limited broadcast, a
+    /// directed broadcast on each of the private ranges, link-local, and the
+    /// CGNAT range an overlay network hands out.
+    #[test]
+    fn the_ranges_a_lan_uses_are_wakeable() {
+        for text in [
+            "255.255.255.255",
+            "192.168.1.255",
+            "10.255.255.255",
+            "172.16.5.255",
+            "169.254.255.255",
+            "100.64.0.255",
+        ] {
+            let wake = WakeOnLan {
+                mac: "aa:bb:cc:dd:ee:ff".into(),
+                broadcast: Some(text.into()),
+                port: None,
+                wait_seconds: None,
+            };
+            assert_eq!(
+                wake.broadcast_addr().unwrap(),
+                text.parse::<Ipv4Addr>().unwrap()
+            );
+        }
+    }
+
+    /// See `is_wakeable`: the field arrives from an importable file, and
+    /// `send` is otherwise 102 bytes to any address and port the file names.
+    #[test]
+    fn an_address_a_magic_packet_doesnt_belong_at_is_refused() {
+        for text in [
+            "8.8.8.8",         // public unicast
+            "224.0.0.1",       // multicast
+            "239.255.255.250", // multicast, and something that does listen
+            "100.128.0.1",     // just past CGNAT, so public
+            "0.0.0.0",
+        ] {
+            let wake = WakeOnLan {
+                mac: "aa:bb:cc:dd:ee:ff".into(),
+                broadcast: Some(text.into()),
+                port: None,
+                wait_seconds: None,
+            };
+            assert!(wake.broadcast_addr().is_err(), "accepted {text}");
+            assert!(wake.validate().is_err(), "validate accepted {text}");
+        }
+    }
+
+    /// The clamp is the thing that stops a stored number becoming either a
+    /// year-long send loop or a panic in `Instant::add`.
+    #[test]
+    fn an_absurd_wait_is_clamped_rather_than_honoured() {
+        let mut wake = WakeOnLan {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            broadcast: None,
+            port: None,
+            wait_seconds: Some(u64::MAX),
+        };
+        assert_eq!(wake.wait(), Duration::from_secs(MAX_WAIT_SECONDS));
+        // Still usable if it arrived from an import — but refused at the
+        // boundary, so whoever typed it is told rather than quietly overruled.
+        assert!(wake.validate().is_err());
+
+        wake.wait_seconds = Some(120);
+        assert_eq!(wake.wait(), Duration::from_secs(120));
+        assert!(wake.validate().is_ok());
+    }
+
+    /// The clamped deadline has to be one `Instant` can hold, which is the
+    /// whole point — this panicked before the `min`.
+    #[test]
+    fn the_clamped_wait_makes_a_deadline_that_doesnt_panic() {
+        let wake = WakeOnLan {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            broadcast: None,
+            port: None,
+            wait_seconds: Some(u64::MAX),
+        };
+        let _ = std::time::Instant::now() + wake.wait();
+    }
+
+    #[test]
+    fn validate_refuses_a_mac_that_isnt_one() {
+        assert!(WakeOnLan {
+            mac: "the printer in the corner".into(),
+            broadcast: None,
+            port: None,
+            wait_seconds: None,
+        }
+        .validate()
+        .is_err());
     }
 
     /// The bytes on the wire are the entire contract with the NIC's firmware,

@@ -59,6 +59,11 @@ export const NEW_FOLDER_SENTINEL = '__new__'
 export const MAC_PATTERN =
   '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|([0-9A-Fa-f]{4}\\.){2}[0-9A-Fa-f]{4}|[0-9A-Fa-f]{12}'
 
+/** The longest wake wait the backend will honour (wake::MAX_WAIT_SECONDS).
+ * Mirrored here so the form's `max` refuses it while the field is still on
+ * screen, rather than `save_session` doing it after the dialog has closed. */
+export const MAX_WAKE_WAIT_SECONDS = 600
+
 /** The six bytes as `aa:bb:cc:dd:ee:ff`, or null if that isn't a MAC.
  *
  * Stored canonically rather than as typed so the same address saved from two
@@ -90,7 +95,11 @@ export function wakeOnLanFrom(draft: ConnectDraft): WakeOnLan | null {
     // a profile that needs it can be edited in sessions.json until something
     // turns up that actually does.
     port: null,
-    waitSeconds: draft.wakeWait === '' ? null : Number(draft.wakeWait),
+    // Clamped as well as bounded by the input's `max`: `save_session`
+    // refuses anything past the ceiling, and a form that could produce one
+    // would be a save that fails for a reason the user can't see.
+    waitSeconds:
+      draft.wakeWait === '' ? null : Math.min(Number(draft.wakeWait), MAX_WAKE_WAIT_SECONDS),
   }
 }
 

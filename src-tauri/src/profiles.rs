@@ -198,6 +198,13 @@ pub async fn save_session(
     profile: SessionProfile,
     state: tauri::State<'_, ProfileState>,
 ) -> Result<(), String> {
+    // Checked here rather than only at connect time: this is the point where
+    // there is still a person to tell. A bad MAC or a wake target that isn't
+    // one used to save cleanly and surface a minute into a connection, in a
+    // pane, with the form long closed.
+    if let Some(wake) = &profile.wake_on_lan {
+        wake.validate()?;
+    }
     let _guard = state.lock.lock().await;
     let path = profiles_path(&app)?;
     let mut profiles = read_profiles(&path)?;

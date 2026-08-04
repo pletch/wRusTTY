@@ -872,6 +872,36 @@ pub async fn vault_export(
     Ok(true)
 }
 
+/// What can be checked about the bundle's plaintext `sessions` half before it
+/// replaces the live one.
+///
+/// Most of a `SessionProfile` can't be: a hostname or a `key_path` is not
+/// wrong in any way this side can see, which is why the import UI's job is to
+/// make the replacement obvious. What *can* be checked is anything the
+/// application will later act on by itself, and `wake_on_lan` is the first
+/// such field — a MAC and a destination that a connect turns into outbound
+/// UDP with nobody asked. Refusing the bundle is right rather than dropping
+/// the field: this runs before anything is torn down, so the cost of being
+/// strict is an error message, and a bundle carrying a wake target that isn't
+/// one is a bundle to be suspicious of rather than to quietly repair.
+///
+/// The pattern generalises deliberately. Every field `SessionProfile` grows
+/// that acts on its own belongs here, checked at the boundary, rather than
+/// discovered at use.
+fn validate_sessions(sessions: &[crate::profiles::SessionProfile]) -> Result<(), String> {
+    for session in sessions {
+        if let Some(wake) = &session.wake_on_lan {
+            wake.validate().map_err(|e| {
+                format!(
+                    "the session \"{}\" in this bundle has an unusable wake setting: {e}",
+                    session.label
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// Importing replaces the vault file, the session profile list, and the
 /// saved workspaces outright, and forces a re-lock (the in-memory vault, if
 /// any, belonged to the old file and its key no longer applies) — the caller
@@ -888,8 +918,9 @@ pub async fn vault_export(
 /// something a filesystem offers — and the recovery is to re-run the import,
 /// since the bundle is still sitting there.
 ///
-/// Note what is *not* checked, because it can't be: `sessions` is trusted
-/// content. A planted bundle can name any `key_path` it likes against any
+/// `sessions` gets what checking it admits of — see `validate_sessions` — but
+/// most of it is untrusted content that can't be judged from here. A planted
+/// bundle can name any `key_path` it likes against any
 /// host, and connecting to that host would hand it a signature from that key.
 /// Nothing here can distinguish that from a legitimate profile — the import
 /// UI's job is to make clear that the session list is being replaced, so the
@@ -925,6 +956,7 @@ pub async fn vault_import(
     // principle as waiting for a file to be chosen: nothing is given up until
     // the replacement is known good.
     wr_vault::validate(&bundle.vault).map_err(|e| format!("not a valid vault file: {e}"))?;
+    validate_sessions(&bundle.sessions)?;
 
     // Only now does the current unlock go: the in-memory vault belonged to the
     // old file and its key no longer applies, and any stored OS-unlock key
@@ -946,4 +978,60 @@ pub async fn vault_import(
     crate::workspaces::replace_all(&app, &workspace_state, &bundle.workspaces).await?;
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Built by deserialising, because that is how a bundle's sessions
+    /// arrive — a struct literal would skip the `serde(default)` handling the
+    /// real path goes through.
+    fn session_with_wake(wake: &str) -> crate::profiles::SessionProfile {
+        serde_json::from_str(&format!(
+            r#"{{
+                "id": "abc",
+                "label": "the one in the study",
+                "folder": null,
+                "host": "desktop.lan",
+                "port": 22,
+                "protocol": "ssh",
+                "username": "tim",
+                "authType": "agent",
+                "keyPath": null,
+                "wakeOnLan": {wake}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_bundle_with_an_ordinary_wake_setting_imports() {
+        let sessions = [
+            session_with_wake(r#"null"#),
+            session_with_wake(r#"{"mac": "aa:bb:cc:dd:ee:ff"}"#),
+            session_with_wake(r#"{"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255"}"#),
+        ];
+        assert!(validate_sessions(&sessions).is_ok());
+    }
+
+    /// The whole bundle is refused, and the message names the session — this
+    /// runs before anything is torn down, so the user still has the vault
+    /// they were using and something to go on.
+    #[test]
+    fn a_bundle_pointing_a_wake_somewhere_it_doesnt_belong_is_refused() {
+        let sessions = [session_with_wake(
+            r#"{"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "8.8.8.8", "port": 53}"#,
+        )];
+        let error = validate_sessions(&sessions).unwrap_err();
+        assert!(error.contains("the one in the study"), "{error}");
+    }
+
+    #[test]
+    fn a_bundle_asking_for_an_absurd_wait_is_refused() {
+        let sessions = [session_with_wake(
+            r#"{"mac": "aa:bb:cc:dd:ee:ff", "waitSeconds": 31536000}"#,
+        )];
+        assert!(validate_sessions(&sessions).is_err());
+    }
 }
