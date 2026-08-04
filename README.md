@@ -246,6 +246,12 @@ target rather than here. On Windows 11, check all of:
 Wi-Fi wake (WoWLAN) is unreliable across vendors even when all of the above is
 set; Ethernet is what this works on consistently.
 
+The matching problem is a host that sleeps again *during* a session. The
+Windows idle timer is reset by user input and power requests only — not by
+network traffic — so an SSH session is invisible to it, and keepalives don't
+help. [`tools/keep-awake.ps1`](tools/keep-awake.ps1) runs on the remote host
+and holds it awake for as long as it runs.
+
 ### Checks
 
 ```sh
