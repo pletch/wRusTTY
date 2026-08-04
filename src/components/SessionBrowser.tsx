@@ -12,6 +12,7 @@ import {
   ChevronRight,
   ChevronDown,
   Fingerprint,
+  Zap,
 } from 'lucide-react'
 import type { SessionProfile } from '../lib/profiles'
 import { profileSubtitle, puttySessionCount } from '../lib/profiles'
@@ -55,6 +56,9 @@ interface Props {
    * them. */
   onEditSession?: (profile: SessionProfile) => void
   onDeleteSession?: (profile: SessionProfile) => void
+  /** Sends this session's magic packet without connecting. Offered only for
+   * a profile that has a MAC saved. */
+  onWakeSession?: (profile: SessionProfile) => void
   /** A session with a stored credential picked while the vault is locked
    * prompts for the master password inline instead of just falling back to
    * the caller's form — this unlocks the vault and then behaves like
@@ -93,6 +97,7 @@ export function SessionBrowser({
   onSelectSession,
   onEditSession,
   onDeleteSession,
+  onWakeSession,
   onUnlockAndSelectSession,
   osUnlockAvailable,
   onUnlockWithOsAndSelectSession,
@@ -476,6 +481,20 @@ export function SessionBrowser({
           >
             <Pencil size={13} /> Edit
           </button>
+          {/* Only for a session that has a MAC — the command behind it fails
+              without one, and an item that can only report that isn't worth
+              a row. Sits above Delete so the destructive item stays last. */}
+          {menu.profile.wakeOnLan && (
+            <button
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
+              onClick={() => {
+                onWakeSession?.(menu.profile)
+                setMenu(null)
+              }}
+            >
+              <Zap size={13} /> Wake
+            </button>
+          )}
           <button
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-white/10"
             onClick={() => {

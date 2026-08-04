@@ -155,6 +155,15 @@ export function listSessions() {
   return invoke<SessionProfile[]>('list_sessions')
 }
 
+/** Sends this session's magic packet and returns — no probe, no connection.
+ *
+ * The deliberate half of Wake-on-LAN, for wanting the machine up without
+ * opening a terminal on it. Rejects if the profile has no MAC saved, which is
+ * why the menu item offering this is hidden in that case. */
+export function wakeSession(profileId: string) {
+  return invoke<void>('wake_host', { profileId })
+}
+
 export function saveSession(profile: SessionProfile) {
   return invoke<void>('save_session', { profile })
 }

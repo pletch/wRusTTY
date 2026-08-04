@@ -903,6 +903,17 @@ function App() {
       .catch((err) => toast.error(`Couldn't delete session: ${err}`))
   }
 
+  // Fire-and-forget by design: a magic packet is a UDP broadcast with no
+  // acknowledgement of any kind, so "sent" is the only thing that can honestly
+  // be reported. Whether the machine actually wakes is answered by connecting
+  // to it, which is the other half of the feature.
+  function wakeSessionProfile(profile: SessionProfile) {
+    profiles
+      .wakeSession(profile.id)
+      .then(() => toast.success(`Sent a magic packet to "${profile.label}"`))
+      .catch((err) => toast.error(`Couldn't wake session: ${err}`))
+  }
+
   // Returns the promise so ConnectDialog can await the write before
   // connecting through the profile it just saved — otherwise the connection
   // reads whatever was on disk beforehand.
@@ -1275,6 +1286,7 @@ function App() {
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}
+                onWakeSession={wakeSessionProfile}
                 // The importer wrote straight to sessions.json rather than
                 // going through App's own save path, so the in-memory list
                 // has to be re-read rather than patched.

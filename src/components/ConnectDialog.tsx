@@ -98,6 +98,8 @@ interface Props {
    * a session's saved details rather than just reuse them. */
   onEditSession?: (profile: SessionProfile) => void
   onDeleteSession?: (profile: SessionProfile) => void
+  /** Sends a saved session its magic packet, without connecting. */
+  onWakeSession?: (profile: SessionProfile) => void
   /** Sessions were added by the PuTTY import — the owner re-reads the list. */
   onSessionsImported?: () => void
   /** A session with a stored credential picked while the vault is locked
@@ -130,6 +132,7 @@ export function ConnectDialog({
   onSelectSession,
   onEditSession,
   onDeleteSession,
+  onWakeSession,
   onSessionsImported,
   onUnlockAndSelectSession,
   osUnlockAvailable,
@@ -457,6 +460,7 @@ export function ConnectDialog({
       onSelectSession={onSelectSession}
       onEditSession={onEditSession}
       onDeleteSession={onDeleteSession}
+      onWakeSession={onWakeSession}
       onUnlockAndSelectSession={onUnlockAndSelectSession}
       osUnlockAvailable={osUnlockAvailable}
       onUnlockWithOsAndSelectSession={onUnlockWithOsAndSelectSession}

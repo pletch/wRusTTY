@@ -20,6 +20,27 @@ afterEach(cleanup)
 
 const noop = () => {}
 
+const wake = { mac: 'aa:bb:cc:dd:ee:ff', broadcast: null, port: null, waitSeconds: null }
+
+const jumpProfile: SessionProfile = {
+  id: 'jump-1',
+  label: 'bastion',
+  folder: null,
+  host: 'bastion.example.net',
+  port: 22,
+  protocol: 'ssh',
+  username: 'tim',
+  authType: 'agent',
+  keyPath: null,
+  hasCredential: false,
+  jumpProfileId: null,
+  termType: null,
+  backspaceSendsCtrlH: null,
+  keepaliveSeconds: null,
+  wakeOnLan: null,
+  serial: null,
+}
+
 function dialog(props: Partial<Parameters<typeof ConnectDialog>[0]> = {}) {
   return (
     <ConnectDialog onConnect={noop} vaultUnlocked={false} {...props} />
@@ -49,25 +70,7 @@ describe('the Wake-on-LAN field', () => {
    * local broadcast and the target isn't on this segment), so the form must
    * not offer a field that would do nothing. */
   it('disappears once a jump host is selected', async () => {
-    const jump: SessionProfile = {
-      id: 'jump-1',
-      label: 'bastion',
-      folder: null,
-      host: 'bastion.example.net',
-      port: 22,
-      protocol: 'ssh',
-      username: 'tim',
-      authType: 'agent',
-      keyPath: null,
-      hasCredential: false,
-      jumpProfileId: null,
-      termType: null,
-      backspaceSendsCtrlH: null,
-      keepaliveSeconds: null,
-      wakeOnLan: null,
-      serial: null,
-    }
-    render(dialog({ sessions: [jump] }))
+    render(dialog({ sessions: [jumpProfile] }))
     expect(macField()).toBeTruthy()
 
     await userEvent.selectOptions(screen.getByLabelText(/Jump host/i), 'jump-1')
@@ -84,6 +87,19 @@ describe('the Wake-on-LAN field', () => {
 
     expect(screen.getByLabelText(/Broadcast to/i)).toBeTruthy()
     expect(screen.getByLabelText(/Wait \(seconds\)/i)).toBeTruthy()
+  })
+
+  /** The command behind the menu item fails without a MAC, so an item that
+   * could only ever report that isn't worth a row. */
+  it('offers Wake in a session\'s menu only when that session has a MAC', async () => {
+    const sleeps = { ...jumpProfile, id: 'desk', label: 'desktop', wakeOnLan: wake }
+    render(dialog({ sessions: [jumpProfile, sleeps] }))
+
+    await userEvent.pointer({ target: screen.getByText('bastion'), keys: '[MouseRight]' })
+    expect(screen.queryByText('Wake')).toBeNull()
+
+    await userEvent.pointer({ target: screen.getByText('desktop'), keys: '[MouseRight]' })
+    expect(screen.getByText('Wake')).toBeTruthy()
   })
 
   it('opens a saved session on the MAC it already had', () => {
