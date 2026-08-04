@@ -330,6 +330,26 @@ export const T_OPT_SCROLLBACK_MAX_LINES = 28
 export const T_OPT_DESKTOP_NOTIFICATION = 29
 export const T_OPT_PROGRESS_REPORT = 30
 
+/**
+ * `GhosttyColorRgb` is **3 packed bytes**, no padding, so a 256-entry palette is
+ * 768 bytes. Verified: at stride 4 a palette of `rgb(i, 100, 200)` resolved
+ * index 7 to `(100, 200, 0)` — shifted by one channel, a plausible colour that
+ * is simply wrong.
+ */
+export const COLOR_RGB_BYTES = 3
+export const PALETTE_ENTRIES = 256
+export const PALETTE_BYTES = PALETTE_ENTRIES * COLOR_RGB_BYTES
+
+/**
+ * `ghostty_terminal_set`'s `value` always points **at** the data.
+ *
+ * For a scalar option that means a pointer to the scalar; for
+ * `T_OPT_COLOR_PALETTE`, whose declared input type is already
+ * `GhosttyColorRgb[256]*`, it means the array pointer itself and *not* a pointer
+ * to it. Passing a pointer-to-pointer there returns GHOSTTY_SUCCESS and leaves
+ * every palette colour black.
+ */
+
 /** `active_screen` values for `T_DATA_ACTIVE_SCREEN`. */
 export const SCREEN_PRIMARY = 0
 export const SCREEN_ALTERNATE = 1
@@ -390,6 +410,12 @@ export interface GhosttyMainExports {
   /* row iteration */
   ghostty_render_state_row_iterator_new(alloc: number, slot: number): number
   ghostty_render_state_row_iterator_free(iter: number): void
+  /**
+   * Returns a **bool**, not a `GhosttyResult` — truthy means it advanced. Both
+   * `_next` calls break the convention every neighbouring function follows, so
+   * an `expectOk` around either treats a successful advance (1) as a failure
+   * and a exhausted iterator (0) as success.
+   */
   ghostty_render_state_row_iterator_next(iter: number): number
   ghostty_render_state_row_get(iter: number, key: number, out: number): number
   ghostty_render_state_row_get_multi(iter: number, n: number, keys: number, values: number, written: number): number
@@ -398,6 +424,7 @@ export interface GhosttyMainExports {
   /* cell iteration within a row */
   ghostty_render_state_row_cells_new(alloc: number, slot: number): number
   ghostty_render_state_row_cells_free(cells: number): void
+  /** Also a **bool**, not a result — see `row_iterator_next`. */
   ghostty_render_state_row_cells_next(cells: number): number
   ghostty_render_state_row_cells_get(cells: number, key: number, out: number): number
   ghostty_render_state_row_cells_get_multi(cells: number, n: number, keys: number, values: number, written: number): number
