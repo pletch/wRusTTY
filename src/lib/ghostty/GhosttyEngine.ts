@@ -39,6 +39,8 @@ import {
   CURSOR_STYLE_UNDERLINE,
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
+// Off unless switched on at runtime; see its header for why it exists.
+import * as resizeTrace from '../resizeTrace'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
 // `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
@@ -1536,7 +1538,14 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   resize(cols: number, rows: number, force = false): void {
-    if (cols === this._cols && rows === this._rows && !force) return
+    if (cols === this._cols && rows === this._rows && !force) {
+      resizeTrace.log('resize-skip', { size: `${cols}x${rows}` })
+      return
+    }
+    resizeTrace.log('resize', { from: `${this._cols}x${this._rows}`, to: `${cols}x${rows}`, force })
+    // A core resize is one of the two things that can move a pinned scroll
+    // region, so whatever the remote says next is worth having.
+    resizeTrace.armCapture('core-resize')
     this._cols = cols
     this._rows = rows
     this.needsRedraw = true
@@ -1682,6 +1691,10 @@ export class GhosttyEngine implements TerminalEngine {
     // the rest quietly is fine here *because* the failure was reported once,
     // loudly, at the point it happened.
     if (this.fatalError !== null) return
+    if (resizeTrace.isEnabled() && typeof data !== 'string') {
+      resizeTrace.captureInbound(data)
+      resizeTrace.scanRegions(data)
+    }
     this.needsRedraw = true
     this.bufferGen++
 
@@ -1875,6 +1888,25 @@ export class GhosttyEngine implements TerminalEngine {
       { width: cellWidth, height: cellHeight },
       SCROLLBAR_GUTTER_PX,
     )
+    if (resizeTrace.isEnabled()) {
+      // Both measurements, because they can disagree: `fitGrid` floors the
+      // fractional rect while every guard elsewhere reads the integer
+      // clientHeight, so a sub-pixel relayout can change the row count without
+      // changing anything the guards can see. `exact` is how close the height
+      // sits to a whole number of rows — a value near 0 or 1 means the floor is
+      // on a knife edge.
+      const exact = cellHeight > 0 ? (rect.height / cellHeight) % 1 : -1
+      resizeTrace.log('fit', {
+        rectH: rect.height,
+        clientH: this.container.clientHeight,
+        cellH: cellHeight,
+        rows: r,
+        cols: c,
+        have: `${this._cols}x${this._rows}`,
+        exact,
+        force,
+      })
+    }
     if (c > 0 && r > 0) {
       this.resize(c, r, force)
     }

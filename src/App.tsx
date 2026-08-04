@@ -83,6 +83,7 @@ import {
 } from './state/paneRuntime'
 import { tabsReducer, layoutSignature } from './state/tabs'
 import { usePanePortals } from './hooks/usePanePortals'
+import * as resizeTrace from './lib/resizeTrace'
 
 function refit() {
   // Terminal listens for window resize to re-fit; nudge it after a tab or
@@ -95,8 +96,12 @@ function refit() {
   // transitional size (visible as the cursor rendering a few columns off
   // right after a tab switch, self-correcting on the next full redraw).
   // Double rAF reliably waits for a completed paint first.
+  resizeTrace.log('refit', { note: 'tab/layout change, double-rAF then a synthetic resize' })
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
+    requestAnimationFrame(() => {
+      resizeTrace.log('refit-fire', {})
+      window.dispatchEvent(new Event('resize'))
+    })
   })
 }
 

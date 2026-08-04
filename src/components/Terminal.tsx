@@ -24,6 +24,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
+import * as resizeTrace from '../lib/resizeTrace'
 import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
@@ -198,6 +199,9 @@ export function Terminal({
   onReconnect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
+  /** Last size actually sent to the PTY, so the trace can say whether a tab
+   *  switch delivered a real resize or a SIGWINCH for the size it already had. */
+  const lastPtySizeRef = useRef('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   /** Whether the search box was open on the previous render, so closing it can
    * hand focus back without the mount-time run of that effect doing so. */
@@ -1557,10 +1561,33 @@ export function Terminal({
       // rendering a few columns off from the shell's own idea of where
       // it is, until the next full redraw (e.g. pressing Enter) resynced
       // them. A hidden container has nothing useful to fit to anyway.
-      if (container.clientWidth === 0 || container.clientHeight === 0) return
+      if (container.clientWidth === 0 || container.clientHeight === 0) {
+        // The hidden half of a tab switch. Logged rather than silent: it is the
+        // marker for "this pane just went away", and the next entries are what
+        // happened when it came back.
+        resizeTrace.log('onResize-skip', { reason: 'hidden 0x0', pane: paneId })
+        return
+      }
+      resizeTrace.log('onResize', {
+        clientW: container.clientWidth,
+        clientH: container.clientHeight,
+        pane: paneId,
+      })
       term.fit()
       reportDimensions(term)
-      if (sessionId) conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
+      if (sessionId) {
+        // Sent unconditionally, so the remote gets a SIGWINCH on every tab
+        // switch whether or not the size changed. Whether that alone is enough
+        // to strand apt's progress bar is the open question — `sameAsLast` says
+        // which case each entry is.
+        resizeTrace.log('pty-resize', {
+          size: `${term.cols}x${term.rows}`,
+          sameAsLast: `${term.cols}x${term.rows}` === lastPtySizeRef.current,
+        })
+        lastPtySizeRef.current = `${term.cols}x${term.rows}`
+        resizeTrace.armCapture('pty-resize')
+        conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
+      }
       // Guarding against the 0x0 fit stopped the PTY-side desync, but the
       // canvas can still end up visually stale after this — most sharply
       // when a pane is dragged between tabs, since that detaches and
