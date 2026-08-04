@@ -7,9 +7,9 @@ Built with Tauri 2 (Rust) + React.
 Aimed squarely at replacing PuTTY and SuperPuTTY rather than at being a
 general-purpose terminal emulator. It reads PuTTY `.ppk` keys directly (v2
 and v3, encrypted or not), authenticates through Pageant or the Windows
-OpenSSH agent, and supports ProxyJump, port forwarding, and the serial
-line-control details a console cable actually needs — break signalling,
-DTR/RTS, local echo, and line-ending control.
+OpenSSH agent, and supports ProxyJump, port forwarding, Wake-on-LAN, and
+the serial line-control details a console cable actually needs — break
+signalling, DTR/RTS, local echo, and line-ending control.
 
 See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) for architecture,
 feature scope, and the phased build plan.
@@ -213,6 +213,38 @@ everywhere, which is why it remains the default.
 **Serial break.** The `BRK` button in the status bar holds a break condition
 on the line, for Cisco password recovery, ROMMON entry, and bootloader
 interrupts. DTR and RTS toggles sit beside it.
+
+**Wake-on-LAN.** An SSH session can carry the host's MAC address. Connecting
+then checks whether the host is already up and only sends a magic packet if
+it isn't, so leaving a MAC saved costs one round trip and nothing else; while
+waiting, the pane shows *Waking* and the packet is re-sent every few seconds
+until the host answers or the wait (60s by default) runs out. Right-clicking a
+saved session also offers **Wake**, which sends the packet without connecting.
+
+Two things about the packet itself. It doesn't route: the default
+255.255.255.255 reaches this machine's own network segment only, so a host on
+another subnet needs that subnet's directed broadcast (`192.168.1.255`) in the
+*Broadcast to* field. On a machine with several active adapters — Wi-Fi,
+Ethernet, a VM switch — the default also leaves by whichever one the routing
+table picks, and naming a directed broadcast is how you choose. Not offered
+for a session with a jump host: the packet would go out on this segment for a
+machine that isn't on it, so waking is skipped rather than waited on.
+
+When a packet is sent and nothing happens, the cause is almost always on the
+target rather than here. On Windows 11, check all of:
+
+- **Device Manager → the adapter → Power Management**: *Allow this device to
+  wake the computer*, and *Only allow a magic packet to wake the computer*.
+- **The adapter's Advanced tab**: *Wake on Magic Packet* enabled.
+- **Fast Startup off** (Control Panel → Power Options → *Choose what the power
+  buttons do*) if you want to wake the machine from a full shutdown. With it
+  on, S5 is closer to hibernation and most NICs won't arm.
+- **`powercfg /a`**: a Modern Standby (S0) machine sleeps and wakes on
+  entirely different rules from an S3 one, and its Wi-Fi adapter in particular
+  may never listen for a packet.
+
+Wi-Fi wake (WoWLAN) is unreliable across vendors even when all of the above is
+set; Ethernet is what this works on consistently.
 
 ### Checks
 

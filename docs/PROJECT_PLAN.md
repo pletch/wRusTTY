@@ -128,6 +128,11 @@ mosh, RDP) means adding a crate, not touching the UI.
   requires it **(shipped)**, with a management panel
 - **Keepalive** with visible connection state per tab **(shipped — per-profile
   interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect is not built.
+- **Wake-on-LAN** — a per-profile MAC, sent before connecting to a host that
+  isn't answering **(shipped — `src-tauri/src/wake.rs`, run from the registry's
+  pre-connect hook)**. Probes first, so an already-awake host is never sent
+  anything. Not attempted behind a jump host; see TODO.md for that and for
+  automatic multi-interface broadcast.
 - Proxy support (HTTP CONNECT / SOCKS5) **for reaching a host through a
   corporate proxy** — not built. Note the SOCKS5 code in `wr-ssh/src/socks.rs`
   is the *dynamic forward's own server* and is not this; the two get confused

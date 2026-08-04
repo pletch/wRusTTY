@@ -53,3 +53,37 @@ its siblings, not a bug observed disappearing.
 If the cursor lands a few columns off after a tab close *again*, the
 transitional-size theory is wrong and the next place to look is the
 `ResizeObserver` / WebGL-reload interaction in `Terminal.tsx:786`.
+
+## Wake-on-LAN: the two pieces deliberately left out
+
+Shipped: a per-session MAC (`SessionProfile.wakeOnLan`), a probe-first wake in
+`src-tauri/src/wake.rs`, the pre-connect hook it runs from
+(`SessionRegistry::spawn_connect_prepared`), the form field, and a **Wake**
+item in the session context menu. Two known gaps, both scoped out on purpose
+rather than missed.
+
+**Automatic multi-NIC broadcast.** `wake::send` binds `0.0.0.0`, so the
+routing table picks the interface and a limited broadcast has no way to
+influence that choice. On a machine with Wi-Fi, Ethernet and a Hyper-V switch
+all up, the packet leaves by whichever one wins. The current answer is the
+per-profile *Broadcast to* field: a directed broadcast (`192.168.1.255`) has a
+route, so naming the subnet picks the interface.
+
+Doing it automatically means enumerating interfaces and sending on each, which
+needs a dependency — `if-addrs` is the small, obvious one. Worth it only if
+the manual field turns out to be a recurring annoyance; the failure it fixes
+is invisible (the packet goes somewhere, just not where you meant), which
+argues for doing it eventually.
+
+**Waking through a jump host.** `start_connection` currently *skips* waking
+when a profile has a jump host, and the form hides the field, because a magic
+packet is a broadcast on this machine's segment and the target isn't on it —
+sending anyway would waste the whole wait probing a host with no route to it,
+failing a connection that would otherwise work.
+
+Doing it properly means the packet originating on the far side: open the jump
+connection first, run `wakeonlan`/`ether-wake` there (or send raw UDP through a
+forwarded channel), then wait for the target. That reorders the connect path —
+today the jump is established as part of `SshConnector::connect`, i.e. *after*
+the pre-connect step — so it isn't a small change. It also can't assume the
+jump host has either tool installed, which is the part with no clean answer.
