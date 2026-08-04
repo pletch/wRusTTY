@@ -12,80 +12,74 @@
  *   per cell:  row_cells_next(cells); row_cells_get(cells, key, out) x N
  *              or a single row_cells_get_multi(cells, n, keys, values, written)
  *
+ * It also prices the RAW path, which is the only thing in the newer API that
+ * could plausibly close the gap: ROW_CELLS_DATA_RAW returns `page.Cell.C` —
+ * the whole cell packed into one u64 (`cell.cval()`) — so a renderer can take
+ * one call per cell and unpack in JS, the way it already unpacks the 16-byte
+ * cells of the batched viewport. RAW is per *cell*, not per row: GhosttyCell is
+ * a u64 value, not a pointer to the row's cell array, so it cannot amortise the
+ * boundary crossing. What it can do is take four gets per cell down to one.
+ *
+ * And it prices the one thing that beats a batched read outright: skipping
+ * clean rows. `render_state_update` consumes the core's dirty bits and rebuilds
+ * only dirty rows, so a one-row edit can be read back as one row. The batched
+ * `get_viewport` has no way to ask for less than the whole viewport.
+ *
+ * ## Methodology, learned the hard way
+ *
+ * **One mode per process.** A single `frame(mode)` with a branch per mode goes
+ * megamorphic and its numbers move by 2x between runs depending on which modes
+ * ran. Each mode is therefore measured in a freshly spawned child, and the
+ * parent only formats the table. This is the same lesson probe.mjs records
+ * about probes sharing a heap, in a different costume.
+ *
+ * **The baseline is measured, not remembered.** `today` comes from the vendored
+ * 1.3.1 binary in a child of its own, so a machine or Node change moves both
+ * sides together.
+ *
  * Build the wasm with Zig 0.16.0:
  *   zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
  *
- * Run: node tools/parse-probes/iter.mjs <path-to-main-ghostty-vt.wasm>
+ * Run: node tools/parse-probes/iter.mjs <main-ghostty-vt.wasm> [vendored.wasm]
  */
 import { readFileSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { fileURLToPath } from 'url'
 
 const WASM = process.argv[2]
-if (!WASM) throw new Error('usage: iter.mjs <ghostty-vt.wasm from ghostty main>')
+if (!WASM) throw new Error('usage: iter.mjs <ghostty-vt.wasm from ghostty main> [vendored.wasm]')
+const VENDORED = process.argv[3] ?? 'src/lib/ghostty/vendor/ghostty-vt.wasm'
+/** Set by the parent when it spawns a child to measure exactly one mode. */
+const ONLY = process.argv[4] ?? null
 
 // GhosttyRenderStateData
 const DATA_ROW_ITERATOR = 4
-// GhosttyRenderStateRowData
+// GhosttyRenderStateRowData / GhosttyRenderStateRowOption
+const ROW_DATA_DIRTY = 1
 const ROW_DATA_CELLS = 3
+const ROW_OPTION_DIRTY = 0
 // GhosttyRenderStateRowCellsData
+const CELL_RAW = 1
 const CELL_STYLE = 2
 const CELL_BG = 5
 const CELL_FG = 6
 const CELL_HAS_STYLING = 8
-// What a renderer needs per cell to draw it.
+// What a renderer needs per cell to draw it, the way the old probe asked for it.
 const KEYS = [CELL_STYLE, CELL_FG, CELL_BG, CELL_HAS_STYLING]
+// The same information taken through RAW: one packed cell plus the two resolved
+// colors. Colors arrive pre-resolved in the vendored ABI, so a fair comparison
+// has to fetch them here too rather than stopping at the style id inside RAW.
+const RAW_KEYS = [CELL_RAW, CELL_FG, CELL_BG]
 
-const mod = new WebAssembly.Module(readFileSync(WASM))
-const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-const ex = inst.exports
-const mem = ex.memory
+const CELL_BYTES = 16 // vendored packed cell, matching wasmBindings.ts
 const enc = new TextEncoder()
-const dv = () => new DataView(mem.buffer)
-const ok = (r, what) => { if (r !== 0) throw new Error(`${what} failed: result ${r}`) }
 
-/**
- * alloc_opaque gives a slot; the constructor writes the handle into it.
- *
- * Both are kept, because the API needs each in different places: iterator and
- * cells handles are advanced and freed by handle, but `get(state, ROW_ITERATOR,
- * out)` wants the *slot* — render.zig does `const it = out.* orelse ...` and
- * populates the object the slot points at. Passing the handle there returns
- * GHOSTTY_INVALID_VALUE (-2).
- */
-function make(fn, what) {
-  const slot = ex.ghostty_wasm_alloc_opaque()
-  ok(fn(slot), what)
-  return { slot, h: dv().getUint32(slot, true) }
-}
+const GRIDS = [
+  [80, 24],
+  [200, 60],
+]
 
-function newTerminal(cols, rows, scrollback) {
-  // GhosttyTerminalOptions { u16 cols; u16 rows; size_t max_scrollback; } = 8 B
-  const opt = ex.ghostty_wasm_alloc_u8_array(8)
-  const d = dv()
-  d.setUint16(opt, cols, true)
-  d.setUint16(opt + 2, rows, true)
-  d.setUint32(opt + 4, scrollback, true)
-  return make((slot) => ex.ghostty_terminal_new(0, slot, opt), 'terminal_new').h
-}
-
-function write(term, s) {
-  const b = enc.encode(s)
-  const p = ex.ghostty_wasm_alloc_u8_array(b.length)
-  new Uint8Array(mem.buffer).set(b, p)
-  ex.ghostty_terminal_vt_write(term, p, b.length)
-  ex.ghostty_wasm_free_u8_array(p, b.length)
-}
-
-function fill(term, cols, rows) {
-  let s = '\x1b[H'
-  for (let r = 0; r < rows; r++) {
-    s += `\x1b[38;5;${(r % 200) + 16}m`
-    s += ('sample text ' + String(r).padStart(3, '0') + ' ').repeat(Math.ceil(cols / 16)).slice(0, cols)
-    if (r < rows - 1) s += '\r\n'
-  }
-  write(term, s + '\x1b[0m')
-}
-
-function bench(fn, iters) {
+const bench = (fn, iters) => {
   for (let i = 0; i < Math.max(3, Math.min(iters, 50)); i++) fn()
   let best = Infinity
   for (let r = 0; r < 5; r++) {
@@ -97,74 +91,317 @@ function bench(fn, iters) {
   return best
 }
 
-console.log(`wasm: ${WASM}`)
-console.log(`exports: ${WebAssembly.Module.exports(mod).length}\n`)
-
-const GRIDS = [[80, 24], [200, 60]]
-const TODAY = { '80x24': 13.3, '200x60': 85.4 } // us/frame, measured by viewport.mjs
-
-console.log(`${'grid'.padEnd(9)} ${'cells'.padStart(6)} ${'update'.padStart(8)} ${'iterate'.padStart(9)} ${'+4x get'.padStart(9)} ${'+get_multi'.padStart(11)} ${'today'.padStart(8)}  vs today`)
-
-for (const [cols, rows] of GRIDS) {
-  const term = newTerminal(cols, rows, 1000)
-  fill(term, cols, rows)
-  const state = make((slot) => ex.ghostty_render_state_new(0, slot), 'render_state_new').h
-  const iter = make((slot) => ex.ghostty_render_state_row_iterator_new(0, slot), 'row_iterator_new')
-  const cells = make((slot) => ex.ghostty_render_state_row_cells_new(0, slot), 'row_cells_new')
-
-  const out = ex.ghostty_wasm_alloc_u8_array(64)
-  // get_multi takes parallel arrays of keys and output pointers, allocated once.
-  const keysPtr = ex.ghostty_wasm_alloc_u8_array(KEYS.length * 4)
-  const valsPtr = ex.ghostty_wasm_alloc_u8_array(KEYS.length * 4)
-  const writtenPtr = ex.ghostty_wasm_alloc_usize()
-  {
-    const d = dv()
-    for (let i = 0; i < KEYS.length; i++) {
-      d.setUint32(keysPtr + i * 4, KEYS[i], true)
-      d.setUint32(valsPtr + i * 4, out + i * 8, true)
-    }
+/**
+ * A screenful of text. Styled by default, so cells carry real styles rather
+ * than blanks. WORKLOAD=plain leaves every cell on the default style, which is
+ * what most of a real screen looks like and is the case the styled-only color
+ * fetch exists for.
+ */
+const PLAIN = process.env.WORKLOAD === 'plain'
+function screenful(cols, rows) {
+  let s = '\x1b[H'
+  for (let r = 0; r < rows; r++) {
+    if (!PLAIN) s += `\x1b[38;5;${(r % 200) + 16}m`
+    s += ('sample text ' + String(r).padStart(3, '0') + ' ').repeat(Math.ceil(cols / 16)).slice(0, cols)
+    if (r < rows - 1) s += '\r\n'
   }
-
-  const update = () => ok(ex.ghostty_render_state_update(state, term), 'update')
-
-  /** mode: 0 = iterate only, 1 = 4 separate gets, 2 = one get_multi */
-  const frame = (mode) => {
-    update()
-    ok(ex.ghostty_render_state_get(state, DATA_ROW_ITERATOR, iter.slot), 'get ROW_ITERATOR')
-    let n = 0
-    while (ex.ghostty_render_state_row_iterator_next(iter.h)) {
-      ok(ex.ghostty_render_state_row_get(iter.h, ROW_DATA_CELLS, cells.slot), 'row_get CELLS')
-      while (ex.ghostty_render_state_row_cells_next(cells.h)) {
-        n++
-        if (mode === 1) {
-          for (const k of KEYS) ex.ghostty_render_state_row_cells_get(cells.h, k, out)
-        } else if (mode === 2) {
-          ex.ghostty_render_state_row_cells_get_multi(cells.h, KEYS.length, keysPtr, valsPtr, writtenPtr)
-        }
-      }
-    }
-    return n
-  }
-
-  const seen = frame(1)
-  const iters = cols * rows > 5000 ? 200 : 600
-  const tUpd = bench(update, 2000) / 1000
-  const tIter = bench(() => frame(0), iters) / 1000
-  const tGet = bench(() => frame(1), iters) / 1000
-  const tMulti = bench(() => frame(2), iters) / 1000
-  const key = `${cols}x${rows}`
-  const today = TODAY[key]
-
-  console.log(
-    `${key.padEnd(9)} ${String(seen).padStart(6)} ${tUpd.toFixed(1).padStart(7)}u ${tIter.toFixed(1).padStart(8)}u ${tGet.toFixed(1).padStart(8)}u ${tMulti.toFixed(1).padStart(10)}u ${today.toFixed(1).padStart(7)}u  ${(tGet / today).toFixed(1)}x / ${(tMulti / today).toFixed(1)}x`,
-  )
-
-  ex.ghostty_render_state_row_cells_free(cells.h)
-  ex.ghostty_render_state_row_iterator_free(iter.h)
-  ex.ghostty_render_state_free(state)
-  ex.ghostty_terminal_free(term)
+  return s + '\x1b[0m'
 }
 
-console.log('\n(u = microseconds per frame; "today" = one batched get_viewport, from viewport.mjs)')
-console.log(`per-cell keys fetched: ${KEYS.length} (style, fg, bg, has_styling)`)
-console.log('vs today = 4x-separate-get / single-get_multi')
+const editRow = (rows) => `\x1b[${(rows >> 1) + 1};1Hchanged line, redraw me`
+
+// ---- the vendored build: one batched call -----------------------------------
+
+/** modes: `today` (full frame) and `today-steady` (one row edited, full re-read) */
+function measureVendored(mode) {
+  const mod = new WebAssembly.Module(readFileSync(VENDORED))
+  const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
+  const ex = inst.exports
+  const mem = ex.memory
+
+  const write = (term, s) => {
+    const b = enc.encode(s)
+    const p = ex.ghostty_wasm_alloc_u8_array(b.length)
+    new Uint8Array(mem.buffer).set(b, p)
+    ex.ghostty_terminal_write(term, p, b.length)
+    ex.ghostty_wasm_free_u8_array(p, b.length)
+  }
+
+  const out = {}
+  for (const [cols, rows] of GRIDS) {
+    const cfg = ex.ghostty_wasm_alloc_u8_array(80)
+    const d = new DataView(mem.buffer)
+    d.setUint32(cfg, 1000, true)
+    for (let i = 4; i < 80; i += 4) d.setUint32(cfg + i, 0, true)
+    const term = ex.ghostty_terminal_new_with_config(cols, rows, cfg)
+    ex.ghostty_wasm_free_u8_array(cfg, 80)
+    write(term, screenful(cols, rows))
+
+    const cells = cols * rows
+    const buf = ex.ghostty_wasm_alloc_u8_array(cells * CELL_BYTES)
+    // One frame, end to end: update, one batched read, then the JS walk the
+    // renderer does over the packed buffer.
+    const full = () => {
+      ex.ghostty_render_state_update(term)
+      ex.ghostty_render_state_get_viewport(term, buf, cells)
+      const v = new DataView(mem.buffer, buf, cells * CELL_BYTES)
+      let acc = 0
+      for (let i = 0; i < cells; i++) acc += v.getUint32(i * CELL_BYTES, true)
+      return acc
+    }
+    const steady = () => {
+      write(term, editRow(rows))
+      return full()
+    }
+    const fn = mode === 'today-steady' ? steady : full
+    out[`${cols}x${rows}`] = { us: bench(fn, 2000) / 1000, cells }
+    ex.ghostty_wasm_free_u8_array(buf, cells * CELL_BYTES)
+    ex.ghostty_terminal_free(term)
+  }
+  return out
+}
+
+// ---- ghostty main: the iterator API -----------------------------------------
+
+function measureMain(mode) {
+  const mod = new WebAssembly.Module(readFileSync(WASM))
+  const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
+  const ex = inst.exports
+  const mem = ex.memory
+  /**
+   * One DataView, refreshed only when linear memory grows and detaches it.
+   * Allocating a view per cell costs more than the WASM call it is there to
+   * read — it made RAW measure 2x *slower* than four separate gets, which is
+   * arithmetically impossible and was the tell.
+   */
+  let view = new DataView(mem.buffer)
+  const dv = () => {
+    if (view.buffer !== mem.buffer) view = new DataView(mem.buffer)
+    return view
+  }
+  const ok = (r, what) => {
+    if (r !== 0) throw new Error(`${what} failed: result ${r}`)
+  }
+
+  /**
+   * alloc_opaque gives a slot; the constructor writes the handle into it.
+   *
+   * Both are kept, because the API needs each in different places: iterator and
+   * cells handles are advanced and freed by handle, but `get(state,
+   * ROW_ITERATOR, out)` wants the *slot* — render.zig does `const it = out.*
+   * orelse ...` and populates the object the slot points at. Passing the handle
+   * there returns GHOSTTY_INVALID_VALUE (-2).
+   */
+  const make = (fn, what) => {
+    const slot = ex.ghostty_wasm_alloc_opaque()
+    ok(fn(slot), what)
+    return { slot, h: dv().getUint32(slot, true) }
+  }
+
+  const write = (term, s) => {
+    const b = enc.encode(s)
+    const p = ex.ghostty_wasm_alloc_u8_array(b.length)
+    new Uint8Array(mem.buffer).set(b, p)
+    ex.ghostty_terminal_vt_write(term, p, b.length)
+    ex.ghostty_wasm_free_u8_array(p, b.length)
+  }
+
+  const out = {}
+  for (const [cols, rows] of GRIDS) {
+    /**
+     * Note the shape change since this probe was first written: tip takes cols
+     * and rows as plain arguments — `new(allocator, result, cols, rows)` —
+     * where the older build passed a GhosttyTerminalOptions struct by pointer.
+     * Scrollback is no longer a constructor argument at all; it is a
+     * `terminal_set` option. The default is left alone: the probe renders the
+     * viewport and never scrolls, so scrollback cannot enter the measurement.
+     */
+    const term = make((slot) => ex.ghostty_terminal_new(0, slot, cols, rows), 'terminal_new').h
+    write(term, screenful(cols, rows))
+    const state = make((slot) => ex.ghostty_render_state_new(0, slot), 'render_state_new').h
+    const iter = make((slot) => ex.ghostty_render_state_row_iterator_new(0, slot), 'row_iterator_new')
+    const cells = make((slot) => ex.ghostty_render_state_row_cells_new(0, slot), 'row_cells_new')
+
+    const cellOut = ex.ghostty_wasm_alloc_u8_array(64)
+    // get_multi takes parallel arrays of keys and output pointers, allocated once.
+    const arrays = (keys) => {
+      const keysPtr = ex.ghostty_wasm_alloc_u8_array(keys.length * 4)
+      const valsPtr = ex.ghostty_wasm_alloc_u8_array(keys.length * 4)
+      const d = dv()
+      for (let i = 0; i < keys.length; i++) {
+        d.setUint32(keysPtr + i * 4, keys[i], true)
+        d.setUint32(valsPtr + i * 4, cellOut + i * 8, true)
+      }
+      return { keysPtr, valsPtr, n: keys.length }
+    }
+    const four = arrays(KEYS)
+    const raw3 = arrays(RAW_KEYS)
+    const fgbg = arrays([CELL_FG, CELL_BG])
+    const writtenPtr = ex.ghostty_wasm_alloc_usize()
+    const falsePtr = ex.ghostty_wasm_alloc_u8_array(4)
+    dv().setUint32(falsePtr, 0, true)
+
+    let touched = 0
+    /**
+     * Per-cell work, one function per mode so no call site sees more than one
+     * shape. `acc` is returned rather than discarded, so the JS-side unpack
+     * cannot be optimised away and credited to RAW as a saving.
+     */
+    const cellFns = {
+      iterate: () => 0,
+      get4: () => {
+        for (const k of KEYS) ex.ghostty_render_state_row_cells_get(cells.h, k, cellOut)
+        return 0
+      },
+      multi4: () => {
+        ex.ghostty_render_state_row_cells_get_multi(cells.h, four.n, four.keysPtr, four.valsPtr, writtenPtr)
+        return 0
+      },
+      raw: () => {
+        ex.ghostty_render_state_row_cells_get(cells.h, CELL_RAW, cellOut)
+        return view.getUint32(cellOut, true)
+      },
+      raw3: () => {
+        ex.ghostty_render_state_row_cells_get_multi(cells.h, raw3.n, raw3.keysPtr, raw3.valsPtr, writtenPtr)
+        return view.getUint32(cellOut, true)
+      },
+      rawStyled: () => {
+        ex.ghostty_render_state_row_cells_get(cells.h, CELL_RAW, cellOut)
+        const lo = view.getUint32(cellOut, true)
+        const hi = view.getUint32(cellOut + 4, true)
+        // style_id is bits 26-41 of the packed cell: six bits at the top of the
+        // low word, ten at the bottom of the high one. Zero is the default
+        // style, and a default-styled cell needs no color fetch at all.
+        if (lo >>> 26 !== 0 || (hi & 0x3ff) !== 0) {
+          ex.ghostty_render_state_row_cells_get_multi(cells.h, fgbg.n, fgbg.keysPtr, fgbg.valsPtr, writtenPtr)
+        }
+        return lo
+      },
+    }
+    const perCell = cellFns[mode === 'steady' ? 'raw' : mode]
+    if (!perCell) throw new Error(`unknown mode ${mode}`)
+    const dirtyOnly = mode === 'steady'
+
+    const frame = () => {
+      if (dirtyOnly) write(term, editRow(rows))
+      ok(ex.ghostty_render_state_update(state, term), 'update')
+      ok(ex.ghostty_render_state_get(state, DATA_ROW_ITERATOR, iter.slot), 'get ROW_ITERATOR')
+      // After the calls that can allocate, before the read loop that cannot:
+      // a grown memory detaches the cached view, and the getters below would
+      // throw on it. The row loop only reads, so once per frame is enough.
+      dv()
+      let acc = 0
+      let n = 0
+      while (ex.ghostty_render_state_row_iterator_next(iter.h)) {
+        if (dirtyOnly) {
+          ok(ex.ghostty_render_state_row_get(iter.h, ROW_DATA_DIRTY, cellOut), 'row_get DIRTY')
+          if (!view.getUint8(cellOut)) continue
+          // The per-row dirty flag lives in the render state and is cleared by
+          // its consumer, not by the next update. Without this every row reads
+          // dirty from the second frame on and the mode measures nothing.
+          ok(ex.ghostty_render_state_row_set(iter.h, ROW_OPTION_DIRTY, falsePtr), 'row_set DIRTY')
+        }
+        ok(ex.ghostty_render_state_row_get(iter.h, ROW_DATA_CELLS, cells.slot), 'row_get CELLS')
+        while (ex.ghostty_render_state_row_cells_next(cells.h)) {
+          n++
+          acc += perCell()
+        }
+      }
+      touched = n
+      return acc
+    }
+
+    frame()
+    const iters = cols * rows > 5000 ? 200 : 600
+    out[`${cols}x${rows}`] = { us: bench(frame, iters) / 1000, cells: touched }
+
+    ex.ghostty_render_state_row_cells_free(cells.h)
+    ex.ghostty_render_state_row_iterator_free(iter.h)
+    ex.ghostty_render_state_free(state)
+    ex.ghostty_terminal_free(term)
+  }
+  return out
+}
+
+// ---- child: measure one mode, print JSON ------------------------------------
+
+const VENDORED_MODES = new Set(['today', 'today-steady'])
+
+if (ONLY) {
+  const result = VENDORED_MODES.has(ONLY) ? measureVendored(ONLY) : measureMain(ONLY)
+  console.log(JSON.stringify(result))
+  process.exit(0)
+}
+
+// ---- parent: one child per mode, then the table -----------------------------
+
+const self = fileURLToPath(import.meta.url)
+const run = (mode, workload) =>
+  JSON.parse(
+    execFileSync(process.execPath, [self, WASM, VENDORED, mode], {
+      encoding: 'utf8',
+      env: { ...process.env, WORKLOAD: workload ?? 'styled' },
+    }).trim(),
+  )
+
+console.log(`main:     ${WASM}`)
+console.log(`vendored: ${VENDORED}`)
+console.log(`exports:  ${WebAssembly.Module.exports(new WebAssembly.Module(readFileSync(WASM))).length}\n`)
+
+const MODES = [
+  ['today', 'today: one batched get_viewport + JS walk'],
+  ['iterate', 'iterate only, no cell data'],
+  ['get4', '4 separate gets (style, fg, bg, has_styling)'],
+  ['multi4', 'one get_multi, same 4 keys'],
+  ['raw', 'one RAW get, unpacked in JS'],
+  ['raw3', 'one get_multi {RAW, fg, bg}'],
+  ['rawStyled', 'RAW, fg/bg only when the cell is styled'],
+]
+const results = Object.fromEntries(MODES.map(([m]) => [m, run(m)]))
+
+console.log(`${'mode'.padEnd(11)} ${'80x24'.padStart(9)} ${'vs today'.padStart(9)} ${'200x60'.padStart(9)} ${'vs today'.padStart(9)}   what it fetches`)
+for (const [mode, what] of MODES) {
+  const cols = GRIDS.map(([c, r]) => {
+    const key = `${c}x${r}`
+    const us = results[mode][key].us
+    const ratio = us / results.today[key].us
+    return [`${us.toFixed(1).padStart(8)}u`, `${(mode === 'today' ? 1 : ratio).toFixed(1).padStart(8)}x`]
+  }).flat()
+  console.log(`${mode.padEnd(11)} ${cols.join(' ')}   ${what}`)
+}
+
+// The styled workload puts a style on every cell, which is the worst case for
+// fetching colors only where they differ from the default. Most of a real
+// screen is unstyled, so the same three modes are re-run on plain text to give
+// the other end of the range.
+const PLAIN_MODES = ['today', 'raw', 'rawStyled']
+const plain = Object.fromEntries(PLAIN_MODES.map((m) => [m, run(m, 'plain')]))
+console.log('\n--- plain text: no styles, so styled-only color fetches never fire ---')
+console.log(`${'mode'.padEnd(11)} ${'80x24'.padStart(9)} ${'vs today'.padStart(9)} ${'200x60'.padStart(9)} ${'vs today'.padStart(9)}`)
+for (const mode of PLAIN_MODES) {
+  const cols = GRIDS.map(([c, r]) => {
+    const key = `${c}x${r}`
+    const us = plain[mode][key].us
+    return [`${us.toFixed(1).padStart(8)}u`, `${(mode === 'today' ? 1 : us / plain.today[key].us).toFixed(1).padStart(8)}x`]
+  }).flat()
+  console.log(`${mode.padEnd(11)} ${cols.join(' ')}`)
+}
+
+// Steady state is its own comparison: both sides pay the same one-row write, so
+// the difference between them is the read.
+const steady = { main: run('steady'), today: run('today-steady') }
+console.log(`\n--- steady state: one row edited, then redrawn ---`)
+console.log(`${'grid'.padEnd(9)} ${'cells read'.padStart(11)} ${'iterator+RAW'.padStart(13)} ${'today'.padStart(9)}   vs today`)
+for (const [c, r] of GRIDS) {
+  const key = `${c}x${r}`
+  const m = steady.main[key]
+  const t = steady.today[key]
+  console.log(
+    `${key.padEnd(9)} ${`${m.cells}/${t.cells}`.padStart(11)} ${m.us.toFixed(1).padStart(12)}u ${t.us.toFixed(1).padStart(8)}u   ${(m.us / t.us).toFixed(2)}x`,
+  )
+}
+
+console.log('\n(u = microseconds per frame, best of five; each mode measured in its own process)')
+console.log('"today" = the vendored 1.3.1 build: update + one batched get_viewport + the JS walk')
+console.log('RAW is per cell, not per row — GhosttyCell is a u64 value, not a pointer into the row')
+console.log('rawStyled: the workload styles every row, so it is that mode\'s worst case, not its best')

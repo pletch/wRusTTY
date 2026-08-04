@@ -30,7 +30,7 @@ worth reading.
 | `diff3.mjs` | re-runs the suspect rows with an `env.log` counter (see below) |
 | `scan.mjs` | `scanOsc` in ms/MB per content shape |
 | `viewport.mjs` | cost of getting a frame's cells out, and the JS→WASM call floor |
-| `iter.mjs` | the same, driven through ghostty **main**'s row/cell iterator API |
+| `iter.mjs` | the same, driven through ghostty **main**'s row/cell iterator API, including the RAW packed-cell path and a dirty-rows-only frame |
 | `names.mjs` | function names from the name section, filtered |
 | `secs.mjs` | section sizes |
 
@@ -75,7 +75,8 @@ builds with different toolchains:
 git clone --depth 1 --branch main https://github.com/ghostty-org/ghostty.git
 cd ghostty
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-# -> zig-out/bin/ghostty-vt.wasm   (187 exports, vs 79 in the vendored build)
+# -> zig-out/bin/ghostty-vt.wasm   (202 exports at 48d85eae, 187 when first
+#    measured, 84 in the vendored build — main's surface is still moving)
 ```
 
 No patch is needed for this — the 133-line patch `ghostty-web` carries on top of
@@ -86,12 +87,58 @@ Note the tag **v1.3.1 will not work**: `libghostty-vt` at that tag ships only
 no terminal API and no render state in a released version — `render.h`,
 `terminal.h` and `grid_ref.h` exist only on main.
 
-### Two ABI traps
+### ABI traps
 
-`GhosttyTerminalOptions` is passed by value in C but arrives as a **pointer**
-(`ghostty_terminal_new(i32, i32, i32)`); dump signatures from the binary rather
-than reading them off the header.
+**The constructor has changed shape twice.** It is now
+`ghostty_terminal_new(allocator, result, cols, rows)` — four arguments, no
+options struct, and scrollback is a `terminal_set` option rather than a
+constructor argument. Earlier it was `new(allocator, result, options*)`, where
+`GhosttyTerminalOptions` is passed by value in C but arrives as a pointer. Dump
+signatures from the binary rather than reading them off a header of unknown
+vintage; the failure is a bare `GHOSTTY_INVALID_VALUE` (-2).
 
 `get(state, ROW_ITERATOR, out)` wants the **slot** holding the handle, not the
 handle — `render.zig` does `const it = out.* orelse ...` and populates what the
 slot points at. Passing the handle returns `GHOSTTY_INVALID_VALUE` (-2).
+
+**Per-row dirty is cleared by the consumer.** `render_state_update` sets it and
+nothing resets it, so unless each row you read is cleared with
+`row_set(iter, ROW_OPTION_DIRTY, false)`, every row reads dirty from the second
+frame on and a dirty-rows-only measurement quietly becomes a full-frame one.
+`render_state_set(state, DIRTY, false)` is a different flag and will not do it.
+
+### What it found, at 48d85eae
+
+Per frame, against the vendored build's single batched `get_viewport` — the
+whole grid redrawn, colors and all:
+
+| | 80x24 | 200x60 |
+| --- | --- | --- |
+| today: one batched read | 13.6us | 85.6us |
+| 4 separate gets per cell | 3.2x | 4.2x |
+| one `get_multi`, same 4 keys | 2.6x | 3.0x |
+| **RAW alone**, unpacked in JS | **0.9x** | **1.3x** |
+| `get_multi` {RAW, fg, bg} | 1.8x | 2.3x |
+| RAW + colors only where styled | 1.9x | 2.5x (1.1x-1.4x on plain text) |
+
+RAW is what makes the difference, and it is worth being precise about why: it
+returns `page.Cell.C`, the whole cell bit-cast into one u64, so four calls per
+cell become one and the unpacking happens in JS where it is nearly free. What
+it cannot do is amortise the boundary crossing — `GhosttyCell` is a u64 *value*,
+not a pointer to the row's cell array — so the model stays at one call per cell
+and RAW alone does not carry resolved colors. Fetching those too is the 1.4x-2.5x
+row, and that is the honest number for a drop-in replacement of today's read.
+
+The other direction is the one that matters more:
+
+| steady state: one row edited, redrawn | 80x24 | 200x60 |
+| --- | --- | --- |
+| iterator, clean rows skipped | 2.0us | 4.3us |
+| today, full re-read | 14.6us | 87.1us |
+| | **0.14x** | **0.05x** |
+
+The batched read has no way to ask for less than the viewport, so a one-row edit
+costs it a whole frame; the iterator reads 200 cells instead of 12,000. Note the
+absolute numbers on both sides before treating any of this as decisive: the
+worst full-redraw case is 0.21 ms against an 8.3 ms frame, so the 2.5x is 2.5x
+of something that was never the bottleneck.

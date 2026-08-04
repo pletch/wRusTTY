@@ -12,6 +12,16 @@ unreleased upstream, and — the load-bearing reason — lets us keep the **batc
 API replaces that with a per-cell row/cell iterator that measured **2.9x-4.1x**
 more expensive (`tools/parse-probes/iter.mjs`).
 
+**That gap has since narrowed, and the reason is worth knowing before the next
+rebase.** Re-measured against `main` at `48d85eae`, the iterator's
+`ROW_CELLS_DATA_RAW` returns the whole cell as one u64, which takes four calls
+per cell down to one: **0.9x-1.3x** of the batched read for the cell alone, and
+**1.4x-2.5x** once the resolved colors our ABI hands over for free are fetched
+too. Skipping clean rows — which the batched read cannot do at all — makes a
+one-row edit **0.05x-0.14x**. So the render API is no longer the thing that
+pins us to the tag; the numbers and their caveats are in
+`tools/parse-probes/README.md`.
+
 The rebase itself changed nothing on this side: it landed **byte-identical to
 the previous ghostty-web build at 79 exports, same names**, so `GhosttyEngine.ts`
 and `wasmBindings.ts` needed no changes. The exports under "What we added on
