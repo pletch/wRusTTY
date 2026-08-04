@@ -205,6 +205,88 @@ run('ghostty main ABI, against a build at the pin', () => {
     expect(readRow(h, abi.POINT_TAG_SCREEN, 1500)).toBe('line 1500')
   })
 
+  /**
+   * `GhosttyStyle`'s offsets were found by writing one attribute at a time and
+   * seeing which byte moved, because the header's apparent layout is wrong —
+   * the colour union is 8-aligned, so the booleans sit 20-odd bytes further
+   * along than a naive reading puts them. These assert the answers.
+   */
+  describe('GhosttyStyle', () => {
+    /** Style of the first cell after writing `seq` then one glyph. */
+    const styleAfter = (seq: string) => {
+      const h = boot(moduleOnce())
+      const p = h.ex.ghostty_wasm_alloc_u8_array(abi.STYLE_SIZE)
+      h.write(`${seq}X`)
+      const d = h.dv()
+      for (let i = 0; i < abi.STYLE_SIZE; i += 4) d.setUint32(p + i, 0, true)
+      d.setUint32(p + abi.STYLE_OFF_SIZE, abi.STYLE_SIZE, true) // versioned struct
+      abi.expectOk(
+        h.ex.ghostty_terminal_grid_ref(h.term, h.point(abi.POINT_TAG_ACTIVE, 0, 0), h.refPtr),
+        'grid_ref',
+      )
+      abi.expectOk(h.ex.ghostty_grid_ref_style(h.refPtr, p), 'grid_ref_style')
+      return { d: h.dv(), p }
+    }
+
+    it('reports the size it filled, which is how a layout change announces itself', () => {
+      const { d, p } = styleAfter('')
+      expect(d.getUint32(p + abi.STYLE_OFF_SIZE, true)).toBe(abi.STYLE_SIZE)
+    })
+
+    it.each([
+      ['bold', '\x1b[1m', abi.STYLE_OFF_BOLD],
+      ['italic', '\x1b[3m', abi.STYLE_OFF_ITALIC],
+      ['faint', '\x1b[2m', abi.STYLE_OFF_FAINT],
+      ['blink', '\x1b[5m', abi.STYLE_OFF_BLINK],
+      ['inverse', '\x1b[7m', abi.STYLE_OFF_INVERSE],
+      ['invisible', '\x1b[8m', abi.STYLE_OFF_INVISIBLE],
+      ['strikethrough', '\x1b[9m', abi.STYLE_OFF_STRIKETHROUGH],
+      ['overline', '\x1b[53m', abi.STYLE_OFF_OVERLINE],
+    ])('sets %s and only %s', (_name, seq, offset) => {
+      const { d, p } = styleAfter(seq)
+      expect(d.getUint8(p + offset)).toBe(1)
+      // Every other boolean must stay clear — an offset that is merely close
+      // would otherwise pass by landing on a neighbour.
+      for (const other of [
+        abi.STYLE_OFF_BOLD, abi.STYLE_OFF_ITALIC, abi.STYLE_OFF_FAINT, abi.STYLE_OFF_BLINK,
+        abi.STYLE_OFF_INVERSE, abi.STYLE_OFF_INVISIBLE, abi.STYLE_OFF_STRIKETHROUGH,
+        abi.STYLE_OFF_OVERLINE,
+      ]) {
+        if (other !== offset) expect(d.getUint8(p + other)).toBe(0)
+      }
+    })
+
+    it.each([
+      ['single', '\x1b[4m', 1],
+      ['double', '\x1b[4:2m', 2],
+      ['curly', '\x1b[4:3m', 3],
+      ['dotted', '\x1b[4:4m', 4],
+      ['dashed', '\x1b[4:5m', 5],
+    ])('carries %s underline as an int, not a flag', (_name, seq, expected) => {
+      const { d, p } = styleAfter(seq)
+      expect(d.getUint32(p + abi.STYLE_OFF_UNDERLINE_STYLE, true)).toBe(expected)
+    })
+
+    it('tags a palette colour apart from an rgb one', () => {
+      const pal = styleAfter('\x1b[31m')
+      expect(pal.d.getUint32(pal.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_PALETTE)
+      expect(pal.d.getUint8(pal.p + abi.STYLE_OFF_FG_VALUE)).toBe(1) // red
+
+      const rgb = styleAfter('\x1b[38;2;10;20;30m')
+      expect(rgb.d.getUint32(rgb.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_RGB)
+      expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_VALUE)).toBe(10)
+      expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_VALUE + 1)).toBe(20)
+      expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_VALUE + 2)).toBe(30)
+    })
+
+    it('keeps background in its own slot, not aliasing foreground', () => {
+      const bg = styleAfter('\x1b[44m')
+      expect(bg.d.getUint32(bg.p + abi.STYLE_OFF_BG_TAG, true)).toBe(abi.STYLE_COLOR_PALETTE)
+      expect(bg.d.getUint8(bg.p + abi.STYLE_OFF_BG_VALUE)).toBe(4) // blue
+      expect(bg.d.getUint32(bg.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_NONE)
+    })
+  })
+
   it('still renders ESC k payloads, which is why #176 is still carried', () => {
     const h = boot(moduleOnce())
     h.write('\x1bkSCREENTITLE\x1b\\')

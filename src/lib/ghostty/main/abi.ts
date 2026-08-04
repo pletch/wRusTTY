@@ -141,6 +141,50 @@ export const ROW_DATA_KITTY_VIRTUAL_PLACEHOLDER = 7
 export const ROW_DATA_DIRTY = 8
 
 /* -------------------------------------------------------------------------- */
+/* Styles                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `GhosttyStyle` layout, wasm32 — 72 bytes, offsets found by probing, not by
+ * reading `style.h`.
+ *
+ * The header declares `{ size_t size; GhosttyStyleColor fg, bg, underline;
+ * bool bold..overline; int underline; }`, which looks 4-aligned. It is not:
+ * `GhosttyStyleColorValue` carries a `uint64_t`, so every colour is 8-aligned
+ * and 16 bytes wide, and the booleans start well past where a naive reading
+ * puts them.
+ *
+ * There is no `ghostty_style_get` — unlike cells and rows, a style is read
+ * directly out of caller memory. `size` is a **versioned-struct** field: write
+ * the buffer size in before the call, and the callee writes back the size it
+ * actually filled (72 at the pin). A style that reads back a different size is
+ * the signal that this block needs revisiting.
+ */
+export const STYLE_SIZE = 72
+export const STYLE_OFF_SIZE = 0
+export const STYLE_OFF_FG_TAG = 8
+export const STYLE_OFF_FG_VALUE = 16
+export const STYLE_OFF_BG_TAG = 24
+export const STYLE_OFF_BG_VALUE = 32
+export const STYLE_OFF_UNDERLINE_TAG = 40
+export const STYLE_OFF_UNDERLINE_VALUE = 48
+export const STYLE_OFF_BOLD = 56
+export const STYLE_OFF_ITALIC = 57
+export const STYLE_OFF_FAINT = 58
+export const STYLE_OFF_BLINK = 59
+export const STYLE_OFF_INVERSE = 60
+export const STYLE_OFF_INVISIBLE = 61
+export const STYLE_OFF_STRIKETHROUGH = 62
+export const STYLE_OFF_OVERLINE = 63
+/** `int`, not a bool: 0 none, 1 single, 2 double, 3 curly, 4 dotted, 5 dashed. */
+export const STYLE_OFF_UNDERLINE_STYLE = 64
+
+/** `GhosttyStyleColorTag`. */
+export const STYLE_COLOR_NONE = 0
+export const STYLE_COLOR_PALETTE = 1
+export const STYLE_COLOR_RGB = 2
+
+/* -------------------------------------------------------------------------- */
 /* Render state                                                                */
 /* -------------------------------------------------------------------------- */
 
@@ -364,7 +408,13 @@ export interface GhosttyMainExports {
   ghostty_grid_ref_row(ref: number, outRow: number): number
   ghostty_grid_ref_graphemes(ref: number, buf: number, bufLen: number, outLen: number): number
   ghostty_grid_ref_hyperlink_uri(ref: number, buf: number, bufLen: number, outLen: number): number
+  /**
+   * Fills a caller-owned `GhosttyStyle`. Write `STYLE_SIZE` into the buffer's
+   * first word first — it is a versioned struct and the callee reads it.
+   */
   ghostty_grid_ref_style(ref: number, outStyle: number): number
+  ghostty_style_default(outStyle: number): void
+  ghostty_style_is_default(style: number): number
 
   /** Takes the packed cell **by value** — an i64 argument, so pass a BigInt. */
   ghostty_cell_get(cell: bigint, key: number, out: number): number
