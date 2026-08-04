@@ -130,6 +130,31 @@ None of these are derivable by reading the headers, and each fails *silently*.
   re-enter it on the same terminal. Buffer and hand over once the write returns.
 - **Replies are only valid for the duration of the callback.** Copy them; a view
   over wasm memory is overwritten by the next write.
+- **`ghostty_terminal_mode_get` takes three arguments, not four.** Our ABI takes
+  `(mode, is_ansi)`; `main` folds both into one `GhosttyMode` — a DEC private
+  mode is its bare number, an ANSI mode is `number | 0x8000`. The four-argument
+  call fails in the worst available way: JS drops the extra argument, the *out
+  pointer* lands in the mode slot, the write goes to address 0, and the call
+  returns `SUCCESS` while the caller reads its own stale buffer. A mode query
+  then answers "still set" forever. `GhosttyMode` is declared in a header we do
+  not vendor, so the encoding was probed: after `ESC [ 4 h`, mode `4` reads back
+  false (DEC 4 exists and is unset) and `4 | 0x8000` reads back true.
+- **Our `is_row_wrapped` is main's `ROW_DATA_WRAP_CONTINUATION`**, not
+  `ROW_DATA_WRAP`. The pair are the two ends of one wrap, both answer plausibly,
+  and `logicalLines` joins on "this row continues the one above". Taking `WRAP`
+  shifts every joined line up by a row: on a two-row line the vendored build
+  flags row 1 and `WRAP` flags row 0.
+- **The cursor style enum is renumbered.** Ours is block=0, bar=1; main's is
+  bar=0, block=1 (underline and hollow agree). Passing the value through gives
+  every DECSCUSR the other shape, with no call ever failing.
+- **Cursor viewport coordinates are `uint16_t`,** as are `COLS`/`ROWS` — reading
+  them as words happens to work only while the scratch above them is zeroed.
+  Their validity is gated by `CURSOR_VIEWPORT_HAS_VALUE`; when it is false the
+  x/y are explicitly undefined, so "visible" on our side has to mean both.
+- **The default scrollback budget is 10,000 *bytes*** — 370 rows at 200 columns.
+  Measured, not read. Anything that creates a terminal and does not set
+  `OPT_SCROLLBACK_MAX_BYTES` has a scrollback of nothing much. Setting bytes
+  alone is enough; `MAX_LINES` is unset by default and does not bind.
 
 ## What each export becomes
 
@@ -152,7 +177,7 @@ the 29 is a blocker. Full mapping:
 | `render_state_is_row_dirty` | `row_get` + `ROW_DATA_DIRTY` |
 | `render_state_mark_clean` | `row_set` + `ROW_OPTION_DIRTY` |
 | `render_state_get_grapheme` | `row_cells_get` + `GRAPHEMES_LEN`/`GRAPHEMES_BUF` |
-| `terminal_get_mode` | `terminal_mode_get` |
+| `terminal_get_mode` | `terminal_mode_get` (three args; `is_ansi` is bit 15 of the mode) |
 | `terminal_write` | `terminal_vt_write` |
 | `terminal_is_alternate_screen` | `terminal_get` + `DATA_ACTIVE_SCREEN` |
 | `terminal_has_mouse_tracking` | `DATA_MOUSE_TRACKING` |
@@ -184,11 +209,14 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
   wired everything renders correctly and device-attribute/status queries
   silently go unanswered. A test pins that default so it stays a known fact
   rather than a rediscovered one.
-- `terminal_last_reset_seq` / `terminal_last_cursor_style_seq` → **probably
-  obsolete.** They exist because RIS discards a configured cursor and the host
-  wants it back only if the application did not then set its own. `main` has
-  `OPT_DEFAULT_CURSOR_STYLE` and `OPT_DEFAULT_CURSOR_BLINK`, so the core holds
-  the default across a reset. Confirm before deleting them.
+- `terminal_last_reset_seq` / `terminal_last_cursor_style_seq` → **superseded,
+  but not yet replaced.** They exist because RIS discards a configured cursor
+  and the host wants it back only if the application did not then set its own.
+  `main` has `OPT_DEFAULT_CURSOR_STYLE` and `OPT_DEFAULT_CURSOR_BLINK`, so the
+  core holds the default across a reset and the ordering question disappears.
+  Setting them needs a cursor style in `TerminalConfig`, which it does not
+  carry, so the shim answers both with 0 and `restoreCursorAfterReset` never
+  fires. Tracked in the status list — it is the port's one open behaviour gap.
 
 ## Status
 
@@ -208,20 +236,39 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       **byte-identical** to `get_viewport` across ten cases. It fills the same
       packed 16-byte buffer the renderer already consumes, so nothing
       downstream changes.
-- [ ] **Select the reader in `GhosttyEngine` / `WebGLRenderer`.** Blocked on the
-      binary, not on design: the shipped build is v1.3.1 and has no iterator
-      API, so a pane using this reader fails at the first `render_state_new`.
-      Two call sites, both replacing
-      `get_viewport(term, buf, cols * rows)` with `source.read(buf, cols, rows)`:
-      `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows`.
-      `ViewportSource` names the shape.
+- [x] **The shim: our whole export surface over `main`** — `main/shim.ts`.
+      Supersedes the "two call sites" plan below, which was too narrow: the
+      viewport is two call sites, but `GhosttyEngine` reaches for twenty-odd
+      exports across the render loop, search, links, mouse reporting and resize,
+      and all of them move with the binary. So the boundary moves instead of the
+      callers — `shimMainWasm(instance)` hands back exactly the `GhosttyExports`
+      object the app already talks to. 24 cases in `shim.test.ts`, each driving
+      **both builds through the same call sequence** and comparing: viewport
+      bytes, cursor position and shape, dimensions, modes, alternate screen,
+      mouse tracking, scrollback depth and rows, wrap in both coordinate spaces,
+      graphemes, replies, and two terminals in one instance.
+      `isMainBuild(instance)` selects on the binary rather than a build flag.
+- [ ] **Call `shimMainWasm` from `instantiateGhosttyModule`.** One branch, and
+      deliberately not taken yet: the shipped binary is still v1.3.1, so it
+      would be dead code guarding a swap that has not happened. It lands with
+      the rebuild.
+- [ ] **Cursor restore across RIS.** The shim answers `last_reset_seq` /
+      `last_cursor_style_seq` with 0, so `restoreCursorAfterReset` never fires
+      and a RIS leaves the core's default cursor rather than the configured one.
+      The replacement is `OPT_DEFAULT_CURSOR_STYLE` / `_BLINK`, which needs a
+      cursor style carried in `TerminalConfig` — the one behaviour regression in
+      the port, and the only item on this list that is a change in behaviour
+      rather than a change in plumbing.
 - [x] **Scrollback reads onto `grid_ref`** — `main/ScrollbackReader.ts`, also
       byte-identical, nine cases including cleared regions and clusters.
 - [x] **Responses onto `OPT_WRITE_PTY`** — `main/effects.ts`. Ten cases,
       including a *negative* one pinning the silent default (no callback, no
       replies) and a comparison against what the vendored queue answers for the
       same queries.
-- [ ] `#176` extracted as a standalone patch against the pin
+- [x] `#176` extracted as a standalone patch against the pin, and a binary at
+      the pin built with it applied — `patches/ghostty-main-esc-k.patch`,
+      `main/vendor-main/`. The parity suite asserts the *behaviour* (an `ESC k`
+      payload is swallowed), not `git apply`'s exit code.
 - [ ] Rebuild + `vendorIntegrity` hash + `gridSnapshot` green
 
 ### Not startable on this machine

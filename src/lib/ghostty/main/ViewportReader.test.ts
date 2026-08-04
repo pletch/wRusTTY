@@ -114,6 +114,9 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
     const buf = ex.ghostty_wasm_alloc_u8_array(CELLS * CELL_BYTES)
     new Uint8Array(ex.memory.buffer, buf, CELLS * CELL_BYTES).fill(0)
     const reader = new MainViewportReader({ ex, term })
+    // Update and read are separate for the same reason the vendored side's are:
+    // one snapshot answers the cells, the dimensions and the cursor.
+    reader.update()
     reader.read(buf, COLS, ROWS)
     const out = new Uint8Array(ex.memory.buffer, buf, CELLS * CELL_BYTES).slice()
     reader.dispose()

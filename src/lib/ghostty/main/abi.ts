@@ -364,6 +364,21 @@ export const PALETTE_BYTES = PALETTE_ENTRIES * COLOR_RGB_BYTES
  * every palette colour black.
  */
 
+/**
+ * `GhosttyMode` folds our `(mode, is_ansi)` pair into one number: a DEC private
+ * mode is its bare number, an ANSI mode is the number with bit 15 set.
+ *
+ * `GhosttyMode` is declared in a header we do not vendor, so this was probed:
+ * after `ESC [ 4 h` (IRM, an ANSI mode), `4` reads back false — because DEC 4
+ * also exists and is unset — while `4 | 0x8000` reads back true. An unknown
+ * mode returns INVALID_VALUE, which is how the encoding is distinguishable from
+ * a plain miss at all.
+ */
+export const MODE_ANSI_BIT = 0x8000
+export function ansiMode(mode: number, isAnsi: boolean): number {
+  return isAnsi ? mode | MODE_ANSI_BIT : mode
+}
+
 /** `active_screen` values for `T_DATA_ACTIVE_SCREEN`. */
 export const SCREEN_PRIMARY = 0
 export const SCREEN_ALTERNATE = 1
@@ -408,8 +423,18 @@ export interface GhosttyMainExports {
   ghostty_terminal_get(term: number, key: number, out: number): number
   ghostty_terminal_get_multi(term: number, n: number, keys: number, values: number, written: number): number
   ghostty_terminal_set(term: number, key: number, value: number): number
-  ghostty_terminal_mode_get(term: number, mode: number, isAnsi: number, out: number): number
-  ghostty_terminal_mode_set(term: number, mode: number, isAnsi: number, value: number): number
+  /**
+   * **Three arguments, not four.** Our ABI takes the mode number and an
+   * `is_ansi` flag; main folds both into one `GhosttyMode` — see
+   * `ansiMode` below.
+   *
+   * The four-argument form fails in the worst available way: JS drops the extra
+   * argument, so the *out pointer* lands in the mode slot and the write goes to
+   * address 0. The call returns `GHOSTTY_SUCCESS`, the caller reads whatever
+   * was already in its own buffer, and a mode query answers "still set" forever.
+   */
+  ghostty_terminal_mode_get(term: number, mode: number, out: number): number
+  ghostty_terminal_mode_set(term: number, mode: number, value: number): number
   ghostty_terminal_scroll_viewport(term: number, tag: number, delta: number): number
 
   /* render state */

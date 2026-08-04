@@ -95,7 +95,16 @@ export interface ViewportReaderHandles {
  * moment `vendor/ghostty-vt.wasm` is a build at the pin.
  */
 export interface ViewportSource {
-  /** Packs `cols * rows` cells into `bufPtr`; returns cells written. */
+  /**
+   * Rebuilds the snapshot. Separate from `read` because our ABI separates them
+   * — `render_state_update` is called once a frame, and the cursor position,
+   * the dimensions and the cells are then all read off that one snapshot. A
+   * reader that updated on every read would answer a mid-frame `readRows` from
+   * a newer grid than the cursor drawn beside it.
+   */
+  update(): void
+  /** Packs `cols * rows` cells into `bufPtr` from the last `update`; returns
+   *  cells written. */
   read(bufPtr: number, cols: number, rows: number): number
   dispose(): void
 }
@@ -111,7 +120,13 @@ export interface ViewportSource {
 export class MainViewportReader implements ViewportSource {
   private readonly ex: abi.GhosttyMainExports
   private readonly term: number
-  private readonly state: number
+  /**
+   * Public because the render state answers far more than the cells: the
+   * dimensions, the cursor and the default colours all come off this handle,
+   * and our ABI exposes them as separate `render_state_get_*` calls that the
+   * shim has to satisfy from the same snapshot this reader packed.
+   */
+  readonly state: number
   private readonly iterSlot: number
   private readonly cellsSlot: number
   private readonly scratch: number
@@ -160,8 +175,13 @@ export class MainViewportReader implements ViewportSource {
     return { fg, bg }
   }
 
+  /** Rebuilds the snapshot every subsequent read is answered from. */
+  update(): void {
+    abi.expectOk(this.ex.ghostty_render_state_update(this.state, this.term), 'render_state_update')
+  }
+
   /**
-   * Refreshes the render state and packs the whole viewport into `bufPtr`.
+   * Packs the whole viewport into `bufPtr`, from the last `update`.
    *
    * `bufPtr` must have room for `cols * rows` cells. The caller zeroes it, the
    * same way `updateStaticGrid` already does — a short read must leave blanks
@@ -172,7 +192,6 @@ export class MainViewportReader implements ViewportSource {
    */
   read(bufPtr: number, cols: number, rows: number): number {
     const { ex } = this
-    abi.expectOk(ex.ghostty_render_state_update(this.state, this.term), 'render_state_update')
     // Wants the slot holding the handle, not the handle.
     abi.expectOk(
       ex.ghostty_render_state_get(this.state, abi.RS_DATA_ROW_ITERATOR, this.iterSlot),

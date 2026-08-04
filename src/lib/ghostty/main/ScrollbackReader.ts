@@ -72,12 +72,25 @@ export interface ScrollbackReaderHandles {
   term: number
 }
 
+/**
+ * Which coordinate space a lookup is in.
+ *
+ * `SCREEN` counts from the top of scrollback — the numbering
+ * `get_scrollback_line` uses. `ACTIVE` counts from the top of the active
+ * screen, which is what our `is_row_wrapped` and `render_state_get_grapheme`
+ * take. Both resolve through the same `grid_ref`, so the viewport/scrollback
+ * split in our ABI collapses into one path here; only the tag differs.
+ */
+export const SPACE_SCREEN = abi.POINT_TAG_SCREEN
+export const SPACE_ACTIVE = abi.POINT_TAG_ACTIVE
+
 export class MainScrollbackReader {
   private readonly ex: abi.GhosttyMainExports
   private readonly term: number
   private readonly ptPtr: number
   private readonly refPtr: number
   private readonly cellPtr: number
+  private readonly rowPtr: number
   private readonly scratch: number
   private readonly stylePtr: number
   private readonly palPtr: number
@@ -94,6 +107,7 @@ export class MainScrollbackReader {
     this.ptPtr = ex.ghostty_wasm_alloc_u8_array(abi.POINT_SIZE)
     this.refPtr = ex.ghostty_wasm_alloc_u8_array(abi.GRID_REF_SIZE)
     this.cellPtr = ex.ghostty_wasm_alloc_u8_array(abi.CELL_U64_BYTES)
+    this.rowPtr = ex.ghostty_wasm_alloc_u8_array(8)
     this.scratch = ex.ghostty_wasm_alloc_u8_array(16)
     this.stylePtr = ex.ghostty_wasm_alloc_u8_array(abi.STYLE_SIZE)
     this.palPtr = ex.ghostty_wasm_alloc_u8_array(abi.PALETTE_BYTES)
@@ -140,24 +154,30 @@ export class MainScrollbackReader {
   }
 
   /**
+   * Points the ref at (x, y) in `tag`'s coordinate space.
+   *
+   * Zeroes the whole point first: it is 16 bytes with a hole between the tag
+   * and the value, and a stale byte in there is read as part of the union.
+   */
+  private resolve(tag: number, x: number, y: number): boolean {
+    const d = this.dv()
+    for (let i = 0; i < abi.POINT_SIZE; i += 4) d.setUint32(this.ptPtr + i, 0, true)
+    d.setUint32(this.ptPtr + abi.POINT_OFF_TAG, tag, true)
+    d.setUint32(this.ptPtr + abi.POINT_OFF_X, x, true)
+    d.setUint32(this.ptPtr + abi.POINT_OFF_Y, y, true)
+    return this.ex.ghostty_terminal_grid_ref(this.term, this.ptPtr, this.refPtr) === abi.GHOSTTY_SUCCESS
+  }
+
+  /**
    * Packs row `absY` — counted from the top of scrollback, the same numbering
    * `get_scrollback_line` uses — into `bufPtr`.
    *
    * Returns false when the row cannot be resolved, leaving the buffer alone so
    * the caller's blank stays a blank rather than becoming stale content.
    */
-  readRow(bufPtr: number, absY: number, cols: number): boolean {
-    const { ex } = this
+  readRow(bufPtr: number, absY: number, cols: number, tag: number = SPACE_SCREEN): boolean {
     this.refreshColors()
-
-    const d0 = this.dv()
-    for (let i = 0; i < abi.POINT_SIZE; i += 4) d0.setUint32(this.ptPtr + i, 0, true)
-    d0.setUint32(this.ptPtr + abi.POINT_OFF_TAG, abi.POINT_TAG_SCREEN, true)
-    d0.setUint32(this.ptPtr + abi.POINT_OFF_X, 0, true)
-    d0.setUint32(this.ptPtr + abi.POINT_OFF_Y, absY, true)
-    if (ex.ghostty_terminal_grid_ref(this.term, this.ptPtr, this.refPtr) !== abi.GHOSTTY_SUCCESS) {
-      return false
-    }
+    if (!this.resolve(tag, 0, absY)) return false
 
     for (let x = 0; x < cols; x++) {
       // Stepping the row: write x back into the ref rather than resolving again.
@@ -262,16 +282,36 @@ export class MainScrollbackReader {
    * Writes the cell's grapheme cluster as u32 codepoints, base first, matching
    * `ghostty_terminal_get_scrollback_grapheme`. Returns how many were written.
    */
-  graphemes(absY: number, x: number, bufPtr: number, cap: number): number {
+  graphemes(absY: number, x: number, bufPtr: number, cap: number, tag: number = SPACE_SCREEN): number {
     const { ex } = this
-    const d = this.dv()
-    for (let i = 0; i < abi.POINT_SIZE; i += 4) d.setUint32(this.ptPtr + i, 0, true)
-    d.setUint32(this.ptPtr + abi.POINT_OFF_TAG, abi.POINT_TAG_SCREEN, true)
-    d.setUint32(this.ptPtr + abi.POINT_OFF_X, x, true)
-    d.setUint32(this.ptPtr + abi.POINT_OFF_Y, absY, true)
-    if (ex.ghostty_terminal_grid_ref(this.term, this.ptPtr, this.refPtr) !== abi.GHOSTTY_SUCCESS) return 0
+    if (!this.resolve(tag, x, absY)) return 0
     if (ex.ghostty_grid_ref_graphemes(this.refPtr, bufPtr, cap, this.scratch) !== abi.GHOSTTY_SUCCESS) return 0
     return Math.min(this.dv().getUint32(this.scratch, true), cap)
+  }
+
+  /**
+   * Whether the row at `y` **continues the row above it**, which is what our
+   * `is_row_wrapped` answers and what `logicalLines` joins on.
+   *
+   * So it is `ROW_DATA_WRAP_CONTINUATION`, not `ROW_DATA_WRAP` — the pair are
+   * the two ends of the same wrap, and taking the other one shifts every joined
+   * line up by a row. Both answer plausibly on a wrapped line, which is why the
+   * mistake survives until something is compared: the vendored build reports
+   * row 1 of a two-row line, `ROW_DATA_WRAP` reports row 0.
+   *
+   * The row comes back as a `GhosttyRow` in caller memory and is then passed to
+   * `row_get` **by value**, i.e. as an i64, hence the BigInt.
+   */
+  isRowWrapped(y: number, tag: number = SPACE_SCREEN): boolean {
+    const { ex } = this
+    if (!this.resolve(tag, 0, y)) return false
+    if (ex.ghostty_grid_ref_row(this.refPtr, this.rowPtr) !== abi.GHOSTTY_SUCCESS) return false
+    const d = this.dv()
+    const row = (BigInt(d.getUint32(this.rowPtr + 4, true)) << 32n) | BigInt(d.getUint32(this.rowPtr, true))
+    if (ex.ghostty_row_get(row, abi.ROW_DATA_WRAP_CONTINUATION, this.scratch) !== abi.GHOSTTY_SUCCESS) {
+      return false
+    }
+    return this.dv().getUint8(this.scratch) !== 0
   }
 
   dispose(): void {
@@ -280,6 +320,7 @@ export class MainScrollbackReader {
     ex.ghostty_wasm_free_u8_array(this.palPtr, abi.PALETTE_BYTES)
     ex.ghostty_wasm_free_u8_array(this.stylePtr, abi.STYLE_SIZE)
     ex.ghostty_wasm_free_u8_array(this.scratch, 16)
+    ex.ghostty_wasm_free_u8_array(this.rowPtr, 8)
     ex.ghostty_wasm_free_u8_array(this.cellPtr, abi.CELL_U64_BYTES)
     ex.ghostty_wasm_free_u8_array(this.refPtr, abi.GRID_REF_SIZE)
     ex.ghostty_wasm_free_u8_array(this.ptPtr, abi.POINT_SIZE)
