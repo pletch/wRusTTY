@@ -1,0 +1,13 @@
+# Patches must stay LF on checkout, whatever core.autocrlf says.
+#
+# These are applied with `git apply` to a freshly cloned ghostty tree, which is
+# LF. With autocrlf=true — the default on this machine — a fresh clone of this
+# repo would hand them out with CRLF endings and `git apply` would reject them,
+# on a checkout where nothing looks wrong and the files were never edited. The
+# in-repo bytes are already LF; this is about what lands in the working tree.
+*.patch -text
+*.diff -text
+
+# Same reasoning: the WASM comparison binaries and any other binary artifacts
+# must never be line-ending translated.
+*.wasm binary
