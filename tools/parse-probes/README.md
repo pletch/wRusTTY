@@ -31,6 +31,8 @@ worth reading.
 | `scan.mjs` | `scanOsc` in ms/MB per content shape |
 | `viewport.mjs` | cost of getting a frame's cells out, and the JS→WASM call floor |
 | `iter.mjs` | the same, driven through ghostty **main**'s row/cell iterator API, including the RAW packed-cell path and a dirty-rows-only frame |
+| `search.mjs` | the **scrollback search** path — today's row-at-a-time read against main's `grid_ref`. `check` mode gates it |
+| `gridrefdepth.mjs` | whether `grid_ref` resolution is O(scrollback depth) |
 | `names.mjs` | function names from the name section, filtered |
 | `secs.mjs` | section sizes |
 
@@ -101,6 +103,15 @@ vintage; the failure is a bare `GHOSTTY_INVALID_VALUE` (-2).
 handle — `render.zig` does `const it = out.* orelse ...` and populates what the
 slot points at. Passing the handle returns `GHOSTTY_INVALID_VALUE` (-2).
 
+**`GhosttyPoint` is not laid out the way the header reads.** `point.h` declares
+`{ tag; value }` over a `{ uint16_t x; uint32_t y; }` coordinate, which on wasm32
+reads as `tag@0, x@4, y@8`. It is actually **`tag@0, x@+8, y@+12`, 16 bytes** —
+the union carries an 8-aligned member, so `value` starts at +8, and the struct
+arrives by pointer rather than by value. Getting this wrong is silent: the
+coordinates land in each other's fields and you read a real cell from the wrong
+place. `y=1` returning column 1 of row 0 is the tell. Probe the offsets against
+known content rather than deriving them (this is what `search.mjs check` guards).
+
 **Per-row dirty is cleared by the consumer.** `render_state_update` sets it and
 nothing resets it, so unless each row you read is cleared with
 `row_set(iter, ROW_OPTION_DIRTY, false)`, every row reads dirty from the second
@@ -142,3 +153,46 @@ costs it a whole frame; the iterator reads 200 cells instead of 12,000. Note the
 absolute numbers on both sides before treating any of this as decisive: the
 worst full-redraw case is 0.21 ms against an 8.3 ms frame, so the 2.5x is 2.5x
 of something that was never the bottleneck.
+
+## The search path (`search.mjs`), at 48d85eae
+
+`iter.mjs` measures the *render* path. Search is a different shape and, on main,
+a different API: `SearchController` walks the whole scrollback via
+`readRows(0, total - 1)`, which today is one `get_scrollback_line` per **row**.
+Main has no such call — scrollback is addressed through `grid_ref`.
+
+One full search pass, both engines reading the identical 1,977 / 9,941 rows:
+
+| | 80x24, 2k rows | 200x60, 10k rows |
+| --- | --- | --- |
+| today: one packed row per call | 1.09 ms | 13.6 ms |
+| **`grid_ref`, one resolve per row** | **0.9x** | **0.8x** |
+| the same via `ghostty_cell_get` | 1.7x | 1.7x |
+| `grid_ref` re-resolved per **cell** | 6.3x | 9.1x |
+
+So the search path is **not** the regression it looked like it would be — it is
+slightly faster, and holds at depth: 0.65x at 40k rows, 0.86x at 100k.
+
+Three things decide that, and all three are easy to get wrong:
+
+- **Resolve once per row, then walk by mutating `ref.x`.** `GhosttyGridRef` is a
+  plain `{size, node, x, y}` struct in caller memory, so stepping a row costs no
+  further resolves. The direct transliteration of `readRows` — resolve per cell —
+  is the 6.3x-9.1x row, and it is what you get by writing the obvious thing.
+- **`GhosttyCell` is a `uint64_t`**, the same packed cell as `ROW_CELLS_DATA_RAW`,
+  so `ghostty_grid_ref_cell` already hands back everything and JS can unpack it:
+  `codepoint = (lo >>> 2) & 0x1FFFFF`. Going through `ghostty_cell_get` per field
+  instead costs 1.7x, and it is the accessor upstream documents.
+- **`grid_ref` resolution really is O(depth)**, as `terminal.h` warns: 14 ns at
+  row 0 rising linearly to 188 ns at row 39,540 (`gridrefdepth.mjs`). One resolve
+  per row amortises that over `cols` cells, which is why the pass stays linear
+  enough to win. One resolve per *cell* does not.
+
+### The trap that inverted this result
+
+The first version of this probe reported `grid_ref` at **5.2x slower**. The
+baseline was measuring an empty loop: `get_scrollback_line` reads through
+`RenderState.row_data` (patch #177), so without a `ghostty_render_state_update`
+first, every scrollback row reads back **blank** — no error, no zero return, just
+spaces. `search.mjs check` compares both engines' text row by row and is the only
+reason this was caught. Run it whenever the harness changes.
