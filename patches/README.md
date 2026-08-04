@@ -55,7 +55,9 @@ The terminal and render-state C API does not exist in any released
 `src/terminal/c/terminal.zig` (+1150, a new file) is that whole API. Everything
 else is small: only ~30 lines touch Ghostty's own internals.
 
-Carried from `ghostty-web`, all three still unmerged upstream:
+Carried from `ghostty-web`, all three still unmerged into the v1.3.1 tag. Two of
+the three are **already fixed on `main`**, which matters for the rebase and is
+recorded under each below.
 
 - **#142 zero-initialize WASM page buffers** (`PageList.zig`). **Do not drop
   this.** The WASM allocator reuses freed memory without zeroing, and
@@ -65,13 +67,26 @@ Carried from `ghostty-web`, all three still unmerged upstream:
   observed as leftover text from a previous test, `error(screen): style addition
   failed after capacity increase`, and eventually a hard crash of the test
   worker.
+  **On `main`: already fixed, drop it.** Both call sites in `PageList.zig` guard
+  with `std.debug.runtime_safety or builtin.os.tag == .freestanding`, and the
+  comment states the same WASM-allocator reasoning. Their condition is the better
+  one — it is the allocator that matters, not the ISA, which is what our
+  `builtin.target.cpu.arch.isWasm()` keys off.
 - **#176 ignore `ESC k` payloads** (`Parser.zig`, `parse_table.zig`). Adds a
   `screen_title_string` state. v1.3.1 does **not** handle this natively —
   verified: without it, `ESC k SCREENTITLE ST` renders `SCREENTITLE` onto the
   grid.
+  **On `main`: still missing, keep carrying it.** `main` has no `screen_title`
+  state and no `0x6B` transition in `parse_table.zig`, and the same test renders
+  `SCREENTITLE` on a `main` build. Note this is *not* a matter of wiring an
+  effect callback — a parser that has no state for the sequence prints the
+  payload whatever the embedder configures. ~25 lines, self-contained and
+  plausibly acceptable upstream; a PR would take the carried burden to zero.
 - **#177 stabilize viewport row reads** (`c/terminal.zig`). Reads rows from
   `RenderState.row_data` rather than walking pins, which keeps rows coherent
   across page boundaries.
+  **On `main`: moot.** It patches a file this patch itself creates; `main` ships
+  its own render state.
 
 Plus **#180**, merged upstream, in corrected form.
 
