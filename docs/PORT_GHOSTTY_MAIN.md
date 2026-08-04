@@ -176,9 +176,21 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       palette and rgb colors, default colors, wide glyphs, scrolling, and a
       styled full screen. `search.mjs check` covers the scrollback half.
 - [x] `GhosttyStyle` mapped onto our `flags` / `attrs2` bytes
-- [ ] `GhosttyEngine` read path onto the iterator — **the oracle above is the
-      gate for this**; extend its cases rather than trusting the app to look
-      right, since everything that has gone wrong so far looked right
+- [x] **Viewport read onto the iterator** — `main/ViewportReader.ts`, asserted
+      **byte-identical** to `get_viewport` across ten cases. It fills the same
+      packed 16-byte buffer the renderer already consumes, so nothing
+      downstream changes.
+- [ ] **Select the reader in `GhosttyEngine` / `WebGLRenderer`.** Blocked on the
+      binary, not on design: the shipped build is v1.3.1 and has no iterator
+      API, so a pane using this reader fails at the first `render_state_new`.
+      Two call sites, both replacing
+      `get_viewport(term, buf, cols * rows)` with `source.read(buf, cols, rows)`:
+      `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows`.
+      `ViewportSource` names the shape.
+- [ ] **Scrollback reads onto `grid_ref`.** `readRows` also calls
+      `get_scrollback_line` and `get_scrollback_grapheme` per row; those move to
+      `grid_ref` (resolve once per row, step `ref.x`), priced at 0.8x-0.9x by
+      `search.mjs`. Same seam, not yet written.
 - [ ] Responses onto `OPT_WRITE_PTY` (the silent-failure one — see above)
 - [ ] `#176` extracted as a standalone patch against the pin
 - [ ] Rebuild + `vendorIntegrity` hash + `gridSnapshot` green
