@@ -34,13 +34,25 @@ import {
   GhosttyOutOfMemoryError,
   type GhosttyWasm,
   CELL_BYTES,
+  CURSOR_STYLE_BLOCK,
+  CURSOR_STYLE_BAR,
+  CURSOR_STYLE_UNDERLINE,
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
-// A locally-built binary, not the one `ghostty-web` publishes: it layers three
-// unmerged upstream PRs (coder/ghostty-web#142, #176, #177) onto the commit
-// package.json pins, none of which had shipped in any release at build time.
-// See vendor/README.md for what each fixes and how to rebuild or revert.
+// A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
+// still carry (#176, `ESC k`). It speaks main's API rather than the one
+// `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
+// the binary's exports and wraps it in `main/shim.ts`, so nothing in this file
+// knows which build it is talking to. See vendor/README.md and
+// docs/PORT_GHOSTTY_MAIN.md.
 import ghosttyWasmUrl from './vendor/ghostty-vt.wasm?url'
+
+/** The cursor preference as the core's own numbering, for the config struct. */
+const CONFIG_CURSOR_STYLE: Record<CursorStyleSetting, number> = {
+  block: CURSOR_STYLE_BLOCK,
+  bar: CURSOR_STYLE_BAR,
+  underline: CURSOR_STYLE_UNDERLINE,
+}
 
 /** xterm's blink period, so the two engines don't visibly differ. */
 const CURSOR_BLINK_MS = 530
@@ -56,9 +68,14 @@ const CURSOR_BLINK_MS = 530
  * at its initial 6.6 MB because the core never had a reason to grow.
  *
  * The unit is settled by sweeping the raw field against this binary: retention
- * tracks `value / (cols * 12.65)` across the range where the budget exceeds one
- * page. 12.65 bytes per cell is that measurement, near-flat from 40 to 400
- * columns. Note `vendor/README.md` used to assert the opposite and dismiss
+ * tracks `value / (cols * 9.2)`. That constant is a property of the *core*, not
+ * arithmetic, and it moved with the port — the v1.3.1 build delivered 12.65
+ * bytes per cell, ghostty `main` delivers 8.5-9.7 from 80 to 400 columns and
+ * across every budget from 6 MB up, so the same budget now buys ~37% more
+ * depth. Below ~3 MB the figure degrades to 10.5-12.6 because whole-page
+ * eviction dominates when a budget is only a few pages wide; that is why the
+ * band around the smallest tier in `scrollbackLimit.test.ts` is wider than the
+ * others. Note `vendor/README.md` used to assert the opposite and dismiss
  * `ghostty-web`'s "it's bytes" docs (their PR #151); they were right.
  *
  * Rows are therefore not a quantity this side can promise — they fall out of
@@ -69,7 +86,7 @@ const CURSOR_BLINK_MS = 530
  * offered and broken twice before this. `estimateScrollbackRows` derives the
  * rows for display, which is the honest direction to convert in.
  */
-const SCROLLBACK_BYTES_PER_CELL = 12.65
+const SCROLLBACK_BYTES_PER_CELL = 9.2
 
 /**
  * Per-pane memory tiers, keyed by the figure shown in Settings.
@@ -81,30 +98,34 @@ const SCROLLBACK_BYTES_PER_CELL = 12.65
  *
  * They look arbitrary because they are measured, not derived. WASM memory grows
  * in doubling steps, so the heap is a staircase against the budget rather than
- * a line: every budget from 13 MB to 28 MB lands on the same ~30.7 MB heap, and
- * one more megabyte doubles it. Measured against the vendored core (flood to
- * saturation, sweeping 80/200/400 columns — the steps are width-independent):
+ * a line: every budget from 13 MB to 26 MB lands on the same 33 MB heap, and
+ * one more megabyte doubles it. **Re-measured for the move to ghostty `main`**,
+ * which shifted every step: its binary is 1.3 MB against 742 kB and carries
+ * more static data, so each budget now lands one doubling higher than it did.
+ * Flooded to saturation, sweeping 80/200/400 columns and three flood shapes —
+ * the steps are width-independent and shape-independent:
  *
- *   budget <= 4 MB   -> 6.6 MB heap        4 MB chosen, labelled 8 MB
- *   budget 5-12 MB   -> 14.7 MB heap      10 MB chosen, labelled 16 MB
- *   budget 13-28 MB  -> 30.7 MB heap      24 MB chosen, labelled 32 MB
- *   budget 44-56 MB  -> 62.7 MB heap      48 MB chosen, labelled 64 MB
+ *   budget <= 2.5 MB  ->  5.0 MB heap     2.5 MB chosen, labelled 8 MB
+ *   budget 2.75-6 MB  ->  9.0 MB heap       6 MB chosen, labelled 16 MB
+ *   budget 6.5-12 MB  -> 17.0 MB heap      12 MB chosen, labelled 32 MB
+ *   budget 13-26 MB   -> 33.0 MB heap      26 MB chosen, labelled 64 MB
  *
- * Each budget sits inside its step with room to spare, so the label is an
- * honest ceiling rather than a target the pane creeps past — the renderer's
- * scratch buffers come out of the same linear memory and are not in the
- * measurement above. Picking the *top* of each step is the point: 4 MB and
- * 12 MB cost the same 14.7 MB heap but differ by 3x in depth, so rounding the
- * budget down would give away rows for nothing.
+ * Each budget sits inside its step, so the label is an honest ceiling rather
+ * than a target the pane creeps past — the renderer's scratch buffers come out
+ * of the same linear memory and are not in the measurement above. Picking the
+ * *top* of each step is the point: 6.5 MB and 12 MB cost the same 17 MB heap
+ * but differ by ~2x in depth, so rounding the budget down would give away rows
+ * for nothing. The tiers still buy more depth than they did before the port
+ * despite the smaller budgets, because a row costs less.
  *
- * Re-measure before changing any of this; it is a property of the vendored
- * binary, not arithmetic.
+ * Re-measure before changing any of this, and after any rebuild of the
+ * vendored binary; it is a property of that binary, not arithmetic.
  */
 const SCROLLBACK_BUDGET_BY_FOOTPRINT_MB: Record<number, number> = {
-  8: 4 * 1024 * 1024,
-  16: 10 * 1024 * 1024,
-  32: 24 * 1024 * 1024,
-  64: 48 * 1024 * 1024,
+  8: 2.5 * 1024 * 1024,
+  16: 6 * 1024 * 1024,
+  32: 12 * 1024 * 1024,
+  64: 26 * 1024 * 1024,
 }
 
 /** Tier used when a setting is missing, corrupt, or not one of the tiers. The
@@ -142,8 +163,10 @@ export function scrollbackBudgetBytesFor(footprintMB: number): number {
  *
  * Approximate on purpose, and labelled that way wherever it is rendered. The
  * core evicts whole pages, so the true figure lands a little under this;
- * measured against the vendored binary across 8-64 MB and 80-400 columns the
- * error runs -7% to +1%, tightening as the budget grows. Good enough to size a
+ * measured against the vendored binary across 80-400 columns the error runs
+ * -27% to +8%, and all of the -27% is the smallest tier, where a budget only a
+ * few pages wide makes page granularity the dominant term. From the 16 MB tier
+ * up it is within -5% to +8%. Good enough to size a
  * decision by, which is all it is for — the exact depth of a live pane is
  * `scrollbackLength`, which is measured rather than estimated.
  */
@@ -151,32 +174,6 @@ export function estimateScrollbackRows(budgetBytes: number, cols: number): numbe
   const safeCols = Number.isFinite(cols) ? Math.max(1, cols) : 1
   const safeBytes = Number.isFinite(budgetBytes) ? Math.max(0, budgetBytes) : 0
   return Math.round(safeBytes / (safeCols * SCROLLBACK_BYTES_PER_CELL))
-}
-
-/**
- * Whether a full reset has discarded the configured cursor and nothing has
- * claimed it since.
- *
- * Split out from the engine because it is the whole of the decision and the
- * rest is plumbing — and because the cases are combinations of two ticks,
- * which is miserable to reach through a live core and a DOM.
- *
- * Deliberately holds no "already handled" state. Restoring writes DECSCUSR,
- * which moves `styleAt` past `resetAt`, so the second condition below is what
- * stops this firing again on every subsequent write. A separate handled-marker
- * would be a second mechanism for the same thing, and dead the moment the first
- * one works.
- *
- * @param resetAt core tick of the last RIS; 0 if there has never been one
- * @param styleAt core tick of the last DECSCUSR; 0 if there has never been one
- */
-export function shouldRestoreCursor(resetAt: number, styleAt: number): boolean {
-  // Never reset: nothing to put back.
-  if (resetAt === 0) return false
-  // Something set the cursor at or after the reset — an application choosing
-  // its own, which outranks a preference. Common: a TUI resets and then asks
-  // for the cursor it wants, both inside one write.
-  return styleAt <= resetAt
 }
 
 /**
@@ -510,6 +507,12 @@ export class GhosttyEngine implements TerminalEngine {
       this.termPtr = createTerminal(this.wasm, this._cols, this._rows, {
         scrollbackLimit: this.scrollbackBudgetBytes,
         ...this.themeConfigColors(),
+        // The cursor a RIS returns to. Only the `main` ABI acts on it, where it
+        // replaces the reset/DECSCUSR tick comparison in
+        // `restoreCursorAfterReset` outright — the core simply keeps the
+        // preference across the reset instead of the host putting it back.
+        cursorStyle: CONFIG_CURSOR_STYLE[this._cursorStyle],
+        cursorBlink: this._cursorBlink,
       })
       if (this.termPtr === 0) {
         this.failInit('Ghostty could not allocate a terminal.')
@@ -1703,8 +1706,6 @@ export class GhosttyEngine implements TerminalEngine {
         this.parseSegment(bytes)
       }
 
-      this.restoreCursorAfterReset()
-
       // Drained here rather than on the frame: a reply is only correct for the
       // state that provoked it, and a cursor-position report that waits for the
       // next repaint can describe a cursor that has already moved on.
@@ -1971,41 +1972,18 @@ export class GhosttyEngine implements TerminalEngine {
    * application that sets its own shape simply overwrites this — which is the
    * precedence a preference should have.
    *
-   * Reapplied by the caller on a settings change, and by
-   * `restoreCursorAfterReset` when RIS discards it.
+   * Reapplied by the caller on a settings change. A reset does not need it:
+   * the core is told this preference at construction
+   * (`TerminalConfig.cursorStyle`) and returns to it after a RIS by itself,
+   * which is what replaced the reset/DECSCUSR tick comparison the host used to
+   * do here. A preference changed *after* a pane opens therefore reaches the
+   * live cursor immediately but not that pane's reset default, which is the one
+   * seam left in this.
    */
   setCursorStyle(style: CursorStyleSetting, blink: boolean): void {
     this._cursorStyle = style
     this._cursorBlink = blink
     if (this.termPtr) this.write(cursorStyleSequence(style, blink))
-  }
-
-  /**
-   * Puts the configured cursor back after a full reset (RIS) discarded it.
-   *
-   * RIS returns the core to a steady block, which silently throws the
-   * preference away — `clear`, a crashed curses program, or anything that
-   * resets the terminal on exit. Detecting it by scanning the stream for
-   * `ESC c` would be guesswork (the bytes can split across writes, and appear
-   * inside payloads that are not sequences), so the core reports it instead.
-   *
-   * The ordering matters as much as the fact. A TUI commonly resets *and then*
-   * sets the cursor it wants, both inside one write, and reapplying blindly
-   * would overwrite the choice it just made. So this restores only when the
-   * reset is the more recent of the two — when nothing has spoken for the
-   * cursor since.
-   *
-   * Reapplying bumps the core's own DECSCUSR tick, which is what stops this
-   * from running again on the next write.
-   */
-  private restoreCursorAfterReset(): void {
-    if (!this.wasm || !this.termPtr) return
-    const resetAt = this.wasm.exports.ghostty_terminal_last_reset_seq(this.termPtr)
-    const styleAt = this.wasm.exports.ghostty_terminal_last_cursor_style_seq(this.termPtr)
-    if (!shouldRestoreCursor(resetAt, styleAt)) return
-    writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
-      cursorStyleSequence(this._cursorStyle, this._cursorBlink),
-    ))
   }
 
   setFont(fontFamily: string, fontSize: number): void {

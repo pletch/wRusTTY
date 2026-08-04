@@ -37,12 +37,18 @@
  *
  * ## What it does not carry
  *
- * `last_reset_seq` / `last_cursor_style_seq` answer 0 — "never happened" — so
- * `restoreCursorAfterReset` never fires. `main` holds the configured cursor
- * across a RIS itself through `OPT_DEFAULT_CURSOR_STYLE` / `_BLINK`, which is
- * the real replacement; wiring those needs a cursor style in the config struct,
- * which our config does not carry. Until then a RIS leaves the core's default
- * cursor rather than the configured one. See `docs/PORT_GHOSTTY_MAIN.md`.
+ * `last_reset_seq` / `last_cursor_style_seq` are **gone from the ABI**, not
+ * shimmed. They existed only so the host could tell whether a RIS had thrown
+ * the configured cursor away and nothing had claimed it since; `main` holds
+ * that preference across the reset itself, through the
+ * `OPT_DEFAULT_CURSOR_STYLE` / `_BLINK` pair that `TerminalConfig.cursorStyle`
+ * feeds. `cursorResetLive.test.ts` still passes unchanged, through an entirely
+ * different mechanism, which is the evidence that this was a fair trade.
+ *
+ * The one thing that does not carry over is a preference *changed mid-session*:
+ * the default is set when the terminal is made, so a RIS after a settings
+ * change returns the cursor the pane opened with. The live cursor is still
+ * correct — `setCursorStyle` writes DECSCUSR either way.
  *
  * `hyperlinkId` is 0 on every cell, as documented in `ViewportReader`.
  */
@@ -66,6 +72,10 @@ const CONFIG_OFF_BG = 8
 const CONFIG_OFF_CURSOR = 12
 const CONFIG_OFF_PALETTE = 16
 const CONFIG_PALETTE_ENTRIES = 16
+/** Past the struct the vendored core reads; see `TerminalConfig`. Both are
+ *  stored +1, so zero means "not specified". */
+const CONFIG_OFF_CURSOR_STYLE = 80
+const CONFIG_OFF_CURSOR_BLINK = 84
 
 /**
  * What a terminal created without a config gets.
@@ -84,12 +94,47 @@ const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024
  */
 const UNLIMITED_SCROLLBACK_BYTES = 0xffffffff
 
-/** main's `GhosttyRenderStateCursorVisualStyle` onto our `CURSOR_STYLE_*`. */
-const CURSOR_STYLE_FOR_MAIN = new Uint8Array(4)
-CURSOR_STYLE_FOR_MAIN[abi.RS_CURSOR_BAR] = CURSOR_STYLE_BAR
-CURSOR_STYLE_FOR_MAIN[abi.RS_CURSOR_BLOCK] = CURSOR_STYLE_BLOCK
-CURSOR_STYLE_FOR_MAIN[abi.RS_CURSOR_UNDERLINE] = CURSOR_STYLE_UNDERLINE
-CURSOR_STYLE_FOR_MAIN[abi.RS_CURSOR_BLOCK_HOLLOW] = CURSOR_STYLE_BLOCK_HOLLOW
+/**
+ * main's `GhosttyRenderStateCursorVisualStyle` onto our `CURSOR_STYLE_*`.
+ *
+ * A function rather than a lookup table built at module scope, and that is
+ * load-bearing: `wasmBindings` imports this module to select the ABI, so the
+ * two form an import cycle, and a table built while `wasmBindings` is still
+ * initialising reads its constants in their temporal dead zone. Everything here
+ * touches the other module only when called.
+ */
+function cursorStyleForMain(style: number): number {
+  switch (style) {
+    case abi.RS_CURSOR_BAR:
+      return CURSOR_STYLE_BAR
+    case abi.RS_CURSOR_UNDERLINE:
+      return CURSOR_STYLE_UNDERLINE
+    case abi.RS_CURSOR_BLOCK_HOLLOW:
+      return CURSOR_STYLE_BLOCK_HOLLOW
+    default:
+      return CURSOR_STYLE_BLOCK
+  }
+}
+
+/**
+ * The same renumbering the other way, for `OPT_DEFAULT_CURSOR_STYLE`.
+ *
+ * `GhosttyTerminalCursorStyle` and `GhosttyRenderStateCursorVisualStyle` number
+ * identically, so this is one mapping used in both directions rather than two
+ * that could disagree.
+ */
+function mainCursorStyleFor(ours: number): number {
+  switch (ours) {
+    case CURSOR_STYLE_BAR:
+      return abi.RS_CURSOR_BAR
+    case CURSOR_STYLE_UNDERLINE:
+      return abi.RS_CURSOR_UNDERLINE
+    case CURSOR_STYLE_BLOCK_HOLLOW:
+      return abi.RS_CURSOR_BLOCK_HOLLOW
+    default:
+      return abi.RS_CURSOR_BLOCK
+  }
+}
 
 type MainExports = abi.GhosttyMainExports & { __indirect_function_table?: WebAssembly.Table }
 
@@ -222,6 +267,33 @@ class MainShim {
     if (cursor !== 0) this.setColor(term, abi.T_OPT_COLOR_CURSOR, cursor)
 
     this.applyPalette(term, ptr)
+    this.applyCursor(term, ptr)
+  }
+
+  /**
+   * The cursor a reset returns to.
+   *
+   * This is what replaces `last_reset_seq` / `last_cursor_style_seq`: those
+   * exist only because RIS discarded the configured cursor and the host had to
+   * decide whether to put it back. Here the core holds it — verified, not
+   * assumed: with a default of bar+blink, `ESC c` comes back bar+blink, and so
+   * does `CSI 0 q`.
+   *
+   * Both fields are stored +1 so that "not specified" is distinguishable from
+   * block, which is 0 on our side and a perfectly ordinary request.
+   */
+  private applyCursor(term: number, ptr: number): void {
+    const d = this.dv()
+    const style = d.getUint32(ptr + CONFIG_OFF_CURSOR_STYLE, true)
+    const blink = d.getUint32(ptr + CONFIG_OFF_CURSOR_BLINK, true)
+    if (style !== 0) {
+      this.dv().setUint32(this.scratch, mainCursorStyleFor(style - 1), true)
+      this.ex.ghostty_terminal_set(term, abi.T_OPT_DEFAULT_CURSOR_STYLE, this.scratch)
+    }
+    if (blink !== 0) {
+      this.dv().setUint8(this.scratch, blink === 2 ? 1 : 0)
+      this.ex.ghostty_terminal_set(term, abi.T_OPT_DEFAULT_CURSOR_BLINK, this.scratch)
+    }
   }
 
   /**
@@ -361,7 +433,7 @@ class MainShim {
         this.rsBool(term, abi.RS_DATA_CURSOR_BLINKING) ? 1 : 0,
       ghostty_render_state_get_cursor_style: (term) =>
         this.rsGet(term, abi.RS_DATA_CURSOR_VISUAL_STYLE)
-          ? CURSOR_STYLE_FOR_MAIN[this.dv().getUint32(this.scratch, true) & 0x3]
+          ? cursorStyleForMain(this.dv().getUint32(this.scratch, true))
           : CURSOR_STYLE_BLOCK,
       ghostty_render_state_get_fg_color: (term) => this.rsRgb(term, abi.RS_DATA_COLOR_FOREGROUND),
       ghostty_render_state_get_bg_color: (term) => this.rsRgb(term, abi.RS_DATA_COLOR_BACKGROUND),
@@ -407,11 +479,6 @@ class MainShim {
         this.state(term)?.scrollback.isRowWrapped(y, SPACE_ACTIVE) ? 1 : 0,
       ghostty_terminal_is_scrollback_row_wrapped: (term, offset) =>
         this.state(term)?.scrollback.isRowWrapped(offset, SPACE_SCREEN) ? 1 : 0,
-
-      // "Never happened" — see this file's header. The core holds the
-      // configured cursor across a reset itself on main.
-      ghostty_terminal_last_reset_seq: () => 0,
-      ghostty_terminal_last_cursor_style_seq: () => 0,
 
       ghostty_terminal_get_scrollback_length: (term) =>
         this.tGet(term, abi.T_DATA_SCROLLBACK_ROWS) ? this.dv().getUint32(this.scratch, true) : 0,

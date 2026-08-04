@@ -79,20 +79,17 @@ export interface ViewportReaderHandles {
 /**
  * What the renderer and `readRows` actually depend on, stated once.
  *
- * Today both reach for `ghostty_render_state_get_viewport` directly, in
- * `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows`. Those are the
- * only two places that care which ABI filled the buffer, and this is the shape
- * that replaces the call in both:
+ * `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows` reach for
+ * `ghostty_render_state_get_viewport`, and neither had to change: `main/shim.ts`
+ * answers that call by driving this reader —
  *
  *   ghostty_render_state_get_viewport(term, buf, cols * rows)
- *   -> source.read(buf, cols, rows)
+ *   -> source.update() once a frame, then source.read(buf, cols, rows)
  *
- * `MainViewportReader` already satisfies it and is asserted byte-identical to
- * the batched read. The switch is therefore a constructor argument, not a
- * rewrite — but it is **not** made yet, and deliberately: the shipped binary is
- * the v1.3.1 build, which has no iterator API, so a pane wired to this reader
- * would fail at the first `render_state_new`. It becomes a one-line change the
- * moment `vendor/ghostty-vt.wasm` is a build at the pin.
+ * — which is why the port reached the renderer as a swapped binary rather than
+ * as a diff. `update` is separate from `read` because our ABI separates them:
+ * the cells, the dimensions and the cursor all come off one snapshot, and
+ * `readRows` reads that snapshot again mid-frame without rebuilding it.
  */
 export interface ViewportSource {
   /**

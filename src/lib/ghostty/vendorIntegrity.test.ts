@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
  * Pins the vendored WASM to the exact artifact `vendor/README.md` documents.
  *
  * The binary parses untrusted bytes from every host you connect to, which makes
- * it the highest-value swap target in the tree, and it is an opaque 742 kB blob
+ * it the highest-value swap target in the tree, and it is an opaque 1.3 MB blob
  * that reviewing a diff cannot tell you anything about. A recorded hash is the
  * only check available.
  *
@@ -27,8 +27,8 @@ import { dirname, join } from 'node:path'
  * binary moving when nobody rebuilt it.
  */
 
-const EXPECTED_SHA256 = 'be419bfc5b6de37eb1768585aa4225039b9dacde56d429db1f53904af7775b0b'
-const EXPECTED_BYTES = 742_403
+const EXPECTED_SHA256 = '54fa7b5339893ddb4247d3eb5e868cbdeeaa8cd236185bd8bd00daa0766c6d9e'
+const EXPECTED_BYTES = 1_308_136
 
 const here = dirname(fileURLToPath(import.meta.url))
 const WASM_PATH = join(here, 'vendor/ghostty-vt.wasm')

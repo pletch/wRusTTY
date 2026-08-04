@@ -31,7 +31,7 @@ import { PALETTE_16, PALETTE_256, DEFAULT_FG, DEFAULT_BG } from '../../../bench/
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MAIN_WASM = process.env.GHOSTTY_MAIN_WASM ?? join(here, 'vendor-main/ghostty-vt.wasm')
-const VENDORED = join(here, '../vendor/ghostty-vt.wasm')
+const VENDORED = join(here, '../vendor-131/ghostty-vt.wasm')
 
 const COLS = 40
 const ROWS = 8

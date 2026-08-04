@@ -74,15 +74,17 @@ describe('StatusBar dimensions readout', () => {
  * The scrollback-depth estimate that rides alongside the size.
  *
  * It exists because the setting is memory, not rows: the same budget is worth
- * ~24,000 rows at 80 columns and ~6,500 at 400, and this is where that becomes
- * visible instead of being a fact buried in a code comment.
+ * ~34,000 rows at 80 columns and ~6,800 at 400, and this is where that becomes
+ * visible instead of being a fact buried in a code comment. (Both numbers went
+ * up with the port to ghostty `main`, whose rows cost less — the estimate is
+ * `SCROLLBACK_BYTES_PER_CELL`, a measurement of the core, not a constant.)
  */
 describe('StatusBar scrollback estimate', () => {
   const dims = { cols: 80, rows: 24 }
 
   it('shows a depth estimate beside the size', () => {
     render(<StatusBar {...base} dimensions={dims} scrollbackBudgetBytes={24 * 1024 * 1024} />)
-    expect(screen.getByText(/~25k/)).toBeTruthy()
+    expect(screen.getByText(/~34k/)).toBeTruthy()
   })
 
   it('shows nothing extra when the pane has not reported a budget', () => {
@@ -104,8 +106,8 @@ describe('StatusBar scrollback estimate', () => {
       <StatusBar {...base} dimensions={{ cols: 400, rows: 24 }} scrollbackBudgetBytes={budget} />,
     )
     expect(narrowText).not.toBe(wide.textContent ?? '')
-    expect(narrowText).toMatch(/~25k/)
-    expect(wide.textContent ?? '').toMatch(/~5\.0k/)
+    expect(narrowText).toMatch(/~34k/)
+    expect(wide.textContent ?? '').toMatch(/~6\.8k/)
   })
 
   it('explains both numbers in the tooltip', () => {

@@ -248,17 +248,18 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       mouse tracking, scrollback depth and rows, wrap in both coordinate spaces,
       graphemes, replies, and two terminals in one instance.
       `isMainBuild(instance)` selects on the binary rather than a build flag.
-- [ ] **Call `shimMainWasm` from `instantiateGhosttyModule`.** One branch, and
-      deliberately not taken yet: the shipped binary is still v1.3.1, so it
-      would be dead code guarding a swap that has not happened. It lands with
-      the rebuild.
-- [ ] **Cursor restore across RIS.** The shim answers `last_reset_seq` /
-      `last_cursor_style_seq` with 0, so `restoreCursorAfterReset` never fires
-      and a RIS leaves the core's default cursor rather than the configured one.
-      The replacement is `OPT_DEFAULT_CURSOR_STYLE` / `_BLINK`, which needs a
-      cursor style carried in `TerminalConfig` — the one behaviour regression in
-      the port, and the only item on this list that is a change in behaviour
-      rather than a change in plumbing.
+- [x] **`instantiateGhosttyModule` selects the ABI from the binary.** One
+      branch on `isMainBuild(instance)`, so which `.wasm` is vendored is the
+      whole of the switch and no build flag can fall out of step with it.
+- [x] **Cursor restore across RIS, without the host doing it.**
+      `TerminalConfig` carries `cursorStyle` / `cursorBlink` into
+      `OPT_DEFAULT_CURSOR_STYLE` / `_BLINK`, and the core holds the preference
+      across the reset. `last_reset_seq` / `last_cursor_style_seq`,
+      `restoreCursorAfterReset` and `shouldRestoreCursor` are **removed** —
+      `cursorResetLive.test.ts` passes unchanged through the new mechanism,
+      which is what made deleting the old one safe rather than hopeful. The
+      residue: a preference changed *after* a pane opens reaches the live cursor
+      but not that pane's reset default.
 - [x] **Scrollback reads onto `grid_ref`** — `main/ScrollbackReader.ts`, also
       byte-identical, nine cases including cleared regions and clusters.
 - [x] **Responses onto `OPT_WRITE_PTY`** — `main/effects.ts`. Ten cases,
@@ -269,11 +270,35 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       the pin built with it applied — `patches/ghostty-main-esc-k.patch`,
       `main/vendor-main/`. The parity suite asserts the *behaviour* (an `ESC k`
       payload is swallowed), not `git apply`'s exit code.
-- [ ] Rebuild + `vendorIntegrity` hash + `gridSnapshot` green
+- [x] **The binary swapped.** `vendor/ghostty-vt.wasm` is `main` at the pin,
+      stripped: 1,308,136 bytes against 742,403, the port's whole size cost.
+      `vendorIntegrity` re-pinned, `gridSnapshot` (against xterm.js) green, and
+      the full suite green — 906 tests, the engine running on `main` throughout.
+      The v1.3.1 build moved to `vendor-131/` and is now the comparison oracle:
+      without a second implementation the parity suites would be comparing
+      `main` with `main` and passing for nothing.
+- [x] **Scrollback re-measured, because its costs are the core's.** A row costs
+      ~9.2 bytes per cell on `main` against 12.65 on v1.3.1, and the bigger
+      binary moves every WASM heap step, so both `SCROLLBACK_BYTES_PER_CELL` and
+      the footprint tier table were re-derived by flooding the new core. The
+      tiers now buy *more* depth from smaller budgets. Nothing but
+      `scrollbackLimit.test.ts` would have noticed: the setting is a byte budget
+      and every symptom of getting it wrong is silent.
 
-### Not startable on this machine
+### Left open
 
-Producing the new binary needs **Zig 0.16.0 on Linux/WSL**, which is not
-installed here (`wsl -l -v` shows a stopped Debian with no Zig). Everything
-above the rebuild line can be developed and verified against the already-built
-binary at the pin; the rebuild itself is yours to run.
+- **Two exports the app no longer needs.** `render_state_is_row_dirty` has no
+  caller (the shim implements it honestly anyway — a stub answering "clean" is
+  the shape of bug that hides itself), and `hyperlinkId` is 0 on every cell
+  because main's render iterator does not carry one. `LinkController` works off
+  text, so nothing reads it; a hyperlink-aware feature would need `grid_ref`.
+- **Per-row dirty is unused.** The renderer redraws the whole viewport. Main can
+  skip clean rows at 0.05x-0.14x of a full read (`iter.mjs`), which is the one
+  measured *improvement* the new API offers and the obvious next thing to take.
+
+### Rebuilding
+
+Producing the binary needs **Zig 0.16.0 on Linux/WSL** — it is installed in the
+WSL Debian on this machine; drive it with `wsl.exe -e bash -lc`. The recipe,
+the strip step and what has to be re-measured afterwards are in
+`src/lib/ghostty/vendor/README.md`. Build under `~`, not `/mnt/c`.

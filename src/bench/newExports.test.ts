@@ -7,6 +7,12 @@
  *
  * Driven against the core directly rather than through GhosttyEngine: both are
  * one call deep, and a DOM-less test says plainly which side a failure is on.
+ *
+ * The third thing that shim added — `last_reset_seq` / `last_cursor_style_seq`,
+ * the tick pair the host used to order a RIS against a DECSCUSR — is gone with
+ * the port to ghostty `main`, which holds the configured cursor across the
+ * reset itself. What was a comparison of two counters is now a property of the
+ * terminal, and it is tested that way below.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -152,65 +158,96 @@ describe('ghostty_render_state_get_cursor_style', () => {
 })
 
 /**
- * Restoring the configured cursor after a full reset.
+ * Keeping the configured cursor across a full reset.
  *
- * RIS puts the core back to a steady block, discarding whatever the host had
- * configured. Detecting that from the byte stream would be guesswork, so the
- * core orders the two events instead and the host compares them.
+ * RIS puts a terminal back to its default cursor, discarding whatever DECSCUSR
+ * had asked for. The question is only ever "which default" — and on ghostty
+ * `main` the embedder gets to say, through the cursor fields in the config,
+ * which the core then holds across the reset.
+ *
+ * That replaces a two-counter comparison in the host (`last_reset_seq` against
+ * `last_cursor_style_seq`, then rewriting DECSCUSR when the reset was the more
+ * recent). The counters had a failure mode this shape cannot have: a TUI that
+ * resets and then sets its own cursor inside one write had to be distinguished
+ * from one that only reset, and getting the order wrong overwrote the choice
+ * the application had just made. Here the application's DECSCUSR simply wins,
+ * because it happens after.
  */
-describe('reset / cursor-style ordering', () => {
-  const seqs = (ptr: number) => ({
-    reset: wasm.exports.ghostty_terminal_last_reset_seq(ptr),
-    style: wasm.exports.ghostty_terminal_last_cursor_style_seq(ptr),
-  })
+describe('the cursor a reset returns to', () => {
+  const configured = (style: number, blink: boolean) => {
+    const ptr = createTerminal(wasm, 20, 3, {
+      scrollbackLimit: 200,
+      fgColor: 0xcccccc,
+      bgColor: 0,
+      cursorColor: 0,
+      cursorStyle: style,
+      cursorBlink: blink,
+    })
+    if (ptr === 0) throw new Error('terminal_new failed')
+    return ptr
+  }
 
-  it('starts with neither event recorded', () => {
-    expect(seqs(term(20, 3))).toEqual({ reset: 0, style: 0 })
-  })
+  const shape = (ptr: number) => {
+    wasm.exports.ghostty_render_state_update(ptr)
+    return wasm.exports.ghostty_render_state_get_cursor_style(ptr)
+  }
 
-  it('puts the reset last when RIS discarded the cursor', () => {
+  const blinking = (ptr: number) => {
+    wasm.exports.ghostty_render_state_update(ptr)
+    return !!wasm.exports.ghostty_render_state_get_cursor_blinking(ptr)
+  }
+
+  it('is the core default when the embedder configured nothing', () => {
     const ptr = term(20, 3)
     write(ptr, cursorStyleSequence('bar', true))
     write(ptr, 'c')
-    const { reset, style } = seqs(ptr)
-    // Reset is the more recent, so nothing has spoken for the cursor since and
-    // the host should put its preference back.
-    expect(reset).toBeGreaterThan(style)
-    wasm.exports.ghostty_render_state_update(ptr)
-    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_BLOCK)
-    expect(wasm.exports.ghostty_render_state_get_cursor_blinking(ptr)).toBeFalsy()
+    expect(shape(ptr)).toBe(CURSOR_STYLE_BLOCK)
+    expect(blinking(ptr)).toBe(false)
   })
 
-  it('puts the style last when the application chose one after resetting', () => {
-    // The case that makes blind reapplication wrong: a TUI resets and then sets
-    // the cursor it wants, both inside one write. Restoring the preference here
-    // would overwrite the choice it just made.
-    const ptr = term(20, 3)
+  it('is the configured cursor when there is one, with no host involvement', () => {
+    // The whole of what `restoreCursorAfterReset` used to do, done by the core:
+    // nothing writes DECSCUSR between the reset and the assertion.
+    const ptr = configured(CURSOR_STYLE_BAR, true)
+    expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
+    write(ptr, '[2 q')
+    expect(shape(ptr)).toBe(CURSOR_STYLE_BLOCK)
+    write(ptr, 'c')
+    expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
+    expect(blinking(ptr)).toBe(true)
+  })
+
+  it('does not overwrite a cursor the application sets after resetting', () => {
+    // The case the counter comparison existed for: a TUI resets and then asks
+    // for its own cursor, both inside one write.
+    const ptr = configured(CURSOR_STYLE_BAR, true)
     write(ptr, 'c[3 q')
-    const { reset, style } = seqs(ptr)
-    expect(style).toBeGreaterThan(reset)
-    wasm.exports.ghostty_render_state_update(ptr)
-    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_UNDERLINE)
+    expect(shape(ptr)).toBe(CURSOR_STYLE_UNDERLINE)
   })
 
-  it('advances the tick on every reset, so a second one is distinguishable', () => {
-    // The host remembers which reset it has already handled; two resets that
-    // reported the same number would leave the second unrestored.
-    const ptr = term(20, 3)
+  it('survives a second reset, not just the first', () => {
+    const ptr = configured(CURSOR_STYLE_UNDERLINE, false)
     write(ptr, 'c')
-    const first = seqs(ptr).reset
+    expect(shape(ptr)).toBe(CURSOR_STYLE_UNDERLINE)
+    write(ptr, '[5 q')
     write(ptr, 'c')
-    expect(seqs(ptr).reset).toBeGreaterThan(first)
+    expect(shape(ptr)).toBe(CURSOR_STYLE_UNDERLINE)
   })
 
-  it('leaves the ordering alone for a soft reset, which keeps the cursor', () => {
-    // DECSTR does not touch the cursor style, so it must not look like a RIS.
-    const ptr = term(20, 3)
+  it('is answered by DECSCUSR 0, which asks for the default explicitly', () => {
+    const ptr = configured(CURSOR_STYLE_BAR, true)
+    write(ptr, '[2 q')
+    write(ptr, '[0 q')
+    expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
+  })
+
+  it('is not disturbed by a soft reset, which keeps the cursor as it is', () => {
+    // DECSTR does not touch the cursor style, so it must not behave like a RIS:
+    // the application's bar survives it, rather than falling back to the
+    // configured underline.
+    const ptr = configured(CURSOR_STYLE_UNDERLINE, false)
     write(ptr, cursorStyleSequence('bar', true))
-    const before = seqs(ptr)
     write(ptr, '[!p')
-    expect(seqs(ptr)).toEqual(before)
-    wasm.exports.ghostty_render_state_update(ptr)
-    expect(wasm.exports.ghostty_render_state_get_cursor_style(ptr)).toBe(CURSOR_STYLE_BAR)
+    expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
   })
 })

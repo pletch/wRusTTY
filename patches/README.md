@@ -1,7 +1,15 @@
 # `ghostty-131-wasm-api.patch`
 
 The WASM terminal API our engine talks to, rebased onto the **Ghostty v1.3.1
-release tag**. This is what builds `src/lib/ghostty/vendor/ghostty-vt.wasm`.
+release tag**.
+
+> **Superseded.** This no longer builds what ships. The engine now runs on
+> ghostty `main` (`patches/README-main-esc-k.md`, `docs/PORT_GHOSTTY_MAIN.md`),
+> which speaks its own API with `src/lib/ghostty/main/shim.ts` presenting ours
+> over it — 1,648 lines of carried patch replaced by 24. What this patch builds
+> is kept as `src/lib/ghostty/vendor-131/ghostty-vt.wasm`, the second
+> implementation the port's comparison tests need. Everything below remains
+> accurate for *that* binary, and is the record of why the patch existed.
 
 We carry it ourselves rather than tracking `coder/ghostty-web`. That project has
 been bursty — a four-month gap from Feb 24 to Jun 26, then a short burst, with 27

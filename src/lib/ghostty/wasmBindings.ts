@@ -20,6 +20,7 @@
  */
 
 import * as phases from '../writePhases'
+import { isMainBuild, shimMainWasm } from './main/shim'
 
 /** Cell flags, matching GHOSTTY_CELL_* in the upstream header. */
 export const CELL_BOLD = 1 << 0
@@ -117,14 +118,6 @@ export interface GhosttyExports {
   ghostty_render_state_get_cursor_style(term: number): number
   /** Whether DECSCUSR asked for a blinking cursor (DEC mode 12). */
   ghostty_render_state_get_cursor_blinking(term: number): number
-  /**
-   * Ticks identifying the last RIS and the last DECSCUSR, so the two can be
-   * ordered. A reset discards the configured cursor; comparing these says
-   * whether the application then chose one of its own, which it commonly does
-   * immediately afterwards. Zero means the event has never happened.
-   */
-  ghostty_terminal_last_reset_seq(term: number): number
-  ghostty_terminal_last_cursor_style_seq(term: number): number
 
   // Scrollback
   ghostty_terminal_get_scrollback_length(term: number): number
@@ -148,8 +141,21 @@ export interface GhosttyWasm {
 
 export const CELL_BYTES = 16
 
-/** Byte layout of GhosttyTerminalConfig: 4 u32s then a 16-entry palette. */
-const CONFIG_BYTES = 4 * 4 + 16 * 4
+/**
+ * Byte layout of GhosttyTerminalConfig: 4 u32s, a 16-entry palette, then two
+ * words the **vendored core does not read**.
+ *
+ * The core takes a fixed 80-byte struct by pointer and ignores anything past
+ * it, which is what makes appending safe: the tail is for whoever is behind
+ * `GhosttyExports`, and on ghostty `main` it becomes
+ * `OPT_DEFAULT_CURSOR_STYLE` / `OPT_DEFAULT_CURSOR_BLINK` — the pair that hold
+ * the configured cursor across a RIS. Each is stored **+1 so that zero means
+ * "not specified"**, since every cursor style including block is a valid 0.
+ */
+const CONFIG_CORE_BYTES = 4 * 4 + 16 * 4
+const CONFIG_OFF_CURSOR_STYLE = CONFIG_CORE_BYTES
+const CONFIG_OFF_CURSOR_BLINK = CONFIG_CORE_BYTES + 4
+const CONFIG_BYTES = CONFIG_CORE_BYTES + 8
 
 export interface TerminalConfig {
   /**
@@ -167,6 +173,17 @@ export interface TerminalConfig {
   cursorColor: number
   /** The 16 ANSI colors as 0xRRGGBB, or omitted for the core's defaults. */
   palette?: number[]
+  /**
+   * The cursor a reset returns to, as a `CURSOR_STYLE_*` value, and whether it
+   * blinks. Omitted leaves the core's own default (a steady block).
+   *
+   * These replaced `last_reset_seq` / `last_cursor_style_seq`, the tick pair
+   * the host used to compare to decide whether a RIS had discarded the
+   * preference. The core now simply keeps it, so there is nothing to decide.
+   * The v1.3.1 build reads neither field and ignores them harmlessly.
+   */
+  cursorStyle?: number
+  cursorBlink?: boolean
 }
 
 /** Imports for one instance. Built per instance rather than shared: `log` has
@@ -213,12 +230,21 @@ export function compileGhosttyWasm(url: string): Promise<WebAssembly.Module> {
   return started
 }
 
-/** A fresh instance — its own memory, its own terminal state — of an
- *  already-compiled module. */
+/**
+ * A fresh instance — its own memory, its own terminal state — of an
+ * already-compiled module.
+ *
+ * A build at ghostty `main` speaks a different ABI and is wrapped in
+ * `main/shim.ts`, which presents this exact interface over it. The choice is
+ * made from the binary's own export list rather than from a build flag, so the
+ * two can never fall out of step: whichever `.wasm` is vendored is the one that
+ * decides, and swapping it is the whole of the switch.
+ */
 export async function instantiateGhosttyModule(module: WebAssembly.Module): Promise<GhosttyWasm> {
   let wasmMemory: WebAssembly.Memory
   const instance = await WebAssembly.instantiate(module, ghosttyImports(() => wasmMemory))
   wasmMemory = instance.exports.memory as WebAssembly.Memory
+  if (isMainBuild(instance)) return shimMainWasm(instance)
   const exports = instance.exports as unknown as GhosttyExports
   return { exports, instance }
 }
@@ -251,6 +277,9 @@ export function createTerminal(
   for (let i = 0; i < 16; i++) {
     view.setUint32(16 + i * 4, config.palette?.[i] ?? 0, true)
   }
+  // +1, so that an unset field is a zero rather than a block cursor.
+  view.setUint32(CONFIG_OFF_CURSOR_STYLE, config.cursorStyle === undefined ? 0 : config.cursorStyle + 1, true)
+  view.setUint32(CONFIG_OFF_CURSOR_BLINK, config.cursorBlink === undefined ? 0 : (config.cursorBlink ? 2 : 1), true)
   const term = wasm.exports.ghostty_terminal_new_with_config(cols, rows, ptr)
   wasm.exports.ghostty_wasm_free_u8_array(ptr, CONFIG_BYTES)
   return term

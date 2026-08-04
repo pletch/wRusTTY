@@ -1,8 +1,14 @@
 # Comparison build: ghostty `main` at the pin
 
-**Not shipped, not tracked.** This is the reference binary the port is developed
-and verified against — `abi.parity.test.ts` picks it up from here automatically,
-so the suite runs without setting `GHOSTTY_MAIN_WASM`.
+**Not tracked.** This is the reference binary the port was developed against —
+`abi.parity.test.ts` and the other parity suites pick it up from here
+automatically, so they run without setting `GHOSTTY_MAIN_WASM`.
+
+It is now the *same build* that ships: `../../vendor/ghostty-vt.wasm` is this
+file with its DWARF stripped (`tools/strip-wasm-debug.mjs`), which changes no
+behaviour. It is kept unstripped and separate because the parity suites are
+allowed to skip when it is absent — that is how they stay green on CI, which
+holds no comparison build — while the shipped binary never may.
 
 ```
 ghostty-org/ghostty @ 48d85eaeb06ac9fc49073815bda5bac97de655ca

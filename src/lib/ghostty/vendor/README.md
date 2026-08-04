@@ -1,23 +1,27 @@
 # Vendored ghostty-vt.wasm
 
-Built from the **Ghostty v1.3.1 release tag** plus our own
-`patches/ghostty-131-wasm-api.patch`. It is not `ghostty-web`'s binary and no
-longer tracks that project — see `patches/README.md` for why, for the build
-recipe, and for the rebase notes that matter next time this is upgraded.
+Built from **ghostty `main` at the port's pin** plus the one fix we still carry,
+`patches/ghostty-main-esc-k.patch`. It speaks `main`'s render/terminal C API,
+not the API `wasmBindings.ts` declares — `main/shim.ts` presents ours over it,
+and `instantiateGhosttyModule` selects that automatically by looking at the
+binary's own exports. See `docs/PORT_GHOSTTY_MAIN.md` for the port, and
+`../vendor-131/README.md` for the build this replaced, which is kept as the
+comparison oracle.
 
 ## The expected artifact
 
 ```text
-SHA-256  be419bfc5b6de37eb1768585aa4225039b9dacde56d429db1f53904af7775b0b
-Size     742,403 bytes
-Source   ghostty-org/ghostty @ v1.3.1 + patches/ghostty-131-wasm-api.patch
-Built    Zig 0.15.2, -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+SHA-256  54fa7b5339893ddb4247d3eb5e868cbdeeaa8cd236185bd8bd00daa0766c6d9e
+Size     1,308,136 bytes
+Source   ghostty-org/ghostty @ 48d85eaeb06ac9fc49073815bda5bac97de655ca
+         + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
+Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
 ```
 
 This binary parses untrusted bytes off the wire from every remote host you
 connect to, which makes it the highest-value thing in the tree to swap. It also
-arrives as an opaque 742 kB blob that no review of a diff can meaningfully read.
+arrives as an opaque 1.3 MB blob that no review of a diff can meaningfully read.
 Recording what the bytes are supposed to be is the only check available.
 
 `vendorIntegrity.test.ts` asserts this hash on every `npm test` and CI run, so a
@@ -37,11 +41,32 @@ reproducible byte-for-byte across toolchain versions, so a hash that differs
 after a rebuild is expected and is not by itself evidence of anything wrong;
 what the check catches is the binary moving when nobody rebuilt it.
 
+## Rebuilding
+
+Needs **Zig 0.16.0 on Linux or WSL** — 0.16 is `main`'s `minimum_zig_version`,
+and building natively on Windows hits a Zig `ftruncate`/`FileTooBig` bug in the
+unicode table generator. Build under `~`, not `/mnt/c`.
+
+```sh
+mkdir ghostty-pin && cd ghostty-pin && git init -q .
+git config core.autocrlf false          # or the patch will not apply
+git remote add origin https://github.com/ghostty-org/ghostty.git
+git fetch -q --depth 1 origin 48d85eaeb06ac9fc49073815bda5bac97de655ca
+git checkout -q FETCH_HEAD
+git apply ../patches/ghostty-main-esc-k.patch
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+node tools/strip-wasm-debug.mjs zig-out/bin/ghostty-vt.wasm <here>/ghostty-vt.wasm
+```
+
+Then re-measure what the core's own costs decide, because they are properties of
+*this binary* and they moved with the last rebuild:
+`SCROLLBACK_BYTES_PER_CELL` and the tier table in `GhosttyEngine.ts` (see below),
+and the probes named in `docs/PORT_GHOSTTY_MAIN.md` if the commit changed.
+
 `package.json` still depends on `ghostty-web` for **TypeScript types only**; we
 import none of its JavaScript, and never did. The engine talks to this binary
-directly through the 79 exports listed in `wasmBindings.ts`, which are unchanged
-from the previous ghostty-web-based build — the move to 1.3.1 needed no change to
-`GhosttyEngine.ts` or `wasmBindings.ts`.
+through the `GhosttyExports` surface in `wasmBindings.ts`, unchanged across the
+port — that is what the shim is for.
 
 ## `scrollbackLimit` is a byte budget
 
@@ -81,8 +106,10 @@ pane costs. The test floods the real core and asserts the heap stays under the
 label.
 
 To re-measure: sweep the raw field and count `ghostty_terminal_get_scrollback_length`
-after a flood. Retention tracks `value / (cols * 12.65)` wherever the budget
-exceeds one page.
+after a flood. Retention tracks `value / (cols * 9.2)` wherever the budget
+exceeds a few pages. That constant belongs to the binary — the v1.3.1 build
+delivered 12.65 bytes per cell, this one delivers ~9.2, so the same budget buys
+~37% more depth and every tier was re-picked around the new heap staircase.
 
 An earlier revision of this file asserted the opposite and dismissed
 `ghostty-web`'s own "it's bytes" docs (their PR #151) as not applying to the code
@@ -108,9 +135,11 @@ instance.
 
 ## The binary is stripped of DWARF, but keeps its name section
 
-As built, the module is 3,299 kB, of which **2,556 kB (77.5%) is `.debug_*`**
-against 538 kB of actual code. `tools/strip-wasm-debug.mjs` removes the DWARF
-sections and keeps everything else, taking it to **742 kB**:
+As built, the module is 5,259 kB, of which **3,951 kB (75.1%) is `.debug_*`**.
+`tools/strip-wasm-debug.mjs` removes the DWARF sections and keeps everything
+else, taking it to **1,308 kB**. (The v1.3.1 build stripped to 742 kB; `main`'s
+VT library is simply larger, and that ~566 kB is the whole size cost of the
+port.)
 
 ```sh
 node tools/strip-wasm-debug.mjs ghostty-vt.wasm ghostty-vt.stripped.wasm

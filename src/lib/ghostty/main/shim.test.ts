@@ -40,7 +40,7 @@ import { PALETTE_16, DEFAULT_FG, DEFAULT_BG } from '../../../bench/gridPalette'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MAIN_WASM = process.env.GHOSTTY_MAIN_WASM ?? join(here, 'vendor-main/ghostty-vt.wasm')
-const VENDORED = join(here, '../vendor/ghostty-vt.wasm')
+const VENDORED = join(here, '../vendor-131/ghostty-vt.wasm')
 
 const COLS = 40
 const ROWS = 8
@@ -355,6 +355,35 @@ run('the main shim, against the ABI it replaces', () => {
       writeString(wasm, term, 'plain output\r\n')
       return wasm.exports.ghostty_terminal_has_response(term)
     }).then((n) => expect(n).toBe(0)))
+
+  /**
+   * The replacement for `last_reset_seq` / `last_cursor_style_seq`, which the
+   * shim answers with 0. Those exist only because RIS discarded the configured
+   * cursor and the host had to decide whether to put it back; here the core
+   * keeps it. Main-only: the vendored core reads no cursor out of the config
+   * and comes back from a reset as a steady block.
+   */
+  it('returns to the configured cursor after a reset, without being told to', async () => {
+    const wasm = await loadMain()
+    const term = createTerminal(wasm, COLS, ROWS, {
+      ...CONFIG,
+      cursorStyle: CURSOR_STYLE_BAR,
+      cursorBlink: true,
+    })
+    const shape = () => {
+      wasm.exports.ghostty_render_state_update(term)
+      return [
+        wasm.exports.ghostty_render_state_get_cursor_style(term),
+        wasm.exports.ghostty_render_state_get_cursor_blinking(term),
+      ]
+    }
+    expect(shape()).toEqual([CURSOR_STYLE_BAR, 1])
+    writeString(wasm, term, '\x1b[2 q')
+    expect(shape()).toEqual([CURSOR_STYLE_BLOCK, 0])
+    writeString(wasm, term, '\x1bc')
+    expect(shape()).toEqual([CURSOR_STYLE_BAR, 1])
+    wasm.exports.ghostty_terminal_free(term)
+  })
 
   it('keeps two terminals in the same instance apart', async () => {
     const wasm = await loadMain()

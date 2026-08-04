@@ -20,7 +20,7 @@ import { instantiateGhosttyWasm, readResponse, writeString, createTerminal } fro
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MAIN_WASM = process.env.GHOSTTY_MAIN_WASM ?? join(here, 'vendor-main/ghostty-vt.wasm')
-const VENDORED = join(here, '../vendor/ghostty-vt.wasm')
+const VENDORED = join(here, '../vendor-131/ghostty-vt.wasm')
 
 const COLS = 80
 const ROWS = 24

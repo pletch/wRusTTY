@@ -156,15 +156,21 @@ describe('against the core', () => {
   })
 
   it('retains roughly the depth the estimate advertises', async () => {
-    // Measured -7% to +1% across tiers and widths; the band is a little wider
-    // so page granularity at the smallest tier can't make this flap.
+    // Two bands, because the error is not uniform and one band wide enough for
+    // the smallest tier would stop checking the others at all. The core evicts
+    // whole pages, so the estimate is worst where the budget is only a few
+    // pages wide: measured against `main`, -5% to +8% from the 16 MB tier up
+    // and as much as -27% at the smallest. Anything outside these is a change
+    // in the core's per-row cost, which is exactly what a rebuild can do —
+    // re-measure and move SCROLLBACK_BYTES_PER_CELL rather than the band.
+    const smallest = SCROLLBACK_FOOTPRINT_TIERS_MB[0]
     for (const tier of SCROLLBACK_FOOTPRINT_TIERS_MB) {
       for (const cols of [80, 200]) {
         const budget = scrollbackBudgetBytesFor(tier)
         const { held } = await flood(budget, cols)
         const predicted = estimateScrollbackRows(budget, cols)
-        expect(held).toBeGreaterThan(predicted * 0.85)
-        expect(held).toBeLessThan(predicted * 1.1)
+        expect(held).toBeGreaterThan(predicted * (tier === smallest ? 0.65 : 0.9))
+        expect(held).toBeLessThan(predicted * 1.15)
       }
     }
   })
