@@ -187,10 +187,8 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       `get_viewport(term, buf, cols * rows)` with `source.read(buf, cols, rows)`:
       `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows`.
       `ViewportSource` names the shape.
-- [ ] **Scrollback reads onto `grid_ref`.** `readRows` also calls
-      `get_scrollback_line` and `get_scrollback_grapheme` per row; those move to
-      `grid_ref` (resolve once per row, step `ref.x`), priced at 0.8x-0.9x by
-      `search.mjs`. Same seam, not yet written.
+- [x] **Scrollback reads onto `grid_ref`** — `main/ScrollbackReader.ts`, also
+      byte-identical, nine cases including cleared regions and clusters.
 - [ ] Responses onto `OPT_WRITE_PTY` (the silent-failure one — see above)
 - [ ] `#176` extracted as a standalone patch against the pin
 - [ ] Rebuild + `vendorIntegrity` hash + `gridSnapshot` green
