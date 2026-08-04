@@ -257,14 +257,7 @@ class MainShim {
       budget === 0 ? UNLIMITED_SCROLLBACK_BYTES : budget,
     )
 
-    // Zero means "let the core pick" in our config, and the core's pick is
-    // better than black.
-    const fg = d.getUint32(ptr + CONFIG_OFF_FG, true)
-    const bg = d.getUint32(ptr + CONFIG_OFF_BG, true)
-    const cursor = d.getUint32(ptr + CONFIG_OFF_CURSOR, true)
-    if (fg !== 0) this.setColor(term, abi.T_OPT_COLOR_FOREGROUND, fg)
-    if (bg !== 0) this.setColor(term, abi.T_OPT_COLOR_BACKGROUND, bg)
-    if (cursor !== 0) this.setColor(term, abi.T_OPT_COLOR_CURSOR, cursor)
+    this.applyColors(term, ptr)
 
     this.applyPalette(term, ptr)
     this.applyCursor(term, ptr)
@@ -294,6 +287,40 @@ class MainShim {
       this.dv().setUint8(this.scratch, blink === 2 ? 1 : 0)
       this.ex.ghostty_terminal_set(term, abi.T_OPT_DEFAULT_CURSOR_BLINK, this.scratch)
     }
+  }
+
+  /**
+   * Foreground, background and cursor — **always both of the first two**.
+   *
+   * Zero means "let the core pick" in our config, so the obvious shape is to
+   * skip the ones that are zero. That silently loses the other one: setting a
+   * foreground and no background leaves the *render state* reporting plain
+   * white, forever, while `terminal_get(COLOR_FOREGROUND)` cheerfully reports
+   * the colour that was set. Setting both — in either order, and black counts —
+   * makes both stick. Measured against the pin, not read: the terminal and the
+   * render state disagree, so nothing about it looks like an error, and it only
+   * shows on a theme whose background is `#000000`, which packs as 0 and so
+   * reads as "unset".
+   *
+   * So a zero field becomes the core's *current* value rather than a skipped
+   * call, which keeps "0 means let the core pick" true while still setting
+   * both.
+   */
+  private applyColors(term: number, ptr: number): void {
+    const d = this.dv()
+    const fg = d.getUint32(ptr + CONFIG_OFF_FG, true)
+    const bg = d.getUint32(ptr + CONFIG_OFF_BG, true)
+    const cursor = d.getUint32(ptr + CONFIG_OFF_CURSOR, true)
+    this.setColor(term, abi.T_OPT_COLOR_FOREGROUND, fg !== 0 ? fg : this.currentColor(term, abi.T_DATA_COLOR_FOREGROUND, 0xffffff))
+    this.setColor(term, abi.T_OPT_COLOR_BACKGROUND, bg !== 0 ? bg : this.currentColor(term, abi.T_DATA_COLOR_BACKGROUND, 0x000000))
+    if (cursor !== 0) this.setColor(term, abi.T_OPT_COLOR_CURSOR, cursor)
+  }
+
+  /** What the terminal already holds for a colour, or `fallback`. */
+  private currentColor(term: number, key: number, fallback: number): number {
+    if (!this.tGet(term, key)) return fallback
+    const d = this.dv()
+    return (d.getUint8(this.scratch) << 16) | (d.getUint8(this.scratch + 1) << 8) | d.getUint8(this.scratch + 2)
   }
 
   /**

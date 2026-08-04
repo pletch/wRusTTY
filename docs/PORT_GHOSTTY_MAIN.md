@@ -151,6 +151,16 @@ None of these are derivable by reading the headers, and each fails *silently*.
   them as words happens to work only while the scratch above them is zeroed.
   Their validity is gated by `CURSOR_VIEWPORT_HAS_VALUE`; when it is false the
   x/y are explicitly undefined, so "visible" on our side has to mean both.
+- **A default foreground only sticks if a background is set too.** Set
+  `OPT_COLOR_FOREGROUND` alone and the *render state* reports plain white
+  forever, while `terminal_get(COLOR_FOREGROUND)` reports the colour that was
+  set — the two disagree, so nothing looks wrong. Set both, in either order,
+  and both apply; black counts. This bites through our config, where `0` means
+  "let the core pick": a theme whose background is `#000000` packs as 0, the
+  background set gets skipped, and every unstyled cell in the pane is drawn in
+  the wrong foreground. The shim therefore writes both always, substituting the
+  core's current value for a zero field. Found by the `run-wrustty` driver, not
+  by the suite — no test had a black background.
 - **The default scrollback budget is 10,000 *bytes*** — 370 rows at 200 columns.
   Measured, not read. Anything that creates a terminal and does not set
   `OPT_SCROLLBACK_MAX_BYTES` has a scrollback of nothing much. Setting bytes

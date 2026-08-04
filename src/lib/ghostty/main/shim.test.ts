@@ -203,6 +203,33 @@ run('the main shim, against the ABI it replaces', () => {
       ]
     }).then((c) => expect(c).toEqual([DEFAULT_FG, DEFAULT_BG])))
 
+  /**
+   * The shape that broke, and the reason it is a case of its own: our config
+   * takes 0 to mean "let the core pick", and a theme with a black background
+   * packs as exactly that. Skipping the background's `set` then loses the
+   * *foreground* too — the render state answers white while the terminal
+   * insists it holds the configured colour. Every pane on a `#000000` theme
+   * would have drawn its text in the wrong colour, and no test with a
+   * non-black background could see it.
+   */
+  it('keeps the configured foreground when the background is left to the core', () =>
+    same(
+      (wasm, term) => {
+        writeString(wasm, term, 'plain text')
+        wasm.exports.ghostty_render_state_update(term)
+        const ptr = allocBuffer(wasm, CELLS * CELL_BYTES)
+        new Uint8Array(wasm.exports.memory.buffer, ptr, CELLS * CELL_BYTES).fill(0)
+        wasm.exports.ghostty_render_state_get_viewport(term, ptr, CELLS)
+        const cell = parseCell(new DataView(wasm.exports.memory.buffer, ptr, CELL_BYTES), 0)
+        return [
+          wasm.exports.ghostty_render_state_get_fg_color(term),
+          // An unstyled cell takes the default, so it has to move with it.
+          (cell.fgR << 16) | (cell.fgG << 8) | cell.fgB,
+        ]
+      },
+      { scrollbackLimit: 1024 * 1024, fgColor: 0xcccccc, bgColor: 0, cursorColor: 0 },
+    ).then((c) => expect(c).toEqual([0xcccccc, 0xcccccc])))
+
   it('resolves palette colours from the 16 the config carries', () =>
     same((wasm, term) => {
       // Index 4 is blue in PALETTE_16; a shim that dropped the palette would

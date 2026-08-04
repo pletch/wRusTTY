@@ -12,7 +12,7 @@ either, in increasing cost:
 
 | Surface | Needs | Use it for |
 | --- | --- | --- |
-| `driver.mjs` | node only | engine + core behaviour. **Start here.** |
+| `driver.mts` | node only | engine + core behaviour. **Start here.** |
 | `/visual.html` | vite + a browser | what the renderer actually draws |
 | `/#bench` | vite + a browser | A/B benchmark harness, both engines |
 | full app | Tauri + a host | end-to-end connection work only |
@@ -27,9 +27,10 @@ Node 24 (verified on v24.18.0, npm 12.0.1). Nothing else for the paths above.
 npm install
 ```
 
-Rebuilding the WASM core additionally needs WSL and Zig 0.15.2 — see
-`patches/README.md`. You do **not** need it to run or change anything in TypeScript;
-the built core is committed at `src/lib/ghostty/vendor/ghostty-vt.wasm`.
+Rebuilding the WASM core additionally needs WSL and Zig 0.16.0 — see
+`src/lib/ghostty/vendor/README.md`. You do **not** need it to run or change
+anything in TypeScript; the built core is committed at
+`src/lib/ghostty/vendor/ghostty-vt.wasm`.
 
 ## Run: the driver (agent path — start here)
 
@@ -37,8 +38,13 @@ Drives the real WASM core headlessly: writes bytes, reads back the grid, the
 per-cell attributes and the cursor. No browser, no Tauri, no host, under a second.
 
 ```bash
-node .claude/skills/run-wrustty/driver.mjs smoke
+npx vite-node .claude/skills/run-wrustty/driver.mts smoke
 ```
+
+Run through `vite-node`, not `node`: the driver goes through the app's own
+`wasmBindings.ts` rather than reaching into the `.wasm` itself. It used to
+hand-roll the ABI and broke the day the binary became a ghostty `main` build,
+having been a second implementation of the thing it was meant to test.
 
 Exercises colour, bold, all five underline styles, overline, wide characters,
 DECSCUSR and reset, then asserts the core agrees. Exit 1 on any mismatch. Output:
@@ -58,7 +64,7 @@ Arbitrary payloads — the fastest way to answer "what does the engine do with
 these bytes". `\x1b`, `\e`, `\r`, `\n`, `\t` are unescaped for you:
 
 ```bash
-node .claude/skills/run-wrustty/driver.mjs grid 'hi\r\n\x1b[1;31mbold red\x1b[0m\r\n\x1b[4:3mcurly\x1b[0m\r\n\x1b[3 q'
+npx vite-node .claude/skills/run-wrustty/driver.mts grid 'hi\r\n\x1b[1;31mbold red\x1b[0m\r\n\x1b[4:3mcurly\x1b[0m\r\n\x1b[3 q'
 ```
 
 ```
@@ -72,7 +78,7 @@ cursor: underline, blinking at 0,3
 ## Run: the browser surfaces
 
 ```bash
-node .claude/skills/run-wrustty/driver.mjs serve
+npx vite-node .claude/skills/run-wrustty/driver.mts serve
 ```
 
 Starts vite on <http://localhost:1420> and stays in the foreground. Then:
@@ -102,7 +108,7 @@ faster through the driver.
 ## Test and check
 
 ```bash
-npx vitest run     # 427 tests
+npx vitest run     # 906 tests
 npx tsc -b
 npm run lint
 npm run build      # emits dist/index.html only; visual.html is dev-only
@@ -144,23 +150,31 @@ and cursor per cell.
 
 ## Rebuilding the WASM core
 
-Only if you are changing the Zig shim. Full recipe and the rebase notes are in
-`patches/README.md`. In WSL:
+Only if you are moving to a different ghostty commit. The engine runs on ghostty
+`main` at the pin in `docs/PORT_GHOSTTY_MAIN.md`, plus one carried fix; the
+recipe, the DWARF strip and the things that must be re-measured afterwards are
+in `src/lib/ghostty/vendor/README.md`. In WSL, under `~` rather than `/mnt/c`:
 
 ```bash
-git clone --depth 1 --branch v1.3.1 https://github.com/ghostty-org/ghostty.git
-cd ghostty
-git apply ../patches/ghostty-131-wasm-api.patch
-zig build lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-cp zig-out/bin/ghostty-vt.wasm ../src/lib/ghostty/vendor/ghostty-vt.wasm
+mkdir ghostty-pin && cd ghostty-pin && git init -q .
+git config core.autocrlf false          # or the patch will not apply
+git remote add origin https://github.com/ghostty-org/ghostty.git
+git fetch -q --depth 1 origin 48d85eaeb06ac9fc49073815bda5bac97de655ca
+git checkout -q FETCH_HEAD
+git apply ../patches/ghostty-main-esc-k.patch
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 ```
 
 Traps, all hit for real: this WSL image has no `xz`, `python3` or `zstd`, so the
 Zig tarball has to be unpacked from the Windows side — and files written over the
 9p bridge lose the exec bit, so `chmod +x zig` afterwards. Building natively on
 Windows hits a Zig `ftruncate`/`FileTooBig` bug in the unicode table generator.
-The v1.3.1 tag wants Zig **0.15.2**; ghostty `main` wants 0.16.0 — they are not
-interchangeable.
+`main` wants Zig **0.16.0**; the old v1.3.1 build wanted 0.15.2 — they are not
+interchangeable. `src/lib/ghostty/vendor-131/` still holds that older build,
+which is the comparison oracle the port's parity suites read and is not shipped.
+
+**A rebuild is supposed to fail `vendorIntegrity.test.ts`** — update the hash
+there and in `vendor/README.md` in the same commit as the binary.
 
 ## Troubleshooting
 
@@ -170,5 +184,6 @@ interchangeable.
 | Harness stuck on "Booting engines… warming up…" | A run is in progress and the renderer is busy; screenshots time out. Wait ~10 s and retry. |
 | Cursor draws as a hollow box, not a bar | The pane is unfocused. Click into it. |
 | Blinking cursor shape looks absent in a screenshot | You caught the off phase. Use the steady variant (2, 4, 6). |
-| `driver.mjs` throws `terminal_new_with_config returned 0` | The vendored `.wasm` is missing or truncated — check `src/lib/ghostty/vendor/`. |
+| `driver.mts` throws `createTerminal returned 0` | The vendored `.wasm` is missing or truncated — check `src/lib/ghostty/vendor/`. |
+| `ex.ghostty_… is not a function` anywhere | Something is talking to the binary directly instead of through `wasmBindings.ts`. The shipped build speaks ghostty `main`'s ABI; `main/shim.ts` is what makes it look like ours. |
 | Zig build: `error: no field named 'prompt_start'` | You are building against the wrong Ghostty version. The patch targets v1.3.1. |
