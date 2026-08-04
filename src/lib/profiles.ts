@@ -35,8 +35,28 @@ export interface SessionProfile {
    * disable. Per-profile because the idle timeout that makes it necessary
    * belongs to the network path to one host, not to this machine. */
   keepaliveSeconds: number | null
+  /** How to wake this host before connecting, or null to just connect. */
+  wakeOnLan: WakeOnLan | null
   /** Serial only — null for SSH and telnet. */
   serial: SerialProfile | null
+}
+
+/** What to send to wake a sleeping host, and where.
+ *
+ * Everything but the MAC is optional and means "use the default" when absent,
+ * so the common profile stores a MAC and nothing else. `broadcast` is the one
+ * worth setting by hand: a magic packet doesn't route, so reaching a host on
+ * another subnet — or picking which interface the packet leaves by on a
+ * machine with several — means naming that subnet's directed broadcast
+ * (`192.168.1.255`) rather than the default 255.255.255.255. */
+export interface WakeOnLan {
+  /** Any of `aa:bb:cc:dd:ee:ff`, `aa-bb-...`, `aabb.ccdd.eeff`, bare hex. */
+  mac: string
+  broadcast: string | null
+  /** 9 by convention; 7 on some gear. */
+  port: number | null
+  /** How long to wait for the host to answer before giving up. Null is 60. */
+  waitSeconds: number | null
 }
 
 /** The stable identity of a USB serial adapter: a COM number is a property of

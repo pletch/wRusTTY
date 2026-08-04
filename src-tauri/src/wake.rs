@@ -228,6 +228,22 @@ pub async fn wake_and_wait(
     }
 }
 
+/// Sends a saved session's magic packet and returns, without waiting for the
+/// host or connecting to it.
+///
+/// The deliberate half of the feature, for the times you want the machine up
+/// but aren't about to open a terminal on it. It doesn't probe first — asking
+/// for this is asking for a packet, and suppressing it because the host looked
+/// up would just be confusing.
+#[tauri::command]
+pub async fn wake_host(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
+    let profile = crate::profiles::get_profile(&app, &profile_id)?;
+    let wake = profile
+        .wake_on_lan
+        .ok_or("this session has no MAC address saved — add one by editing it")?;
+    send(&wake)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

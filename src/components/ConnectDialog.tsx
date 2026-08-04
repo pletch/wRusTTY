@@ -2,7 +2,7 @@ import { useReducer, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
-import type { SessionProfile, SerialProfile } from '../lib/profiles'
+import type { SessionProfile, SerialProfile, WakeOnLan } from '../lib/profiles'
 import { serialProfileFrom } from '../lib/profiles'
 import type { PortInfo } from '../lib/serial'
 import type { Workspace } from '../lib/workspaces'
@@ -40,6 +40,8 @@ export interface ConnectDialogInitial {
   backspaceSendsCtrlH?: boolean | null
   /** Seconds between SSH keepalives — null/absent means the 60s default. */
   keepaliveSeconds?: number | null
+  /** How to wake this host before connecting — null/absent means don't. */
+  wakeOnLan?: WakeOnLan | null
   /** Serial only — the stored line settings and adapter identity. */
   serial?: SerialProfile | null
 }
@@ -319,6 +321,10 @@ export function ConnectDialog({
           // '' means "use the default", which is null rather than 0 — 0 is
           // the distinct, deliberate "turn keepalives off".
           keepaliveSeconds: keepalive === '' ? null : Number(keepalive),
+          // No field on the form yet — preserved rather than defaulted to
+          // null, so an unrelated edit doesn't quietly drop a MAC someone
+          // saved.
+          wakeOnLan: initial?.wakeOnLan ?? null,
           serial: null,
         })
 
@@ -375,6 +381,8 @@ export function ConnectDialog({
           backspaceSendsCtrlH: backspace === 'ctrlh',
           // Telnet has no keepalive of its own.
           keepaliveSeconds: null,
+          // Waking is wired into the SSH connect path only, so far.
+          wakeOnLan: null,
           serial: null,
         })
       }
@@ -407,8 +415,9 @@ export function ConnectDialog({
           jumpProfileId: null,
           termType: null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
-          // No idle timeout on a wire.
+          // No idle timeout on a wire, and nothing to wake at the end of one.
           keepaliveSeconds: null,
+          wakeOnLan: null,
           serial: serialProfileFrom(serialConfig, serialUsb),
         })
         // Connect through the profile so this very first connection resolves

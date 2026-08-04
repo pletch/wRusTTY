@@ -35,6 +35,7 @@ function profile(overrides: Partial<SessionProfile> = {}): SessionProfile {
     keyPath: null,
     serial: null,
     keepaliveSeconds: null,
+    wakeOnLan: null,
     hasCredential: false,
     jumpProfileId: null,
     termType: null,

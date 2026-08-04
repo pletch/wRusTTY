@@ -62,6 +62,13 @@ pub struct SessionProfile {
     /// on the LAN doesn't. See `wr_ssh::SshConfig::keepalive_seconds`.
     #[serde(rename = "keepaliveSeconds", default)]
     pub keepalive_seconds: Option<u64>,
+    /// How to wake this host before connecting to it, or `None` to just
+    /// connect. Per-profile for the same reason `keepalive_seconds` is: a MAC
+    /// address describes one machine, and whether that machine sleeps is a
+    /// fact about it rather than about this one. `default` so profiles saved
+    /// before this field existed still parse.
+    #[serde(rename = "wakeOnLan", default)]
+    pub wake_on_lan: Option<crate::wake::WakeOnLan>,
     /// Serial only — `None` for SSH and telnet, which use `host`/`port`.
     ///
     /// Serial used to be ad-hoc precisely because a COM number stops being
@@ -245,4 +252,60 @@ pub async fn reorder_sessions(
         .collect();
     profiles.sort_by_key(|p| position.get(p.id.as_str()).copied().unwrap_or(usize::MAX));
     write_profiles(&path, &profiles)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `sessions.json` is a compatibility surface: it is on disk before an
+    /// update and read by the version after it. Every field added since v1 is
+    /// `#[serde(default)]` for this reason, and the way that stays true is a
+    /// test that parses a profile written without them.
+    #[test]
+    fn a_profile_saved_before_waking_existed_still_parses() {
+        let json = r#"{
+            "id": "abc",
+            "label": "desktop",
+            "folder": null,
+            "host": "192.168.1.10",
+            "port": 22,
+            "protocol": "ssh",
+            "username": "tim",
+            "authType": "agent",
+            "keyPath": null
+        }"#;
+        let profile: SessionProfile = serde_json::from_str(json).unwrap();
+        assert!(profile.wake_on_lan.is_none());
+        assert!(profile.keepalive_seconds.is_none());
+    }
+
+    /// The other direction: what the form saves has to come back as what it
+    /// saved, under the camelCase names the frontend reads.
+    #[test]
+    fn a_wake_config_round_trips_through_the_stored_shape() {
+        let json = r#"{
+            "id": "abc",
+            "label": "desktop",
+            "folder": null,
+            "host": "192.168.1.10",
+            "port": 22,
+            "protocol": "ssh",
+            "username": "tim",
+            "authType": "agent",
+            "keyPath": null,
+            "wakeOnLan": { "mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255" }
+        }"#;
+        let profile: SessionProfile = serde_json::from_str(json).unwrap();
+        let wake = profile.wake_on_lan.clone().unwrap();
+        assert_eq!(wake.mac, "aa:bb:cc:dd:ee:ff");
+        assert_eq!(wake.broadcast.as_deref(), Some("192.168.1.255"));
+        // Unwritten by the form when left at its default, and unwritten again
+        // on the way back out.
+        assert!(wake.port.is_none());
+
+        let reparsed: SessionProfile =
+            serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(reparsed.wake_on_lan, profile.wake_on_lan);
+    }
 }

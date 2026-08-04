@@ -42,6 +42,9 @@ export function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
     termType: profile.termType,
     backspaceSendsCtrlH: profile.backspaceSendsCtrlH,
     keepaliveSeconds: profile.keepaliveSeconds,
+    // Carried so an edit of some unrelated field doesn't save the profile
+    // back without its MAC — the form has no wake field yet to re-supply one.
+    wakeOnLan: profile.wakeOnLan,
     // Carried whole so editing a saved serial session opens the form on its
     // stored line settings *and* keeps the adapter identity — re-saving
     // without touching the port dropdown must not silently downgrade the

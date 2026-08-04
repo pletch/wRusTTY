@@ -22,6 +22,7 @@ use crate::connection_status::status_label;
 use crate::profiles;
 use crate::session_registry::{SessionRegistry, Slot};
 use crate::vault::VaultState;
+use crate::wake::WakeOnLan;
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -155,6 +156,7 @@ pub async fn ssh_connect(
     app: AppHandle,
     mut config: SshConfig,
     jump_profile_id: Option<String>,
+    wake: Option<WakeOnLan>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     cols: u16,
@@ -170,7 +172,7 @@ pub async fn ssh_connect(
         let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
         config.jump = Some(Box::new(jump_config));
     }
-    start_connection(app, config, channel, data_channel, cols, rows, &state).await
+    start_connection(app, config, wake, channel, data_channel, cols, rows, &state).await
 }
 
 /// Connects using a saved session profile's vault-stored credential,
@@ -201,7 +203,17 @@ pub async fn ssh_connect_profile(
         config.jump = Some(Box::new(jump_config));
     }
 
-    start_connection(app, config, channel, data_channel, cols, rows, &state).await
+    start_connection(
+        app,
+        config,
+        profile.wake_on_lan,
+        channel,
+        data_channel,
+        cols,
+        rows,
+        &state,
+    )
+    .await
 }
 
 /// Resolves `profile`'s own auth from the vault and builds a plain
@@ -279,9 +291,14 @@ async fn resolve_auth(
     }
 }
 
+// Eight, one past clippy's threshold, and every one of them is already the
+// shape the two commands above hold — a struct here would exist only to be
+// built twice and destructured once.
+#[allow(clippy::too_many_arguments)]
 async fn start_connection(
     app: AppHandle,
     config: SshConfig,
+    wake: Option<WakeOnLan>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     cols: u16,
@@ -296,12 +313,35 @@ async fn start_connection(
         session_id: session_id.clone(),
     });
 
+    // A magic packet is a broadcast on the local segment; the host behind a
+    // jump is, by definition, not on it. Waking would send the packet
+    // somewhere it can't help and then spend the whole wait probing a host
+    // this machine has no route to — failing a connection that would
+    // otherwise have gone through the jump perfectly well. Waking *through*
+    // the jump is a real thing to want, and a different feature: the packet
+    // has to originate on the far side.
+    let wake = match wake {
+        Some(_) if config.jump.is_some() => {
+            log::warn!(
+                "not waking {}: a magic packet can't reach a host behind a jump host",
+                config.host
+            );
+            None
+        }
+        wake => wake,
+    };
+
+    // Cloned before the config is handed to the connector: the probe needs to
+    // know where it's knocking, and this is the same endpoint the handshake
+    // will use.
+    let target = wake.map(|wake| (config.host.clone(), config.port, wake));
+
     let connector =
         SshConnector::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
 
     state
         .sessions
-        .spawn_connect(
+        .spawn_connect_prepared(
             app,
             session_id.clone(),
             connector,
@@ -310,6 +350,11 @@ async fn start_connection(
             |status| SshEvent::Status {
                 status: status_label(status),
             },
+            target.map(|(host, port, wake)| {
+                move |events| async move {
+                    crate::wake::wake_and_wait(&host, port, &wake, &events).await
+                }
+            }),
         )
         .await;
 

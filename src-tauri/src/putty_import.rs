@@ -208,6 +208,9 @@ pub fn to_profile(session: &PuttySession, id: String) -> Option<SessionProfile> 
         // because a firewall on the path to *that host* was dropping their
         // session, which is exactly the thing worth carrying over.
         keepalive_seconds: keepalive_seconds(session),
+        // PuTTY has no Wake-on-LAN setting to carry across — waking is
+        // something its users do with a separate tool.
+        wake_on_lan: None,
         serial: None,
     })
 }
@@ -260,6 +263,8 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
         backspace_sends_ctrl_h: None,
         // Serial has no keepalive concept — there is no idle timeout on a wire.
         keepalive_seconds: None,
+        // Nor anything to wake: the adapter is on the end of a cable.
+        wake_on_lan: None,
         serial: Some(crate::profiles::SerialProfile {
             identity: wr_serial::PortIdentity {
                 port_name,

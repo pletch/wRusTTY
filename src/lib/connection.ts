@@ -2,9 +2,10 @@ import { invoke, Channel } from '@tauri-apps/api/core'
 import type { SshConfig } from './ssh'
 import type { TelnetConfig } from './telnet'
 import type { SerialConfig } from './serial'
+import type { WakeOnLan } from './profiles'
 
 export type ConnectionSource =
-  | { protocol: 'ssh'; config: SshConfig; jumpProfileId?: string | null }
+  | { protocol: 'ssh'; config: SshConfig; jumpProfileId?: string | null; wake?: WakeOnLan | null }
   | { protocol: 'sshProfile'; profileId: string }
   | { protocol: 'telnet'; config: TelnetConfig }
   | { protocol: 'serial'; config: SerialConfig }
@@ -50,6 +51,11 @@ export function connect(
       return invoke<string>('ssh_connect', {
         config: source.config,
         jumpProfileId: source.jumpProfileId ?? null,
+        // Sent explicitly as null rather than omitted: every argument here is
+        // named in the command's signature, and leaving one out relies on the
+        // IPC layer's treatment of a missing key rather than on this file
+        // saying what it means.
+        wake: source.wake ?? null,
         channel,
         dataChannel,
         cols,
