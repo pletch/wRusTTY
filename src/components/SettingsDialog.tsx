@@ -12,6 +12,7 @@ import {
   Upload,
   Download,
   ShieldCheck,
+  Info,
   X,
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
@@ -19,6 +20,8 @@ import type { TerminalSettings, CursorStyleSetting } from '../lib/settings'
 import { SCROLLBACK_FOOTPRINT_TIERS_MB } from '../lib/settings'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { PRESET_THEMES } from '../lib/theme'
+import { APP_VERSION } from '../lib/version'
+import { GHOSTTY_PIN, GHOSTTY_COMMIT_SHORT } from '../lib/ghostty/vendorPin'
 import { revealLogs } from '../lib/logging'
 import { toast } from '../lib/toast'
 import { SHELL_SNIPPETS } from '../lib/shellSnippets'
@@ -58,6 +61,7 @@ const SECTIONS = [
   { id: 'shell', label: 'Shell integration', icon: ClipboardCopy },
   { id: 'logging', label: 'Logging', icon: ScrollText },
   { id: 'import', label: 'Backup & import', icon: Upload },
+  { id: 'about', label: 'About', icon: Info },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
@@ -83,6 +87,25 @@ const FONT_STACKS = [
 /** Width the scrollback estimates are quoted against when no pane has fitted
  *  yet — Settings can be opened before any connection exists. */
 const FALLBACK_COLS = 80
+
+/** What About shows, and what its copy button puts on the clipboard — one
+ *  definition so the two can't say different things. Ordered as it reads: what
+ *  you are running first, then what identifies the engine build.
+ *
+ *  The engine facts are not read off the running wasm, because it doesn't
+ *  publish them — it exports no version symbol, and the `XTVERSION` reply is
+ *  ours rather than its. They come from `vendorPin.ts`, which
+ *  `vendorIntegrity.test.ts` checks against the bytes on every run, so what
+ *  this shows is verified rather than merely recorded. */
+const ABOUT_FACTS: ReadonlyArray<readonly [string, string]> = [
+  ['wRusTTY', APP_VERSION],
+  ['Engine', `ghostty ${GHOSTTY_PIN.upstream} @ ${GHOSTTY_COMMIT_SHORT}`],
+  ['Patched with', GHOSTTY_PIN.patch],
+  ['Engine SHA-256', GHOSTTY_PIN.sha256],
+  ['Engine size', `${GHOSTTY_PIN.bytes.toLocaleString('en-US')} bytes`],
+  ['Built with', `Zig ${GHOSTTY_PIN.zig}`],
+  ['Build flags', GHOSTTY_PIN.buildFlags],
+]
 
 /** Rows, rounded to something readable at a glance. The estimate is ±7% at
  *  worst, so digits past the first two would be false precision. */
@@ -661,6 +684,46 @@ export function SettingsDialog({
                               : puttyCount === 0
                                 ? 'No saved PuTTY sessions found on this machine.'
                                 : `${puttyCount} saved ${puttyCount === 1 ? 'session' : 'sessions'} found. Passwords aren't imported — PuTTY doesn't store them.`}
+                          </span>
+                        </span>
+                      </button>
+                    </>
+                  )}
+
+                  {section === 'about' && (
+                    <>
+                      <div className="px-2 py-1.5">
+                        <p className="leading-relaxed text-white/40">
+                          The terminal engine is a build of ghostty compiled to WebAssembly, not a
+                          released version of it — the commit and hash below are what identify it.
+                          Quote all of this in a bug report about parsing or rendering.
+                        </p>
+                      </div>
+                      <dl className="space-y-1.5 px-2 py-1.5">
+                        {ABOUT_FACTS.map(([label, value]) => (
+                          <div key={label} className="flex items-baseline gap-3">
+                            <dt className="w-28 shrink-0 text-white/40">{label}</dt>
+                            {/* break-all, not truncate: the hash is the field most
+                                likely to be read off the screen rather than copied,
+                                and half a hash is no use. */}
+                            <dd className="min-w-0 break-all font-mono text-white/85">{value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          writeText(ABOUT_FACTS.map(([k, v]) => `${k}: ${v}`).join('\n'))
+                            .then(() => toast.success('Version details copied'))
+                            .catch((e) => toast.error(`Couldn't copy: ${e}`))
+                        }
+                        className="mt-1 flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5"
+                      >
+                        <ClipboardCopy size={14} className="mt-0.5 shrink-0 text-white/50" />
+                        <span className="text-white/85">
+                          Copy version details
+                          <span className="mt-0.5 block text-white/40">
+                            As plain text, ready to paste into an issue.
                           </span>
                         </span>
                       </button>

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { GHOSTTY_PIN } from './vendorPin'
 
 /**
  * Pins the vendored WASM to the exact artifact `vendor/README.md` documents.
@@ -20,18 +21,24 @@ import { dirname, join } from 'node:path'
  * that is checked in and static, so it can only fail when something actually
  * moved.
  *
- * **A legitimate rebuild is supposed to fail this.** Update the constant and
- * `vendor/README.md` in the same commit as the new binary so the two can't
+ * **A legitimate rebuild is supposed to fail this.** Update `vendorPin.ts` and
+ * `vendor/README.md` in the same commit as the new binary so the three can't
  * drift. A Zig rebuild isn't reproducible byte-for-byte across toolchains, so a
  * different hash after a real rebuild is expected — what this catches is the
  * binary moving when nobody rebuilt it.
+ *
+ * The expected values come from `vendorPin.ts` rather than living here, because
+ * Settings' About section shows them too. Pinning a copy the app never reads
+ * would verify the wrong thing: what a bug report quotes is what needs to be
+ * true.
  */
 
-const EXPECTED_SHA256 = '54fa7b5339893ddb4247d3eb5e868cbdeeaa8cd236185bd8bd00daa0766c6d9e'
-const EXPECTED_BYTES = 1_308_136
+const EXPECTED_SHA256 = GHOSTTY_PIN.sha256
+const EXPECTED_BYTES = GHOSTTY_PIN.bytes
 
 const here = dirname(fileURLToPath(import.meta.url))
 const WASM_PATH = join(here, 'vendor/ghostty-vt.wasm')
+const README_PATH = join(here, 'vendor/README.md')
 
 describe('the vendored ghostty-vt.wasm', () => {
   it('is the artifact vendor/README.md documents', () => {
@@ -40,7 +47,7 @@ describe('the vendored ghostty-vt.wasm', () => {
     expect(
       actual,
       'The vendored WASM does not match its recorded hash. If you rebuilt it ' +
-        'deliberately, update EXPECTED_SHA256 here and the block in ' +
+        'deliberately, update GHOSTTY_PIN in vendorPin.ts and the block in ' +
         'vendor/README.md in the same commit. If you did not, do not update ' +
         'either — find out why the file changed.',
     ).toBe(EXPECTED_SHA256)
@@ -63,5 +70,28 @@ describe('the vendored ghostty-vt.wasm', () => {
       bytes.includes(Buffer.from('.debug_', 'utf8')),
       'DWARF sections are present — was tools/strip-wasm-debug.mjs run?',
     ).toBe(false)
+  })
+
+  /**
+   * The remaining drift risk once the pin, the test and the About box share one
+   * constant: the README's prose block, which is the long-form explanation
+   * everything else is a summary of. Substrings rather than a parse — the block
+   * is documentation and gets reworded, and a test that dictated its layout
+   * would fail on edits that changed nothing that matters.
+   */
+  it('is the build vendor/README.md describes', () => {
+    const readme = readFileSync(README_PATH, 'utf8')
+    for (const [field, value] of [
+      ['SHA-256', EXPECTED_SHA256],
+      ['source commit', GHOSTTY_PIN.commit],
+      ['Zig version', GHOSTTY_PIN.zig],
+    ] as const) {
+      expect(
+        readme,
+        `vendorPin.ts and vendor/README.md disagree about the ${field}. Both ` +
+          "describe the same binary, and Settings' About section shows the " +
+          'vendorPin.ts one — update them together.',
+      ).toContain(value)
+    }
   })
 })
