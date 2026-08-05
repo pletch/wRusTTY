@@ -1673,6 +1673,7 @@ export function Terminal({
 
     return () => {
       disposed = true
+      // A disposed pane must not resize a session it no longer owns.
       ptyResize.cancel()
       // Before the engine goes: the scheduler may be holding a queue and a
       // pending frame callback, and draining either into a disposed terminal
