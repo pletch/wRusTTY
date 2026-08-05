@@ -64,7 +64,7 @@ async function mounted() {
   engine.resize(COLS, ROWS, true)
 
   const sent: string[] = []
-  engine.onData((d) => sent.push(d))
+  engine.onData((d) => sent.push(new TextDecoder().decode(d)))
 
   const canvas = container.querySelector('canvas')!
   const at = (x: number, y: number) => ({ clientX: x, clientY: y, bubbles: true, cancelable: true })
@@ -191,6 +191,26 @@ describe('mouse reporting, from the canvas to the wire', () => {
     // the drag simply goes quiet, which is not what any terminal does.
     move(5000, 25)
     expect(sent).toEqual(['\x1b[<32;80;2M'])
+    engine.unmount()
+  })
+
+  it('gets a legacy report past column 95 onto the wire intact', async () => {
+    const { engine, down } = await mounted()
+    // Wide enough that a column exceeds 95, which any full-screen pane is.
+    engine.resize(200, 24, true)
+    const raw: Uint8Array[] = []
+    engine.onData((d) => raw.push(d))
+    // The legacy one-byte format: 1000 without 1006. Still the default for
+    // programs that never learned SGR.
+    engine.write('\x1b[?1000h')
+    down(1000, 25)
+
+    // Column 101, row 2, each biased by 32 — so the column byte is 0x85, and
+    // 0x85 is not valid UTF-8 on its own. Carried as a string it became
+    // U+FFFD and reached the wire as ef bf bd: the column destroyed, and one
+    // byte turned into three, which desynchronises the far end for the rest
+    // of the report. This is the reason the data channel carries bytes.
+    expect([...raw[0]]).toEqual([0x1b, 0x5b, 0x4d, 0x20, 0x20 + 101, 0x20 + 2])
     engine.unmount()
   })
 

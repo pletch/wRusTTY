@@ -39,8 +39,8 @@ async function mounted() {
 
   const data: string[] = []
   const input: string[] = []
-  engine.onData((d) => data.push(d))
-  engine.onInput((d) => input.push(d))
+  engine.onData((d) => data.push(new TextDecoder().decode(d)))
+  engine.onInput((d) => input.push(new TextDecoder().decode(d)))
   return { engine, data, input }
 }
 

@@ -81,16 +81,23 @@ export class MouseReporter {
     return this.host.tracking()
   }
 
-  isButtonDown(): boolean {
-    return this.buttonDown !== null
-  }
-
   /**
    * A release that never arrived. Called on blur: left set, a stuck "still
    * held" keeps reporting drags on the next hover.
    */
   forgetButton(): void {
     this.buttonDown = null
+  }
+
+  /**
+   * Drops the remembered cell. Called when the geometry changes, because the
+   * cell it names is measured against the old one — after a resize or a font
+   * change, "same cell as last time" is comparing two different grids, and the
+   * first motion in a genuinely new cell can be suppressed as a duplicate.
+   */
+  forgetLastCell(): void {
+    this.lastCol = -1
+    this.lastRow = -1
   }
 
   /**
@@ -129,9 +136,11 @@ export class MouseReporter {
   reportMotion(e: MouseEvent): void {
     const p = this.host.at(e)
     if (!p) return
-    if (!this.host.pixelReporting()) {
-      if (p.col === this.lastCol && p.row === this.lastRow) return
-    }
+    // Cell first, mode second: `pixelReporting` is a call into the core, and
+    // asking it on a move that has changed cell — which is reported under
+    // every format — answers a question whose answer cannot matter. Only a
+    // move that stayed put has to know whether pixels are being reported.
+    if (p.col === this.lastCol && p.row === this.lastRow && !this.host.pixelReporting()) return
     this.lastCol = p.col
     this.lastRow = p.row
     const button = this.buttonDown === null ? null : mouseButtonFor(this.buttonDown)

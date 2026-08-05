@@ -235,10 +235,11 @@ export class MouseEncoder {
     return new Uint8Array(ex.memory.buffer, this.buf, len).slice()
   }
 
-  /** Drops the encoder's own motion state. */
-  reset(): void {
-    this.ex.ghostty_mouse_encoder_reset(this.encoder)
-  }
+  // No `reset()` wrapper. `ghostty_mouse_encoder_reset` clears the encoder's
+  // last-cell memory, which is the state `TRACK_LAST_CELL` would use and which
+  // does nothing observable in this build — so a wrapper for it would be a
+  // method with no caller and no effect. The deduplication that does happen is
+  // `MouseReporter`'s, and it has its own `forgetLastCell`.
 
   dispose(): void {
     const { ex } = this

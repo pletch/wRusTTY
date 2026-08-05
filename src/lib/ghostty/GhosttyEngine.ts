@@ -219,12 +219,12 @@ export class GhosttyEngine implements TerminalEngine {
   private fontFamily = 'Consolas, monospace'
   private fontSize = 14
   
-  private onDataHandlers = new Set<(data: string) => void>()
+  private onDataHandlers = new Set<(data: Uint8Array) => void>()
   /** Fired from the two sites a human is behind — key input and paste — and
    *  nowhere else. Kept as a separate set rather than a flag threaded through
    *  `onData` so the distinction is made where the data originates, by the
    *  code that knows what it is, instead of being guessed at downstream. */
-  private onInputHandlers = new Set<(data: string) => void>()
+  private onInputHandlers = new Set<(data: Uint8Array) => void>()
   private onResizeHandlers = new Set<(size: { cols: number; rows: number }) => void>()
   private inputHandler: GhosttyInputHandler | null = null
   /**
@@ -325,7 +325,6 @@ export class GhosttyEngine implements TerminalEngine {
   private oscPending: Uint8Array | null = null
   private oscDecoder = new TextDecoder()
   private oscEncoder = new TextEncoder()
-  private responseDecoder = new TextDecoder()
   private oscHandlers = new Map<number, ((data: string) => boolean | Promise<boolean>)[]>()
   private onBellHandlers = new Set<() => void>()
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
@@ -377,8 +376,7 @@ export class GhosttyEngine implements TerminalEngine {
       encoder: () => this.mouseEncoder,
       pixelReporting: () => this.mouseMode(MODE_MOUSE_SGR_PIXELS),
       send: (bytes) => {
-        const str = new TextDecoder().decode(bytes)
-        for (const h of this.onDataHandlers) h(str)
+        for (const h of this.onDataHandlers) h(bytes)
       },
     })
     this.selection = new SelectionController({
@@ -759,7 +757,7 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private reportFocus(focused: boolean) {
     if (!this.mouseMode(MODE_FOCUS_REPORTING)) return
-    const seq = focused ? '\x1b[I' : '\x1b[O'
+    const seq = this.oscEncoder.encode(focused ? '\x1b[I' : '\x1b[O')
     for (const h of this.onDataHandlers) h(seq)
   }
 
@@ -830,8 +828,7 @@ export class GhosttyEngine implements TerminalEngine {
     for (let i = 0; i < 64; i++) {
       const out = readResponse(this.wasm, this.termPtr)
       if (!out || out.length === 0) return
-      const str = this.responseDecoder.decode(out)
-      for (const h of this.onDataHandlers) h(str)
+      for (const h of this.onDataHandlers) h(out)
     }
   }
 
@@ -1001,6 +998,9 @@ export class GhosttyEngine implements TerminalEngine {
    * in here rather than to subtract at the call sites.
    */
   private syncMouseSurface(): void {
+    // Whatever the geometry became, the cell the reporter last named was
+    // measured against the old one.
+    this.mouse.forgetLastCell()
     if (!this.mouseEncoder || !this.renderer) return
     const cell = this.renderer.getCellSize()
     this.mouseEncoder.setSurface({
@@ -1521,13 +1521,11 @@ export class GhosttyEngine implements TerminalEngine {
       // Typing while scrolled up otherwise sends keystrokes to a prompt that
       // isn't on screen.
       this.scrollToBottom()
-      // Input handler gives Uint8Array, convert to string since onData expects string in TerminalEngine
-      const str = new TextDecoder().decode(data)
       for (const handler of this.onDataHandlers) {
-        handler(str)
+        handler(data)
       }
       for (const handler of this.onInputHandlers) {
-        handler(str)
+        handler(data)
       }
     }, () => this.keyEncoder)
     // Focus now lives on the input handler's element, so that is what the pane
@@ -1856,7 +1854,7 @@ export class GhosttyEngine implements TerminalEngine {
     // Concatenating the brackets by hand is what this replaced: it pasted an
     // embedded terminator straight through, which ends the bracket early and
     // delivers the rest as typing.
-    const payload = new TextDecoder().decode(encodePaste(this.wasm, text, bracketed))
+    const payload = encodePaste(this.wasm, text, bracketed)
     // Fire it as input data to be sent to the backend PTY
     for (const handler of this.onDataHandlers) {
       handler(payload)
@@ -1866,12 +1864,12 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  onData(handler: (data: string) => void): IDisposable {
+  onData(handler: (data: Uint8Array) => void): IDisposable {
     this.onDataHandlers.add(handler)
     return { dispose: () => this.onDataHandlers.delete(handler) }
   }
 
-  onInput(handler: (data: string) => void): IDisposable {
+  onInput(handler: (data: Uint8Array) => void): IDisposable {
     this.onInputHandlers.add(handler)
     return { dispose: () => this.onInputHandlers.delete(handler) }
   }

@@ -75,7 +75,7 @@ async function mounted({ mouseTracking = false, url = URL } = {}) {
   const opened: string[] = []
   engine.onLinkActivate((u) => opened.push(u))
   const sent: string[] = []
-  engine.onData((d) => sent.push(d))
+  engine.onData((d) => sent.push(new TextDecoder().decode(d)))
 
   const at = (x: number, y: number) => ({
     clientX: x * CELL.width + CELL.width / 2,

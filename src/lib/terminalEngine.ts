@@ -66,15 +66,22 @@ export interface TerminalEngine {
    * tracking reports, DEC 1004 focus reports, and the replies the core
    * generates for host queries (DSR, DA, OSC colour). A single session's
    * writer wants all of it.
+   *
+   * **Bytes, not a string, and that is load-bearing.** Not all of this is
+   * text: a legacy mouse report encodes each coordinate as `32 + n`, so past
+   * column 95 it contains a byte that is not valid UTF-8 on its own. Carried
+   * as a string it went through `TextDecoder` and came out as U+FFFD, which
+   * `TextEncoder` then turned into *three* bytes — destroying the coordinate
+   * and desynchronising the far end's parser for the rest of the report.
    */
-  onData(cb: (data: string) => void): IDisposable
+  onData(cb: (data: Uint8Array) => void): IDisposable
   /**
    * User-originated input only — typing and paste. A strict subset of
    * `onData`, and the one anything that *redirects* input has to use: a mouse
    * report carries this pane's geometry, and a query reply belongs to the host
    * that asked. Sending either somewhere else is wrong in both directions.
    */
-  onInput(cb: (data: string) => void): IDisposable
+  onInput(cb: (data: Uint8Array) => void): IDisposable
   onWriteParsed(cb: () => void): IDisposable
   onScroll(cb: (newPos: number) => void): IDisposable
   onBufferChange(cb: (isAlternate: boolean) => void): IDisposable

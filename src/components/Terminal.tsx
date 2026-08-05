@@ -168,9 +168,12 @@ interface PendingHostKey {
   storedFingerprint: string | null
 }
 
+import { translateBackspace } from '../lib/translateBackspace'
+
 function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
 }
+
 
 export function Terminal({
   source,
@@ -1365,16 +1368,18 @@ export function Terminal({
         // Not translated: the line editor is local and matches on the
         // engine's own ^? for its own editing. What it eventually sends is a finished
         // line, which never contains a backspace anyway.
-        lineEditor.handleData(data)
+        //
+        // Decoded here and nowhere else: the line editor works in characters,
+        // and this path only ever carries typing — never a mouse report, which
+        // is what made the byte channel necessary in the first place.
+        lineEditor.handleData(new TextDecoder().decode(data))
         return
       }
       // Applied here rather than via a key handler so it covers every route
       // the engine takes to produce the byte, and only on what actually goes out
       // on the wire. Null means the session never expressed a preference,
       // which is ^? — what modern Unix expects.
-      const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
-      const bytes = new TextEncoder().encode(out)
-      if (sessionId) conn.write(source, sessionId, bytes)
+      if (sessionId) conn.write(source, sessionId, translateBackspace(data, backspaceRef.current === true))
     })
 
     // The fan-out point, deliberately on `onInput` and not `onData`.
@@ -1405,8 +1410,11 @@ export function Terminal({
       // be meaningless to a remote shell.
       if (lineEditor) return
       if (!broadcastingRef.current) return
-      const out = backspaceRef.current ? data.replaceAll('\x7f', '\b') : data
-      broadcast.send(broadcastGroupRef.current, new TextEncoder().encode(out), paneId)
+      broadcast.send(
+        broadcastGroupRef.current,
+        translateBackspace(data, backspaceRef.current === true),
+        paneId,
+      )
     })
 
     const selectionListener = term.onSelectionChange(() => {
@@ -1465,11 +1473,27 @@ export function Terminal({
             return
           }
           const multiLine = lines > 1
+          // Both reasons get said when both apply. Naming only the line count
+          // for a multi-line paste that *also* carries an escape sequence left
+          // the more dangerous of the two properties unmentioned.
+          const reasons: string[] = []
+          if (multiLine) {
+            reasons.push(
+              'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.',
+            )
+          }
+          if (text.includes('\x1b')) {
+            reasons.push(
+              `${multiLine ? 'It also contains' : 'This text contains'} a terminal escape sequence. That is defused before being sent — the escape becomes a space — but text carrying one is worth a second look.`,
+            )
+          }
           void confirmRef.current({
             title: multiLine ? `Paste ${lines} lines?` : 'Paste this text?',
-            body: multiLine
-              ? 'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.'
-              : 'This text contains a terminal escape sequence. It is defused before being sent — the escape becomes a space — but text that carries one is worth a second look.',
+            // The fallback is unreachable today — the core calls a paste
+            // unsafe only for a newline or an embedded terminator, and each
+            // has a reason above — but an empty dialog would be the worst
+            // possible way to find out that had changed.
+            body: reasons.join(' ') || 'This text may not be safe to paste as typed.',
             confirmLabel: 'Paste',
           }).then((ok) => {
             if (ok) term.paste(text)

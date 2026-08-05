@@ -52,7 +52,7 @@ async function mounted() {
   inner.renderer = { selection: null as Sel | null, getCellSize: () => CELL, dispose: () => {} }
 
   const sent: string[] = []
-  engine.onData((d) => sent.push(d))
+  engine.onData((d) => sent.push(new TextDecoder().decode(d)))
 
   const input = container.querySelector('textarea')!
   // `code` as well as `key`: the encoder identifies the physical key from it,

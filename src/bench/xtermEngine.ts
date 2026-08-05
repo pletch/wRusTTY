@@ -117,8 +117,11 @@ export class XtermEngine implements TerminalEngine {
     return this.term.onSelectionChange(cb)
   }
 
-  onData(cb: (data: string) => void) {
-    return this.term.onData(cb)
+  onData(cb: (data: Uint8Array) => void) {
+    // xterm hands out a string; the engine contract is bytes. UTF-8 is the
+    // right encoding for everything xterm produces here, and this class never
+    // reaches a wire anyway (see `onInput` below).
+    return this.term.onData((s) => cb(new TextEncoder().encode(s)))
   }
 
   /**
@@ -128,8 +131,8 @@ export class XtermEngine implements TerminalEngine {
    * connects a session — nothing here reaches a wire, let alone another
    * pane's. A real consumer of this class would need the split.
    */
-  onInput(cb: (data: string) => void) {
-    return this.term.onData(cb)
+  onInput(cb: (data: Uint8Array) => void) {
+    return this.term.onData((s) => cb(new TextEncoder().encode(s)))
   }
 
   onWriteParsed(cb: () => void) {
