@@ -238,6 +238,13 @@ mosh, RDP) means adding a crate, not touching the UI.
   all** for Ctrl+Alt and Ctrl+Shift chords and had no Ctrl+digit or
   Ctrl+Space. Not a setting and deliberately not one: the protocol in force is
   the application's business, not a preference.
+  **Application keypad mode works**, and looks like it does not: DECKPAM on its
+  own changes nothing because DEC 1035 defaults to on and disables it, so a
+  program has to clear 1035 too. That is xterm's behaviour as well. Once it
+  does, the keypad sends the SS3 set (`ESC O q`, `ESC O M`, `ESC O k`, …).
+  An earlier note in this file's history called the mode unimplemented on the
+  strength of `ESC =` alone doing nothing; the tests now pin it both ways so
+  the gate is not mistaken for a gap again.
 - **Mouse reporting — the engine's too** (`lib/ghostty/MouseEncoder.ts`). All
   five tracking modes (X10, normal, button, any) and all five wire formats
   (X10, UTF-8, urxvt, SGR, **SGR-pixels**) ship, for the same reason and on the

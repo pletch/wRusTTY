@@ -30,6 +30,13 @@
  * that push can arrive between any two of them, and it costs a handful of
  * loads against a keyboard's ~10 events a second.
  *
+ * One of those modes looks inert and is not. **Application keypad mode does
+ * nothing until the application also clears DEC 1035**, which defaults to on
+ * and hard-disables the keypad mode whenever it is set — xterm's modern
+ * default, and upstream's. `ESC =` alone therefore changes no numpad output,
+ * which reads exactly like an unimplemented mode. It is implemented;
+ * `KeyEncoder.test.ts` pins the whole keypad both ways round.
+ *
  * ## What still has to be decided here
  *
  * The DOM does not describe a key event the way the encoder wants one:

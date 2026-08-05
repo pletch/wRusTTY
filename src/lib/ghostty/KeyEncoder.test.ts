@@ -169,6 +169,119 @@ describe('KeyEncoder', () => {
     })
   })
 
+  /**
+   * Application keypad mode, which works and looks like it does not.
+   *
+   * Setting DECKPAM on its own changes nothing, and that is correct rather
+   * than broken: DEC 1035 (`ignore_keypad_with_numlock`) defaults to **on**,
+   * and upstream hard-disables application keypad whenever it is
+   * — `if (ignore_keypad_with_numlock) break :keypad false`. xterm's modern
+   * default is the same. An application therefore has to clear 1035 as well,
+   * and the ones that care do.
+   *
+   * Pinned in full because the first reading of the evidence here was that
+   * the encoder ignored mode 66 altogether. It does not; the gate was simply
+   * invisible. Anyone who reaches the same wrong conclusion will be tempted
+   * to "fix" the numpad by removing that gate, and this is what should stop
+   * them.
+   */
+  describe('application keypad mode', () => {
+    /** The whole keypad, as a single readable snapshot. */
+    const keypad = (encode: (e: KeyboardEvent) => string | null) => ({
+      one: encode(key('Numpad1', { key: '1', numLock: true })),
+      five: encode(key('Numpad5', { key: '5', numLock: true })),
+      enter: encode(key('NumpadEnter', { key: 'Enter' })),
+      plus: encode(key('NumpadAdd', { key: '+' })),
+      minus: encode(key('NumpadSubtract', { key: '-' })),
+      times: encode(key('NumpadMultiply', { key: '*' })),
+      divide: encode(key('NumpadDivide', { key: '/' })),
+      dot: encode(key('NumpadDecimal', { key: '.' })),
+    })
+
+    const NUMERIC = {
+      one: '1',
+      five: '5',
+      enter: '\r',
+      plus: '+',
+      minus: '-',
+      times: '*',
+      divide: '/',
+      dot: '.',
+    }
+    const APPLICATION = {
+      one: '\x1bOq',
+      five: '\x1bOu',
+      enter: '\x1bOM',
+      plus: '\x1bOk',
+      minus: '\x1bOm',
+      times: '\x1bOj',
+      divide: '\x1bOo',
+      dot: '\x1bOn',
+    }
+
+    it('does nothing on its own, because 1035 defaults to on', () => {
+      const { encode, write } = boot()
+      write('\x1b[?66h')
+      expect(keypad(encode)).toEqual(NUMERIC)
+    })
+
+    it('takes effect once the application also clears 1035', () => {
+      const { encode, write } = boot()
+      write('\x1b[?66h\x1b[?1035l')
+      expect(keypad(encode)).toEqual(APPLICATION)
+    })
+
+    it('is entered by ESC = as well, which is what programs actually send', () => {
+      const { encode, write } = boot()
+      // vim and less send DECKPAM as `ESC =`, not as a private mode set.
+      write('\x1b=\x1b[?1035l')
+      expect(keypad(encode)).toEqual(APPLICATION)
+    })
+
+    it('is left by ESC >, by resetting 66, or by putting 1035 back', () => {
+      for (const off of ['\x1b>', '\x1b[?66l', '\x1b[?1035h']) {
+        const { encode, write } = boot()
+        write('\x1b=\x1b[?1035l')
+        expect(keypad(encode)).toEqual(APPLICATION)
+        write(off)
+        expect(keypad(encode)).toEqual(NUMERIC)
+      }
+    })
+
+    it('carries modifiers in the SS3 form', () => {
+      const { encode, write } = boot()
+      write('\x1b=\x1b[?1035l')
+      expect(encode(key('Numpad1', { key: '1', shift: true, numLock: true }))).toBe('\x1bO2q')
+    })
+
+    it('leaves the navigation keypad to DECCKM instead', () => {
+      // With Num Lock off these are different keys entirely — `numpad_end`,
+      // not `numpad_1` — and upstream keys them off the cursor mode, not the
+      // keypad mode. So they are unmoved by application keypad...
+      const { encode, write } = boot()
+      write('\x1b=\x1b[?1035l')
+      expect(encode(key('Numpad1', { key: 'End' }))).toBe('\x1b[F')
+      // ...and moved by DECCKM.
+      write('\x1b[?1h')
+      expect(encode(key('Numpad1', { key: 'End' }))).toBe('\x1bOF')
+      expect(encode(key('Numpad8', { key: 'ArrowUp' }))).toBe('\x1bOA')
+    })
+
+    it('leaves the main-row digits alone', () => {
+      const { encode, write } = boot()
+      write('\x1b=\x1b[?1035l')
+      // The mode is about the physical keypad. A `1` typed above the letters
+      // is still a `1`, which is the point of tracking `code` at all.
+      expect(encode(key('Digit1', { key: '1' }))).toBe('1')
+    })
+
+    it('gives way to the kitty protocol, which supersedes it', () => {
+      const { encode, write } = boot()
+      write('\x1b=\x1b[?1035l\x1b[>1u')
+      expect(encode(key('Numpad1', { key: '1', numLock: true }))).toBe('1')
+    })
+  })
+
   describe('kitty keyboard protocol, entered the way a program enters it', () => {
     it('disambiguates once the far end pushes the flag', () => {
       const { encode, write } = boot()
