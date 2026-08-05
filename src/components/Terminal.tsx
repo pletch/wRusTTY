@@ -1455,13 +1455,21 @@ export function Terminal({
         .then((text) => {
           if (!text) return
           const lines = countLines(text)
-          if (lines === 1) {
+          // The engine's own judgement where there is one. It refuses the same
+          // multi-line pastes this used to catch by counting, and one more it
+          // could not: a single line carrying a bracketed-paste terminator,
+          // which looks perfectly ordinary and is the case that matters.
+          const safe = term.isPasteSafe?.(text) ?? lines === 1
+          if (safe) {
             term.paste(text)
             return
           }
+          const multiLine = lines > 1
           void confirmRef.current({
-            title: `Paste ${lines} lines?`,
-            body: 'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.',
+            title: multiLine ? `Paste ${lines} lines?` : 'Paste this text?',
+            body: multiLine
+              ? 'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.'
+              : 'This text contains a terminal escape sequence. It is defused before being sent — the escape becomes a space — but text that carries one is worth a second look.',
             confirmLabel: 'Paste',
           }).then((ok) => {
             if (ok) term.paste(text)

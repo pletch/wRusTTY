@@ -8,6 +8,7 @@ import {
 import { SearchController } from './SearchController'
 import { MouseReporter, type MousePoint } from './MouseReporter'
 import { MouseEncoder } from './MouseEncoder'
+import { encodePaste, hasPasteEncoder, pasteIsSafe } from './pasteEncode'
 import { SelectionController } from './SelectionController'
 import { MarkModeController } from './MarkModeController'
 import { LinkController, type Link } from './LinkController'
@@ -1828,6 +1829,19 @@ export class GhosttyEngine implements TerminalEngine {
     return Promise.resolve()
   }
 
+  /**
+   * Whether the text can go straight to the wire, or whether the user should
+   * be asked first. See `pasteIsSafe` — it catches an embedded
+   * bracketed-paste terminator, which counting lines cannot.
+   *
+   * Null when there is no core to ask, which leaves the decision to the
+   * caller rather than guessing "safe" on its behalf.
+   */
+  isPasteSafe(text: string): boolean | null {
+    if (!this.wasm || !hasPasteEncoder(this.wasm)) return null
+    return pasteIsSafe(this.wasm, text)
+  }
+
   paste(text: string): void {
     if (!this.wasm) return
     // Paste can arrive from a menu or a shortcut handled above this engine, and
@@ -1836,12 +1850,13 @@ export class GhosttyEngine implements TerminalEngine {
     // hung.
     this.inputHandler?.focus()
     this.scrollToBottom()
+    // The one piece of terminal state the encoder does not read for itself.
     const bracketed =
       this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_BRACKETED_PASTE, 0) !== 0
-    let payload = text
-    if (bracketed) {
-      payload = '\x1b[200~' + text + '\x1b[201~'
-    }
+    // Concatenating the brackets by hand is what this replaced: it pasted an
+    // embedded terminator straight through, which ends the bracket early and
+    // delivers the rest as typing.
+    const payload = new TextDecoder().decode(encodePaste(this.wasm, text, bracketed))
     // Fire it as input data to be sent to the backend PTY
     for (const handler of this.onDataHandlers) {
       handler(payload)

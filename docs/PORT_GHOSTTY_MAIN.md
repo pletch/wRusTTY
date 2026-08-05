@@ -297,32 +297,40 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
 
 ### What reaches past the shim
 
-The two input encoders: keys (`lib/ghostty/KeyEncoder.ts`, constants in
-`main/keyAbi.ts`) and the mouse (`lib/ghostty/MouseEncoder.ts`, constants in
-`main/mouseAbi.ts`). They are the only things in the app that talk to `main`'s
-exports directly rather than through `GhosttyExports`, and the reason is
-structural rather than laziness: the shim's job is to present *our* 83-export
-ABI over main's 202, and our ABI has no input encoding in it at all — there is
-nothing on the v1.3.1 build for it to be shimmed *to*. Adding it to
-`GhosttyExports` would mean inventing an export that only one of the two
-implementations could ever answer, which is exactly the shape the shim exists
-to avoid.
+The three input encoders: keys (`lib/ghostty/KeyEncoder.ts`, constants in
+`main/keyAbi.ts`), the mouse (`lib/ghostty/MouseEncoder.ts`, constants in
+`main/mouseAbi.ts`), and paste (`lib/ghostty/pasteEncode.ts`). They are the
+only things in the app that talk to `main`'s exports directly rather than
+through `GhosttyExports`, and the reason is structural rather than laziness:
+the shim's job is to present *our* 83-export ABI over main's 202, and our ABI
+has no input encoding in it at all — there is nothing on the v1.3.1 build for
+it to be shimmed *to*. Adding it to `GhosttyExports` would mean inventing an
+export that only one of the two implementations could ever answer, which is
+exactly the shape the shim exists to avoid.
 
-So both `create` methods read `wasm.instance.exports`, check the encoder is
-there, and return null if it is not. Null means a pane with no control keys, or
-one that reports no mouse; only the oracle build can produce it and no user can
-reach it.
+So each of them checks its exports are present and says so when they are not —
+`create` returning null for the two encoders, `hasPasteEncoder` for the third.
+That means a pane with no control keys, one that reports no mouse, or one that
+falls back to counting lines before a paste; only the oracle build can produce
+any of it and no user can reach it.
 
-That surface is 28 exports (`ghostty_key_event_*`, `ghostty_key_encoder_*`,
-`ghostty_mouse_event_*`, `ghostty_mouse_encoder_*`), declared on
-`GhosttyMainExports` with the same rule as the rest of that interface: listed
-because there is a use for it and the signature has been checked. Checked
-literally, for the mouse: `GhosttyMousePosition` is two floats passed *by
-value* in the header, and on wasm32 that lowers to a pointer, which was read
-off the binary's own type section rather than assumed.
+Paste is a module of functions rather than a class because that is what it is
+upstream: no handle, no terminal, no state. Bracketing is passed in by the
+caller, since DEC 2004 is the only terminal state involved.
 
-`ghostty_paste_encode` is the obvious next candidate — the bracketed-paste path
-is still hand-rolled, and the same argument applies.
+That surface is 30 exports (`ghostty_key_event_*`, `ghostty_key_encoder_*`,
+`ghostty_mouse_event_*`, `ghostty_mouse_encoder_*`, `ghostty_paste_*`),
+declared on `GhosttyMainExports` with the same rule as the rest of that
+interface: listed because there is a use for it and the signature has been
+checked. Checked literally, for the mouse: `GhosttyMousePosition` is two floats
+passed *by value* in the header, and on wasm32 that lowers to a pointer, which
+was read off the binary's own type section rather than assumed. And for paste,
+`ghostty_paste_encode` modifies its **input** buffer in place, so a retry has
+to refill it rather than reuse what the failed call left behind.
+
+With paste done, the hand-rolled input paths are gone. What is left out here is
+policy rather than encoding: which button is held, how often motion is worth
+sending, and whether to ask before pasting.
 
 ### Left open
 

@@ -50,6 +50,13 @@ export interface TerminalEngine {
   write(data: Uint8Array | string): void
   writeln(data: string): void
   paste(text: string): void
+  /**
+   * Whether `paste` can be called without asking the user first, or null when
+   * the engine cannot say. Optional because it is the vt core's judgement and
+   * an engine without one has nothing to answer with — the caller falls back
+   * to counting lines, which is the part of the rule that is obvious.
+   */
+  isPasteSafe?(text: string): boolean | null
 
   getSelection(): string
   onSelectionChange(cb: () => void): IDisposable

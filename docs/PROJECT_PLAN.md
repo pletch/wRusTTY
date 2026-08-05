@@ -249,6 +249,15 @@ mosh, RDP) means adding a crate, not touching the UI.
   policy no encoder can know: which button is held, and dropping motion that
   has not left its cell — except under SGR-pixels, where that motion is the
   point.
+- **Paste — the engine's as well** (`lib/ghostty/pasteEncode.ts`). Bracketed
+  paste used to be a string concatenation, which pasted an embedded
+  `ESC [ 201 ~` straight through: that ends the bracket early and delivers
+  everything after it as *typing*, which at a shell prompt is a command nobody
+  ran. The encoder replaces the escape with a space, so it arrives inert, and
+  converts newlines to carriage returns when nothing is bracketing — which the
+  old path also got wrong. The confirmation prompt now asks the core whether a
+  paste is safe rather than counting lines, so it catches a **single-line**
+  paste carrying that terminator.
 - Configurable keyboard shortcuts — **not built**; every binding is hard-coded
   in `Terminal.tsx` and `App.tsx`
 - Duplicate tab / reconnect / "restart session" actions **(shipped — the tab

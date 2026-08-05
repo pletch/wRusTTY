@@ -548,6 +548,23 @@ export interface GhosttyMainExports {
   /** Writes the byte count to `outLen` even when it returns `OUT_OF_SPACE`,
    *  in which case that count is the buffer size required. */
   ghostty_mouse_encoder_encode(encoder: number, event: number, out: number, outSize: number, outLen: number): number
+
+  /** Conservative, and deliberately independent of terminal state: false for
+   *  a newline and for an embedded bracketed-paste terminator. */
+  ghostty_paste_is_safe(data: number, len: number): number
+  /**
+   * **Modifies `data` in place** while encoding — the unsafe-byte stripping
+   * happens in the input buffer. A caller that retries has to refill it.
+   * `out` may be 0 to ask only for the size.
+   */
+  ghostty_paste_encode(
+    data: number,
+    dataLen: number,
+    bracketed: number,
+    out: number,
+    outSize: number,
+    outWritten: number,
+  ): number
 }
 
 /** Throws on any non-success result, naming the call. */
