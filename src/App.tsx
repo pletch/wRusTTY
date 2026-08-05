@@ -83,6 +83,7 @@ import {
 } from './state/paneRuntime'
 import { tabsReducer, layoutSignature } from './state/tabs'
 import { usePanePortals } from './hooks/usePanePortals'
+import { useDragRegionDoubleClickGuard } from './hooks/useDragRegionDoubleClickGuard'
 
 function refit() {
   // Terminal listens for window resize to re-fit; nudge it after a tab or
@@ -383,6 +384,10 @@ function App() {
       unlisten.then((f) => f()).catch(() => {})
     }
   }, [])
+
+  // A double-click aimed at the ✕ on the last tab must not maximize the
+  // window when the drag-region spacer slides under the second press.
+  useDragRegionDoubleClickGuard()
 
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.
