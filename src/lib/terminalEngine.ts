@@ -75,8 +75,9 @@ export interface TerminalEngine {
   registerOscHandler(ident: number, cb: (data: string) => boolean | Promise<boolean>): IDisposable
 
   resize(cols: number, rows: number): void
-  /** Re-measures the container and updates the terminal size to fit. */
-  fit(force?: boolean): void
+  /** Re-measures the container and updates the terminal size to fit.
+   *  `why` is for the resize trace only — see `lib/resizeTrace.ts`. */
+  fit(force?: boolean, why?: string): void
   
   scrollLines(amount: number): void
   scrollToLine(line: number): void

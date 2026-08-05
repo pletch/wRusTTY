@@ -231,6 +231,8 @@ export class GhosttyEngine implements TerminalEngine {
    *  write is converted to bytes up front (see write). */
   private writeBuffer: Uint8Array[] = []
   private writeBufferBytes = 0
+  /** Which path last asked for a fit, for the resize trace only. */
+  private lastFitWhy = 'none'
   /** Whether the render loop may re-fit this engine to its container. Off while
    *  a caller has pinned the grid on purpose — see the poll in the render loop
    *  and `setAutoFit`. */
@@ -620,7 +622,7 @@ export class GhosttyEngine implements TerminalEngine {
     // Force a fit now that the renderer is available!
     // This fixes the issue where the terminal doesn't fill the screen on first load
     // because the ResizeObserver fired before WASM finished compiling.
-    this.fit(true)
+    this.fit(true, 'core-ready')
 
     // ...but this fit still races two things that settle *after* the WASM
     // fetch that got us here, and the canvas is only ever sized while a
@@ -635,7 +637,7 @@ export class GhosttyEngine implements TerminalEngine {
     // why the grid stayed stale until the window was resized by hand. Re-fit
     // on the next frame and once fonts are ready to close both windows.
     requestAnimationFrame(() => {
-      if (!this.disposed) this.fit(true)
+      if (!this.disposed) this.fit(true, 'font-loaded')
     })
     document.fonts?.ready
       .then(() => {
@@ -1542,7 +1544,12 @@ export class GhosttyEngine implements TerminalEngine {
       resizeTrace.log('resize-skip', { size: `${cols}x${rows}` })
       return
     }
-    resizeTrace.log('resize', { from: `${this._cols}x${this._rows}`, to: `${cols}x${rows}`, force })
+    resizeTrace.log('resize', {
+      from: `${this._cols}x${this._rows}`,
+      to: `${cols}x${rows}`,
+      force,
+      why: this.lastFitWhy,
+    })
     // A core resize is one of the two things that can move a pinned scroll
     // region, so whatever the remote says next is worth having.
     resizeTrace.armCapture('core-resize')
@@ -1860,8 +1867,9 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onSearchResultHandlers.delete(cb) }
   }
 
-  fit(force = false): void {
+  fit(force = false, why = 'unattributed'): void {
     if (!this.container || this.disposed) return
+    this.lastFitWhy = why
 
     // The renderer sizes the canvas as `cols * its own cellWidth`, so cols has
     // to be derived from that same width. Measuring independently here let the
@@ -1905,6 +1913,7 @@ export class GhosttyEngine implements TerminalEngine {
         have: `${this._cols}x${this._rows}`,
         exact,
         force,
+        why,
       })
     }
     if (c > 0 && r > 0) {
@@ -2036,7 +2045,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.needsRedraw = true
       // A new face means new cell metrics, so the grid that fit the old ones
       // no longer fills the container.
-      this.fit(true)
+      this.fit(true, 'font-changed')
     }
   }
   // The core takes its scrollback limit at construction and exposes no setter,

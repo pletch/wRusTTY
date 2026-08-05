@@ -143,18 +143,30 @@ export function scanRegions(data: Uint8Array): void {
   for (let i = 0; i + 2 < data.length; i++) {
     if (data[i] !== 0x1b || data[i + 1] !== 0x5b) continue // ESC [
     let j = i + 2
+    // A private-parameter marker (`?`) leads the alt-screen modes.
+    const priv = data[j] === 0x3f
+    if (priv) j++
     // Parameters are digits and semicolons; anything else ends the sequence.
+    const from = j
     while (j < data.length && ((data[j] >= 0x30 && data[j] <= 0x39) || data[j] === 0x3b)) j++
     if (j >= data.length) return
-    if (data[j] === 0x72) {
+    const params = new TextDecoder().decode(data.subarray(from, j))
+    if (!priv && data[j] === 0x72) {
       // 'r' — DECSTBM. No parameters at all means "reset to the full screen",
       // which is the interesting case and reads as an empty string.
-      const params = new TextDecoder().decode(data.subarray(i + 2, j))
       log('DECSTBM', { params: params === '' ? '(reset to full screen)' : params })
+    } else if (priv && (data[j] === 0x68 || data[j] === 0x6c) && ALT_SCREEN.has(params)) {
+      // The alternate screen. Leaving it restores the primary screen wholesale,
+      // which is the other way a pinned region can vanish without anyone
+      // resizing anything — a debconf prompt mid-upgrade is exactly that.
+      log('alt-screen', { mode: params, action: data[j] === 0x68 ? 'enter' : 'leave' })
     }
     i = j
   }
 }
+
+/** The modes that swap screens: the modern one, and the two it superseded. */
+const ALT_SCREEN = new Set(['1049', '1047', '47'])
 
 /**
  * Readable escapes: `ESC` spelled out, other control bytes as hex, printable

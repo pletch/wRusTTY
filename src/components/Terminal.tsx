@@ -25,6 +25,7 @@ import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import * as resizeTrace from '../lib/resizeTrace'
+import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
@@ -199,9 +200,6 @@ export function Terminal({
   onReconnect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  /** Last size actually sent to the PTY, so the trace can say whether a tab
-   *  switch delivered a real resize or a SIGWINCH for the size it already had. */
-  const lastPtySizeRef = useRef('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   /** Whether the search box was open on the previous render, so closing it can
    * hand focus back without the mount-time run of that effect doing so. */
@@ -1552,6 +1550,15 @@ export function Terminal({
     }
     container.addEventListener('keydown', onKeyDown, true)
 
+    // One per session: it holds the last size actually delivered, which is what
+    // lets a tab switch that changes nothing send nothing.
+    const ptyResize = createPtyResizeSender((cols, rows) => {
+      if (!sessionId) return
+      resizeTrace.log('pty-resize', { size: `${cols}x${rows}` })
+      resizeTrace.armCapture('pty-resize')
+      conn.resize(source, sessionId, cols, rows).catch(() => {})
+    })
+
     const onResize = () => {
       // Switching away from this tab sets its container to `display:
       // none`, collapsing it to 0x0 — which the ResizeObserver below
@@ -1573,21 +1580,16 @@ export function Terminal({
         clientH: container.clientHeight,
         pane: paneId,
       })
-      term.fit()
+      // Fitted immediately: the canvas has to track the container while the
+      // pointer is still moving, or the pane visibly lags the window.
+      term.fit?.(false, 'onResize')
       reportDimensions(term)
-      if (sessionId) {
-        // Sent unconditionally, so the remote gets a SIGWINCH on every tab
-        // switch whether or not the size changed. Whether that alone is enough
-        // to strand apt's progress bar is the open question — `sameAsLast` says
-        // which case each entry is.
-        resizeTrace.log('pty-resize', {
-          size: `${term.cols}x${term.rows}`,
-          sameAsLast: `${term.cols}x${term.rows}` === lastPtySizeRef.current,
-        })
-        lastPtySizeRef.current = `${term.cols}x${term.rows}`
-        resizeTrace.armCapture('pty-resize')
-        conn.resize(source, sessionId, term.cols, term.rows).catch(() => {})
-      }
+      // The far end, however, is told once the drag settles — see ptyResize.ts.
+      // Every intermediate size is a SIGWINCH there, and a program pinning a
+      // status line to the last row redraws it on each one, stranding the row
+      // it drew on before. A drag across five row boundaries left five stranded
+      // apt progress bars and scrolled the real output off the top.
+      if (sessionId) ptyResize.post(term.cols, term.rows)
       // Guarding against the 0x0 fit stopped the PTY-side desync, but the
       // canvas can still end up visually stale after this — most sharply
       // when a pane is dragged between tabs, since that detaches and
@@ -1671,6 +1673,7 @@ export function Terminal({
 
     return () => {
       disposed = true
+      ptyResize.cancel()
       // Before the engine goes: the scheduler may be holding a queue and a
       // pending frame callback, and draining either into a disposed terminal
       // is a write to a freed core.
