@@ -15,7 +15,8 @@ either, in increasing cost:
 | `driver.mts` | node only | engine + core behaviour. **Start here.** |
 | `/visual.html` | vite + a browser | what the renderer actually draws |
 | `/#bench` | vite + a browser | A/B benchmark harness, both engines |
-| full app | Tauri + a host | end-to-end connection work only |
+| full app | Tauri | window chrome, tab strip, dialogs — see `window.ps1` |
+| full app + host | Tauri + a host | end-to-end connection work only |
 
 Paths below are relative to the repo root.
 
@@ -95,20 +96,52 @@ Starts vite on <http://localhost:1420> and stays in the foreground. Then:
 Click into the pane before judging the cursor: an unfocused pane deliberately
 draws a hollow outline instead of the real shape.
 
-## Run: the full app (human path)
+## Run: the full app
 
 ```bash
 npm run tauri dev
 ```
 
-Opens the desktop window. Needs a host to connect to before a terminal exists,
-so it is only worth it for connection, PTY or window work. Everything else is
-faster through the driver.
+Opens the desktop window. A *terminal* needs a host, so connection and PTY work
+still needs one — but the window itself does not, and the tab strip, the title
+bar, Settings and the other dialogs are all reachable with nothing connected.
+Everything below the chrome is faster through the driver.
+
+The first build is cold Rust and takes minutes; background it and wait on the
+window rather than on the log, which npm buffers and which can stay empty the
+whole time.
+
+### Driving it (agent path)
+
+`window.ps1` does mouse input and screenshots against the real window. Run it
+from the repo root; `-X`/`-Y` are **window-relative**, so they match what you
+measure off a screenshot it just took.
+
+```powershell
+$w = '.claude/skills/run-wrustty/window.ps1'
+& $w -Action wait                     # block until the window has painted
+& $w -Action focus
+& $w -Action shot -Out shot.png       # then Read shot.png to see it
+& $w -Action click -X 1005 -Y 21      # the Settings gear, at the default size
+& $w -Action dblclick -X 335 -Y 21    # a real double-click, not a DOM event
+& $w -Action rect                     # JSON: bounds, and Maximized
+& $w -Action restore                  # un-maximize between trials
+```
+
+**Use it rather than dispatching DOM events when the behaviour under test is
+Tauri's.** Tauri injects its own listeners — the drag-region script maximizes
+the window from a raw `mousedown` with `e.detail === 2` — and `detail` is a
+platform click counter. A `new MouseEvent('mousedown', {detail: 2})` carries
+whatever you put in the init dict and proves nothing about what Windows counts
+as a double-click.
+
+`rect`'s `Maximized` is the cheapest assertion available for window-state work:
+snapshot it before the gesture and after.
 
 ## Test and check
 
 ```bash
-npx vitest run     # 906 tests
+npx vitest run     # 923 tests
 npx tsc -b
 npm run lint
 npm run build      # emits dist/index.html only; visual.html is dev-only
@@ -128,6 +161,18 @@ and cursor per cell.
 - **The harness resets its panes between trials** (RIS). A payload written to be
   looked at is gone by the time a run settles — that is what `/visual.html` is
   for. Don't add a "visual" workload to the harness; it was tried and removed.
+- **Don't trust HMR when verifying a fix in the window.** A change to a hook or
+  a document-level listener can hot-apply as a no-op and leave the old listener
+  installed, so the bug still reproduces and the fix looks wrong. This cost a
+  wrong conclusion once: kill the app and relaunch before believing a negative
+  result. HMR is fine for iterating, not for the verdict.
+- **A passing DOM-level test does not mean the window behaves.** The
+  drag-region double-click fix passed a jsdom suite and still maximized the
+  real window, because a second listener — React's `onDoubleClick`, on the
+  `dblclick` the two presses compose rather than on the presses — was never
+  modelled. When a gesture has more than one listener, prove which one fires by
+  disabling them one at a time in the running app (see
+  `src/hooks/useDragRegionDoubleClickGuard.ts`).
 - **Port 1420 fails silently.** If something already holds it, vite dies with
   `EADDRINUSE` while `curl` still returns 200 *from the other server*. Check
   `Get-NetTCPConnection -LocalPort 1420 -State Listen` before believing a launch.
@@ -173,8 +218,11 @@ Windows hits a Zig `ftruncate`/`FileTooBig` bug in the unicode table generator.
 interchangeable. `src/lib/ghostty/vendor-131/` still holds that older build,
 which is the comparison oracle the port's parity suites read and is not shipped.
 
-**A rebuild is supposed to fail `vendorIntegrity.test.ts`** — update the hash
-there and in `vendor/README.md` in the same commit as the binary.
+**A rebuild is supposed to fail `vendorIntegrity.test.ts`** — update
+`GHOSTTY_PIN` in `src/lib/ghostty/vendorPin.ts` and the block in
+`vendor/README.md` in the same commit as the binary. The pin is one constant
+because Settings' About section displays it too; the test asserts the binary,
+the pin and the README all still agree.
 
 ## Troubleshooting
 
@@ -184,6 +232,8 @@ there and in `vendor/README.md` in the same commit as the binary.
 | Harness stuck on "Booting engines… warming up…" | A run is in progress and the renderer is busy; screenshots time out. Wait ~10 s and retry. |
 | Cursor draws as a hollow box, not a bar | The pane is unfocused. Click into it. |
 | Blinking cursor shape looks absent in a screenshot | You caught the off phase. Use the steady variant (2, 4, 6). |
+| `window.ps1` says the window is not found | The app isn't up yet (`-Action wait` first), or it crashed. Note it keys off the *process*, not the window title, which changes with the active tab. |
+| A gesture through `window.ps1` does nothing | The window wasn't focused — `-Action focus` first. Co-ordinates are window-relative, and they move when the window is maximized, so re-`shot` after any state change. |
 | `driver.mts` throws `createTerminal returned 0` | The vendored `.wasm` is missing or truncated — check `src/lib/ghostty/vendor/`. |
 | `ex.ghostty_… is not a function` anywhere | Something is talking to the binary directly instead of through `wasmBindings.ts`. The shipped build speaks ghostty `main`'s ABI; `main/shim.ts` is what makes it look like ours. |
 | Zig build: `error: no field named 'prompt_start'` | You are building against the wrong Ghostty version. The patch targets v1.3.1. |
