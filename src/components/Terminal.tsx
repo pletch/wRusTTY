@@ -1490,21 +1490,28 @@ export function Terminal({
       // Ctrl+Shift+C is what every terminal binds copy to, precisely because
       // plain Ctrl+C has to stay available as SIGINT. Until now the only copy in
       // the app was copy-on-select, so turning that setting off left no way to
-      // copy at all. Runs on capture so the pane's input element never sees it —
-      // though Ctrl+Shift+C maps to no sequence anyway, so nothing reaches the
-      // wire either way.
+      // copy at all. Runs on capture so the pane's input element never sees it.
+      //
+      // That capture is now the whole of the protection, where it used to be
+      // belt and braces: this comment said Ctrl+Shift+C "maps to no sequence
+      // anyway", and since the engine's own key encoder replaced our table it
+      // does — `CSI 99;5u`, and under the Kitty protocol a program may well be
+      // listening for it. Every branch below therefore has to consume what it
+      // claims. `GhosttyInputHandler` skips any event that has been
+      // `preventDefault`ed, which is what makes that enough.
       if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
         const text = term.getSelection()
         // With no selection there is nothing to copy, and consuming the key
-        // would only mask whatever else might want it.
+        // would only mask whatever else might want it — which, now that the
+        // chord encodes, includes the program on the far end.
         if (!text) return
         e.preventDefault()
         e.stopPropagation()
         writeText(text).catch(() => {})
       } else if (
-        // The counterpart to the copy binding above, and safe for the same
-        // reason: Ctrl+Shift+V maps to no terminal sequence, so consuming it
-        // costs nothing on the wire. Plain Ctrl+V deliberately isn't bound —
+        // The counterpart to the copy binding above, and consumed the same
+        // way — see the note there about why consuming is now the point.
+        // Plain Ctrl+V deliberately isn't bound —
         // it sends ^V, which is readline's quoted-insert, and a terminal that
         // swallowed it would break entering a literal control character.
         //
@@ -1527,17 +1534,16 @@ export function Terminal({
       } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'm') {
         // Selecting with the keyboard. Ctrl+Shift+M is what Windows Terminal
         // binds mark mode to, and like the copy and paste bindings above it
-        // maps to no terminal sequence, so consuming it costs nothing on the
-        // wire. The engine owns the mode itself — this is only the way in.
+        // consumes the key rather than leaving it to the encoder. The engine
+        // owns the mode itself — this is only the way in.
         e.preventDefault()
         e.stopPropagation()
         term.toggleMarkMode?.()
       } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
         // Opening a link with the keyboard, beside mark mode's Ctrl+Shift+M so
-        // the two read as a family. Like the bindings above it maps to no
-        // terminal sequence, so consuming it costs nothing on the wire — and
-        // it is the only link gesture that works while a full-screen program
-        // is holding the mouse.
+        // the two read as a family. Consumed like the bindings above, and it
+        // is the only link gesture that works while a full-screen program is
+        // holding the mouse.
         e.preventDefault()
         e.stopPropagation()
         term.toggleHintMode?.()

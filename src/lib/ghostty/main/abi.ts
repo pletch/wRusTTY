@@ -24,11 +24,23 @@ export const GHOSTTY_SUCCESS = 0
 export const GHOSTTY_OUT_OF_MEMORY = -1
 export const GHOSTTY_INVALID_VALUE = -2
 /**
+ * The caller's buffer was too small. The call also writes the size it needed,
+ * so the recovery is to grow and repeat — see `KeyEncoder.encode`.
+ */
+export const GHOSTTY_OUT_OF_SPACE = -3
+/**
  * Returned when a lookup is well-formed but has no answer — e.g. a scrollback
  * cell asked for in viewport coordinates. Distinct from INVALID_VALUE, and the
  * difference matters: one is a bug, the other is an ordinary miss.
+ *
+ * **-4, not -3.** It was transcribed as -3 here until the key encoder needed
+ * `OUT_OF_SPACE`, which is what -3 actually is. Nothing had gone wrong yet
+ * because nothing compared against it — the constant was declared and never
+ * read — but a `!== GHOSTTY_NO_VALUE` test would have treated a too-small
+ * buffer as a missing value, and that reads as an empty answer rather than as
+ * an error.
  */
-export const GHOSTTY_NO_VALUE = -3
+export const GHOSTTY_NO_VALUE = -4
 
 /* -------------------------------------------------------------------------- */
 /* Points and grid references                                                  */
@@ -485,6 +497,32 @@ export interface GhosttyMainExports {
   /** Takes the packed cell **by value** — an i64 argument, so pass a BigInt. */
   ghostty_cell_get(cell: bigint, key: number, out: number): number
   ghostty_row_get(row: bigint, key: number, out: number): number
+
+  /* key encoding — see `keyAbi.ts` and `../KeyEncoder.ts`.
+   *
+   * These have no counterpart in our 83-export ABI and are therefore reached
+   * directly rather than through the shim: there is nothing on the v1.3.1
+   * build for it to shim them *to*. `KeyEncoder.create` checks for them and
+   * says so plainly if they are missing. */
+  ghostty_key_event_new(alloc: number, slot: number): number
+  ghostty_key_event_free(event: number): void
+  ghostty_key_event_set_action(event: number, action: number): void
+  ghostty_key_event_set_key(event: number, key: number): void
+  ghostty_key_event_set_mods(event: number, mods: number): void
+  ghostty_key_event_set_consumed_mods(event: number, mods: number): void
+  ghostty_key_event_set_composing(event: number, composing: number): void
+  /** The text does **not** become the event's to own; the buffer must outlive
+   *  every `encode` that reads it. */
+  ghostty_key_event_set_utf8(event: number, ptr: number, len: number): void
+  ghostty_key_event_set_unshifted_codepoint(event: number, codepoint: number): void
+  ghostty_key_encoder_new(alloc: number, slot: number): number
+  ghostty_key_encoder_free(encoder: number): void
+  /** `value` is a *pointer* to the value, whose type depends on the option. */
+  ghostty_key_encoder_setopt(encoder: number, option: number, value: number): void
+  ghostty_key_encoder_setopt_from_terminal(encoder: number, term: number): void
+  /** Writes the byte count to `outLen` even when it returns `OUT_OF_SPACE`,
+   *  in which case that count is the buffer size required. */
+  ghostty_key_encoder_encode(encoder: number, event: number, out: number, outSize: number, outLen: number): number
 }
 
 /** Throws on any non-success result, naming the call. */

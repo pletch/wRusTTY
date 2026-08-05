@@ -27,7 +27,6 @@ import {
   readResponse,
   parseCellInto,
   emptyCell,
-  MODE_APP_CURSOR_KEYS,
   MODE_BRACKETED_PASTE,
   MODE_FOCUS_REPORTING,
   allocBufferOrThrow,
@@ -39,6 +38,7 @@ import {
   CURSOR_STYLE_UNDERLINE,
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
+import { KeyEncoder } from './KeyEncoder'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
 // `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
@@ -224,7 +224,14 @@ export class GhosttyEngine implements TerminalEngine {
   private onInputHandlers = new Set<(data: string) => void>()
   private onResizeHandlers = new Set<(size: { cols: number; rows: number }) => void>()
   private inputHandler: GhosttyInputHandler | null = null
-  
+  /**
+   * Ghostty's own key encoder, over this pane's terminal. Made with the
+   * terminal and freed with it, because it holds a pointer to it — and it is
+   * the terminal it reads the active keyboard protocol from on every
+   * keystroke, so the two cannot outlive each other.
+   */
+  private keyEncoder: KeyEncoder | null = null
+
   /** Writes that arrived before the core finished loading. Bytes only: every
    *  write is converted to bytes up front (see write). */
   private writeBuffer: Uint8Array[] = []
@@ -518,6 +525,13 @@ export class GhosttyEngine implements TerminalEngine {
         this.failInit('Ghostty could not allocate a terminal.')
         return
       }
+
+      // Before the buffered writes below: those writes can carry the very
+      // sequence that turns the Kitty protocol on, and an encoder made
+      // afterwards would be reading a terminal whose state had already moved.
+      // (It reads that state per keystroke, so this is belt and braces — but
+      // the ordering is free and the alternative is a rule to remember.)
+      this.keyEncoder = KeyEncoder.create(this.wasm, this.termPtr)
 
       // Before the buffered writes below, so a shape the connection itself sets
       // in its first bytes wins over the preference rather than being undone by
@@ -1456,11 +1470,7 @@ export class GhosttyEngine implements TerminalEngine {
       for (const handler of this.onInputHandlers) {
         handler(str)
       }
-    }, () => {
-      return this.wasm
-        ? this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_APP_CURSOR_KEYS, 0) !== 0
-        : false
-    })
+    }, () => this.keyEncoder)
     // Focus now lives on the input handler's element, so that is what the pane
     // has to watch to know whether it is the one being typed into.
     this.inputHandler.element.addEventListener('focus', this.onFocus)
@@ -1505,6 +1515,11 @@ export class GhosttyEngine implements TerminalEngine {
     // core's page memory for the terminal's whole scrollback budget on every
     // closed pane.
     if (this.wasm && this.termPtr) {
+      // The encoder first: it holds this terminal's pointer, and freeing the
+      // terminal out from under it would leave a live object pointing at
+      // released memory.
+      this.keyEncoder?.dispose()
+      this.keyEncoder = null
       this.wasm.exports.ghostty_terminal_free(this.termPtr)
       this.termPtr = 0
     }

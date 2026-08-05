@@ -10,30 +10,44 @@
  * layout reports `key: "Dead"` and then hands the accented character over the
  * same way. Both were dropped on the floor.
  *
- * So printable text is taken from `input`/`compositionend`, and keydown is left
- * to handle only what has no textual form — control combinations, named keys,
- * and Alt-modified keys, which Windows does not deliver as input at all. The
+ * So there are two paths, and this file is the arbitration between them. Text
+ * that the browser composes arrives through `input`/`compositionend`;
+ * everything else is handed to the engine's own key encoder
+ * (`KeyEncoder.ts`), which decides both what bytes a key produces and which
+ * protocol — legacy, `modifyOtherKeys`, or Kitty — it produces them in. The
  * two paths cannot double up: whatever keydown claims, it also cancels, and a
  * cancelled keydown produces no input event.
+ *
+ * The encoder decides *whether* it claims a key, too. It answers null for a
+ * key that has no sequence, and that null is what lets the browser's text
+ * path deliver characters keydown has no business inventing.
  */
+import type { KeyEncoder } from './KeyEncoder'
+
 export class GhosttyInputHandler {
   private container: HTMLElement
   /** Focus lives here, not on the canvas — see the note above. */
   readonly element: HTMLTextAreaElement
   private onData: (data: Uint8Array) => void
   private encoder = new TextEncoder()
-  private isAppCursorKeys: () => boolean
-  private backspaceBehavior: 'delete' | 'backspace' = 'delete'
+  /**
+   * Null until the pane's WASM instance is up, which is a few milliseconds
+   * after mount. Keys pressed in that window produce no sequence — text still
+   * goes out through the `input` path, since nothing cancels it — and the
+   * alternative was a queue whose only customer is somebody typing Ctrl+C at
+   * a terminal that has not drawn yet.
+   */
+  private keyEncoder: () => KeyEncoder | null
   private composing = false
 
   constructor(
     container: HTMLElement,
     onData: (data: Uint8Array) => void,
-    isAppCursorKeys: () => boolean = () => false
+    keyEncoder: () => KeyEncoder | null = () => null
   ) {
     this.container = container
     this.onData = onData
-    this.isAppCursorKeys = isAppCursorKeys
+    this.keyEncoder = keyEncoder
 
     const ta = document.createElement('textarea')
     ta.setAttribute('aria-label', 'Terminal input')
@@ -69,14 +83,14 @@ export class GhosttyInputHandler {
     container.appendChild(ta)
 
     ta.addEventListener('keydown', this.handleKeyDown)
+    // Releases matter only under the Kitty protocol, and only when the far end
+    // has asked for them. Asking the encoder is how that is discovered: it
+    // answers null for every release until an application sets the flag.
+    ta.addEventListener('keyup', this.handleKeyUp)
     ta.addEventListener('compositionstart', this.handleCompositionStart)
     ta.addEventListener('compositionend', this.handleCompositionEnd)
     ta.addEventListener('input', this.handleInput)
     ta.addEventListener('blur', this.handleBlur)
-  }
-
-  setBackspaceBehavior(behavior: 'delete' | 'backspace') {
-    this.backspaceBehavior = behavior
   }
 
   focus() {
@@ -133,6 +147,7 @@ export class GhosttyInputHandler {
 
   dispose() {
     this.element.removeEventListener('keydown', this.handleKeyDown)
+    this.element.removeEventListener('keyup', this.handleKeyUp)
     this.element.removeEventListener('compositionstart', this.handleCompositionStart)
     this.element.removeEventListener('compositionend', this.handleCompositionEnd)
     this.element.removeEventListener('input', this.handleInput)
@@ -172,85 +187,61 @@ export class GhosttyInputHandler {
     this.element.value = ''
   }
 
+  /**
+   * Whether this event is the engine's to encode at all.
+   *
+   * Three things get first refusal, and each is a case where sending bytes
+   * would be actively wrong rather than merely unhelpful:
+   *
+   * - **An event the app already claimed.** Every in-app binding — copy,
+   *   paste, search, mark mode, the tab shortcuts in `App.tsx` — runs on a
+   *   capture listener above this element and calls `preventDefault`. Testing
+   *   for that here is what keeps the two sets from having to know about each
+   *   other. It matters more than it used to: those handlers were written
+   *   against a keyboard that mapped Ctrl+Shift+C to nothing, and the encoder
+   *   maps it to `^C`, so "consuming it costs nothing on the wire" is no
+   *   longer true and this is what makes it true again.
+   * - **A Super chord.** Win+L, Win+D and the rest belong to the OS, and a
+   *   terminal that encoded them would be reporting keys the user never gave
+   *   it.
+   * - **An IME's key.** 229 is the placeholder keycode browsers report while
+   *   a composition is active, and some omit `isComposing` on the first key
+   *   of one.
+   */
+  private isOurs(e: KeyboardEvent): boolean {
+    if (e.defaultPrevented) return false
+    if (e.metaKey) return false
+    if (e.isComposing || e.keyCode === 229) return false
+    return true
+  }
+
   private handleKeyDown = (e: KeyboardEvent) => {
-    // Avoid interfering with browser shortcuts
-    if (e.metaKey && e.key !== 'v' && e.key !== 'c') return;
+    if (!this.isOurs(e)) return
+    const bytes = this.keyEncoder()?.encode(e)
+    // No sequence: a bare modifier, a key the encoder has no opinion on, or
+    // one whose character the browser is about to deliver as text. Leaving the
+    // event alone is what lets that text arrive — cancelling it here is
+    // precisely what used to lose composed characters.
+    if (!bytes) return
+    e.preventDefault()
+    e.stopPropagation()
+    this.onData(bytes)
+  }
 
-    // A key that is feeding an IME belongs to the composition, not to us. 229
-    // is the placeholder keycode browsers report while one is active, and some
-    // of them omit isComposing on the first key of a composition.
-    if (e.isComposing || e.keyCode === 229) return;
-
-    let seq = '';
-    const alt = e.altKey ? '\x1b' : '';
-
-    // Calculate modifier mask for CSI sequences (1 + Shift*1 + Alt*2 + Ctrl*4)
-    let modifier = 1;
-    if (e.shiftKey) modifier += 1;
-    if (e.altKey) modifier += 2;
-    if (e.ctrlKey) modifier += 4;
-    const modStr = modifier > 1 ? `;${modifier}` : '';
-
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.length === 1) {
-      // Basic ctrl mapping (a-z, [, ], \, ^, _)
-      const k = e.key.toLowerCase();
-      if (k >= 'a' && k <= 'z') {
-        seq = String.fromCharCode(k.charCodeAt(0) - 96);
-      } else if (k === '[') seq = '\x1b';
-      else if (k === '\\') seq = '\x1c';
-      else if (k === ']') seq = '\x1d';
-      else if (k === '^') seq = '\x1e';
-      else if (k === '_') seq = '\x1f';
-      else if (k === ' ') seq = '\x00';
-    } else {
-      const appCursor = this.isAppCursorKeys() && modifier === 1;
-      switch (e.key) {
-        case 'Enter': seq = alt + '\r'; break;
-        case 'Backspace':
-          seq = alt + (this.backspaceBehavior === 'delete' ? '\x7f' : '\x08');
-          break;
-        case 'Tab':
-          if (e.shiftKey) seq = '\x1b[Z';
-          else seq = alt + '\t';
-          break;
-        case 'Escape': seq = '\x1b'; break;
-        case 'ArrowUp': seq = modifier > 1 ? `\x1b[1${modStr}A` : (appCursor ? '\x1bOA' : '\x1b[A'); break;
-        case 'ArrowDown': seq = modifier > 1 ? `\x1b[1${modStr}B` : (appCursor ? '\x1bOB' : '\x1b[B'); break;
-        case 'ArrowRight': seq = modifier > 1 ? `\x1b[1${modStr}C` : (appCursor ? '\x1bOC' : '\x1b[C'); break;
-        case 'ArrowLeft': seq = modifier > 1 ? `\x1b[1${modStr}D` : (appCursor ? '\x1bOD' : '\x1b[D'); break;
-        case 'Home': seq = modifier > 1 ? `\x1b[1${modStr}H` : (appCursor ? '\x1bOH' : '\x1b[H'); break;
-        case 'End': seq = modifier > 1 ? `\x1b[1${modStr}F` : (appCursor ? '\x1bOF' : '\x1b[F'); break;
-        case 'PageUp': seq = `\x1b[5${modStr}~`; break;
-        case 'PageDown': seq = `\x1b[6${modStr}~`; break;
-        case 'Insert': seq = `\x1b[2${modStr}~`; break;
-        case 'Delete': seq = `\x1b[3${modStr}~`; break;
-        case 'F1': seq = modifier > 1 ? `\x1b[1${modStr}P` : '\x1bOP'; break;
-        case 'F2': seq = modifier > 1 ? `\x1b[1${modStr}Q` : '\x1bOQ'; break;
-        case 'F3': seq = modifier > 1 ? `\x1b[1${modStr}R` : '\x1bOR'; break;
-        case 'F4': seq = modifier > 1 ? `\x1b[1${modStr}S` : '\x1bOS'; break;
-        case 'F5': seq = `\x1b[15${modStr}~`; break;
-        case 'F6': seq = `\x1b[17${modStr}~`; break;
-        case 'F7': seq = `\x1b[18${modStr}~`; break;
-        case 'F8': seq = `\x1b[19${modStr}~`; break;
-        case 'F9': seq = `\x1b[20${modStr}~`; break;
-        case 'F10': seq = `\x1b[21${modStr}~`; break;
-        case 'F11': seq = `\x1b[23${modStr}~`; break;
-        case 'F12': seq = `\x1b[24${modStr}~`; break;
-        default:
-          // Alt-modified printable keys only. Windows does not deliver these as
-          // text input, so keydown is the only place they exist — but plain
-          // printable keys are deliberately left alone, because taking them
-          // here is what stopped composed characters from ever arriving.
-          if (e.key.length === 1 && e.altKey && !e.ctrlKey && !e.metaKey) {
-            seq = alt + e.key;
-          }
-      }
-    }
-
-    if (seq) {
-      e.preventDefault();
-      e.stopPropagation();
-      this.onData(this.encoder.encode(seq));
-    }
-  };
+  /**
+   * Key releases, which encode to nothing at all unless the far end has asked
+   * for them with the Kitty protocol's `report events` flag. There is no test
+   * for that flag here on purpose: the encoder holds the terminal's state and
+   * answers null while it is off, so this stays correct through an
+   * application setting and clearing it mid-session.
+   *
+   * Not cancelled even when it does produce bytes — a release has no default
+   * action worth suppressing, and cancelling one has been known to confuse
+   * IMEs.
+   */
+  private handleKeyUp = (e: KeyboardEvent) => {
+    if (!this.isOurs(e)) return
+    const bytes = this.keyEncoder()?.encode(e)
+    if (bytes) this.onData(bytes)
+  }
 }

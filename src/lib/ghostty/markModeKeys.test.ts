@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
@@ -11,10 +14,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
  * in the capture phase, the input handler on the textarea inside it — and
  * nothing about that ordering is visible from either file alone.
  *
- * The core is deliberately absent, as in the drag tests: the renderer is stubbed
- * to the members the selection path uses, which is what lets this run without
- * WebGL or WASM.
+ * The renderer is stubbed to the members the selection path uses, which is what
+ * lets this run without WebGL.
+ *
+ * **The core is not stubbed, and used not to be here at all.** Keyboard
+ * encoding is the engine's now (`KeyEncoder.ts`), so an arrow key that reaches
+ * the wire only does so because a real terminal was there to encode it against
+ * — a coreless pane sends nothing at all, and every assertion below would pass
+ * for the wrong reason. So the binary is served through the `fetch` the engine
+ * uses to load it, and `mounted` waits for it.
  */
+
+const here = dirname(fileURLToPath(import.meta.url))
+const WASM = readFileSync(join(here, 'vendor/ghostty-vt.wasm'))
 
 const CELL = { width: 10, height: 20 }
 
@@ -27,15 +39,28 @@ async function mounted() {
   document.body.appendChild(container)
   engine.mount(container)
 
-  const inner = engine as unknown as { renderer: unknown }
+  // The core loads asynchronously from the constructor. Waiting on the pointer
+  // rather than on a timer: it is the thing the encoder is built from, and it
+  // appears in the same turn as the encoder does.
+  const inner = engine as unknown as { renderer: unknown; termPtr: number }
+  for (let i = 0; i < 200 && inner.termPtr === 0; i++) await new Promise((r) => setTimeout(r, 5))
+  if (inner.termPtr === 0) throw new Error('the core never came up')
+
+  // After the wait: setting up the real renderer is what fails in jsdom (there
+  // is no WebGL), and the engine reports that failure rather than throwing, so
+  // this replaces it exactly as it did when there was no core at all.
   inner.renderer = { selection: null as Sel | null, getCellSize: () => CELL, dispose: () => {} }
 
   const sent: string[] = []
   engine.onData((d) => sent.push(d))
 
   const input = container.querySelector('textarea')!
+  // `code` as well as `key`: the encoder identifies the physical key from it,
+  // and for every key this file presses the two happen to be spelled the same.
   const press = (key: string, mods: KeyboardEventInit = {}) =>
-    input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, ...mods }))
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, code: key, ...mods }),
+    )
   const selection = () => (inner.renderer as { selection: Sel | null }).selection
 
   return { engine, container, sent, press, selection }
@@ -43,9 +68,9 @@ async function mounted() {
 
 beforeEach(() => {
   vi.stubGlobal('fetch', async () => ({
-    ok: false,
-    status: 404,
-    arrayBuffer: async () => new ArrayBuffer(0),
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => WASM.buffer.slice(WASM.byteOffset, WASM.byteOffset + WASM.byteLength),
   }))
 })
 afterEach(() => {

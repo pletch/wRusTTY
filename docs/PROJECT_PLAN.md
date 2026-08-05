@@ -228,6 +228,16 @@ mosh, RDP) means adding a crate, not touching the UI.
 - Named colour themes **(partial — five built in, and a per-pane background
   opacity; importing iTerm/VS Code schemes and following the OS light/dark
   setting are not built)**
+- **Keyboard encoding — the engine's, not ours** (`lib/ghostty/KeyEncoder.ts`).
+  Legacy xterm, xterm's `modifyOtherKeys` and the **Kitty keyboard protocol**
+  all ship, because Ghostty's own key encoder is wrapped rather than
+  reimplemented, and it picks between them from the modes the *far end* has
+  set. So a program that asks for the Kitty protocol with `CSI > flags u` gets
+  it, including key-release reporting, and gets legacy encoding back when it
+  pops its flags. This replaced a hand-rolled table that sent **nothing at
+  all** for Ctrl+Alt and Ctrl+Shift chords and had no Ctrl+digit or
+  Ctrl+Space. Not a setting and deliberately not one: the protocol in force is
+  the application's business, not a preference.
 - Configurable keyboard shortcuts — **not built**; every binding is hard-coded
   in `Terminal.tsx` and `App.tsx`
 - Duplicate tab / reconnect / "restart session" actions **(shipped — the tab

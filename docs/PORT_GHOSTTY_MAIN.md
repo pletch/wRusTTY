@@ -295,6 +295,28 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
       `scrollbackLimit.test.ts` would have noticed: the setting is a byte budget
       and every symptom of getting it wrong is silent.
 
+### What reaches past the shim
+
+The key encoder (`lib/ghostty/KeyEncoder.ts`, constants in `main/keyAbi.ts`).
+It is the one thing in the app that talks to `main`'s exports directly rather
+than through `GhosttyExports`, and the reason is structural rather than
+laziness: the shim's job is to present *our* 83-export ABI over main's 202, and
+our ABI has no key encoding in it at all — there is nothing on the v1.3.1 build
+for it to be shimmed *to*. Adding it to `GhosttyExports` would mean inventing
+an export that only one of the two implementations could ever answer, which is
+exactly the shape the shim exists to avoid.
+
+So `KeyEncoder.create` reads `wasm.instance.exports`, checks the encoder is
+there, and returns null if it is not. Null means a pane with no control keys,
+which only the oracle build can produce and no user can reach.
+
+That surface is 14 exports (`ghostty_key_event_*`, `ghostty_key_encoder_*`),
+declared on `GhosttyMainExports` with the same rule as the rest of that
+interface: listed because there is a use for it and the signature has been
+checked. `ghostty_mouse_encoder_*` and `ghostty_paste_encode` are the obvious
+next candidates — `MouseReporter.ts` and the bracketed-paste path are still
+hand-rolled, and the same argument applies to both.
+
 ### Left open
 
 - **Two exports the app no longer needs.** `render_state_is_row_dirty` has no
