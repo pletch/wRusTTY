@@ -238,6 +238,17 @@ mosh, RDP) means adding a crate, not touching the UI.
   all** for Ctrl+Alt and Ctrl+Shift chords and had no Ctrl+digit or
   Ctrl+Space. Not a setting and deliberately not one: the protocol in force is
   the application's business, not a preference.
+- **Mouse reporting — the engine's too** (`lib/ghostty/MouseEncoder.ts`). All
+  five tracking modes (X10, normal, button, any) and all five wire formats
+  (X10, UTF-8, urxvt, SGR, **SGR-pixels**) ship, for the same reason and on the
+  same terms: Ghostty's encoder is wrapped, and it reads which of them applies
+  from the modes the far end set. This replaced hand-rolled reporting that
+  covered two formats and three modes, sent releases and drags into X10 (which
+  is press-only), and could not express pixel coordinates at all because it
+  only ever knew which *cell* the pointer was in. What stays ours is the
+  policy no encoder can know: which button is held, and dropping motion that
+  has not left its cell — except under SGR-pixels, where that motion is the
+  point.
 - Configurable keyboard shortcuts — **not built**; every binding is hard-coded
   in `Terminal.tsx` and `App.tsx`
 - Duplicate tab / reconnect / "restart session" actions **(shipped — the tab

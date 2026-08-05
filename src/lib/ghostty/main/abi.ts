@@ -523,6 +523,31 @@ export interface GhosttyMainExports {
   /** Writes the byte count to `outLen` even when it returns `OUT_OF_SPACE`,
    *  in which case that count is the buffer size required. */
   ghostty_key_encoder_encode(encoder: number, event: number, out: number, outSize: number, outLen: number): number
+
+  ghostty_mouse_event_new(alloc: number, slot: number): number
+  ghostty_mouse_event_free(event: number): void
+  ghostty_mouse_event_set_action(event: number, action: number): void
+  ghostty_mouse_event_set_button(event: number, button: number): void
+  /** "No button", which is what a motion event with nothing held carries.
+   *  Distinct from button 0 — there is no button 0. */
+  ghostty_mouse_event_clear_button(event: number): void
+  ghostty_mouse_event_set_mods(event: number, mods: number): void
+  /** `position` is a *pointer* to a `GhosttyMousePosition` — two `f32` in
+   *  surface pixels. The header passes the struct by value; on wasm32 that
+   *  lowers to a pointer, which the binary's signature confirms. */
+  ghostty_mouse_event_set_position(event: number, position: number): void
+  ghostty_mouse_encoder_new(alloc: number, slot: number): number
+  ghostty_mouse_encoder_free(encoder: number): void
+  /** `value` is a *pointer* to the value, whose type depends on the option. */
+  ghostty_mouse_encoder_setopt(encoder: number, option: number, value: number): void
+  /** Sets the tracking mode and the output format from the terminal. It does
+   *  *not* touch the surface geometry or the any-button flag, so those have to
+   *  be set separately and survive this call. */
+  ghostty_mouse_encoder_setopt_from_terminal(encoder: number, term: number): void
+  ghostty_mouse_encoder_reset(encoder: number): void
+  /** Writes the byte count to `outLen` even when it returns `OUT_OF_SPACE`,
+   *  in which case that count is the buffer size required. */
+  ghostty_mouse_encoder_encode(encoder: number, event: number, out: number, outSize: number, outLen: number): number
 }
 
 /** Throws on any non-success result, naming the call. */

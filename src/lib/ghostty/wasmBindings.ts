@@ -65,12 +65,20 @@ export const MODE_BRACKETED_PASTE = 2004
 
 /**
  * Mouse reporting. `ghostty_terminal_has_mouse_tracking` answers "is anything
- * being reported at all", which is the cheap gate; these say what to report and
- * how to encode it, and have to be queried separately.
+ * being reported at all", which is the cheap gate for deciding between
+ * reporting and selecting.
+ *
+ * There used to be three more constants here — 1002, 1003 and 1006 — because
+ * this app decided for itself which events to report and in which format.
+ * `MouseEncoder` reads all of that from the terminal now, so the modes are no
+ * longer anyone's business out here.
+ *
+ * DEC 1016 is the exception, and only because it changes how *often* a report
+ * is worth sending rather than what one says: it carries pixel coordinates,
+ * so a move within a single cell — which says nothing new under every other
+ * format, and which `MouseReporter` therefore drops — is the whole point.
  */
-export const MODE_MOUSE_BUTTON_EVENT = 1002 // also report drags
-export const MODE_MOUSE_ANY_EVENT = 1003 // report motion with no button down
-export const MODE_MOUSE_SGR = 1006 // CSI < b ; x ; y M/m instead of the 1-byte form
+export const MODE_MOUSE_SGR_PIXELS = 1016
 
 /** DEC 1004: report CSI I / CSI O when the terminal gains or loses focus. */
 export const MODE_FOCUS_REPORTING = 1004

@@ -6,7 +6,8 @@ import {
   type TerminalEngine,
 } from '../terminalEngine'
 import { SearchController } from './SearchController'
-import { MouseReporter } from './MouseReporter'
+import { MouseReporter, type MousePoint } from './MouseReporter'
+import { MouseEncoder } from './MouseEncoder'
 import { SelectionController } from './SelectionController'
 import { MarkModeController } from './MarkModeController'
 import { LinkController, type Link } from './LinkController'
@@ -29,6 +30,7 @@ import {
   emptyCell,
   MODE_BRACKETED_PASTE,
   MODE_FOCUS_REPORTING,
+  MODE_MOUSE_SGR_PIXELS,
   allocBufferOrThrow,
   GhosttyOutOfMemoryError,
   type GhosttyWasm,
@@ -232,6 +234,14 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private keyEncoder: KeyEncoder | null = null
 
+  /**
+   * Ghostty's own mouse encoder, on the same terms as the key one: made with
+   * the terminal, freed with it, and reading the tracking mode and wire format
+   * from it on every event. Unlike the key encoder it also needs the rendered
+   * geometry, which is not terminal state — see `syncMouseSurface`.
+   */
+  private mouseEncoder: MouseEncoder | null = null
+
   /** Writes that arrived before the core finished loading. Bytes only: every
    *  write is converted to bytes up front (see write). */
   private writeBuffer: Uint8Array[] = []
@@ -362,10 +372,12 @@ export class GhosttyEngine implements TerminalEngine {
     // below stay live rather than being snapshotted here.
     this.mouse = new MouseReporter({
       tracking: () => this.mouseTracking(),
-      mode: (mode) => this.mouseMode(mode),
-      coords: (e) => this.viewportCoords(e),
-      send: (seq) => {
-        for (const h of this.onDataHandlers) h(seq)
+      at: (e) => this.pointerAt(e),
+      encoder: () => this.mouseEncoder,
+      pixelReporting: () => this.mouseMode(MODE_MOUSE_SGR_PIXELS),
+      send: (bytes) => {
+        const str = new TextDecoder().decode(bytes)
+        for (const h of this.onDataHandlers) h(str)
       },
     })
     this.selection = new SelectionController({
@@ -532,6 +544,11 @@ export class GhosttyEngine implements TerminalEngine {
       // (It reads that state per keystroke, so this is belt and braces — but
       // the ordering is free and the alternative is a rule to remember.)
       this.keyEncoder = KeyEncoder.create(this.wasm, this.termPtr)
+      this.mouseEncoder = MouseEncoder.create(this.wasm, this.termPtr)
+      // The renderer may already be up (mount runs before this when the module
+      // is warm), in which case the geometry is knowable now; if it is not,
+      // setupRenderer does this instead.
+      this.syncMouseSurface()
 
       // Before the buffered writes below, so a shape the connection itself sets
       // in its first bytes wins over the preference rather than being undone by
@@ -960,16 +977,50 @@ export class GhosttyEngine implements TerminalEngine {
     return !!this.wasm && this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, mode, 0) !== 0
   }
 
-  /** Cell under the pointer, 1-based, as mouse reports are numbered. */
-  private viewportCoords(e: MouseEvent): { col: number; row: number } {
-    if (!this.canvas || !this.renderer) return { col: 1, row: 1 }
+  /**
+   * Where the pointer is, for mouse reporting: surface pixels, plus the cell
+   * they fall in.
+   *
+   * The pixels are clamped into the surface rather than passed through. A
+   * drag that has left the pane still reports — against the edge cell, which
+   * is what every terminal does and what the selection code alongside this
+   * already assumes — and an unclamped position outside the surface encodes
+   * to nothing at all, so the drag would simply go quiet.
+   *
+   * The canvas is the whole surface here: it is sized to the grid, so there
+   * is no padding to describe and the two origins coincide.
+   */
+  /**
+   * Hands the encoder the rendered geometry it converts pixel positions
+   * against. Called wherever that geometry can change — the core coming up,
+   * the renderer being set up, and every resize.
+   *
+   * No padding: the canvas is sized to the grid, so the surface and the grid
+   * share an origin. If a pane ever grows a gutter, that is the number to fill
+   * in here rather than to subtract at the call sites.
+   */
+  private syncMouseSurface(): void {
+    if (!this.mouseEncoder || !this.renderer) return
+    const cell = this.renderer.getCellSize()
+    this.mouseEncoder.setSurface({
+      screenWidth: this._cols * cell.width,
+      screenHeight: this._rows * cell.height,
+      cellWidth: cell.width,
+      cellHeight: cell.height,
+    })
+  }
+
+  private pointerAt(e: MouseEvent): MousePoint | null {
+    if (!this.canvas || !this.renderer) return null
     const rect = this.canvas.getBoundingClientRect()
     const size = this.renderer.getCellSize()
-    const col = Math.floor((e.clientX - rect.left) / size.width)
-    const row = Math.floor((e.clientY - rect.top) / size.height)
+    const x = Math.max(0, Math.min(e.clientX - rect.left, this._cols * size.width - 1))
+    const y = Math.max(0, Math.min(e.clientY - rect.top, this._rows * size.height - 1))
     return {
-      col: Math.max(0, Math.min(col, this._cols - 1)) + 1,
-      row: Math.max(0, Math.min(row, this._rows - 1)) + 1,
+      x,
+      y,
+      col: Math.floor(x / size.width) + 1,
+      row: Math.floor(y / size.height) + 1,
     }
   }
 
@@ -1324,7 +1375,14 @@ export class GhosttyEngine implements TerminalEngine {
       // which is how less and htop page without a scrollback of their own.
       if (this.mouse.tracking() && !e.shiftKey) {
         e.preventDefault()
-        this.mouse.reportWheel(e, e.deltaY < 0)
+        // Whichever axis the gesture is mostly on. A trackpad reports both at
+        // once, and a program that asked for the mouse is entitled to the
+        // horizontal one — the encoder has had buttons for it all along.
+        if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+          this.mouse.reportWheelHorizontal(e, e.deltaX < 0)
+        } else {
+          this.mouse.reportWheel(e, e.deltaY < 0)
+        }
         return
       }
       // There is no scrollback to move through on the alternate screen, so the
@@ -1518,6 +1576,8 @@ export class GhosttyEngine implements TerminalEngine {
       // The encoder first: it holds this terminal's pointer, and freeing the
       // terminal out from under it would leave a live object pointing at
       // released memory.
+      this.mouseEncoder?.dispose()
+      this.mouseEncoder = null
       this.keyEncoder?.dispose()
       this.keyEncoder = null
       this.wasm.exports.ghostty_terminal_free(this.termPtr)
@@ -1564,7 +1624,11 @@ export class GhosttyEngine implements TerminalEngine {
     if (this.renderer) {
       this.renderer.resize(cols, rows, force)
     }
-    
+    // After the renderer, whose cell size is what this reads. A stale surface
+    // reports the wrong cell for every event, which is the kind of wrong that
+    // looks like the program misbehaving rather than the terminal.
+    this.syncMouseSurface()
+
     for (const handler of this.onResizeHandlers) {
       handler({ cols, rows })
     }
