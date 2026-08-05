@@ -103,6 +103,36 @@ describe('paste, through the engine', () => {
     engine.unmount()
   })
 
+  describe('the ^H setting', () => {
+    it('rewrites a Backspace keystroke', async () => {
+      const { engine, data } = await mounted()
+      engine.setBackspaceSendsCtrlH(true)
+      const ta = document.querySelector('textarea')!
+      ta.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Backspace',
+          code: 'Backspace',
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+      // The whole point of the setting, and the reason it cannot simply be
+      // dropped: hosts that want ^H still have to get it.
+      expect(data).toEqual(['\b'])
+      engine.unmount()
+    })
+
+    it('leaves a pasted DEL alone, because the encoder already handled it', async () => {
+      const { engine, data } = await mounted()
+      engine.setBackspaceSendsCtrlH(true)
+      // The paste encoder replaces DEL with a space before this could ever
+      // see it, so a paste is never a route for the translation to reach.
+      engine.paste('a\x7fb')
+      expect(data).toEqual(['a b'])
+      engine.unmount()
+    })
+  })
+
   describe('isPasteSafe', () => {
     it('answers for ordinary and for dangerous text', async () => {
       const { engine } = await mounted()

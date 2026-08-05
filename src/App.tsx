@@ -1287,7 +1287,14 @@ function App() {
                 workspaces={savedWorkspaces}
                 onOpenWorkspace={(w) => openWorkspace(w, tab.id)}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
-                onConnect={(paneId, config, logSession) => connectPane(tab.id, paneId, config, logSession)}
+                // `paneOptions` carries the connect dialog's "Backspace key
+                // sends" choice. Dropping it here — which this did — left the
+                // setting with no effect on any connection made through the
+                // dialog; only panes restored from a saved profile got it,
+                // because those read it from the profile instead.
+                onConnect={(paneId, config, logSession, paneOptions) =>
+                  connectPane(tab.id, paneId, config, logSession, paneOptions)
+                }
                 onSelectSession={(paneId, profile) => connectPaneFromProfile(tab.id, paneId, profile)}
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}

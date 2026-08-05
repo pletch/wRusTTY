@@ -214,6 +214,23 @@ describe('mouse reporting, from the canvas to the wire', () => {
     engine.unmount()
   })
 
+  it('does not let the ^H setting rewrite a click on column 95', async () => {
+    const { engine, down } = await mounted()
+    engine.resize(200, 24, true)
+    // The session says its host wants ^H for Backspace.
+    engine.setBackspaceSendsCtrlH(true)
+    const raw: Uint8Array[] = []
+    engine.onData((d) => raw.push(d))
+    engine.write('\x1b[?1000h')
+    // Column 95 encodes as 32 + 95 = 0x7f, which is DEL. Translating the
+    // whole output channel — which is where this used to happen — turned it
+    // into 0x08 and reported the click as column 8. The translation belongs
+    // on keystrokes, where a 0x7f really is a Backspace.
+    down(945, 25)
+    expect([...raw[0]]).toEqual([0x1b, 0x5b, 0x4d, 0x20, 0x7f, 0x20 + 2])
+    engine.unmount()
+  })
+
   it('leaves the mouse to the terminal while shift is held', async () => {
     const { engine, sent, down } = await mounted()
     engine.write('\x1b[?1000h\x1b[?1006h')

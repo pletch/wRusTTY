@@ -57,6 +57,14 @@ export interface TerminalEngine {
    * to counting lines, which is the part of the rule that is obvious.
    */
   isPasteSafe?(text: string): boolean | null
+  /**
+   * Whether Backspace should send `^H` instead of `^?` for this session.
+   *
+   * The engine's job rather than the caller's, because only the engine can
+   * tell a keystroke from the rest of what leaves a pane. Applied downstream
+   * of that split it also rewrites mouse reports, where 0x7f is column 95.
+   */
+  setBackspaceSendsCtrlH?(enabled: boolean | null | undefined): void
 
   getSelection(): string
   onSelectionChange(cb: () => void): IDisposable

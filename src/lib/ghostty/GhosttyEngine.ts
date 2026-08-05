@@ -9,6 +9,7 @@ import { SearchController } from './SearchController'
 import { MouseReporter, type MousePoint } from './MouseReporter'
 import { MouseEncoder } from './MouseEncoder'
 import { encodePaste, hasPasteEncoder, pasteIsSafe } from './pasteEncode'
+import { translateBackspace } from '../translateBackspace'
 import { SelectionController } from './SelectionController'
 import { MarkModeController } from './MarkModeController'
 import { LinkController, type Link } from './LinkController'
@@ -219,6 +220,14 @@ export class GhosttyEngine implements TerminalEngine {
   private fontFamily = 'Consolas, monospace'
   private fontSize = 14
   
+  /**
+   * Whether this session's host wants `^H` for Backspace rather than `^?`.
+   *
+   * Applied to keystrokes as they leave (see `mount`), not to the pane's whole
+   * output — see the note there for what that cost.
+   */
+  private backspaceSendsCtrlH = false
+
   private onDataHandlers = new Set<(data: Uint8Array) => void>()
   /** Fired from the two sites a human is behind — key input and paste — and
    *  nowhere else. Kept as a separate set rather than a flag threaded through
@@ -1521,11 +1530,18 @@ export class GhosttyEngine implements TerminalEngine {
       // Typing while scrolled up otherwise sends keystrokes to a prompt that
       // isn't on screen.
       this.scrollToBottom()
+      // Here, on the keystroke path, and deliberately not on everything the
+      // pane sends. ^?/^H is a *keyboard* setting, and the merged output
+      // channel also carries mouse reports and query replies — where a 0x7f
+      // is a coordinate, not a backspace. The legacy mouse format encodes
+      // each field as `32 + n`, so column 95 is exactly 0x7f: translating the
+      // whole channel reported a click there as column 8.
+      const out = translateBackspace(data, this.backspaceSendsCtrlH)
       for (const handler of this.onDataHandlers) {
-        handler(data)
+        handler(out)
       }
       for (const handler of this.onInputHandlers) {
-        handler(data)
+        handler(out)
       }
     }, () => this.keyEncoder)
     // Focus now lives on the input handler's element, so that is what the pane
@@ -1835,6 +1851,12 @@ export class GhosttyEngine implements TerminalEngine {
    * Null when there is no core to ask, which leaves the decision to the
    * caller rather than guessing "safe" on its behalf.
    */
+  /** See the field. Null and undefined both mean `^?`, which is what modern
+   *  Unix expects and what a session that never said gets. */
+  setBackspaceSendsCtrlH(enabled: boolean | null | undefined): void {
+    this.backspaceSendsCtrlH = enabled === true
+  }
+
   isPasteSafe(text: string): boolean | null {
     if (!this.wasm || !hasPasteEncoder(this.wasm)) return null
     return pasteIsSafe(this.wasm, text)

@@ -168,8 +168,6 @@ interface PendingHostKey {
   storedFingerprint: string | null
 }
 
-import { translateBackspace } from '../lib/translateBackspace'
-
 function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
 }
@@ -531,6 +529,12 @@ export function Terminal({
     settings.cursorBlink,
   ])
 
+  // Its own effect because it is a per-session setting rather than one of the
+  // global ones above, and it changes when the session's profile does.
+  useEffect(() => {
+    termRef.current?.setBackspaceSendsCtrlH?.(backspaceSendsCtrlH)
+  }, [backspaceSendsCtrlH])
+
   // Only the focused pane's scrollbar is shown — a background pane's
   // scrollbar would otherwise be a distracting, non-interactive-feeling
   // artifact sitting on content you're not looking at.
@@ -772,6 +776,10 @@ export function Terminal({
     term.setFont(settingsRef.current.fontFamily, settingsRef.current.fontSize)
     term.setScrollbackBudget(settingsRef.current.scrollbackBudgetMB)
     term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
+    // Not part of `settings` — it is per-session, not global — but it obeys
+    // the same rule as everything above: repeated here so a new pane gets it,
+    // because the effect that tracks it only fires on changes.
+    term.setBackspaceSendsCtrlH?.(backspaceRef.current)
     // Read back rather than echoing the setting: the engine resolves an
     // unknown tier to its own fallback, and this has to describe what the pane
     // got. Reported after the setter above and only here — the core fixes the
@@ -1379,7 +1387,7 @@ export function Terminal({
       // the engine takes to produce the byte, and only on what actually goes out
       // on the wire. Null means the session never expressed a preference,
       // which is ^? — what modern Unix expects.
-      if (sessionId) conn.write(source, sessionId, translateBackspace(data, backspaceRef.current === true))
+      if (sessionId) conn.write(source, sessionId, data)
     })
 
     // The fan-out point, deliberately on `onInput` and not `onData`.
@@ -1410,11 +1418,7 @@ export function Terminal({
       // be meaningless to a remote shell.
       if (lineEditor) return
       if (!broadcastingRef.current) return
-      broadcast.send(
-        broadcastGroupRef.current,
-        translateBackspace(data, backspaceRef.current === true),
-        paneId,
-      )
+      broadcast.send(broadcastGroupRef.current, data, paneId)
     })
 
     const selectionListener = term.onSelectionChange(() => {
