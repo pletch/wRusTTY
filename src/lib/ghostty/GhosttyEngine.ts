@@ -39,8 +39,6 @@ import {
   CURSOR_STYLE_UNDERLINE,
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
-// Off unless switched on at runtime; see its header for why it exists.
-import * as resizeTrace from '../resizeTrace'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
 // `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
@@ -231,8 +229,6 @@ export class GhosttyEngine implements TerminalEngine {
    *  write is converted to bytes up front (see write). */
   private writeBuffer: Uint8Array[] = []
   private writeBufferBytes = 0
-  /** Which path last asked for a fit, for the resize trace only. */
-  private lastFitWhy = 'none'
   /** Whether the render loop may re-fit this engine to its container. Off while
    *  a caller has pinned the grid on purpose — see the poll in the render loop
    *  and `setAutoFit`. */
@@ -622,7 +618,7 @@ export class GhosttyEngine implements TerminalEngine {
     // Force a fit now that the renderer is available!
     // This fixes the issue where the terminal doesn't fill the screen on first load
     // because the ResizeObserver fired before WASM finished compiling.
-    this.fit(true, 'core-ready')
+    this.fit(true)
 
     // ...but this fit still races two things that settle *after* the WASM
     // fetch that got us here, and the canvas is only ever sized while a
@@ -637,7 +633,7 @@ export class GhosttyEngine implements TerminalEngine {
     // why the grid stayed stale until the window was resized by hand. Re-fit
     // on the next frame and once fonts are ready to close both windows.
     requestAnimationFrame(() => {
-      if (!this.disposed) this.fit(true, 'font-loaded')
+      if (!this.disposed) this.fit(true)
     })
     document.fonts?.ready
       .then(() => {
@@ -1540,19 +1536,7 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   resize(cols: number, rows: number, force = false): void {
-    if (cols === this._cols && rows === this._rows && !force) {
-      resizeTrace.log('resize-skip', { size: `${cols}x${rows}` })
-      return
-    }
-    resizeTrace.log('resize', {
-      from: `${this._cols}x${this._rows}`,
-      to: `${cols}x${rows}`,
-      force,
-      why: this.lastFitWhy,
-    })
-    // A core resize is one of the two things that can move a pinned scroll
-    // region, so whatever the remote says next is worth having.
-    resizeTrace.armCapture('core-resize')
+    if (cols === this._cols && rows === this._rows && !force) return
     this._cols = cols
     this._rows = rows
     this.needsRedraw = true
@@ -1698,10 +1682,6 @@ export class GhosttyEngine implements TerminalEngine {
     // the rest quietly is fine here *because* the failure was reported once,
     // loudly, at the point it happened.
     if (this.fatalError !== null) return
-    if (resizeTrace.isEnabled() && typeof data !== 'string') {
-      resizeTrace.captureInbound(data)
-      resizeTrace.scanRegions(data)
-    }
     this.needsRedraw = true
     this.bufferGen++
 
@@ -1867,9 +1847,8 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onSearchResultHandlers.delete(cb) }
   }
 
-  fit(force = false, why = 'unattributed'): void {
+  fit(force = false): void {
     if (!this.container || this.disposed) return
-    this.lastFitWhy = why
 
     // The renderer sizes the canvas as `cols * its own cellWidth`, so cols has
     // to be derived from that same width. Measuring independently here let the
@@ -1896,26 +1875,6 @@ export class GhosttyEngine implements TerminalEngine {
       { width: cellWidth, height: cellHeight },
       SCROLLBAR_GUTTER_PX,
     )
-    if (resizeTrace.isEnabled()) {
-      // Both measurements, because they can disagree: `fitGrid` floors the
-      // fractional rect while every guard elsewhere reads the integer
-      // clientHeight, so a sub-pixel relayout can change the row count without
-      // changing anything the guards can see. `exact` is how close the height
-      // sits to a whole number of rows — a value near 0 or 1 means the floor is
-      // on a knife edge.
-      const exact = cellHeight > 0 ? (rect.height / cellHeight) % 1 : -1
-      resizeTrace.log('fit', {
-        rectH: rect.height,
-        clientH: this.container.clientHeight,
-        cellH: cellHeight,
-        rows: r,
-        cols: c,
-        have: `${this._cols}x${this._rows}`,
-        exact,
-        force,
-        why,
-      })
-    }
     if (c > 0 && r > 0) {
       this.resize(c, r, force)
     }
@@ -2045,7 +2004,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.needsRedraw = true
       // A new face means new cell metrics, so the grid that fit the old ones
       // no longer fills the container.
-      this.fit(true, 'font-changed')
+      this.fit(true)
     }
   }
   // The core takes its scrollback limit at construction and exposes no setter,

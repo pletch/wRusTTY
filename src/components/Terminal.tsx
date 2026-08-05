@@ -24,7 +24,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
 import type { ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
-import * as resizeTrace from '../lib/resizeTrace'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
@@ -1550,12 +1549,10 @@ export function Terminal({
     }
     container.addEventListener('keydown', onKeyDown, true)
 
-    // One per session: it holds the last size actually delivered, which is what
-    // lets a tab switch that changes nothing send nothing.
+    // One per session: it also holds the last size actually delivered, which is
+    // what lets a tab switch that changed nothing send nothing.
     const ptyResize = createPtyResizeSender((cols, rows) => {
       if (!sessionId) return
-      resizeTrace.log('pty-resize', { size: `${cols}x${rows}` })
-      resizeTrace.armCapture('pty-resize')
       conn.resize(source, sessionId, cols, rows).catch(() => {})
     })
 
@@ -1568,27 +1565,18 @@ export function Terminal({
       // rendering a few columns off from the shell's own idea of where
       // it is, until the next full redraw (e.g. pressing Enter) resynced
       // them. A hidden container has nothing useful to fit to anyway.
-      if (container.clientWidth === 0 || container.clientHeight === 0) {
-        // The hidden half of a tab switch. Logged rather than silent: it is the
-        // marker for "this pane just went away", and the next entries are what
-        // happened when it came back.
-        resizeTrace.log('onResize-skip', { reason: 'hidden 0x0', pane: paneId })
-        return
-      }
-      resizeTrace.log('onResize', {
-        clientW: container.clientWidth,
-        clientH: container.clientHeight,
-        pane: paneId,
-      })
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
       // Fitted immediately: the canvas has to track the container while the
       // pointer is still moving, or the pane visibly lags the window.
-      term.fit?.(false, 'onResize')
+      term.fit()
       reportDimensions(term)
-      // The far end, however, is told once the drag settles — see ptyResize.ts.
-      // Every intermediate size is a SIGWINCH there, and a program pinning a
-      // status line to the last row redraws it on each one, stranding the row
-      // it drew on before. A drag across five row boundaries left five stranded
-      // apt progress bars and scrolled the real output off the top.
+      // The far end is told once the drag settles — see ptyResize.ts. This
+      // observer fires at pointer rate, and every intermediate size that
+      // crosses a row boundary is its own SIGWINCH there. A program pinning a
+      // status line to the last row redraws it on each one and leaves the row
+      // it drew on before behind as ordinary text: measured against apt's
+      // progress bar, a drag across five row boundaries left five stranded
+      // bars and scrolled the real output off the top of the screen.
       if (sessionId) ptyResize.post(term.cols, term.rows)
       // Guarding against the 0x0 fit stopped the PTY-side desync, but the
       // canvas can still end up visually stale after this — most sharply
