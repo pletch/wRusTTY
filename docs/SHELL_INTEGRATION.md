@@ -1,21 +1,29 @@
 # Shell integration
 
-wRusTTY can show which panes have a command running, and notify you when a
-long one finishes in a tab you aren't looking at. Both come from the *remote
-shell* telling us, using OSC 133 — the "semantic prompt" escape sequences
-also understood by iTerm2, kitty, WezTerm, Windows Terminal and VS Code.
+wRusTTY can show which panes have a command running, notify you when a long
+one finishes in a tab you aren't looking at, and know which directory a pane
+is sitting in. All three come from the *remote shell* telling us: OSC 133 —
+the "semantic prompt" escape sequences also understood by iTerm2, kitty,
+WezTerm, Windows Terminal and VS Code — and OSC 7 for the directory.
 
 This has to come from the far end. A terminal that spawns its own shell can
-ask the OS which process has the PTY's foreground process group; wRusTTY
-holds a socket or a serial port, and the process it would be asking about is
-on another machine. The shell saying so out of band is the only reliable
-source, which is why there is a setup step at all.
+ask the OS which process has the PTY's foreground process group, and what its
+cwd is; wRusTTY holds a socket or a serial port, and the process it would be
+asking about is on another machine. The shell saying so out of band is the
+only reliable source, which is why there is a setup step at all.
 
 Nothing breaks without it — a pane's segment of the tab strip simply never
-shows the running marker, and command notifications never fire. The bell
-marker needs no setup, and neither do the sequences a program emits about
-itself — see "Programs that report for themselves" below, which is also the
-only thing that reports anything while a full-screen program is up.
+shows the running marker, command notifications never fire, and the status bar
+shows no directory. The one place the absence is felt rather than merely
+missed is **drag-and-drop upload**: with no reported directory there is
+nowhere to put the file, so the pane asks for a destination every time
+instead of defaulting to where you are (see `lib/dropUpload.ts` — guessing
+`~`, or scraping it off the prompt, is how a file ends up somewhere nobody
+asked for).
+
+The bell marker needs no setup, and neither do the sequences a program emits
+about itself — see "Programs that report for themselves" below, which is also
+the only thing that reports anything while a full-screen program is up.
 
 ## Installing it
 
@@ -45,8 +53,17 @@ ssh myhost 'cat >> ~/.bashrc' < snippet.sh
 | `OSC 133 ; C ST` | a command is executing, output follows |
 | `OSC 133 ; D ; <code> ST` | the command finished, with its exit status |
 | `OSC 633 ; E ; <cmdline> ST` | the command line as text (VS Code's extension) |
+| `OSC 7 ; file://<host>/<path> ST` | the working directory |
 
 `OSC` is `ESC ]`, `ST` is `BEL` (`\a`) in every snippet below.
+
+OSC 7's path is percent-encoded, and the snippets encode it by hand rather
+than calling out to python: this runs on every prompt, on hosts that are
+often a jump box or an appliance, where a fork per prompt is felt and python
+may not exist. The encoders walk *bytes* — under `LC_ALL=C`, in a subshell —
+because in a UTF-8 locale the shell reads a multi-byte character as one
+character and encodes its codepoint, which puts `%E9` on the wire for `é`
+where the URL grammar wants `%C3%A9`.
 
 Two notes on what's deliberately *not* here. The spec also defines
 `OSC 133 ; B ST` (prompt drawn, input starts) — wRusTTY doesn't need it, so
@@ -61,7 +78,8 @@ Add to `~/.bashrc` on the remote host:
 
 ```bash
 # Shell integration: OSC 133 semantic-prompt sequences, which tell the
-# terminal when a command starts, when it ends, and with what exit status.
+# terminal when a command starts, when it ends, and with what exit status,
+# plus OSC 7, which tells it what directory you are in.
 # Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
 # silently discarded by terminals that don't implement them.
 # Emits nothing in a non-interactive shell, so scp/rsync/git-over-ssh are
@@ -70,6 +88,32 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
   __osc133_installed=1
   __osc133_ready=0
   __osc133_running=0
+
+  # OSC 7: the working directory, as a percent-encoded file:// URL.
+  __osc7_encode() (
+    LC_ALL=C
+    local str=$1 safe
+    while [[ -n $str ]]; do
+      # The longest prefix of characters that need no escaping, then one
+      # character that does. RFC 3986's unreserved set, plus the separator.
+      safe=${str%%[!a-zA-Z0-9/._~-]*}
+      printf '%s' "$safe"
+      str=${str#"$safe"}
+      if [[ -n $str ]]; then
+        # A leading quote makes printf take the character's numeric value.
+        printf '%%%02X' "'$str"
+        str=${str#?}
+      fi
+    done
+  )
+
+  # Resolved once: it cannot change for the life of the shell, and `hostname`
+  # is a fork. HOSTNAME first for bash, HOST for zsh, the command for neither.
+  __osc7_host=${HOSTNAME:-${HOST:-$(hostname 2>/dev/null)}}
+
+  __osc7_report() {
+    printf '\e]7;file://%s%s\a' "$__osc7_host" "$(__osc7_encode "$PWD")"
+  }
 
   __osc133_precmd() {
     local __st=$?
@@ -82,6 +126,7 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
       printf '\e]133;D;%s\a' "$__st"
       __osc133_running=0
     fi
+    __osc7_report
     printf '\e]133;A\a'
   }
 
@@ -96,7 +141,10 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
       # Our own hooks. DEBUG fires for __osc133_precmd *before* it runs, so
       # it can't have disarmed yet — without this, pressing Enter on an empty
       # prompt reports the prompt hook itself as the command that just ran.
-      __osc133_*) return ;;
+      # The OSC 7 reporter is only ever called from inside precmd, which has
+      # disarmed by then, but it is named here so that stays true if it is
+      # ever hooked up somewhere else.
+      __osc133_*|__osc7_*) return ;;
       # Functions bound to a key with `bind -x` fire the DEBUG trap too, but
       # they run from readline rather than from a line you typed. systemd's
       # OSC context integration (systemd 257+, /etc/profile.d) binds one to
@@ -145,11 +193,38 @@ DEBUG-trap bookkeeping:
 
 ```zsh
 # Shell integration: OSC 133 semantic-prompt sequences, which tell the
-# terminal when a command starts, when it ends, and with what exit status.
+# terminal when a command starts, when it ends, and with what exit status,
+# plus OSC 7, which tells it what directory you are in.
 # Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
 # silently discarded by terminals that don't implement them.
 # zsh has real preexec/precmd hooks, so there's no DEBUG-trap bookkeeping.
 __osc133_running=0
+
+# OSC 7: the working directory, as a percent-encoded file:// URL.
+__osc7_encode() (
+  LC_ALL=C
+  local str=$1 safe
+  while [[ -n $str ]]; do
+    # The longest prefix of characters that need no escaping, then one
+    # character that does. RFC 3986's unreserved set, plus the separator.
+    safe=${str%%[!a-zA-Z0-9/._~-]*}
+    printf '%s' "$safe"
+    str=${str#"$safe"}
+    if [[ -n $str ]]; then
+      # A leading quote makes printf take the character's numeric value.
+      printf '%%%02X' "'$str"
+      str=${str#?}
+    fi
+  done
+)
+
+# Resolved once: it cannot change for the life of the shell, and `hostname`
+# is a fork. HOSTNAME first for bash, HOST for zsh, the command for neither.
+__osc7_host=${HOSTNAME:-${HOST:-$(hostname 2>/dev/null)}}
+
+__osc7_report() {
+  printf '\e]7;file://%s%s\a' "$__osc7_host" "$(__osc7_encode "$PWD")"
+}
 
 __osc133_precmd() {
   # Not `local status=$?` — zsh's `status` is a special parameter (a synonym
@@ -159,6 +234,7 @@ __osc133_precmd() {
     print -n "\e]133;D;$__st\a"
     __osc133_running=0
   fi
+  __osc7_report
   print -n "\e]133;A\a"
 }
 
@@ -184,7 +260,8 @@ Add to `~/.config/fish/config.fish`:
 
 ```fish
 # Shell integration: OSC 133 semantic-prompt sequences, which tell the
-# terminal when a command starts, when it ends, and with what exit status.
+# terminal when a command starts, when it ends, and with what exit status,
+# plus OSC 7, which tells it what directory you are in.
 # Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
 # silently discarded by terminals that don't implement them.
 function __osc133_prompt --on-event fish_prompt
@@ -200,6 +277,22 @@ end
 function __osc133_postexec --on-event fish_postexec
     set -l status_code $status
     printf '\e]133;D;%s\a' $status_code
+end
+
+# OSC 7: the working directory. fish already reports this itself, from
+# __update_cwd_osc in __fish_config_interactive.fish, so this only fills in
+# for a build that doesn't — two reporters would emit every directory change
+# twice. No hand-rolled encoder either, because fish has one.
+if not functions -q __update_cwd_osc
+    function __osc7_report --on-variable PWD
+        # A command substitution's output is being captured, not displayed.
+        status is-command-substitution; and return
+        # --style=url escapes the separators too. They are put back because a
+        # path with %2F through it is the kind of thing a human has to decode
+        # by hand when it turns up in a status bar or an error message.
+        printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD | string replace -ai %2F /)
+    end
+    __osc7_report
 end
 ```
 
@@ -348,6 +441,14 @@ long-running-thing; printf '\a'
   on the same host: two installs means two `D` reports per command. wRusTTY
   ignores the duplicate (a `D` with nothing running is dropped), but other
   clients may be less forgiving.
+- **A second OSC 7 reporter is harmless, unlike a second `D`.** It is a
+  statement of fact rather than an event, so a host where GNOME's `vte.sh` (or
+  a distro `bashrc`) already reports the directory just reports it twice per
+  prompt and lands on the same answer. The bytes are wasted, nothing else. The
+  fish snippet still skips its own reporter when fish's built-in
+  `__update_cwd_osc` is present, because that one is bound to `PWD` changing
+  rather than to the prompt, and two handlers on one variable is a thing you
+  then have to think about when either misbehaves.
 - The sequences are emitted into the session's byte stream, so they land in
   session logs too. Plain-text logging (on by default) strips them.
 - A `sudo -i`, `su`, or nested `screen`/`tmux` shell has its own startup

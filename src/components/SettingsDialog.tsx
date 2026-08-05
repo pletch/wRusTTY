@@ -557,8 +557,10 @@ export function SettingsDialog({
                     <div className="space-y-3 px-2 py-1.5">
                       <p className="leading-relaxed text-white/50">
                         Append the snippet to the rc file on a host once and every session
-                        there reports when its commands start and finish — to any terminal
-                        that speaks OSC 133, not just wRusTTY. It emits nothing in
+                        there reports when its commands start and finish, and which
+                        directory it is in — to any terminal that speaks OSC 133 and
+                        OSC 7, not just wRusTTY. The directory is what lets a dropped
+                        file land where you are without being asked. It emits nothing in
                         non-interactive shells, so scp and rsync are unaffected.
                       </p>
                       <div className="flex gap-1.5">

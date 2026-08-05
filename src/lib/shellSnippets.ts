@@ -1,5 +1,5 @@
 /**
- * The shell-side half of OSC 133 support, as copyable text.
+ * The shell-side half of OSC 133 and OSC 7 support, as copyable text.
  *
  * These are the canonical copies — docs/SHELL_INTEGRATION.md reproduces them
  * for anyone reading the repo rather than running the app, so a change here
@@ -10,6 +10,13 @@
  * iTerm2, kitty, WezTerm, Windows Terminal and VS Code — calling the
  * functions `__wrustty_*` would misrepresent that to whoever reads the rc
  * file next.
+ *
+ * OSC 7 rides along with the 133 sequences because the shell is the only thing
+ * that can answer either question, and one paste is better than two. It is a
+ * separate feature though: it drives the directory in the status bar and the
+ * destination a drag-and-drop upload lands in (lib/dropUpload.ts refuses the
+ * drop without one), and it is parsed by lib/remoteIdentity.ts rather than
+ * lib/shellIntegration.ts.
  */
 
 export interface ShellSnippet {
@@ -21,9 +28,49 @@ export interface ShellSnippet {
 }
 
 const PREAMBLE = `# Shell integration: OSC 133 semantic-prompt sequences, which tell the
-# terminal when a command starts, when it ends, and with what exit status.
+# terminal when a command starts, when it ends, and with what exit status,
+# plus OSC 7, which tells it what directory you are in.
 # Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
 # silently discarded by terminals that don't implement them.`
+
+// Why every snippet encodes the path by hand rather than shelling out to
+// `python -c urllib...` or similar: this runs on every prompt, on hosts that
+// are often a switch, a router or a busy jump box, and a fork per prompt is
+// the sort of thing people feel on a slow link. It is also the sort of host
+// that has no python.
+//
+// `LC_ALL=C` in a subshell is what makes the loop walk *bytes*. In a UTF-8
+// locale the shell reads a multi-byte character as one character and encodes
+// its codepoint, so `é` comes out as `%E9` instead of `%C3%A9` and the far
+// side decodes a different path — or fails to decode at all.
+const POSIX_OSC7 = `# OSC 7: the working directory, as a percent-encoded file:// URL.
+__osc7_encode() (
+  LC_ALL=C
+  local str=$1 safe
+  while [[ -n $str ]]; do
+    # The longest prefix of characters that need no escaping, then one
+    # character that does. RFC 3986's unreserved set, plus the separator.
+    safe=\${str%%[!a-zA-Z0-9/._~-]*}
+    printf '%s' "$safe"
+    str=\${str#"$safe"}
+    if [[ -n $str ]]; then
+      # A leading quote makes printf take the character's numeric value.
+      printf '%%%02X' "'$str"
+      str=\${str#?}
+    fi
+  done
+)
+
+# Resolved once: it cannot change for the life of the shell, and \`hostname\`
+# is a fork. HOSTNAME first for bash, HOST for zsh, the command for neither.
+__osc7_host=\${HOSTNAME:-\${HOST:-$(hostname 2>/dev/null)}}
+
+__osc7_report() {
+  printf '\\e]7;file://%s%s\\a' "$__osc7_host" "$(__osc7_encode "$PWD")"
+}`
+
+/** The bash snippet keeps its whole body inside the interactive guard. */
+const indent = (block: string) => block.replace(/^(?=.)/gm, '  ')
 
 // The interactive guard is load-bearing, not belt-and-braces: bash detects
 // stdin being a network socket (as when run by sshd) and sources ~/.bashrc
@@ -38,6 +85,8 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
   __osc133_ready=0
   __osc133_running=0
 
+${indent(POSIX_OSC7)}
+
   __osc133_precmd() {
     local __st=$?
     # Disarm for the rest of the prompt cycle. Anything that runs between
@@ -49,6 +98,7 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
       printf '\\e]133;D;%s\\a' "$__st"
       __osc133_running=0
     fi
+    __osc7_report
     printf '\\e]133;A\\a'
   }
 
@@ -63,7 +113,10 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
       # Our own hooks. DEBUG fires for __osc133_precmd *before* it runs, so
       # it can't have disarmed yet — without this, pressing Enter on an empty
       # prompt reports the prompt hook itself as the command that just ran.
-      __osc133_*) return ;;
+      # The OSC 7 reporter is only ever called from inside precmd, which has
+      # disarmed by then, but it is named here so that stays true if it is
+      # ever hooked up somewhere else.
+      __osc133_*|__osc7_*) return ;;
       # Functions bound to a key with \`bind -x\` fire the DEBUG trap too, but
       # they run from readline rather than from a line you typed. systemd's
       # OSC context integration (systemd 257+, /etc/profile.d) binds one to
@@ -98,6 +151,8 @@ const ZSH = `${PREAMBLE}
 # zsh has real preexec/precmd hooks, so there's no DEBUG-trap bookkeeping.
 __osc133_running=0
 
+${POSIX_OSC7}
+
 __osc133_precmd() {
   # Not \`local status=$?\` — zsh's \`status\` is a special parameter (a synonym
   # for \`?\`), so shadowing it is asking for trouble.
@@ -106,6 +161,7 @@ __osc133_precmd() {
     print -n "\\e]133;D;$__st\\a"
     __osc133_running=0
   fi
+  __osc7_report
   print -n "\\e]133;A\\a"
 }
 
@@ -138,6 +194,22 @@ end
 function __osc133_postexec --on-event fish_postexec
     set -l status_code $status
     printf '\\e]133;D;%s\\a' $status_code
+end
+
+# OSC 7: the working directory. fish already reports this itself, from
+# __update_cwd_osc in __fish_config_interactive.fish, so this only fills in
+# for a build that doesn't — two reporters would emit every directory change
+# twice. No hand-rolled encoder either, because fish has one.
+if not functions -q __update_cwd_osc
+    function __osc7_report --on-variable PWD
+        # A command substitution's output is being captured, not displayed.
+        status is-command-substitution; and return
+        # --style=url escapes the separators too. They are put back because a
+        # path with %2F through it is the kind of thing a human has to decode
+        # by hand when it turns up in a status bar or an error message.
+        printf '\\e]7;file://%s%s\\a' $hostname (string escape --style=url -- $PWD | string replace -ai %2F /)
+    end
+    __osc7_report
 end`
 
 export const SHELL_SNIPPETS: ShellSnippet[] = [
