@@ -50,11 +50,18 @@
 //! after it.
 //!
 //! What that buys is the button's *absence*, not a wRusTTY-branded button.
-//! Re-branding would mean giving the window our AppUserModelID (Explorer keys
-//! buttons by AUMID, and the broker's window carries none, which is why it
-//! falls back to a generic per-executable entry) — plausible via
-//! `SHGetPropertyStoreForWindow`, untested here, and moot while absence is
-//! the desired outcome anyway.
+//! Re-branding would mean giving the window our AppUserModelID — Explorer
+//! keys buttons by AUMID, and the prompt's window carries none, which is
+//! exactly why it falls back to a generic per-executable entry. That was
+//! tried too, via `SHGetPropertyStoreForWindow`, on the theory that a shell
+//! API might get through where a window message doesn't. It does not:
+//! `IPropertyStore::SetValue` on that window returns `E_ACCESSDENIED`.
+//!
+//! Note the asymmetry, since it is the useful part of the result: `GetValue`
+//! on the same store *succeeds* and reports the AUMID as unset. The window's
+//! properties are readable across the boundary and not writable, so there is
+//! no reading of "the shell had already latched the button's identity" to
+//! chase here — the write never landed at all.
 //!
 //! The window stays in the Alt-Tab list either way, so a prompt that opened
 //! behind something is still reachable.
