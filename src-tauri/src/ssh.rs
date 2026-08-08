@@ -13,10 +13,11 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 use wr_ssh::{
-    AuthMethod, ForwardHandle, ForwardSpec, HostKeyPrompt, HostKeyStatus, HostKeyVerifier,
-    SshConfig, SshConnector, SshSession,
+    AuthMethod, AuthPrompt, AuthPrompter, ForwardHandle, ForwardSpec, HostKeyPrompt, HostKeyStatus,
+    HostKeyVerifier, SshConfig, SshConnector, SshSession,
 };
 use wr_vault::VaultSecret;
+use zeroize::Zeroizing;
 
 use crate::connection_status::status_label;
 use crate::profiles;
@@ -49,7 +50,44 @@ pub enum SshEvent {
         /// user can compare old vs. new instead of judging the new key blind.
         stored_fingerprint: Option<String>,
     },
+    /// One round of keyboard-interactive auth: the server's own questions,
+    /// relayed for a human to answer. Answered by `ssh_respond_auth_prompt`.
+    AuthPrompt {
+        request_id: String,
+        /// The server's title for the exchange, and its free-text preamble.
+        /// Both are routinely empty, and the UI supplies its own heading then.
+        name: String,
+        instructions: String,
+        /// What to ask, in order. Responses must come back in the same order
+        /// and the same number.
+        fields: Vec<AuthPromptFieldPayload>,
+        /// Which host is asking. A jumped connection authenticates twice, and
+        /// the prompts can look identical — without this the target's password
+        /// gets typed into the bastion.
+        host: String,
+        port: u16,
+        is_jump: bool,
+    },
 }
+
+/// One field of an [`SshEvent::AuthPrompt`].
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthPromptFieldPayload {
+    /// The server's wording, shown verbatim — it's the only thing telling a
+    /// password apart from a one-time code.
+    prompt: String,
+    /// False means the server called this a secret; the field is masked.
+    echo: bool,
+}
+
+/// Prompts waiting on an answer, keyed by request id. Each entry also
+/// remembers the session whose handshake is parked on it, so closing a pane
+/// can answer its own outstanding prompts — without that owner, an unanswered
+/// prompt leaks its entry and parks the connect task on `rx.await` for the
+/// life of the process, where it can't be cancelled. `T` is what an answer
+/// looks like for that kind of prompt.
+type PendingMap<T> = TokioMutex<HashMap<String, (String, oneshot::Sender<T>)>>;
 
 /// SSH keeps its two extra maps *alongside* the shared registry rather than
 /// inside it: a host-key prompt and a set of port forwards are SSH's, not
@@ -57,12 +95,11 @@ pub enum SshEvent {
 /// registry carry fields two of its three users don't have.
 pub struct SshState {
     sessions: SessionRegistry<SshConnector>,
-    /// Keyed by request id; each entry also remembers the session whose
-    /// handshake is parked on it, so closing a pane can answer its own
-    /// outstanding prompt. Without that owner, an unanswered prompt leaks its
-    /// entry here and parks the verifier on `rx.await` for the life of the
-    /// process — the connect task can't be cancelled while it's blocked there.
-    pending_host_key: TokioMutex<HashMap<String, (String, oneshot::Sender<bool>)>>,
+    /// Outstanding host-key prompts. `false` rejects.
+    pending_host_key: PendingMap<bool>,
+    /// Outstanding keyboard-interactive prompts. `None` cancels; otherwise one
+    /// response per field of the prompt, in order.
+    pending_auth: PendingMap<Option<Zeroizing<Vec<String>>>>,
     /// Keyed by forward id; each entry also remembers its owning session id
     /// so `ssh_disconnect` can stop every forward that session opened.
     forwards: TokioMutex<HashMap<String, (String, ForwardHandle)>>,
@@ -77,6 +114,7 @@ impl Default for SshState {
         Self {
             sessions: SessionRegistry::new("ssh"),
             pending_host_key: TokioMutex::default(),
+            pending_auth: TokioMutex::default(),
             forwards: TokioMutex::default(),
             next_id: AtomicU64::new(0),
         }
@@ -126,6 +164,61 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
 
         // If the frontend/channel goes away without answering, fail closed.
         rx.await.unwrap_or(false)
+    }
+}
+
+/// Relays the server's keyboard-interactive questions to the pane that is
+/// connecting. Same shape as `TauriHostKeyVerifier` above — pending map, one
+/// oneshot per outstanding question, fail closed if the webview goes away —
+/// because it has the same job: park a handshake on a human without blocking
+/// anything else in the app.
+struct TauriAuthPrompter {
+    app: AppHandle,
+    channel: Channel<SshEvent>,
+    session_id: String,
+}
+
+#[async_trait]
+impl AuthPrompter for TauriAuthPrompter {
+    async fn prompt(&self, prompt: AuthPrompt) -> Option<Zeroizing<Vec<String>>> {
+        let state = self.app.state::<SshState>();
+        let request_id = state.next_request_id();
+        let (tx, rx) = oneshot::channel();
+        state
+            .pending_auth
+            .lock()
+            .await
+            .insert(request_id.clone(), (self.session_id.clone(), tx));
+
+        if self
+            .channel
+            .send(SshEvent::AuthPrompt {
+                request_id: request_id.clone(),
+                name: prompt.name,
+                instructions: prompt.instructions,
+                fields: prompt
+                    .fields
+                    .into_iter()
+                    .map(|f| AuthPromptFieldPayload {
+                        prompt: f.prompt,
+                        echo: f.echo,
+                    })
+                    .collect(),
+                host: prompt.host,
+                port: prompt.port,
+                is_jump: prompt.is_jump,
+            })
+            .is_err()
+        {
+            // Nothing can answer this now, so don't leave the entry behind for
+            // `ssh_disconnect` to trip over.
+            state.pending_auth.lock().await.remove(&request_id);
+            return None;
+        }
+
+        // A dropped sender (pane closed, channel gone) reads as a cancel,
+        // which abandons the connection rather than sending a blank answer.
+        rx.await.ok().flatten()
     }
 }
 
@@ -241,11 +334,16 @@ async fn resolve_auth(
     profile: &profiles::SessionProfile,
     vault_state: &State<'_, VaultState>,
 ) -> Result<AuthMethod, String> {
-    // Handled before the vault is touched: the agent holds the key itself, so
-    // there is no stored secret to resolve and no reason to make a locked
-    // vault block a connection that doesn't need one.
+    // Both handled before the vault is touched, for opposite reasons: the
+    // agent holds its key itself, and keyboard-interactive asks the user at
+    // connect time. Neither has a stored secret to resolve, so neither has any
+    // business being blocked by a locked vault. `authNeedsVault` in
+    // lib/profiles.ts is the frontend's copy of this same judgement.
     if profile.auth_type == "agent" {
         return Ok(AuthMethod::Agent);
+    }
+    if profile.auth_type == "keyboard_interactive" {
+        return Ok(AuthMethod::KeyboardInteractive);
     }
 
     let guard = vault_state.vault.lock().await;
@@ -312,6 +410,11 @@ async fn start_connection(
         channel: channel.clone(),
         session_id: session_id.clone(),
     });
+    let prompter = Arc::new(TauriAuthPrompter {
+        app: app.clone(),
+        channel: channel.clone(),
+        session_id: session_id.clone(),
+    });
 
     // A magic packet is a broadcast on the local segment; the host behind a
     // jump is, by definition, not on it. Waking would send the packet
@@ -336,8 +439,8 @@ async fn start_connection(
     // will use.
     let target = wake.map(|wake| (config.host.clone(), config.port, wake));
 
-    let connector =
-        SshConnector::new(config, known_hosts, verifier, cols, rows).map_err(|e| e.to_string())?;
+    let connector = SshConnector::new(config, known_hosts, verifier, prompter, cols, rows)
+        .map_err(|e| e.to_string())?;
 
     state
         .sessions
@@ -386,26 +489,18 @@ pub async fn ssh_disconnect(
     state: State<'_, SshState>,
     sftp_state: State<'_, crate::sftp::SftpState>,
 ) -> Result<(), String> {
-    // Before the registry entry goes, answer any host-key prompt this session
-    // is parked on — closing a pane instead of answering its prompt is the
-    // normal way a user declines an unknown host, and the verifier is blocked
-    // on `rx.await` until someone resolves it. `false` is the same answer the
-    // Cancel button gives, so the handshake fails and never builds a session.
-    // Done first so the connect task is already unwinding by the time the id
-    // disappears.
-    let cancelled: Vec<_> = {
-        let mut pending = state.pending_host_key.lock().await;
-        let ids: Vec<String> = pending
-            .iter()
-            .filter(|(_, (owner, _))| *owner == session_id)
-            .map(|(id, _)| id.clone())
-            .collect();
-        ids.into_iter()
-            .filter_map(|id| pending.remove(&id).map(|(_, tx)| tx))
-            .collect()
-    };
-    for tx in cancelled {
+    // Before the registry entry goes, answer any prompt this session is parked
+    // on — closing a pane instead of answering is the normal way a user
+    // declines an unknown host or an auth challenge, and the handshake is
+    // blocked on `rx.await` until someone resolves it. Each gets the same
+    // answer its own Cancel button gives, so the handshake fails and never
+    // builds a session. Done first so the connect task is already unwinding by
+    // the time the id disappears.
+    for tx in take_pending(&state.pending_host_key, &session_id).await {
         let _ = tx.send(false);
+    }
+    for tx in take_pending(&state.pending_auth, &session_id).await {
+        let _ = tx.send(None);
     }
 
     state.sessions.disconnect(&session_id).await?;
@@ -493,6 +588,46 @@ pub async fn ssh_respond_host_key(
         let _ = tx.send(accept);
     }
     Ok(())
+}
+
+/// Answers one round of keyboard-interactive auth. `responses` must hold one
+/// entry per field of the prompt, in order; `None` cancels, which abandons the
+/// connection rather than sending blanks the server would count as a failed
+/// attempt.
+///
+/// The responses are live secrets — a password, a one-time code — so they are
+/// wrapped for zeroizing the moment they arrive and never logged. Nothing here
+/// persists them: saving an interactive answer would mean saving a TOTP code,
+/// which is worthless by the next connection.
+#[tauri::command]
+pub async fn ssh_respond_auth_prompt(
+    request_id: String,
+    responses: Option<Vec<String>>,
+    state: State<'_, SshState>,
+) -> Result<(), String> {
+    let responses = responses.map(Zeroizing::new);
+    if let Some((_, tx)) = state.pending_auth.lock().await.remove(&request_id) {
+        let _ = tx.send(responses);
+    }
+    Ok(())
+}
+
+/// Removes every prompt `session_id` owns from one pending map, returning the
+/// senders so they can be answered outside the lock.
+///
+/// Generic over the answer type because host-key and auth prompts differ only
+/// in what a cancel *is* (`false` vs `None`) — and an unanswered entry in
+/// either one parks its handshake on `rx.await` for the life of the process.
+async fn take_pending<T>(map: &PendingMap<T>, session_id: &str) -> Vec<oneshot::Sender<T>> {
+    let mut pending = map.lock().await;
+    let ids: Vec<String> = pending
+        .iter()
+        .filter(|(_, (owner, _))| owner == session_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.into_iter()
+        .filter_map(|id| pending.remove(&id).map(|(_, tx)| tx))
+        .collect()
 }
 
 /// Every host key this app has been told to trust.

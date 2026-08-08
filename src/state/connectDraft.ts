@@ -130,7 +130,7 @@ export interface ConnectDraft {
   host: string
   port: string
   username: string
-  authType: 'Password' | 'PublicKey' | 'Agent'
+  authType: 'Password' | 'PublicKey' | 'Agent' | 'Interactive'
   keyPath: string
   keyStorage: 'path' | 'vault'
   passphrase: string

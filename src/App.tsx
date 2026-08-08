@@ -840,7 +840,7 @@ function App() {
     }
 
     const canConnectDirect =
-      profile.authType === 'agent' ||
+      !profiles.authNeedsVault(profile.authType) ||
       (vaultStatus === 'unlocked' &&
         (profile.authType === 'public_key' ||
           (await vault.hasCredential(profile.id).catch(() => false))))

@@ -27,6 +27,29 @@ export type ConnEvent =
       /** For 'changed' only: the fingerprint previously on record. */
       storedFingerprint: string | null
     }
+  | {
+      type: 'authPrompt'
+      requestId: string
+      /** The server's own title and preamble for the exchange. Both are
+       * routinely empty, and the dialog supplies its own heading then. */
+      name: string
+      instructions: string
+      /** What to ask, in order. Responses go back in the same order and the
+       * same number. */
+      fields: AuthPromptField[]
+      host: string
+      port: number
+      /** True when the jump host is asking rather than the destination. */
+      isJump: boolean
+    }
+
+export interface AuthPromptField {
+  /** The server's wording, shown verbatim — it is the only thing that
+   * distinguishes a password from a one-time code. */
+  prompt: string
+  /** False means the server called this a secret, and the input is masked. */
+  echo: boolean
+}
 
 export function connect(
   source: ConnectionSource,
@@ -163,6 +186,14 @@ export function disconnect(source: ConnectionSource, sessionId: string) {
 
 export function respondHostKey(requestId: string, accept: boolean) {
   return invoke<void>('ssh_respond_host_key', { requestId, accept })
+}
+
+/** Answers one round of keyboard-interactive auth: one response per field, in
+ * order, or `null` to cancel. Cancelling abandons the connection rather than
+ * sending blanks — an empty answer is a wrong answer, and burns one of the
+ * server's limited attempts. */
+export function respondAuthPrompt(requestId: string, responses: string[] | null) {
+  return invoke<void>('ssh_respond_auth_prompt', { requestId, responses })
 }
 
 export function sourceLabel(source: ConnectionSource): string {

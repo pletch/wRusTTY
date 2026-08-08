@@ -22,12 +22,13 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
-import type { ConnectionSource, ConnEvent } from '../lib/connection'
+import type { AuthPromptField, ConnectionSource, ConnEvent } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
+import { AuthPrompt } from './AuthPrompt'
 import { useConfirm } from './confirmContext'
 import { useDismissable } from '../hooks/useDismissable'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
@@ -168,6 +169,16 @@ interface PendingHostKey {
   storedFingerprint: string | null
 }
 
+interface PendingAuthPrompt {
+  requestId: string
+  name: string
+  instructions: string
+  fields: AuthPromptField[]
+  host: string
+  port: number
+  isJump: boolean
+}
+
 function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
 }
@@ -206,6 +217,7 @@ export function Terminal({
   const wasSearchOpen = useRef(false)
   const termRef = useRef<TerminalEngine | null>(null)
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
+  const [authPrompt, setAuthPrompt] = useState<PendingAuthPrompt | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   /** Keyboard selection is on. Mirrors engine state so the pane can say so —
    *  a mode that takes the arrow keys with nothing on screen to explain why is
@@ -1200,6 +1212,17 @@ export function Terminal({
             storedFingerprint: event.storedFingerprint,
           })
           break
+        case 'authPrompt':
+          setAuthPrompt({
+            requestId: event.requestId,
+            name: event.name,
+            instructions: event.instructions,
+            fields: event.fields,
+            host: event.host,
+            port: event.port,
+            isJump: event.isJump,
+          })
+          break
       }
     }
 
@@ -2154,6 +2177,30 @@ export function Terminal({
             // it to <body> with nothing left to reclaim it. Re-focus here,
             // right as the dialog closes, so the terminal is left with
             // focus regardless of which one of these two fired first.
+            termRef.current?.focus()
+          }}
+        />
+      )}
+      {authPrompt && (
+        <AuthPrompt
+          // Keyed by request so each round of a multi-step exchange gets a
+          // fresh dialog. Without it React reuses the mounted one and the
+          // previous round's typed values sit in the new round's fields —
+          // which for "Password:" then "Verification code:" means submitting
+          // the password as the code.
+          key={authPrompt.requestId}
+          name={authPrompt.name}
+          instructions={authPrompt.instructions}
+          fields={authPrompt.fields}
+          host={authPrompt.host}
+          port={authPrompt.port}
+          isJump={authPrompt.isJump}
+          onAnswer={(responses) => {
+            conn.respondAuthPrompt(authPrompt.requestId, responses)
+            setAuthPrompt(null)
+            // Same focus handoff as the host-key dialog above: this dialog's
+            // own input held focus, and once it unmounts the browser drops
+            // focus to <body> with nothing left to reclaim it.
             termRef.current?.focus()
           }}
         />

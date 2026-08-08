@@ -34,7 +34,7 @@ export interface ConnectDialogInitial {
   host?: string
   port?: number
   username?: string
-  authType?: 'Password' | 'PublicKey' | 'Agent'
+  authType?: 'Password' | 'PublicKey' | 'Agent' | 'Interactive'
   keyPath?: string
   folder?: string | null
   hasCredential?: boolean
@@ -216,6 +216,13 @@ export function ConnectDialog({
   // means the key itself already lives in the vault — the default path
   // placeholder would be misleading there, so leave it blank instead.
   const vaultedInitially = isInitiallyVaulted(initial)
+  // Two of the four auth types have no secret of ours to store: the agent
+  // holds its key and signs on our behalf, and "Ask each time" gets its credential
+  // typed in at connect time on purpose. Both must keep the vault out of it
+  // entirely — offering to save a credential, or marking the profile as having
+  // one, leaves the sidebar offering to unlock a vault the session never put
+  // anything into.
+  const storesSecret = authType === 'Password' || authType === 'PublicKey'
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -250,12 +257,26 @@ export function ConnectDialog({
             ((authType === 'Password' && !password) ||
               (authType === 'PublicKey' && !usingVaultKey && !passphrase))))
 
+      // Password auth with nothing typed and nothing stored to fall back on is
+      // the one state on this form that cannot mean anything else. It used to
+      // send an empty password, which is a guaranteed rejection that also
+      // spends one of the server's limited auth attempts (OpenSSH's
+      // `MaxAuthTries`) to achieve nothing. Ask instead.
+      //
+      // Safe against the *other* reading of a blank field — "use the
+      // credential in the vault", which is why the field starts blank when a
+      // secret is stored — because `relyOnSavedCredential` above has already
+      // claimed that case and routed it through the profile.
+      const promptForPassword = authType === 'Password' && !password && !relyOnSavedCredential
+
       const auth: AuthMethod =
         authType === 'Agent'
           ? { type: 'Agent' }
-          : authType === 'Password'
-            ? { type: 'Password', password }
-            : { type: 'PublicKey', key_path: keyPath, passphrase: passphrase || null }
+          : authType === 'Interactive' || promptForPassword
+            ? { type: 'KeyboardInteractive' }
+            : authType === 'Password'
+              ? { type: 'Password', password }
+              : { type: 'PublicKey', key_path: keyPath, passphrase: passphrase || null }
 
       if (saveProfile && onSaveProfile) {
         const profileId = initial?.id ?? crypto.randomUUID()
@@ -282,7 +303,7 @@ export function ConnectDialog({
         // is stored*, never "store an empty string over it".
         const hasNewSecret = authType === 'Password' ? Boolean(password) : Boolean(passphrase)
         const willSaveCredential =
-          authType !== 'Agent' &&
+          storesSecret &&
           !usingVaultKey &&
           saveCredential &&
           Boolean(onSaveCredential) &&
@@ -294,11 +315,11 @@ export function ConnectDialog({
           // secret, separate from the generic password/passphrase
           // credential path above.
           onImportKeyToVault(profileId, keyPath, passphrase || null)
-        } else if (authType === 'Agent' && initial?.hasCredential && onDeleteCredential) {
-          // Switched an existing session over to the agent. Whatever it had
-          // vaulted — password, passphrase, or the key itself — is no longer
-          // reachable through this profile, and nothing else references that
-          // entry, so drop it rather than leave it orphaned.
+        } else if (!storesSecret && initial?.hasCredential && onDeleteCredential) {
+          // Switched an existing session over to the agent or to prompting.
+          // Whatever it had vaulted — password, passphrase, or the key itself —
+          // is no longer reachable through this profile, and nothing else
+          // references that entry, so drop it rather than leave it orphaned.
           onDeleteCredential(profileId)
         } else if (!usingVaultKey && vaultedInitially && onDeleteCredential) {
           // Switched back to a plain on-disk path — the previously vaulted
@@ -316,7 +337,13 @@ export function ConnectDialog({
           protocol: 'ssh',
           username,
           authType:
-            authType === 'Agent' ? 'agent' : authType === 'Password' ? 'password' : 'public_key',
+            authType === 'Agent'
+              ? 'agent'
+              : authType === 'Interactive'
+                ? 'keyboard_interactive'
+                : authType === 'Password'
+                  ? 'password'
+                  : 'public_key',
           keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
@@ -329,7 +356,7 @@ export function ConnectDialog({
           // deletes the entry that flag pointed at).
           hasCredential: usingVaultKey
             ? Boolean(keyPath) || vaultedInitially
-            : authType !== 'Agent' && (willSaveCredential || Boolean(initial?.hasCredential)),
+            : storesSecret && (willSaveCredential || Boolean(initial?.hasCredential)),
           jumpProfileId: jumpProfileId || null,
           // '' means "use the default", which is null rather than 0 — 0 is
           // the distinct, deliberate "turn keepalives off".
@@ -556,6 +583,15 @@ export function ConnectDialog({
                     />
                     SSH agent
                   </label>
+                  <label className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      className="accent-sky-400"
+                      checked={authType === 'Interactive'}
+                      onChange={() => setAuthType('Interactive')}
+                    />
+                    Ask each time
+                  </label>
                 </div>
 
                 {authType === 'Agent' ? (
@@ -563,6 +599,13 @@ export function ConnectDialog({
                     Keys come from Pageant or the Windows OpenSSH agent — whichever is running.
                     Nothing is stored here, and hardware keys (FIDO2, PIV, YubiKey) work this way
                     only.
+                  </p>
+                ) : authType === 'Interactive' ? (
+                  <p className="text-xs text-white/40">
+                    The server asks, you answer, nothing is stored. Use this when the password
+                    shouldn&apos;t live on this machine, or when logging in takes more than a
+                    password — a one-time code, a push, or anything else a server puts in front of
+                    you.
                   </p>
                 ) : authType === 'Password' ? (
                   <>
@@ -872,7 +915,7 @@ export function ConnectDialog({
                     <option value={NEW_FOLDER_SENTINEL}>+ New folder...</option>
                   </select>
                 )}
-                {onSaveCredential && (authType === 'Password' || keyStorage === 'path') && (
+                {onSaveCredential && storesSecret && (authType === 'Password' || keyStorage === 'path') && (
                   <label
                     className={`flex items-center gap-2 text-xs ${
                       vaultUnlocked ? 'text-white/70' : 'text-white/30'

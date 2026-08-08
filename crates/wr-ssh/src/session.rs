@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,19 +8,28 @@ use async_trait::async_trait;
 use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{decode_secret_key, PrivateKey};
-use russh::{client, ChannelMsg, Disconnect};
+use russh::{client, ChannelMsg, Disconnect, MethodKind};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
 use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
+use zeroize::Zeroizing;
 
 use crate::config::{AuthMethod, SshConfig};
 use crate::error::SshError;
 use crate::forward::{self, ForwardHandle, ForwardSpec};
 use crate::handler::{ClientHandler, HostKeyVerifier};
 use crate::known_hosts::KnownHostsStore;
+use crate::prompt::{AuthPrompt, AuthPromptField, AuthPrompter};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How many prompt rounds a keyboard-interactive exchange may take before it
+/// is treated as a server that will never finish. Generous against real
+/// stacks — password plus a 2FA challenge plus a retry or two is under five —
+/// and the only thing standing between a misbehaving server and a handshake
+/// that prompts forever.
+const MAX_AUTH_ROUNDS: usize = 32;
 
 /// Everything needed to open an SSH session, before one exists.
 ///
@@ -32,6 +42,10 @@ pub struct SshConnector {
     config: SshConfig,
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
+    /// Answers the server's own auth questions, for keyboard-interactive.
+    /// Second of the two ways this handshake blocks on a human, alongside
+    /// `verifier` — see `crate::prompt`.
+    prompter: Arc<dyn AuthPrompter>,
     remote_forwards: forward::RemoteForwardRegistry,
     initial_cols: u16,
     initial_rows: u16,
@@ -60,6 +74,7 @@ impl SshConnector {
         config: SshConfig,
         known_hosts_path: impl Into<PathBuf>,
         verifier: Arc<dyn HostKeyVerifier>,
+        prompter: Arc<dyn AuthPrompter>,
         initial_cols: u16,
         initial_rows: u16,
     ) -> std::io::Result<Self> {
@@ -68,6 +83,7 @@ impl SshConnector {
             config,
             known_hosts: Arc::new(Mutex::new(known_hosts)),
             verifier,
+            prompter,
             remote_forwards: Arc::new(Mutex::new(HashMap::new())),
             initial_cols,
             initial_rows,
@@ -206,6 +222,8 @@ impl SshConnector {
                     &self.config,
                     self.known_hosts.clone(),
                     self.verifier.clone(),
+                    self.prompter.clone(),
+                    false,
                     self.remote_forwards.clone(),
                 )
                 .await?
@@ -215,10 +233,17 @@ impl SshConnector {
                 // registry — incoming forwarded-tcpip requests are only
                 // meaningful on the final hop, which is what
                 // `self.remote_forwards` is shared with.
+                //
+                // It does share the prompter, flagged `is_jump` so a prompt
+                // can say which hop is asking. Both hops can run their own
+                // interactive exchange, and "Password:" with no host beside
+                // it is how a target's password gets typed into a bastion.
                 let jump_handle = connect_direct(
                     jump_config,
                     self.known_hosts.clone(),
                     self.verifier.clone(),
+                    self.prompter.clone(),
+                    true,
                     Arc::new(Mutex::new(HashMap::new())),
                 )
                 .await?;
@@ -241,6 +266,7 @@ impl SshConnector {
                     channel.into_stream(),
                     self.known_hosts.clone(),
                     self.verifier.clone(),
+                    self.prompter.clone(),
                     self.remote_forwards.clone(),
                 )
                 .await?
@@ -367,6 +393,8 @@ async fn connect_direct(
     config: &SshConfig,
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
+    prompter: Arc<dyn AuthPrompter>,
+    is_jump: bool,
     remote_forwards: forward::RemoteForwardRegistry,
 ) -> Result<client::Handle<ClientHandler>, SshError> {
     let ssh_config = Arc::new(client::Config {
@@ -386,7 +414,7 @@ async fn connect_direct(
     );
 
     let connect_fut = client::connect(ssh_config, (config.host.as_str(), config.port), handler);
-    await_handshake(config, connect_fut, verify_started).await
+    await_handshake(config, connect_fut, verify_started, prompter, is_jump).await
 }
 
 /// Same as `connect_direct`, but runs the handshake over an already-open
@@ -400,6 +428,7 @@ async fn connect_via_stream<S>(
     stream: S,
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
+    prompter: Arc<dyn AuthPrompter>,
     remote_forwards: forward::RemoteForwardRegistry,
 ) -> Result<client::Handle<ClientHandler>, SshError>
 where
@@ -422,7 +451,9 @@ where
     );
 
     let connect_fut = client::connect_stream(ssh_config, stream, handler);
-    await_handshake(config, connect_fut, verify_started).await
+    // Always the final hop: a stream only exists because a jump hop opened
+    // it, so this is the destination the user actually asked for.
+    await_handshake(config, connect_fut, verify_started, prompter, false).await
 }
 
 /// Shared by `connect_direct` and `connect_via_stream`: waits for the
@@ -433,6 +464,8 @@ async fn await_handshake<F>(
     config: &SshConfig,
     connect_fut: F,
     verify_started: Arc<tokio::sync::Notify>,
+    prompter: Arc<dyn AuthPrompter>,
+    is_jump: bool,
 ) -> Result<client::Handle<ClientHandler>, SshError>
 where
     F: std::future::Future<Output = Result<client::Handle<ClientHandler>, SshError>>,
@@ -455,23 +488,97 @@ where
         }
     };
 
-    // No prior art for how long auth should take, but unlike host-key
-    // verification this isn't waiting on a human — a real hang here (bad
-    // server, network stall) should surface as an error rather than
-    // leaving the UI stuck on "Connecting..." forever.
-    tokio::time::timeout(AUTH_TIMEOUT, authenticate(config, &mut handle))
-        .await
-        .map_err(|_| SshError::AuthTimeout {
-            host: config.host.clone(),
-            port: config.port,
-        })??;
+    // A real hang here (bad server, network stall) should surface as an error
+    // rather than leaving the UI stuck on "Connecting..." forever. But since
+    // keyboard-interactive, auth *can* be waiting on a human — the assumption
+    // that only host-key verification does no longer holds, and a flat
+    // `timeout` around the whole exchange would fail every 2FA login in the
+    // time it takes to read a push notification.
+    //
+    // So the budget bounds *server* silence rather than the exchange: each
+    // expiry is forgiven while a prompt is on screen, and once more if one was
+    // answered during the window just elapsed. What that buys is a full
+    // `AUTH_TIMEOUT` of quiet after the user's last keystroke before the
+    // connection is declared dead — at the cost of a genuinely dead server
+    // taking up to two windows to be called, but only on a connection that
+    // prompted at all.
+    // Scoped so the pinned future — and with it the `&mut handle` borrow it
+    // holds — is dropped before the handle is returned.
+    {
+        let progress = Arc::new(AuthProgress::default());
+        let auth_fut = authenticate(config, &mut handle, prompter, is_jump, progress.clone());
+        tokio::pin!(auth_fut);
+
+        let mut seen_answers = progress.answers();
+        loop {
+            tokio::select! {
+                result = &mut auth_fut => break result?,
+                () = tokio::time::sleep(AUTH_TIMEOUT) => {
+                    if progress.should_extend(&mut seen_answers) {
+                        continue;
+                    }
+                    return Err(SshError::AuthTimeout {
+                        host: config.host.clone(),
+                        port: config.port,
+                    });
+                }
+            }
+        }
+    }
 
     Ok(handle)
+}
+
+/// Lets `await_handshake`'s timeout tell "the server is not answering" apart
+/// from "a person is reading a fingerprint off their phone", without either
+/// side needing to know how the other measures time.
+///
+/// Two counters rather than one flag because the flag alone is only true
+/// *during* a prompt: a user who answers at second 14 of a 15-second window
+/// would leave a bare flag false again by the time it is read, and the
+/// connection would be failed after one second of server silence rather than
+/// fifteen.
+#[derive(Default)]
+struct AuthProgress {
+    awaiting_user: AtomicBool,
+    answers: AtomicU64,
+}
+
+impl AuthProgress {
+    fn answers(&self) -> u64 {
+        self.answers.load(Ordering::Relaxed)
+    }
+
+    fn begin_prompt(&self) {
+        self.awaiting_user.store(true, Ordering::Relaxed);
+    }
+
+    fn end_prompt(&self) {
+        self.awaiting_user.store(false, Ordering::Relaxed);
+        self.answers.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Whether an elapsed timeout window should be forgiven rather than
+    /// failing the connection, advancing `seen_answers` to this moment when it
+    /// is. Called once per expiry; `false` means the server has been silent for
+    /// a full window with no human involved, which is the case the timeout
+    /// exists for.
+    fn should_extend(&self, seen_answers: &mut u64) -> bool {
+        let answers = self.answers();
+        let extend = self.awaiting_user.load(Ordering::Relaxed) || answers != *seen_answers;
+        if extend {
+            *seen_answers = answers;
+        }
+        extend
+    }
 }
 
 async fn authenticate(
     config: &SshConfig,
     handle: &mut client::Handle<ClientHandler>,
+    prompter: Arc<dyn AuthPrompter>,
+    is_jump: bool,
+    progress: Arc<AuthProgress>,
 ) -> Result<(), SshError> {
     use russh::client::AuthResult;
 
@@ -508,9 +615,8 @@ async fn authenticate(
                 .await?
         }
         AuthMethod::KeyboardInteractive => {
-            // Wired up to a real prompt round-trip once the UI layer
-            // (task #10) can relay server prompts to the user.
-            return Err(SshError::AuthFailed);
+            return authenticate_keyboard_interactive(config, handle, prompter, is_jump, &progress)
+                .await
         }
         AuthMethod::Agent => return authenticate_with_agent(handle, &config.username).await,
     };
@@ -519,6 +625,200 @@ async fn authenticate(
         AuthResult::Success => Ok(()),
         AuthResult::Failure { .. } => Err(SshError::AuthFailed),
     }
+}
+
+/// Drives an RFC 4256 keyboard-interactive exchange, relaying each round of
+/// the server's questions to `prompter` and its answers back.
+///
+/// Unlike every other method here this is a loop, because the server decides
+/// how many rounds there are and what each one asks: a plain password host
+/// sends one, a PAM stack with 2FA sends "Password:" and then "Verification
+/// code:" as two separate rounds, and a wrong answer can be followed by
+/// another attempt rather than a failure. Nothing about that is knowable
+/// before the exchange starts, which is the whole reason this method exists.
+async fn authenticate_keyboard_interactive(
+    config: &SshConfig,
+    handle: &mut client::Handle<ClientHandler>,
+    prompter: Arc<dyn AuthPrompter>,
+    is_jump: bool,
+    progress: &AuthProgress,
+) -> Result<(), SshError> {
+    use russh::client::KeyboardInteractiveAuthResponse as Response;
+
+    // No submethod hint: it's a request for a *preferred* flavour that
+    // servers are free to ignore, and there is nothing to prefer here.
+    let mut response = handle
+        .authenticate_keyboard_interactive_start(config.username.clone(), None::<String>)
+        .await?;
+
+    // Whether the server has asked the user anything yet. Separates "this
+    // server won't do keyboard-interactive" from "that was the wrong answer",
+    // which arrive as the same `Failure`.
+    let mut asked_anything = false;
+
+    for _ in 0..MAX_AUTH_ROUNDS {
+        let (name, instructions, fields) = match response {
+            Response::Success => return Ok(()),
+            // Accepted, but the server's policy wants a second method on top.
+            // Only this one method is driven here, so there is nothing further
+            // to offer — but the credential was right, and an "authentication
+            // failed" here would send the user to change a working password.
+            Response::Failure {
+                partial_success: true,
+                remaining_methods,
+            } => {
+                return Err(SshError::AuthPartial {
+                    remaining: render_methods(&remaining_methods),
+                })
+            }
+            // A server that does not do keyboard-interactive at all refuses
+            // the opening request, before asking anything — which is not a
+            // rejected credential, because nothing was offered yet. This is
+            // the common case, not an exotic one: Debian and Ubuntu ship
+            // `KbdInteractiveAuthentication no` with `PasswordAuthentication
+            // yes`, so the whole method is off on a large share of hosts.
+            //
+            // The rejection carries the methods that *would* work, so when a
+            // password is among them, ask for one and use it. "Prompt me"
+            // means asking the user at connect time rather than storing a
+            // secret; which wire method carries the answer is the server's
+            // business, not something the user chose.
+            //
+            // Only before the first question, and only when the server named
+            // `password` itself. A failure *after* a round is a wrong answer,
+            // and retrying it as a password would spend another of the
+            // server's limited attempts to ask the same thing again.
+            Response::Failure {
+                remaining_methods, ..
+            } => {
+                if !asked_anything && remaining_methods.contains(&MethodKind::Password) {
+                    return authenticate_password_interactively(
+                        config, handle, prompter, is_jump, progress,
+                    )
+                    .await;
+                }
+                if asked_anything {
+                    return Err(SshError::AuthFailed);
+                }
+                return Err(SshError::AuthMethodUnavailable {
+                    remaining: render_methods(&remaining_methods),
+                });
+            }
+            Response::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => (name, instructions, prompts),
+        };
+
+        let answers = if fields.is_empty() {
+            // A round with nothing to fill in is legal, and is the server
+            // talking rather than asking — an expiry notice, a policy banner.
+            // It needs an (empty) response to move the exchange along, but
+            // putting a dialog on screen with no field and one OK button
+            // trains people to dismiss this whole class of prompt unread.
+            Zeroizing::new(Vec::new())
+        } else {
+            asked_anything = true;
+            // The one place auth blocks on a human. Bracketed so the
+            // handshake's timeout can tell this apart from a stalled server.
+            progress.begin_prompt();
+            let answered = prompter
+                .prompt(AuthPrompt {
+                    name,
+                    instructions,
+                    fields: fields
+                        .iter()
+                        .map(|p| AuthPromptField {
+                            prompt: p.prompt.clone(),
+                            echo: p.echo,
+                        })
+                        .collect(),
+                    host: config.host.clone(),
+                    port: config.port,
+                    is_jump,
+                })
+                .await;
+            progress.end_prompt();
+            // Cancelling abandons the connection rather than sending blanks:
+            // an empty answer is a *wrong* answer, and burns one of the
+            // server's limited attempts on the user's behalf.
+            answered.ok_or(SshError::AuthCancelled)?
+        };
+
+        response = handle
+            .authenticate_keyboard_interactive_respond(answers.to_vec())
+            .await?;
+    }
+
+    Err(SshError::AuthTooManyRounds {
+        rounds: MAX_AUTH_ROUNDS,
+    })
+}
+
+/// Asks for a password and authenticates with the plain `password` method.
+///
+/// The fallback for a server that refuses keyboard-interactive but takes a
+/// password — which is most of them, since Debian and Ubuntu ship
+/// `KbdInteractiveAuthentication no` by default. From the user's side this is
+/// indistinguishable from the interactive path, and it should be: "Prompt me"
+/// is a statement about not storing the secret, not about a wire method.
+///
+/// One attempt. The server counts every failure against `MaxAuthTries`
+/// (OpenSSH defaults to 6, and each rejection here spends one), so silently
+/// re-prompting on a typo would burn that budget invisibly and lock the user
+/// out of the retry they would have made themselves.
+async fn authenticate_password_interactively(
+    config: &SshConfig,
+    handle: &mut client::Handle<ClientHandler>,
+    prompter: Arc<dyn AuthPrompter>,
+    is_jump: bool,
+    progress: &AuthProgress,
+) -> Result<(), SshError> {
+    use russh::client::AuthResult;
+
+    progress.begin_prompt();
+    let answered = prompter
+        .prompt(AuthPrompt {
+            name: String::new(),
+            instructions: String::new(),
+            // Worded like the prompt a server would have sent, because to the
+            // user this *is* that prompt.
+            fields: vec![AuthPromptField {
+                prompt: "Password:".to_string(),
+                echo: false,
+            }],
+            host: config.host.clone(),
+            port: config.port,
+            is_jump,
+        })
+        .await;
+    progress.end_prompt();
+
+    let answers = answered.ok_or(SshError::AuthCancelled)?;
+    let password = answers.first().cloned().unwrap_or_default();
+
+    match handle
+        .authenticate_password(&config.username, password)
+        .await?
+    {
+        AuthResult::Success => Ok(()),
+        AuthResult::Failure { .. } => Err(SshError::AuthFailed),
+    }
+}
+
+/// Renders a server's list of acceptable auth methods for an error message.
+/// Empty lists happen and must not render as an empty string, which reads as
+/// a bug in us rather than a statement about the server.
+fn render_methods(methods: &russh::MethodSet) -> String {
+    if methods.is_empty() {
+        return "no other methods".to_string();
+    }
+    methods
+        .iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Connects to whichever SSH agent is running and tries each identity it
@@ -661,6 +961,76 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+/// The rules `await_handshake`'s auth timeout runs on. Worth pinning
+/// separately from a live handshake because getting these wrong fails
+/// silently in one direction (every 2FA login dies at 15 seconds) and
+/// invisibly in the other (a dead server never times out at all).
+#[cfg(test)]
+mod auth_timeout_tests {
+    use super::*;
+
+    /// The case the timeout exists for: nobody was asked anything, the server
+    /// simply stopped talking.
+    #[test]
+    fn a_silent_server_with_no_prompt_is_not_forgiven() {
+        let progress = AuthProgress::default();
+        let mut seen = progress.answers();
+        assert!(!progress.should_extend(&mut seen));
+    }
+
+    /// A dialog is on screen — the "server" is us, waiting on a person.
+    #[test]
+    fn a_prompt_on_screen_is_forgiven_indefinitely() {
+        let progress = AuthProgress::default();
+        let mut seen = progress.answers();
+        progress.begin_prompt();
+        for _ in 0..100 {
+            assert!(progress.should_extend(&mut seen));
+        }
+    }
+
+    /// The reason there is a counter and not just a flag: answering at second
+    /// 14 of a 15-second window leaves the flag false again by the time the
+    /// window is read, and the connection would be failed after one second of
+    /// server silence rather than a full window of it.
+    #[test]
+    fn answering_late_in_a_window_still_buys_a_full_window() {
+        let progress = AuthProgress::default();
+        let mut seen = progress.answers();
+        progress.begin_prompt();
+        progress.end_prompt();
+        assert!(progress.should_extend(&mut seen));
+    }
+
+    /// ...but only one. A server that goes quiet after the user has answered
+    /// must still be called dead, or a cancelled-looking connection hangs
+    /// forever.
+    #[test]
+    fn silence_after_an_answer_is_forgiven_once_and_then_fails() {
+        let progress = AuthProgress::default();
+        let mut seen = progress.answers();
+        progress.begin_prompt();
+        progress.end_prompt();
+        assert!(progress.should_extend(&mut seen));
+        assert!(!progress.should_extend(&mut seen));
+    }
+
+    /// Each round of a multi-step exchange gets its own grace, so a password
+    /// followed by a 2FA code doesn't spend a budget the first round set.
+    #[test]
+    fn every_round_earns_its_own_extension() {
+        let progress = AuthProgress::default();
+        let mut seen = progress.answers();
+        for _ in 0..5 {
+            progress.begin_prompt();
+            assert!(progress.should_extend(&mut seen));
+            progress.end_prompt();
+            assert!(progress.should_extend(&mut seen));
+            assert!(!progress.should_extend(&mut seen));
+        }
+    }
 }
 
 #[cfg(test)]

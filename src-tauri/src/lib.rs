@@ -59,6 +59,7 @@ pub fn run() {
             ssh::ssh_resize,
             ssh::ssh_disconnect,
             ssh::ssh_respond_host_key,
+            ssh::ssh_respond_auth_prompt,
             ssh::ssh_list_known_hosts,
             ssh::ssh_forget_host_key,
             ssh::ssh_forget_host,

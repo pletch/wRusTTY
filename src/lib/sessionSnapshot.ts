@@ -1,4 +1,5 @@
 import type { ConnectionSource } from './connection'
+import { authNeedsVault } from './profiles'
 import type { SessionProfile } from './profiles'
 import type { PaneNode, Tab } from '../types'
 import { allLeaves } from './paneTree'
@@ -116,10 +117,8 @@ export function countSessions(tabs: Tab[]): number {
 
 /** Whether connecting this saved profile has to go through the vault.
  *
- * Agent auth doesn't: the agent (Pageant, or the Windows OpenSSH agent
- * service) holds the key and does the signing, so there is no stored secret
- * to decrypt — `resolve_auth` in ssh.rs returns `AuthMethod::Agent` before it
- * ever takes the vault lock. A jump host does count even when the target
+ * Agent and keyboard-interactive auth don't — see `authNeedsVault`, which owns
+ * that judgement. A jump host does count even when the target
  * itself is agent-authenticated, because `ssh_connect_profile` resolves the
  * jump profile's *own* auth, which may well be a vaulted password. Only one
  * hop is considered, matching that same function ignoring any jump the jump
@@ -133,10 +132,10 @@ export function countSessions(tabs: Tab[]): number {
 function profileNeedsVault(profileId: string, sessions: SessionProfile[]): boolean {
   const profile = sessions.find((s) => s.id === profileId)
   if (!profile) return true
-  if (profile.authType !== 'agent') return true
+  if (authNeedsVault(profile.authType)) return true
   if (profile.jumpProfileId) {
     const jump = sessions.find((s) => s.id === profile.jumpProfileId)
-    if (!jump || jump.authType !== 'agent') return true
+    if (!jump || authNeedsVault(jump.authType)) return true
   }
   return false
 }

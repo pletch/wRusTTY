@@ -7,7 +7,8 @@ Built with Tauri 2 (Rust) + React.
 Aimed squarely at replacing PuTTY and SuperPuTTY rather than at being a
 general-purpose terminal emulator. It reads PuTTY `.ppk` keys directly (v2
 and v3, encrypted or not), authenticates through Pageant or the Windows
-OpenSSH agent, and supports ProxyJump, port forwarding, Wake-on-LAN, and
+OpenSSH agent, handles 2FA and PAM logins that prompt at connect time, and
+supports ProxyJump, port forwarding, Wake-on-LAN, and
 the serial line-control details a console cable actually needs — break
 signalling, DTR/RTS, local echo, and line-ending control.
 
@@ -180,6 +181,25 @@ that cannot be exported at all, such as a FIDO2 security key or a PIV
 smartcard. Note that servers cap authentication attempts (OpenSSH's
 `MaxAuthTries` defaults to 6), so an agent loaded with many keys can be cut
 off before the right one is reached.
+
+**Interactive login ("Ask each time").** For a credential that should not be
+stored at all, and the only auth method that can answer a challenge the server
+invents — a one-time code, a Duo push, an expiry notice mid-login. The server's
+own prompts are shown verbatim, one dialog per round, for as many rounds as it
+asks; a field the server marks as secret is masked, one it does not is not.
+Nothing is written to the vault, so these sessions connect without unlocking it.
+
+A jumped connection authenticates twice and says which end is asking, since a
+bastion and its target routinely send word-for-word identical prompts.
+
+Two things happen automatically. A server with
+`KbdInteractiveAuthentication no` — the default on Debian and Ubuntu — refuses
+the method outright; it names a password as acceptable instead, so one is asked
+for and sent that way. And choosing password auth while leaving the field empty,
+with nothing stored to fall back on, prompts rather than sending a blank that
+could only be rejected. Cancelling any of these prompts abandons the connection
+rather than submitting an empty answer, which the server would count against
+`MaxAuthTries`.
 
 **Terminal type.** Set per session, and reaching the far end by different
 means per protocol: SSH sends it with the PTY request, telnet answers the

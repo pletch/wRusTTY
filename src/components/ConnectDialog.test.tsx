@@ -114,3 +114,74 @@ describe('the Wake-on-LAN field', () => {
     expect((macField() as HTMLInputElement).value).toBe('aa:bb:cc:dd:ee:ff')
   })
 })
+
+/**
+ * How the auth radios turn into an `AuthMethod`.
+ *
+ * The interesting case is a blank password field, which carries two different
+ * meanings depending on whether a credential is stored — and used to carry a
+ * third, useless one (send an empty string and be rejected) when neither
+ * applied.
+ */
+
+/** Submits the form with `host`/`username` filled in, returning the source. */
+async function connectWith(
+  props: Partial<Parameters<typeof ConnectDialog>[0]>,
+  fill: (user: ReturnType<typeof userEvent.setup>) => Promise<void> = async () => {},
+) {
+  let source: unknown = null
+  const user = userEvent.setup()
+  render(dialog({ ...props, onConnect: (s: unknown) => void (source = s) }))
+  await user.type(screen.getByPlaceholderText('host'), 'example.net')
+  await user.type(screen.getByPlaceholderText('username'), 'tim')
+  await fill(user)
+  await user.click(screen.getByRole('button', { name: 'Connect' }))
+  return source as { protocol: string; config?: { auth: { type: string; password?: string } } }
+}
+
+describe('the auth method a blank password field produces', () => {
+  it('asks at connect time when nothing is typed and nothing is stored', async () => {
+    // Used to send `{ type: 'Password', password: '' }`, which the server can
+    // only reject — and each rejection spends one of its limited attempts.
+    const source = await connectWith({})
+    expect(source.config?.auth.type).toBe('KeyboardInteractive')
+  })
+
+  it('still sends a typed password as a password', async () => {
+    const source = await connectWith({}, async (user) => {
+      await user.type(screen.getByPlaceholderText('password'), 'hunter2')
+    })
+    expect(source.config?.auth).toEqual({ type: 'Password', password: 'hunter2' })
+  })
+
+  it('leaves the stored-credential reading of a blank field alone', async () => {
+    // A saved session's password field starts blank because the plaintext
+    // never comes back to the webview. That blank means "use the vault", and
+    // must keep routing through the profile rather than prompting.
+    const source = await connectWith({
+      initial: {
+        id: 'saved-1',
+        protocol: 'ssh',
+        host: 'example.net',
+        username: 'tim',
+        authType: 'Password',
+        hasCredential: true,
+      },
+    })
+    expect(source.protocol).toBe('sshProfile')
+  })
+})
+
+describe('the "ask each time" auth option', () => {
+  it('is offered by name', () => {
+    render(dialog())
+    expect(screen.getByText('Ask each time')).toBeTruthy()
+  })
+
+  it('produces keyboard-interactive auth', async () => {
+    const source = await connectWith({}, async (user) => {
+      await user.click(screen.getByText('Ask each time'))
+    })
+    expect(source.config?.auth.type).toBe('KeyboardInteractive')
+  })
+})

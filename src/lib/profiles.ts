@@ -14,7 +14,7 @@ export interface SessionProfile {
   /** SSH only — empty string for telnet. */
   username: string
   /** SSH only — empty string for telnet. */
-  authType: 'password' | 'public_key' | 'agent' | ''
+  authType: 'password' | 'public_key' | 'agent' | 'keyboard_interactive' | ''
   keyPath: string | null
   // Whether a credential for this profile is stored in the vault. Tracked
   // here (not just inferred by asking the vault) because the vault can't
@@ -39,6 +39,19 @@ export interface SessionProfile {
   wakeOnLan: WakeOnLan | null
   /** Serial only — null for SSH and telnet. */
   serial: SerialProfile | null
+}
+
+/** Whether connecting with this auth type needs a secret out of the vault.
+ *
+ * Two auth types don't have one, for opposite reasons: `agent` keeps the key
+ * in the agent, which signs on our behalf, and `keyboard_interactive` gets its
+ * credential typed in at connect time and never stores it. Both are resolved
+ * by `resolve_auth` in ssh.rs before it ever takes the vault lock, so making
+ * either wait on an unlock prompt would be asking for a secret that isn't
+ * there. Shared so the "should we prompt to unlock?" check and the sidebar's
+ * "can this connect directly?" check can't drift apart. */
+export function authNeedsVault(authType: SessionProfile['authType']): boolean {
+  return authType !== 'agent' && authType !== 'keyboard_interactive'
 }
 
 /** What to send to wake a sleeping host, and where.

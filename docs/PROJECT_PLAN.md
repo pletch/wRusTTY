@@ -79,7 +79,16 @@ mosh, RDP) means adding a crate, not touching the UI.
 
 ### Recommended additions — security (mostly cheap wins with russh)
 - **keyboard-interactive auth** — required for many 2FA/PAM setups **(shipped —
-  `AuthMethod::KeyboardInteractive`)**
+  `AuthMethod::KeyboardInteractive`, exposed in the connect dialog as "Ask each
+  time")**. Full RFC 4256 round-trip: the server's own prompts are relayed to a
+  dialog per round, masked when the server says `echo: false`, for as many
+  rounds as it asks. Jump hops prompt separately and say so. Nothing is stored
+  — this is the auth type for a password that shouldn't live on the machine,
+  and the only one that can answer a one-time code. Servers that refuse the
+  method outright (Debian/Ubuntu ship `KbdInteractiveAuthentication no`) fall
+  back to prompting and using the plain `password` method. Password auth with
+  an empty field and no stored credential routes here too, rather than sending
+  a blank that can only be rejected.
 - **ssh-agent support** — Windows OpenSSH agent (named pipe) and Pageant
   **(shipped — both, tried in that order; see `wr-ssh/src/session.rs`)**
 - **Encrypted key files** — OpenSSH and PuTTY `.ppk` private keys with a
@@ -369,9 +378,13 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - Encrypted OpenSSH key file support with passphrase prompt
 - Single-session UI: quick-connect dialog → live terminal tab
 - Keepalive; clean error surfaces (auth failed vs host unreachable vs key mismatch)
-- Integration tests against a containerized sshd — **not built**. `wr-ssh/tests`
-  holds key fixtures and no test target, so every SSH path is covered by unit
-  tests and by hand. CI (`ci.yml`, `audit.yml`) does run.
+- Integration tests against a containerized sshd — **not built**, and now
+  partly unnecessary: `wr-ssh/tests/keyboard_interactive.rs` stands a `russh`
+  *server* up on a loopback port and drives a real handshake against it, with
+  no container and no sshd. That covers the auth path whose behaviour is
+  decided by the server (how many rounds, what each asks, which fields are
+  secret) and is the pattern to copy for the rest. Every other SSH path is
+  still covered by unit tests and by hand. CI (`ci.yml`, `audit.yml`) does run.
 
 ### Phase 2 — Tabs & session manager
 - Multi-tab UI (Tabby-style tab bar), per-tab connection state, close/duplicate/reconnect

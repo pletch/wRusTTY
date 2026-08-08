@@ -20,6 +20,36 @@ pub enum SshError {
     #[error("authentication failed")]
     AuthFailed,
 
+    /// The user dismissed an interactive authentication prompt. Distinct from
+    /// `AuthFailed` because nothing was rejected — reporting "authentication
+    /// failed" for a cancelled dialog sends people hunting for a wrong
+    /// password that was never sent.
+    #[error("authentication was cancelled")]
+    AuthCancelled,
+
+    /// The server accepted the interactive exchange but wants another method
+    /// on top of it (SSH's `partial success`). Only keyboard-interactive is
+    /// driven here, so there is nothing further to offer — but this is a
+    /// server policy question, not a bad credential, and says so.
+    #[error(
+        "the server accepted this credential but requires additional authentication ({remaining})"
+    )]
+    AuthPartial { remaining: String },
+
+    /// The server refused interactive authentication outright and offers
+    /// nothing this can drive instead. Says what it *will* take, because the
+    /// answer is almost always "switch this session to a key or the agent" and
+    /// a bare "authentication failed" hides that completely.
+    #[error("the server refused interactive authentication; it will accept: {remaining}")]
+    AuthMethodUnavailable { remaining: String },
+
+    /// The server kept asking without ever accepting or rejecting. Bounded
+    /// rather than trusted: a round trip that always returns another prompt
+    /// would otherwise park the handshake forever, and the per-round timeout
+    /// can't catch it because the server is answering promptly every time.
+    #[error("authentication did not finish after {rounds} rounds of prompts")]
+    AuthTooManyRounds { rounds: usize },
+
     /// Distinct from `AuthFailed` because the fix is completely different:
     /// the server never rejected anything, we couldn't reach an agent or it
     /// had nothing to offer.

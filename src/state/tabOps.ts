@@ -35,7 +35,9 @@ export function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
         ? 'Password'
         : profile.authType === 'agent'
           ? 'Agent'
-          : 'PublicKey',
+          : profile.authType === 'keyboard_interactive'
+            ? 'Interactive'
+            : 'PublicKey',
     keyPath: profile.keyPath ?? undefined,
     hasCredential: profile.hasCredential,
     jumpProfileId: profile.jumpProfileId,
