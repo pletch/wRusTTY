@@ -413,12 +413,19 @@ impl HelloProvider {
             // Must happen before the call, not after: the prompt is modal and
             // blocks this thread until answered, so there is no "after" until
             // the user has already found the invisible dialog.
-            crate::win_focus::allow_broker_foreground(hwnd);
+            let foreground = crate::win_focus::allow_broker_foreground(hwnd);
             // The prompt's window is unowned and so earns a taskbar button of
             // its own, wearing a generic icon and grouped under the broker
             // rather than under us. Dropped once `f` returns, which is also
             // when the prompt has closed.
-            let button = crate::win_focus::hide_broker_taskbar_button();
+            //
+            // Gated on having taken the foreground, because that button is
+            // also the user's way of *finding* a prompt that opened behind
+            // something. When the grant is good the prompt comes to the
+            // front and the button is pure clutter; when it isn't, removing
+            // it would hide a modal dialog that is already hidden. Keep the
+            // clutter in exactly the case where it might be load-bearing.
+            let button = foreground.then(crate::win_focus::hide_broker_taskbar_button);
             let result = f();
             drop(button);
             crate::win_focus::restore_after_broker_prompt(&window, hwnd);

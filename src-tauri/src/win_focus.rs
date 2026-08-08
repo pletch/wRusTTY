@@ -65,6 +65,18 @@
 //!
 //! The window stays in the Alt-Tab list either way, so a prompt that opened
 //! behind something is still reachable.
+//!
+//! # The two halves are coupled
+//!
+//! Deleting the button and getting the prompt to the front look like separate
+//! problems and are not. That button is also how a user *finds* a prompt that
+//! opened behind something, so removing it is only safe when the prompt is
+//! going to be in front — otherwise it hides a modal dialog that is already
+//! hidden, which is a worse bug than the cosmetic one being fixed.
+//!
+//! `allow_broker_foreground` therefore reports whether it actually took the
+//! foreground, and the caller only arms `hide_broker_taskbar_button` when it
+//! did. The clutter stays in exactly the case where it might be load-bearing.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -135,17 +147,59 @@ fn force_foreground(hwnd: HWND) {
 /// `AllowSetForegroundWindow(ASFW_ANY)` is the documented way to hand that
 /// right over: the current foreground process voluntarily grants the next
 /// process to ask permission to steal it. The `SetForegroundWindow` first is
-/// not redundant — the grant is only honoured when the process making it
+/// not redundant: the grant is only honoured when the process making it
 /// actually holds foreground, which may have lapsed if a prompt from an
-/// earlier attempt is still on screen.
-pub(crate) fn allow_broker_foreground(hwnd: HWND) {
+/// earlier attempt is still on screen. A grant made without it fails
+/// silently, which is the whole intermittent bug.
+///
+/// # If we don't already hold the foreground, nothing here rescues it
+///
+/// It is tempting to reach for `force_foreground` below instead, on the
+/// theory that its `AttachThreadInput` trick would satisfy the lock where a
+/// bare call cannot. Measured, it does not: from a process that is not the
+/// foreground process, both the bare call and the attach version fail to take
+/// the foreground from an ordinary, same-integrity window. This is not the
+/// UIPI boundary that blocks everything else in this module — it is the
+/// foreground lock itself doing exactly its job, and modern Windows no longer
+/// falls for the classic workaround.
+///
+/// So this call is best-effort and always was. What changed is that it now
+/// says so: it reports whether we ended up holding the foreground, which is
+/// the difference between a grant that will be honoured and one that will be
+/// ignored, and the caller adapts rather than assuming success.
+#[must_use]
+pub(crate) fn allow_broker_foreground(hwnd: HWND) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
-        AllowSetForegroundWindow, SetForegroundWindow, ASFW_ANY,
+        AllowSetForegroundWindow, GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindow,
+        ASFW_ANY, SW_RESTORE,
     };
 
     unsafe {
+        // A minimized window cannot be activated into the foreground, and an
+        // unlock that runs at startup is exactly when we might be minimized.
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+
         let _ = SetForegroundWindow(hwnd);
+
+        // Checked rather than assumed: a denied `SetForegroundWindow` does
+        // not report failure usefully, so the only trustworthy answer is to
+        // ask who holds the foreground now.
+        let held = GetForegroundWindow() == hwnd;
         let _ = AllowSetForegroundWindow(ASFW_ANY);
+
+        if !held {
+            // Worth a log line rather than silence: this is the precondition
+            // for the prompt appearing in front, and when it is false the
+            // prompt will probably open behind something. Without this there
+            // is nothing to correlate against a user reporting exactly that.
+            log::warn!(
+                "could not take foreground before the Windows Hello prompt; \
+                 it may open behind other windows"
+            );
+        }
+        held
     }
 }
 
