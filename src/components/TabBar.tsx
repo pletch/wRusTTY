@@ -242,7 +242,12 @@ function PaneIndicator({
 function statusDotColor(status: string | undefined): string | null {
   if (!status) return null
   if (status === 'connected') return 'bg-emerald-400'
-  if (status.startsWith('failed') || status === 'disconnected') return 'bg-red-400'
+  // `lost` joins the red states rather than the amber in-flight ones: the
+  // session is down. A reconnect following it goes amber like any other
+  // not-connected-yet state, which is what it is.
+  if (status.startsWith('failed') || status === 'disconnected' || status === 'lost') {
+    return 'bg-red-400'
+  }
   return 'bg-amber-400'
 }
 

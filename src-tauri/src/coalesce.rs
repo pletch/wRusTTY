@@ -367,6 +367,20 @@ pub fn ack_delivery(session_id: String, bytes: u64) {
 /// `log_data` sees every flushed chunk before it's sent to the webview —
 /// session-transcript logging hooks in here (see `logging.rs`) so logged
 /// bytes never have to round-trip back over IPC from the frontend.
+///
+/// `on_status` sees every status before it is forwarded, and exists for
+/// auto-reconnect: `session_registry.rs` needs to know the transport died, and
+/// this is the one place in the process that already sees that event. The
+/// alternative — a task interposed on `rx` — would make every `Data` chunk pay
+/// an extra channel hop for the benefit of an event that fires once per
+/// connection, and would double the buffering the bound above is there to
+/// impose. It is a *synchronous* `Fn` for the same reason `flush` is: nothing
+/// on this loop may block, since not draining `rx` is what applies
+/// backpressure to the transport.
+// Seven arguments, exactly at clippy's threshold. The last three are each a
+// distinct consumer of the same stream — render, log, supervise — and a struct
+// grouping them would be built once at the only call site and destructured
+// immediately here.
 pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     session_id: String,
     mut rx: Receiver<ConnectionEvent>,
@@ -374,6 +388,7 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     data_channel: Channel<InvokeResponseBody>,
     make_status: impl Fn(&ConnectionStatus) -> E,
     log_data: impl Fn(&[u8]) + Send,
+    on_status: impl Fn(&ConnectionStatus) + Send,
 ) {
     let flow = flow_for(&session_id);
     let mut buf: Vec<u8> = Vec::new();
@@ -407,6 +422,11 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
                         if !flush(&data_channel, &mut buf, &log_data, &flow) {
                             break;
                         }
+                        // Before the send, so a supervisor still learns of a
+                        // drop when the webview has already gone away — that
+                        // is the case where the `break` below would otherwise
+                        // swallow it.
+                        on_status(&status);
                         if status_channel.send(make_status(&status)).is_err() {
                             break;
                         }
@@ -534,6 +554,7 @@ mod tests {
                 status: format!("{status:?}"),
             },
             |_: &[u8]| {},
+            |_: &ConnectionStatus| {},
         ));
 
         // One oversized burst (flushes on the size branch, carrying the whole
@@ -587,6 +608,7 @@ mod tests {
                 status: format!("{status:?}"),
             },
             |_: &[u8]| {},
+            |_: &ConnectionStatus| {},
         ));
 
         // Enough to overrun the window several times over, with nothing acking.
@@ -718,6 +740,7 @@ mod tests {
                 status: format!("{status:?}"),
             },
             |_: &[u8]| {},
+            |_: &ConnectionStatus| {},
         ));
 
         tx.send(ConnectionEvent::Data(b"hello ".to_vec()))
@@ -752,6 +775,7 @@ mod tests {
                 status: format!("{status:?}"),
             },
             |_: &[u8]| {},
+            |_: &ConnectionStatus| {},
         ));
 
         let big = vec![b'x'; FLUSH_SIZE_THRESHOLD];
@@ -798,14 +822,17 @@ mod tests {
                 status: format!("{status:?}"),
             },
             |_: &[u8]| {},
+            |_: &ConnectionStatus| {},
         ));
 
         tx.send(ConnectionEvent::Data(b"before".to_vec()))
             .await
             .unwrap();
-        tx.send(ConnectionEvent::Status(ConnectionStatus::Disconnected))
-            .await
-            .unwrap();
+        tx.send(ConnectionEvent::Status(ConnectionStatus::Disconnected(
+            wr_core::DisconnectKind::Closed,
+        )))
+        .await
+        .unwrap();
         drop(tx);
         handle.await.unwrap();
 

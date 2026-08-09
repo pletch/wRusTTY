@@ -11,7 +11,7 @@ use russh::keys::{decode_secret_key, PrivateKey};
 use russh::{client, ChannelMsg, Disconnect, MethodKind};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
-use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
+use wr_core::{ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
 use zeroize::Zeroizing;
 
 use crate::config::{AuthMethod, SshConfig};
@@ -176,6 +176,38 @@ impl Connector for SshConnector {
 
         result
     }
+
+    /// The rule is not "did this fail" but "does trying again cost anything".
+    ///
+    /// Every rejected credential spends one of the server's `MaxAuthTries`
+    /// (OpenSSH allows 6 by default), so a background retry loop would lock
+    /// the account out on the user's behalf without ever showing them why —
+    /// and would do it while nobody is watching, which is the whole point of
+    /// auto-reconnect. A rejected host key is worse: retrying past it is
+    /// exactly the thing the prompt exists to prevent.
+    ///
+    /// Timeouts are the other way round. `Timeout` and `AuthTimeout` both mean
+    /// the far side went quiet, which is a network symptom rather than a
+    /// verdict on the credential, and is precisely the case auto-reconnect
+    /// exists for.
+    fn retryable(error: &SshError) -> bool {
+        !matches!(
+            error,
+            SshError::HostKeyRejected { .. }
+                | SshError::AuthFailed
+                | SshError::AuthCancelled
+                | SshError::AuthPartial { .. }
+                | SshError::AuthMethodUnavailable { .. }
+                | SshError::AuthTooManyRounds { .. }
+                // Neither of these is fixed by waiting: the agent is not
+                // running, or it is and the server refused everything in it.
+                | SshError::AgentUnavailable(_)
+                | SshError::AgentRejected { .. }
+                // A missing or unreadable key file is a configuration fault.
+                | SshError::KeyNotFound(_)
+                | SshError::KeyLoad(_)
+        )
+    }
 }
 
 #[async_trait]
@@ -199,7 +231,14 @@ impl Session for SshSession {
     async fn disconnect(&mut self) -> Result<(), SshError> {
         self.input_tx = None;
         self.resize_tx = None;
+        // Both cells, not just the first. `transfer_sftp` was missed here, and
+        // was harmless only for as long as a disconnected session was always
+        // on its way to being dropped: a cell still holding a client for a
+        // channel on a dead connection hands that same dead channel back
+        // forever. The moment a session id survives its transport — which is
+        // what auto-reconnect is — that becomes a live bug.
         self.sftp = tokio::sync::OnceCell::new();
+        self.transfer_sftp = tokio::sync::OnceCell::new();
         if let Some(handle) = self.handle.take() {
             // Dropping input/resize senders stops the pumping tasks; ignore
             // errors here since the transport may already be gone.
@@ -352,8 +391,24 @@ impl SshConnector {
                                     break;
                                 }
                             }
-                            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                                let _ = output_events.send(ConnectionEvent::Status(ConnectionStatus::Disconnected)).await;
+                            // The far end finished — the shell exited, or the
+                            // server closed the channel. Reconnecting after
+                            // this would fight the user.
+                            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
+                                let _ = output_events.send(ConnectionEvent::Status(
+                                    ConnectionStatus::Disconnected(DisconnectKind::Closed),
+                                )).await;
+                                break;
+                            }
+                            // `wait()` yielding nothing is the *transport*
+                            // having gone: the russh session task ended under
+                            // us, which is what a dropped link or an expired
+                            // keepalive looks like from here. Nobody asked for
+                            // it, so it is the one worth undoing.
+                            None => {
+                                let _ = output_events.send(ConnectionEvent::Status(
+                                    ConnectionStatus::Disconnected(DisconnectKind::Lost),
+                                )).await;
                                 break;
                             }
                             _ => {}

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_serial::SerialPort;
-use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
+use wr_core::{ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
 
 use crate::config::{translate_line_ending, SerialConfig};
 use crate::error::SerialError;
@@ -159,18 +159,27 @@ impl SerialConnector {
 
         tokio::spawn(async move {
             let mut buf = [0u8; 4096];
-            loop {
+            // An adapter being unplugged is the best case auto-reconnect has:
+            // the profile resolves its COM port from the adapter's USB identity
+            // rather than a stored port name, so plugging it back in — into any
+            // socket — is enough. Telling that apart from a deliberate close is
+            // all this needs to carry. See `DisconnectKind`.
+            let kind = 'pump: loop {
                 tokio::select! {
                     result = stream.read(&mut buf) => {
                         match result {
-                            Ok(0) | Err(_) => break,
+                            // The port went out from under us: unplugged,
+                            // driver removed, adapter reset.
+                            Err(_) => break 'pump DisconnectKind::Lost,
+                            Ok(0) => break 'pump DisconnectKind::Closed,
                             Ok(n) => {
                                 if output_events
                                     .send(ConnectionEvent::Data(buf[..n].to_vec()))
                                     .await
                                     .is_err()
                                 {
-                                    break;
+                                    // Our end let go, not the adapter's.
+                                    break 'pump DisconnectKind::Closed;
                                 }
                             }
                         }
@@ -178,8 +187,11 @@ impl SerialConnector {
                     cmd = rx.recv() => {
                         match cmd {
                             Some(WriteCommand::Data(bytes)) => {
+                                // A write failing is the same physical event as
+                                // a read failing, and often the first to notice
+                                // it: the port is gone.
                                 if stream.write_all(&bytes).await.is_err() {
-                                    break;
+                                    break 'pump DisconnectKind::Lost;
                                 }
                                 if local_echo
                                     && output_events
@@ -187,7 +199,7 @@ impl SerialConnector {
                                         .await
                                         .is_err()
                                 {
-                                    break;
+                                    break 'pump DisconnectKind::Closed;
                                 }
                             }
                             Some(WriteCommand::Dtr(level)) => {
@@ -216,13 +228,17 @@ impl SerialConnector {
                                     }
                                 }
                             }
-                            None => break,
+                            // The session dropped its sender, which is what
+                            // `disconnect` does. Asked for, by definition.
+                            None => break 'pump DisconnectKind::Closed,
                         }
                     }
                 }
-            }
+            };
             let _ = output_events
-                .send(ConnectionEvent::Status(ConnectionStatus::Disconnected))
+                .send(ConnectionEvent::Status(ConnectionStatus::Disconnected(
+                    kind,
+                )))
                 .await;
         });
 

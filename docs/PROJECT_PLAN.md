@@ -703,3 +703,7 @@ progress UI to put on the other channel anyway.
   channel forever (Phase 6, "what is not", item 1); and the rekey corner above,
   which is the same session-lifetime question asked earlier. Building it once
   closes all three; building it per-symptom closes none of them properly.
+  **Scoped in `docs/AUTO_RECONNECT_PLAN.md`** — the short version is that
+  `SessionRegistry`'s `Slot` enum already has the shape for it, so a reconnect
+  can keep the session id and with it the scrollback, whereas today's Reconnect
+  button remounts the pane and loses it.

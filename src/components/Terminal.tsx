@@ -22,7 +22,8 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
-import type { AuthPromptField, ConnectionSource, ConnEvent } from '../lib/connection'
+import { isDisconnect, parseReconnecting } from '../lib/connection'
+import type { AuthPromptField, ConnectionSource, ConnEvent, Reconnecting } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
@@ -314,6 +315,15 @@ export function Terminal({
   // leaving a dead terminal (or auto-closing, which App does when the setting
   // is on). Reset to false on every remount, i.e. every reconnect.
   const [disconnected, setDisconnected] = useState(false)
+  // An auto-reconnect in flight. The pane deliberately does *not* remount for
+  // one — that is the whole point, and what keeps the scrollback — so unlike
+  // the two states above this one has to be cleared explicitly when the
+  // connection comes back.
+  const [reconnecting, setReconnecting] = useState<Reconnecting | null>(null)
+  // Read from inside the connection effect's event handler, which closes over
+  // the state from the render that set it up and would never see the update.
+  const reconnectingRef = useRef<Reconnecting | null>(null)
+  reconnectingRef.current = reconnecting
   // The rendering engine itself never came up, so this pane will stay blank no
   // matter what the connection does. Deliberately distinct from the connection
   // failures above rather than folded into them: the session underneath may be
@@ -1181,9 +1191,10 @@ export function Terminal({
       if (disposed) return
       setConnecting(false)
       switch (event.type) {
-        case 'status':
+        case 'status': {
           onStatusRef.current?.(event.status)
-          if (event.status.startsWith('failed') || event.status === 'disconnected') {
+          const retry = parseReconnecting(event.status)
+          if (event.status.startsWith('failed') || isDisconnect(event.status)) {
             term.writeln(`\r\n[${event.status}]`)
             // Whatever was running went down with the connection. Its real
             // outcome is unknowable from here, so drop it silently rather
@@ -1194,14 +1205,36 @@ export function Terminal({
             tracker.reset()
             progressTracker.reset()
           }
-          if (event.status.startsWith('failed')) {
+          if (retry) {
+            // Supersedes both terminal states: the run is still going, and the
+            // "failed" the last attempt reported is a step in it rather than a
+            // verdict. Giving up arrives as its own `failed`, which is what
+            // finally sticks.
+            setReconnecting(retry)
+            setConnectFailed(null)
+            setDisconnected(false)
+          } else if (event.status.startsWith('failed')) {
+            setReconnecting(null)
             setConnectFailed(event.status.replace(/^failed: /, ''))
-          } else if (event.status === 'disconnected' && !settingsRef.current.closeOnDisconnect) {
+          } else if (event.status === 'connected') {
+            if (reconnectingRef.current) {
+              // Be honest about what came back. SSH has no session resumption:
+              // the remote process is gone, the working directory is back to
+              // the login default, and anything unsaved in a full-screen
+              // program is lost. The scrollback survives because it is ours,
+              // not the server's — so say where the seam is rather than let
+              // the old output imply continuity with the new.
+              term.writeln('\r\n[reconnected — this is a new shell]')
+            }
+            setReconnecting(null)
+          } else if (isDisconnect(event.status) && !settingsRef.current.closeOnDisconnect) {
             // When auto-close is on, App closes the pane instead — no overlay
             // (it'd only flash for the ~800ms before the pane vanishes).
+            setReconnecting(null)
             setDisconnected(true)
           }
           break
+        }
         case 'hostKeyPrompt':
           setHostKeyPrompt({
             requestId: event.requestId,
@@ -1898,6 +1931,19 @@ export function Terminal({
           <AlertTriangle size={20} className="text-red-400" />
           <p className="max-w-xs text-white/70">{connectFailed}</p>
           {disconnectActions}
+        </div>
+      )}
+      {reconnecting && (
+        // Deliberately not a full cover: the scrollback behind it is the whole
+        // reason the pane did not remount, and hiding it would make a
+        // four-second outage look like a pane that died. A strip, so what was
+        // on screen stays readable while the connection comes back.
+        <div className="animate-in fade-in slide-in-from-top-1 pointer-events-none absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-200/90 duration-fast">
+          <Unplug size={13} className="animate-pulse" />
+          <span>
+            Connection lost — reconnecting in {reconnecting.inSeconds}s
+            {reconnecting.attempt > 1 && ` (attempt ${reconnecting.attempt})`}
+          </span>
         </div>
       )}
       {disconnected && !connectFailed && (

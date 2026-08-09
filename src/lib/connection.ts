@@ -196,6 +196,30 @@ export function respondAuthPrompt(requestId: string, responses: string[] | null)
   return invoke<void>('ssh_respond_auth_prompt', { requestId, responses })
 }
 
+/** An auto-reconnect in progress, parsed out of the backend's status string.
+ *
+ * The wire format is `status_label` in src-tauri/src/connection_status.rs —
+ * `"reconnecting: <attempt> in <seconds>"`. Keep the two in step; this is the
+ * only place that knows the shape. */
+export type Reconnecting = { attempt: number; inSeconds: number }
+
+export function parseReconnecting(status: string): Reconnecting | null {
+  const match = /^reconnecting: (\d+) in (\d+)$/.exec(status)
+  if (!match) return null
+  return { attempt: Number(match[1]), inSeconds: Number(match[2]) }
+}
+
+/** Whether a status means the session is over — as opposed to merely between
+ * connections.
+ *
+ * `disconnected` is a clean close (the shell exited, the server hung up) and
+ * `lost` is the transport going away without being asked to. Both end the
+ * session as it was; the difference is that only `lost` may be followed by a
+ * `reconnecting` status, which is why the two are separate words at all. */
+export function isDisconnect(status: string): boolean {
+  return status === 'disconnected' || status === 'lost'
+}
+
 export function sourceLabel(source: ConnectionSource): string {
   switch (source.protocol) {
     case 'ssh':

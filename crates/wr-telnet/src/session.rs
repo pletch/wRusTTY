@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
+use wr_core::{ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
 
 use crate::config::TelnetConfig;
 use crate::error::TelnetError;
@@ -174,41 +174,53 @@ impl TelnetConnector {
         tokio::spawn(async move {
             let mut parser = Parser::new();
             let mut buf = [0u8; 4096];
-            loop {
+            // Carried out of the loop rather than assumed, because telnet's two
+            // ways of ending read almost identically here and mean opposite
+            // things to auto-reconnect. See `DisconnectKind`.
+            let kind = 'read: loop {
                 let n = match read_half.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    // A clean FIN: the server hung up, which is what logging
+                    // out of a remote host looks like.
+                    Ok(0) => break 'read DisconnectKind::Closed,
+                    // A reset, an unreachable host, an interface going down.
+                    Err(_) => break 'read DisconnectKind::Lost,
                     Ok(n) => n,
                 };
 
                 let out = parser.feed(&buf[..n]);
 
+                // The remaining exits are all *this* side letting go — the
+                // session was disconnected, or the webview went away — so the
+                // status they report is moot; nothing is left to receive it.
                 if !out.data.is_empty()
                     && output_events
                         .send(ConnectionEvent::Data(out.data))
                         .await
                         .is_err()
                 {
-                    break;
+                    break 'read DisconnectKind::Closed;
                 }
                 if !out.replies.is_empty() && !send_reply(&reply_tx, out.replies).await {
-                    break;
+                    break 'read DisconnectKind::Closed;
                 }
                 if out.terminal_type_requested {
                     let bytes = protocol::encode_terminal_type(&term_type);
                     if !send_reply(&reply_tx, bytes).await {
-                        break;
+                        break 'read DisconnectKind::Closed;
                     }
                 }
                 if out.naws_accepted {
                     let (cols, rows) = *last_size.lock().await;
                     let bytes = protocol::encode_naws(cols, rows);
                     if !send_reply(&reply_tx, bytes).await {
-                        break;
+                        break 'read DisconnectKind::Closed;
                     }
                 }
-            }
+            };
             let _ = output_events
-                .send(ConnectionEvent::Status(ConnectionStatus::Disconnected))
+                .send(ConnectionEvent::Status(ConnectionStatus::Disconnected(
+                    kind,
+                )))
                 .await;
         });
 

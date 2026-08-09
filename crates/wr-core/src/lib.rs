@@ -8,5 +8,5 @@ mod events;
 mod session;
 
 pub use connection::{Connector, Session};
-pub use events::{ConnectionEvent, ConnectionStatus};
+pub use events::{ConnectionEvent, ConnectionStatus, DisconnectKind};
 pub use session::{Protocol, SessionId};

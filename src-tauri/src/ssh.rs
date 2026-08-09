@@ -265,7 +265,56 @@ pub async fn ssh_connect(
         let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
         config.jump = Some(Box::new(jump_config));
     }
-    start_connection(app, config, wake, channel, data_channel, cols, rows, &state).await
+
+    // A one-off connection has no profile to re-resolve from, so the only way
+    // to reconnect it is to keep the config it was given — which for most auth
+    // types means keeping a live credential for the pane's whole lifetime, and
+    // that is exactly what decision 2 rules out. So it reconnects only when the
+    // config holds no secret to retain in the first place.
+    let reconnect = keeps_no_secret(&config).then(|| {
+        let config = config.clone();
+        move || {
+            let config = config.clone();
+            async move { Ok(config) }
+        }
+    });
+
+    start_connection(
+        app,
+        config,
+        wake,
+        channel,
+        data_channel,
+        cols,
+        rows,
+        &state,
+        reconnect,
+    )
+    .await
+}
+
+/// Whether a config can be held for the life of a session without holding a
+/// secret with it — the condition for auto-reconnecting a connection that has
+/// no profile behind it.
+///
+/// The agent keeps its own key and signs on request, and a key path with no
+/// passphrase is a filename that is re-read per attempt. Everything else is
+/// either a live secret (`password`, a passphrase, key material) or a question
+/// for a human (`keyboard_interactive`), and a jump hop counts the same way:
+/// the weaker of the two hops decides.
+fn keeps_no_secret(config: &SshConfig) -> bool {
+    fn hop(auth: &AuthMethod) -> bool {
+        match auth {
+            AuthMethod::Agent => true,
+            AuthMethod::PublicKey { passphrase, .. } => passphrase.is_none(),
+            AuthMethod::Password { .. }
+            | AuthMethod::PublicKeyMaterial { .. }
+            | AuthMethod::KeyboardInteractive => false,
+        }
+    }
+    // `map_or(true, ..)` rather than `is_none_or`, which is newer than the
+    // crate's MSRV.
+    hop(&config.auth) && config.jump.as_ref().map_or(true, |jump| hop(&jump.auth))
 }
 
 /// Connects using a saved session profile's vault-stored credential,
@@ -288,13 +337,33 @@ pub async fn ssh_connect_profile(
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
     let profile = profiles::get_profile(&app, &profile_id)?;
-    let mut config = build_ssh_config(&profile, &vault_state).await?;
+    let config = resolve_profile_config(&app, &profile_id, &vault_state).await?;
 
-    if let Some(jump_id) = &profile.jump_profile_id {
-        let jump_profile = profiles::get_profile(&app, jump_id)?;
-        let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
-        config.jump = Some(Box::new(jump_config));
-    }
+    // Both hops have to be answerable without a human, since a reconnect
+    // authenticates twice and either one can park on a prompt.
+    let jump_asks = match &profile.jump_profile_id {
+        Some(jump_id) => !reconnects_unattended(&profiles::get_profile(&app, jump_id)?),
+        None => false,
+    };
+    let reconnect = (reconnects_unattended(&profile) && !jump_asks).then(|| {
+        let app = app.clone();
+        let profile_id = profile_id.clone();
+        move || {
+            let app = app.clone();
+            let profile_id = profile_id.clone();
+            // Every attempt goes back through the vault rather than reusing
+            // what the first connect resolved, so the secret is fetched and
+            // dropped per attempt — and so that editing the profile's host or
+            // port takes effect on the next attempt rather than replaying what
+            // was baked in when the pane opened. The cost is that reconnect
+            // inherits the vault's state: locked means the attempt fails and
+            // the run keeps trying, so unlocking within the window is enough.
+            async move {
+                let vault_state = app.state::<VaultState>();
+                resolve_profile_config(&app, &profile_id, &vault_state).await
+            }
+        }
+    });
 
     start_connection(
         app,
@@ -305,8 +374,28 @@ pub async fn ssh_connect_profile(
         cols,
         rows,
         &state,
+        reconnect,
     )
     .await
+}
+
+/// A saved profile's full `SshConfig`, jump hop included, resolved from the
+/// vault as of right now. Its own function because auto-reconnect runs it again
+/// per attempt — see the factory in `ssh_connect_profile`.
+async fn resolve_profile_config(
+    app: &AppHandle,
+    profile_id: &str,
+    vault_state: &VaultState,
+) -> Result<SshConfig, String> {
+    let profile = profiles::get_profile(app, profile_id)?;
+    let mut config = build_ssh_config(&profile, vault_state).await?;
+
+    if let Some(jump_id) = &profile.jump_profile_id {
+        let jump_profile = profiles::get_profile(app, jump_id)?;
+        let jump_config = build_ssh_config(&jump_profile, vault_state).await?;
+        config.jump = Some(Box::new(jump_config));
+    }
+    Ok(config)
 }
 
 /// Resolves `profile`'s own auth from the vault and builds a plain
@@ -316,7 +405,7 @@ pub async fn ssh_connect_profile(
 /// is supported.
 async fn build_ssh_config(
     profile: &profiles::SessionProfile,
-    vault_state: &State<'_, VaultState>,
+    vault_state: &VaultState,
 ) -> Result<SshConfig, String> {
     let auth = resolve_auth(profile, vault_state).await?;
     Ok(SshConfig {
@@ -330,9 +419,23 @@ async fn build_ssh_config(
     })
 }
 
+/// Whether a profile's credential can be produced again with nobody watching.
+///
+/// The table this encodes, and why it is a feature rather than a limitation:
+/// `agent` reconnects because the agent holds the key and signs again, and a
+/// vault-stored password or key reconnects if the vault is still unlocked.
+/// `keyboard_interactive` — "ask each time" — cannot, by construction: there is
+/// nothing stored, and a session whose whole point is that its credential is
+/// never written down must not sprout a password dialog at 3am because a link
+/// flapped. Those panes keep the manual Reconnect button, which is what it is
+/// for.
+fn reconnects_unattended(profile: &profiles::SessionProfile) -> bool {
+    profile.auth_type != "keyboard_interactive"
+}
+
 async fn resolve_auth(
     profile: &profiles::SessionProfile,
-    vault_state: &State<'_, VaultState>,
+    vault_state: &VaultState,
 ) -> Result<AuthMethod, String> {
     // Both handled before the vault is touched, for opposite reasons: the
     // agent holds its key itself, and keyboard-interactive asks the user at
@@ -389,11 +492,42 @@ async fn resolve_auth(
     }
 }
 
-// Eight, one past clippy's threshold, and every one of them is already the
+/// Builds a connector for one attempt, wiring in the prompts that belong to
+/// this session id.
+///
+/// Its own function because auto-reconnect needs to do this again per attempt
+/// (`Connector::connect` consumes the connector), and because the verifier and
+/// prompter must keep pointing at the *same* session id across a reconnect —
+/// that is what lets `ssh_disconnect` answer a prompt a retry is parked on when
+/// the pane closes.
+fn build_connector(
+    app: &AppHandle,
+    session_id: &str,
+    channel: &Channel<SshEvent>,
+    config: SshConfig,
+    cols: u16,
+    rows: u16,
+) -> Result<SshConnector, String> {
+    let known_hosts = known_hosts_path(app)?;
+    let verifier = Arc::new(TauriHostKeyVerifier {
+        app: app.clone(),
+        channel: channel.clone(),
+        session_id: session_id.to_string(),
+    });
+    let prompter = Arc::new(TauriAuthPrompter {
+        app: app.clone(),
+        channel: channel.clone(),
+        session_id: session_id.to_string(),
+    });
+    SshConnector::new(config, known_hosts, verifier, prompter, cols, rows)
+        .map_err(|e| e.to_string())
+}
+
+// Nine, two past clippy's threshold, and every one of them is already the
 // shape the two commands above hold — a struct here would exist only to be
 // built twice and destructured once.
 #[allow(clippy::too_many_arguments)]
-async fn start_connection(
+async fn start_connection<MakeCfg, Fut>(
     app: AppHandle,
     config: SshConfig,
     wake: Option<WakeOnLan>,
@@ -402,19 +536,19 @@ async fn start_connection(
     cols: u16,
     rows: u16,
     state: &State<'_, SshState>,
-) -> Result<String, String> {
+    // Produces a *fresh* config for each reconnect attempt, or `None` to opt
+    // this session out of auto-reconnect. Re-resolved rather than retained:
+    // `AuthMethod` is `ZeroizeOnDrop` precisely so the copy cloned out of the
+    // vault at connect time is not the one left in freed heap, and keeping a
+    // resolved credential alive for a long-lived session's whole life to make
+    // retries cheap would quietly reverse that for every pane in the app.
+    reconnect_config: Option<MakeCfg>,
+) -> Result<String, String>
+where
+    MakeCfg: Fn() -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<SshConfig, String>> + Send,
+{
     let session_id = state.sessions.next_session_id();
-    let known_hosts = known_hosts_path(&app)?;
-    let verifier = Arc::new(TauriHostKeyVerifier {
-        app: app.clone(),
-        channel: channel.clone(),
-        session_id: session_id.clone(),
-    });
-    let prompter = Arc::new(TauriAuthPrompter {
-        app: app.clone(),
-        channel: channel.clone(),
-        session_id: session_id.clone(),
-    });
 
     // A magic packet is a broadcast on the local segment; the host behind a
     // jump is, by definition, not on it. Waking would send the packet
@@ -439,12 +573,27 @@ async fn start_connection(
     // will use.
     let target = wake.map(|wake| (config.host.clone(), config.port, wake));
 
-    let connector = SshConnector::new(config, known_hosts, verifier, prompter, cols, rows)
-        .map_err(|e| e.to_string())?;
+    let connector = build_connector(&app, &session_id, &channel, config, cols, rows)?;
+
+    let reconnect = reconnect_config.map(|resolve| {
+        let app = app.clone();
+        let channel = channel.clone();
+        let session_id = session_id.clone();
+        move || {
+            let app = app.clone();
+            let channel = channel.clone();
+            let session_id = session_id.clone();
+            let config = resolve();
+            async move {
+                let config = config.await?;
+                build_connector(&app, &session_id, &channel, config, cols, rows)
+            }
+        }
+    });
 
     state
         .sessions
-        .spawn_connect_prepared(
+        .spawn_connect(
             app,
             session_id.clone(),
             connector,
@@ -458,6 +607,7 @@ async fn start_connection(
                     crate::wake::wake_and_wait(&host, port, &wake, &events).await
                 }
             }),
+            reconnect,
         )
         .await;
 

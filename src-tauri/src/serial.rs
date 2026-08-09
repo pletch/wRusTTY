@@ -14,7 +14,7 @@ use tauri::{AppHandle, State};
 use wr_serial::{PortInfo, SerialConfig, SerialConnector};
 
 use crate::connection_status::status_label;
-use crate::session_registry::SessionRegistry;
+use crate::session_registry::{NoPrepare, SessionRegistry};
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -54,6 +54,11 @@ pub async fn serial_connect(
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
     let session_id = state.sessions.next_session_id();
+    // A one-off connection names its port directly, so there is nothing to
+    // re-resolve — replugging into a different socket gives a different COM
+    // number and this will not find it. That is what `serial_connect_profile`
+    // is for.
+    let reconnect_config = config.clone();
     state
         .sessions
         .spawn_connect(
@@ -65,6 +70,11 @@ pub async fn serial_connect(
             |status| SerialEvent::Status {
                 status: status_label(status),
             },
+            None::<NoPrepare>,
+            Some(move || {
+                let config = reconnect_config.clone();
+                async move { Ok(SerialConnector::new(config)) }
+            }),
         )
         .await;
     Ok(session_id)
@@ -85,7 +95,51 @@ pub async fn serial_connect_profile(
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
-    let profile = crate::profiles::get_profile(&app, &profile_id)?;
+    let config = resolve_profile_config(&app, &profile_id)?;
+
+    let session_id = state.sessions.next_session_id();
+    // Auto-reconnect costs serial nothing and pays it the most. Because every
+    // attempt goes back through `resolve_profile_config`, an adapter unplugged
+    // and plugged back into a *different* socket — a new COM number, which is
+    // what makes this hard for anything keyed on a port name — is found again
+    // by its USB identity with no serial-specific logic anywhere in the retry
+    // loop.
+    let reconnect_app = app.clone();
+    let reconnect_profile_id = profile_id.clone();
+    state
+        .sessions
+        .spawn_connect(
+            app,
+            session_id.clone(),
+            SerialConnector::new(config),
+            channel,
+            data_channel,
+            |status| SerialEvent::Status {
+                status: status_label(status),
+            },
+            None::<NoPrepare>,
+            Some(move || {
+                let app = reconnect_app.clone();
+                let profile_id = reconnect_profile_id.clone();
+                async move { resolve_profile_config(&app, &profile_id).map(SerialConnector::new) }
+            }),
+        )
+        .await;
+    Ok(session_id)
+}
+
+/// Reads a serial profile and resolves its adapter to whatever COM number it
+/// holds *right now*.
+///
+/// Its own function because auto-reconnect runs it again per attempt, which is
+/// the whole reason replugging works: the answer is allowed to be different
+/// each time, and an adapter that is not back yet is a plain error the retry
+/// loop treats like any other failed attempt.
+fn resolve_profile_config(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<wr_serial::SerialConfig, String> {
+    let profile = crate::profiles::get_profile(app, profile_id)?;
     let serial = profile
         .serial
         .ok_or_else(|| format!("session profile {profile_id} is not a serial session"))?;
@@ -113,21 +167,7 @@ pub async fn serial_connect_profile(
         }
     };
 
-    let session_id = state.sessions.next_session_id();
-    state
-        .sessions
-        .spawn_connect(
-            app,
-            session_id.clone(),
-            SerialConnector::new(serial.to_config(port_name)),
-            channel,
-            data_channel,
-            |status| SerialEvent::Status {
-                status: status_label(status),
-            },
-        )
-        .await;
-    Ok(session_id)
+    Ok(serial.to_config(port_name))
 }
 
 /// Names an adapter the way its owner thinks of it, for an error message.

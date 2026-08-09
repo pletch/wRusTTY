@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ScrollText, Zap } from 'lucide-react'
 import * as serial from '../lib/serial'
+import { parseReconnecting } from '../lib/connection'
 import { toast } from '../lib/toast'
 import { estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 
@@ -10,7 +11,9 @@ import { estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 function statusDotColor(status: string | undefined): string {
   if (status === 'connected') return 'bg-emerald-400'
   if (!status) return 'bg-white/25'
-  if (status.startsWith('failed') || status === 'disconnected') return 'bg-red-400'
+  if (status.startsWith('failed') || status === 'disconnected' || status === 'lost') {
+    return 'bg-red-400'
+  }
   return 'bg-amber-400'
 }
 
@@ -19,6 +22,12 @@ function statusLabel(status: string | undefined): string {
   // The backend sends "failed: <reason>" — the reason already surfaces as a
   // toast (see App.tsx), so the bar just needs the short state word.
   if (status.startsWith('failed')) return 'Failed'
+  // ...but the countdown is the whole content of this one: "this will come
+  // back on its own in 8 seconds" is a different thing to be told than "this
+  // is hung", which is the distinction the status exists to draw.
+  const retry = parseReconnecting(status)
+  if (retry) return `Reconnecting in ${retry.inSeconds}s`
+  if (status === 'lost') return 'Connection lost'
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 

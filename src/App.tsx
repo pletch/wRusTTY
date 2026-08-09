@@ -34,7 +34,7 @@ import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
 import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
-import { sourceLabel } from './lib/connection'
+import { isDisconnect, parseReconnecting, sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
@@ -353,6 +353,13 @@ function App() {
       .show()
       .catch(() => {})
   }, [])
+
+  // Panes with an auto-reconnect run under way, so the per-attempt failures a
+  // run produces don't each raise a toast. A ref rather than state because the
+  // only reader is the onStatus callback, which closes over a render's state
+  // and would always see this one status behind — and because nothing renders
+  // from it: the pane draws its own reconnecting strip from its own state.
+  const reconnectingPanes = useRef(new Set<string>())
 
   // Read by the window-close hook below, which is mounted once and so can't
   // close over the current tabs/settings. Recomputed each render rather than
@@ -1367,7 +1374,26 @@ function App() {
                     // Surfaced even for background tabs — otherwise a
                     // failed connection in a tab you're not looking at is
                     // silent.
-                    if (s.startsWith('failed')) toast.error(s.replace(/^failed: /, ''))
+                    //
+                    // Not while an auto-reconnect run is under way, though.
+                    // Each attempt reports its own failure from inside the
+                    // transport, so a run would raise a dozen toasts for one
+                    // outage and bury the reconnecting state under its own
+                    // progress. Giving up arrives as a final `failed` with the
+                    // run's last error in it, by which point the pane is no
+                    // longer reconnecting and this fires — one toast, carrying
+                    // the reason that actually matters.
+                    if (s.startsWith('failed') && !reconnectingPanes.current.has(leaf.id)) {
+                      toast.error(s.replace(/^failed: /, ''))
+                    }
+                    // A ref, not `statusByPane`: this callback closes over the
+                    // state from the render that installed it, so the map it
+                    // can see is always one status behind — the same staleness
+                    // the close-on-disconnect note below was written about.
+                    if (parseReconnecting(s)) reconnectingPanes.current.add(leaf.id)
+                    else if (s === 'connected' || s.startsWith('failed')) {
+                      reconnectingPanes.current.delete(leaf.id)
+                    }
                     // A clean remote-initiated disconnect (the shell
                     // exited, the server hung up) closes the pane on its
                     // own rather than leaving a dead terminal sitting open
@@ -1384,7 +1410,14 @@ function App() {
                     // the statusByPane from the render that ran *before* the
                     // update above committed, so the check 800ms later still
                     // read the pane as connected.
-                    if (s === 'disconnected' && terminalSettings.closeOnDisconnect) {
+                    //
+                    // Both kinds of disconnect, and so closeOnDisconnect wins
+                    // over auto-reconnect: a pane the user has asked to close
+                    // when the connection goes is not a pane they want quietly
+                    // brought back, and the two settings are otherwise a
+                    // contradiction. Closing removes the session id, which is
+                    // what stops the reconnect run in its tracks.
+                    if (isDisconnect(s) && terminalSettings.closeOnDisconnect) {
                       setTimeout(() => closePaneNow(tab.id, leaf.id), 800)
                     }
                   }}

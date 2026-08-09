@@ -43,6 +43,22 @@ pub trait Connector: Send + 'static {
     /// what stops a second `connect` on something already connected from
     /// being expressible.
     async fn connect(self, events: Sender<ConnectionEvent>) -> Result<Self::Session, Self::Error>;
+
+    /// Whether a failed attempt is worth making again unattended.
+    ///
+    /// Only consulted while auto-reconnecting, and it defaults to `true`
+    /// because the ordinary reason a reconnect fails is a host that is not
+    /// back yet. Override it wherever a retry would *cost* something rather
+    /// than merely not work: an SSH authentication failure spends one of the
+    /// server's `MaxAuthTries` (OpenSSH allows 6), so a background loop of
+    /// them locks the account out on the user's behalf, and a host key that
+    /// has changed must reach a human rather than be retried past.
+    ///
+    /// An associated function rather than a method: by the time the error
+    /// exists the connector has been consumed.
+    fn retryable(_error: &Self::Error) -> bool {
+        true
+    }
 }
 
 /// A transport that has completed its handshake.
