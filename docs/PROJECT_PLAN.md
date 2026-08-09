@@ -5,9 +5,11 @@ modern GUI, tabbed session management, an encrypted credential vault, and
 GPU-accelerated terminal rendering. Remote file browsing, editing and transfer
 over SFTP have since landed — files and whole folders move in both directions,
 streamed, with progress and cancellation; rename, delete, new folder and chmod
-are in the panel's context menu; and a save can no longer quietly overwrite a
-remote file that changed underneath it. What Phase 6 still holds is what happens
-when a transfer *stops*, and an SCP fallback for hosts with no SFTP subsystem.
+are in the panel's context menu; a failed transfer can be retried and resumes
+where it stopped; and a save can no longer quietly overwrite a remote file that
+changed underneath it. What Phase 6 still holds is a transfer surviving the
+*connection* going away — which is auto-reconnect's problem, not the transfer
+layer's — and an SCP fallback for hosts with no SFTP subsystem.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -29,7 +31,7 @@ features were still marked as ideas.
 |---|---|---|
 | App shell | Tauri 2 | Small installer (<10 MB), native WebView2 on Win11, no Electron overhead |
 | Frontend | React + TypeScript + Vite + Tailwind | Matches r-shell; large ecosystem; fast iteration |
-| Terminal | **Vendored Ghostty VT core (WASM) + an in-house WebGL renderer** | Superseded the original xterm.js choice. xterm's addons (search, fit, links, unicode) all had to be reimplemented as a consequence — see `SearchController`, `fitGrid`, `LinkController`. xterm survives only as the benchmark harness's comparison engine (`src/bench`, `lib/xtermEngine.ts`); `src/lib` no longer depends on it |
+| Terminal | **Vendored Ghostty VT core (WASM) + an in-house WebGL renderer** | Superseded the original xterm.js choice. xterm's addons (search, fit, links, unicode) all had to be reimplemented as a consequence — see `SearchController`, `fitGrid`, `LinkController`. xterm survives only as the benchmark harness's comparison engine (`src/bench/xtermEngine.ts`); `src/lib` no longer depends on it. **The vendored core is ghostty `main` at a pin, not the v1.3.1 release** — that port is finished, including keyboard, mouse and paste encoding, and `docs/PORT_GHOSTTY_MAIN.md` is its record. The v1.3.1 build stays in `vendor-131/` as the parity oracle, since without a second implementation the parity suites would compare `main` with itself and pass for nothing |
 | SSH | `russh` + `russh-keys` | Pure Rust (memory-safe crypto surface), async, actively maintained, proven in r-shell |
 | SFTP | `russh-sftp` | Same ecosystem. In use: browsing, editing, and streaming transfer in both directions. Two subsystem channels per session — one for browsing, one for bulk transfers, so a long download doesn't freeze the panel showing its progress |
 | Serial | `serialport` crate | Cross-platform, COM enumeration, USB hotplug |
@@ -418,7 +420,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   signing **not built** — the two that have to be settled before any public
   release
 
-### Phase 6 — Files (extended capability) — **browse, edit, transfer, folders and mutations all ship; retry, resume and SCP do not**
+### Phase 6 — Files (extended capability) — **browse, edit, transfer, folders, mutations, retry and resume all ship; surviving a dropped connection and SCP do not**
 
 #### What is built
 
@@ -692,3 +694,12 @@ progress UI to put on the other channel anyway.
   release. Nothing about signing or auto-update is set up.
 - **No integration test against a real sshd** — the SSH paths that matter most
   are the ones with no automated coverage at all. See Phase 1.
+- **Auto-reconnect is one missing capability wearing three hats**, and it is
+  worth naming as one thing because the plan mentions it in three separate
+  places as though it were three. There is no `autoReconnect` anywhere in the
+  tree. What depends on it: the disconnect overlay, which can only offer a
+  button; a transfer surviving the connection going away, since the session
+  caches its SFTP client in a `OnceCell` and would hand back the same dead
+  channel forever (Phase 6, "what is not", item 1); and the rekey corner above,
+  which is the same session-lifetime question asked earlier. Building it once
+  closes all three; building it per-symptom closes none of them properly.

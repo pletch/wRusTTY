@@ -43,6 +43,55 @@ Raised while reorganising settings into a dialog.
 - **Custom theme colours.** Presets only, no import of an existing scheme.
 - Lower still: selection word separators, scroll sensitivity, rebindable keys.
 
+## Flake: `port_open_reports_a_closed_port_as_closed`
+
+`src-tauri/src/wake.rs:564`. Fails intermittently under `cargo test --workspace`
+and passes every time `wake::` is run on its own, which is the tell.
+
+The test binds an ephemeral port, drops the listener, and asserts nothing
+answers on that number. Its own comment calls this "as close to 'definitely
+closed' as a test can get" — and that is true of a test running alone. It is
+not true here: the neighbouring `wake` tests bind ephemeral ports of their own
+in parallel, the OS is free to hand the just-freed number straight back to one
+of them, and then something *is* listening on it.
+
+So the assumption to fix is the sharing, not the assertion. Either take the
+port from a range nothing else in the file can be handed, or stop the `wake`
+tests racing each other for ephemeral ports. Resist the urge to widen the
+timeout — the failure is a port that is genuinely open, not one that answered
+slowly.
+
+## Performance: one open question, and it is not the baseline
+
+Recorded here because the state of this is easy to misread from
+`EVALUATION_DECISIONS.md`'s table alone — read its 2026-08-07 postscript, not
+just the Decision column.
+
+**The only thing actually undecided is B4**, the `FLUSH_INTERVAL` matrix:
+8/16/24 ms × typing/flood, at `src-tauri/src/coalesce.rs:26`. It resists being
+settled by reasoning because it is a latency-versus-throughput trade rather
+than an optimisation — there is no direction that is just better, so changing
+the constant on argument alone swaps a known-good echo latency for an
+unmeasured throughput gain. A one-line edit and a rebuild per cell.
+
+**The rest of Track B is closed.** B1a and B2 shipped and need no number (both
+are strictly fewer allocations with no behaviour change). B1b and B3 are
+rejected, on evidence that arrived sideways: `tools/parse-probes/iter.mjs`, run
+to justify the ghostty `main` port, measured the worst full redraw at **0.21 ms
+against an 8.3 ms frame**. B3 was deferred pending proof that B1a and B2 left us
+short of target; at ~2.5% of frame budget there is no target being missed, so
+the honest outcome is rejection rather than another deferral.
+
+**The committed baseline (B0) is optional and gates nothing.** Its remaining
+value is regression detection, not tuning. If you do want it, now is the
+cheapest moment — the VT core was swapped underneath (v1.3.1 → `main` at a pin,
+742,403 → 1,308,136 bytes) with no frame-level number on either side, and that
+gap only widens as changes land on top. `docs/bench/README.md` has the
+protocol; it needs your machine, mains power and roughly an untouched hour.
+
+Do not let the harness's existence imply the perf track is unfinished. It is
+finished bar B4.
+
 ## Watch: cursor position after closing a tab
 
 Fixed in 872b9b3 by giving `closeTabNow` the `refit()` every other

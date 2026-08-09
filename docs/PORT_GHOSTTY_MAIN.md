@@ -341,7 +341,14 @@ sending, and whether to ask before pasting.
   text, so nothing reads it; a hyperlink-aware feature would need `grid_ref`.
 - **Per-row dirty is unused.** The renderer redraws the whole viewport. Main can
   skip clean rows at 0.05x-0.14x of a full read (`iter.mjs`), which is the one
-  measured *improvement* the new API offers and the obvious next thing to take.
+  measured *improvement* the new API offers. It was the obvious next thing to
+  take; it is now deliberately **not** being taken. Same page, same probe: the
+  worst full redraw is 0.21 ms against an 8.3 ms frame, so the saving is a
+  fraction of ~2.5% of budget, bought with the most invasive renderer change on
+  the list. Tracked as B3 in `docs/EVALUATION_DECISIONS.md`, where it is now
+  closed as rejected rather than deferred. The capability is real and stays
+  documented here for whoever finds an actual bottleneck on this path — but
+  reach for it then, not on the strength of the ratio alone.
 
 ### Rebuilding
 
