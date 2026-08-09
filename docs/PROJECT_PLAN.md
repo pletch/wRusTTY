@@ -8,8 +8,9 @@ streamed, with progress and cancellation; rename, delete, new folder and chmod
 are in the panel's context menu; a failed transfer can be retried and resumes
 where it stopped; and a save can no longer quietly overwrite a remote file that
 changed underneath it. What Phase 6 still holds is a transfer surviving the
-*connection* going away — which is auto-reconnect's problem, not the transfer
-layer's — and an SCP fallback for hosts with no SFTP subsystem.
+*connection* going away — the session itself now does (see auto-reconnect
+below), but nothing yet resumes an in-flight transfer onto the channel that
+comes back — and an SCP fallback for hosts with no SFTP subsystem.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -138,7 +139,9 @@ mosh, RDP) means adding a crate, not touching the UI.
 - **Port forwarding** — local, remote, and dynamic (SOCKS); PuTTY parity
   requires it **(shipped)**, with a management panel
 - **Keepalive** with visible connection state per tab **(shipped — per-profile
-  interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect is not built.
+  interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect **(partial —
+  the session comes back; what it was holding does not, and there is no
+  per-profile toggle yet. See the watch item in §5)**.
 - **Wake-on-LAN** — a per-profile MAC, sent before connecting to a host that
   isn't answering **(shipped — `src-tauri/src/wake.rs`, run from the registry's
   pre-connect hook)**. Probes first, so an already-awake host is never sent
@@ -279,8 +282,12 @@ mosh, RDP) means adding a crate, not touching the UI.
 - Configurable keyboard shortcuts — **not built**; every binding is hard-coded
   in `Terminal.tsx` and `App.tsx`
 - Duplicate tab / reconnect / "restart session" actions **(shipped — the tab
-  context menu)**. Automatic reconnection on an unexpected drop is not built;
-  the overlay offers the button.
+  context menu)**. Automatic reconnection on an unexpected drop **(shipped)** —
+  and it is a different thing from the button rather than an automatic version
+  of it: the button remounts the pane and loses the scrollback, which is
+  defensible for something pressed deliberately after reading a failure, where
+  auto-reconnect keeps the session id and so keeps everything hanging off it.
+  Both are worth having.
 - Serial QoL: live port hotplug refresh, common baud presets, DTR/RTS toggles
   **(shipped)**, local echo and line-ending options (CR/LF/CRLF) **(shipped)**,
   input mode — Normal/Local echo/Readline/Readline-hex, matching Tabby's
@@ -600,13 +607,19 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 #### What is not, roughly in the order it matters
 
-1. **Surviving a dropped connection**, which is the half of "retry" that is not
-   built and cannot be built here. Resume and the Retry button cover a transfer
-   that *failed*; neither covers the connection itself going away, because the
-   session caches its SFTP client in a `OnceCell` and would hand back the same
-   dead channel on every attempt. Reconnecting is the missing piece, and it is
-   the same missing piece as auto-reconnect generally — so it belongs with that,
-   not with transfers.
+1. **Surviving a dropped connection**, which is the half of "retry" that is
+   still not built — though the reason has changed. Resume and the Retry button
+   cover a transfer that *failed*; neither covers the connection itself going
+   away. The two blockers named here were the session not coming back and the
+   `OnceCell` handing out a dead channel forever; both are now gone
+   (auto-reconnect phase 1 reconnects under the same session id, and
+   `SshSession::disconnect` resets *both* SFTP cells, `transfer_sftp` included).
+   What is left is the part that was always transfer-shaped: nothing notices the
+   reconnect and restarts the transfer against the channel that came back. The
+   resume machinery to do it with already exists. See phase 2 of
+   `docs/AUTO_RECONNECT_PLAN.md`, which also covers port forwards — those are
+   bound to the old `client::Handle` and are silently dead after a reconnect
+   while the panel still lists them.
 2. **The edit save still reads its local file whole.** The download half of that
    round trip streams; the re-upload on save calls `write` with a `Vec<u8>` read
    from the temp copy. Bounded by whatever the user just saved rather than by a
@@ -683,7 +696,10 @@ progress UI to put on the other channel anyway.
   `cat largefile` behave. Kept as a watch item because every one of those
   parts is still load-bearing.
 - **russh coverage** — agent auth and ProxyJump are in and working; rekey
-  behaviour under a long-lived session is still the untested corner.
+  behaviour under a long-lived session is still the untested corner. Auto-
+  reconnect does not test it and was never going to; what it does is make the
+  answer survivable, since a rekey that drops the transport now looks like any
+  other drop and comes back.
 - **WebView2 quirks** — WebGL context loss on GPU driver resets is **handled**
   (`ContextManager`, `rebuildWebglRenderer`), and the note about xterm's canvas
   fallback no longer applies: there is no fallback renderer, so context
@@ -694,16 +710,27 @@ progress UI to put on the other channel anyway.
   release. Nothing about signing or auto-update is set up.
 - **No integration test against a real sshd** — the SSH paths that matter most
   are the ones with no automated coverage at all. See Phase 1.
-- **Auto-reconnect is one missing capability wearing three hats**, and it is
-  worth naming as one thing because the plan mentions it in three separate
-  places as though it were three. There is no `autoReconnect` anywhere in the
-  tree. What depends on it: the disconnect overlay, which can only offer a
-  button; a transfer surviving the connection going away, since the session
-  caches its SFTP client in a `OnceCell` and would hand back the same dead
-  channel forever (Phase 6, "what is not", item 1); and the rekey corner above,
-  which is the same session-lifetime question asked earlier. Building it once
-  closes all three; building it per-symptom closes none of them properly.
-  **Scoped in `docs/AUTO_RECONNECT_PLAN.md`** — the short version is that
-  `SessionRegistry`'s `Slot` enum already has the shape for it, so a reconnect
-  can keep the session id and with it the scrollback, whereas today's Reconnect
-  button remounts the pane and loses it.
+- **Auto-reconnect was one missing capability wearing three hats** — named here
+  as one thing because the plan used to mention it in three separate places as
+  though it were three. **Phase 1 is built** (`docs/AUTO_RECONNECT_PLAN.md`):
+  the reconnect keeps the session id, so the frontend's engine and scrollback,
+  the logging sink, the SFTP edit watchers and the coalescer's credit window all
+  survive a drop, and keystrokes typed mid-reconnect are queued and replayed by
+  the machinery `Slot::Connecting` already had. All three transports, since
+  `SessionRegistry` is generic over `Connector`.
+
+  Of the three hats: the disconnect overlay now has something better than a
+  button; the rekey corner is survivable but still untested; the transfer one is
+  **not** closed — see Phase 6, "what is not", item 1. Still open, and worth
+  keeping on this list rather than declaring the capability done:
+
+  - **Phase 2** — port forwards are dead after a reconnect and the panel still
+    lists them; nothing restarts an in-flight transfer onto the new channel.
+  - **Phase 3** — no per-profile toggle or limits. Auto-reconnect is on for
+    every session that can reconnect unattended, and `closeOnDisconnect`
+    currently wins over it by fiat rather than by a decision anyone made.
+  - **Untested against a real drop.** The registry's logic is pinned against a
+    scripted fake connector, but whether SSH, telnet and serial each classify a
+    *genuine* drop as `Lost` rather than `Closed` is a judgement about `russh`
+    and the OS. It needs a live session and an unplugged cable, and it is the
+    one part of this most likely to be right for the wrong reason.
