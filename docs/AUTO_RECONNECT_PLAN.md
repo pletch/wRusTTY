@@ -3,9 +3,11 @@
 Implementation plan for a session that survives its transport going away.
 
 **Phase 1 is built, and Phase 2's port forwards with it.** The rest of Phase 2
-and all of Phase 3 are not. The three decisions below were
-taken as written and are now load-bearing in the code; what changed on contact
-is recorded under "What Phase 1 actually did" at the end.
+is not, and Phase 3 is a decision short of a feature: its precedence question —
+what `closeOnDisconnect` should do to a reconnect — is settled and shipped, but
+the per-profile toggle and the limits are not built. The three decisions below
+were taken as written and are now load-bearing in the code; what changed on
+contact is recorded under "What Phase 1 actually did" at the end.
 
 This document was written against the code as it stood after the
 keyboard-interactive auth work, and every file and line reference below was
@@ -235,11 +237,22 @@ connection and are silently dead without further work.
   editor. They pick up the new channel through `get_or_open_sftp` once the cell
   is reset.
 
-## Phase 3 — policy *(not built)*
+## Phase 3 — policy *(the precedence is decided; the controls are not built)*
 
 A per-profile toggle, attempt and backoff limits, alongside the existing
 `closeOnDisconnect` setting, which is the nearest neighbour and the obvious
 place for it to live.
+
+**The precedence half is done**, and was the urgent half — see "What Phase 1
+actually did" below. `closeOnDisconnect` fired on both kinds of disconnect,
+which meant the setting silently switched auto-reconnect off for everyone who
+had it on, and it is on by default. It now acts on a session that *ended* and
+leaves a *lost* transport to reconnect. That is what the setting always
+described itself as doing, so it needed no new control to fix — which is why it
+did not wait for the rest of this phase.
+
+What is left is genuinely a feature rather than a correction: per-profile opt
+out, and limits for someone who wants a shorter leash than the built-in budget.
 
 ---
 

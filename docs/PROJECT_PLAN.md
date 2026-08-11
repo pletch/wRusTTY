@@ -147,8 +147,9 @@ mosh, RDP) means adding a crate, not touching the UI.
   carries nothing
 - **Keepalive** with visible connection state per tab **(shipped — per-profile
   interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect **(partial —
-  the session comes back; what it was holding does not, and there is no
-  per-profile toggle yet. See the watch item in §5)**.
+  the session comes back, and so do its port forwards; an in-flight file
+  transfer does not, and there is no per-profile toggle yet. See the watch item
+  in §5)**.
 - **Wake-on-LAN** — a per-profile MAC, sent before connecting to a host that
   isn't answering **(shipped — `src-tauri/src/wake.rs`, run from the registry's
   pre-connect hook)**. Probes first, so an already-awake host is never sent
@@ -746,8 +747,18 @@ progress UI to put on the other channel anyway.
     do. It previously fired on both, and since it is on by default and closing
     a pane drops the session id that a reconnect run needs, most users had
     auto-reconnect silently switched off.
-  - **Untested against a real drop.** The registry's logic is pinned against a
-    scripted fake connector, but whether SSH, telnet and serial each classify a
-    *genuine* drop as `Lost` rather than `Closed` is a judgement about `russh`
-    and the OS. It needs a live session and an unplugged cable, and it is the
-    one part of this most likely to be right for the wrong reason.
+  - **Tested against a real drop — for SSH.** This said "untested", and called
+    it the part most likely to be right for the wrong reason. It has since been
+    run: a live SSH session to a real host, severed by a TCP reset from a relay
+    standing in for the network path, so the transport died without the machine
+    losing the network it was being driven over. `russh` surfaced it as an
+    error rather than a clean close, the registry classified it `Lost`, the
+    retry run started, and the session came back under the same id with its
+    scrollback intact. So the judgement about `russh` and the OS holds where it
+    was most doubted.
+    - **Telnet and serial are still untested**, and are separate judgements —
+      a serial adapter being unplugged is a different event reaching a
+      different crate. Serial is the easiest of the three to test honestly and
+      the best case the feature has.
+    - A reset is not the only shape a drop takes. A link that goes *silent*
+      relies on the keepalive timeout instead, which this did not exercise.
