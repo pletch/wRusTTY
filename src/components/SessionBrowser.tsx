@@ -18,11 +18,20 @@ import type { SessionProfile } from '../lib/profiles'
 import { profileSubtitle, puttySessionCount } from '../lib/profiles'
 import { isPuttyOfferSettled, settlePuttyOffer, runPuttyImport } from '../lib/puttyBanner'
 import type { Workspace } from '../lib/workspaces'
+import { useDismissable } from '../hooks/useDismissable'
+import { menuAnchor } from '../lib/sessionMenu'
 
 const inputClass =
   'rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 const COLLAPSED_FOLDERS_KEY = 'wrustty.collapsed-session-folders'
+
+/** The DOM half of `menuAnchor`, kept separate so the rule itself can be
+ * tested without a layout engine — jsdom reports every rect as zero. */
+function menuPosition(e: React.MouseEvent<HTMLElement>): { x: number; y: number } {
+  const row = e.currentTarget.getBoundingClientRect()
+  return menuAnchor(row.right, e.clientY, window.innerWidth, window.innerHeight)
+}
 
 function loadCollapsedFolders(): Set<string> {
   try {
@@ -149,12 +158,9 @@ export function SessionBrowser({
     if (added) onSessionsImported?.()
   }
 
-  useEffect(() => {
-    if (!menu) return
-    const close = () => setMenu(null)
-    window.addEventListener('click', close)
-    return () => window.removeEventListener('click', close)
-  }, [menu])
+  // Escape only. Clicking away is the backdrop's job — see where it is
+  // rendered for why a window listener cannot do it safely here.
+  useDismissable(menu !== null, () => setMenu(null))
 
   function pickSession(profile: SessionProfile) {
     if (profile.hasCredential && !vaultUnlocked && onUnlockAndSelectSession) {
@@ -379,7 +385,7 @@ export function SessionBrowser({
                         onClick={() => pickSession(s)}
                         onContextMenu={(e) => {
                           e.preventDefault()
-                          setMenu({ profile: s, x: e.clientX, y: e.clientY })
+                          setMenu({ profile: s, ...menuPosition(e) })
                         }}
                         className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06] ${
                           draggedId === s.id ? 'opacity-40' : ''
@@ -457,11 +463,36 @@ export function SessionBrowser({
         </div>
       </div>
 
+      {/* Swallows the click that dismisses the menu.
+       *
+       * A window-level listener cannot do this job, and having one was a real
+       * bug: it closed the menu, but the same click went on to reach whatever
+       * was underneath, and what is underneath a menu here is the session list.
+       * The menu opens *at the cursor* and is taller than a row, so it covers
+       * the entries just below the one that was right-clicked — clicking away
+       * to dismiss it therefore picked one of those. With the vault unlocked
+       * that connects to the wrong host; with it locked the whole browser is
+       * replaced by that host's unlock prompt, which reads as the app deciding
+       * to open a session nobody asked for.
+       *
+       * Dismissing a menu must not also be a click on the thing behind it. */}
+      {menu && (
+        <div
+          data-session-menu-backdrop
+          className="fixed inset-0 z-40"
+          onClick={() => setMenu(null)}
+          // A right-click elsewhere dismisses too, rather than landing on a row
+          // and opening a second menu behind this one.
+          onContextMenu={(e) => {
+            e.preventDefault()
+            setMenu(null)
+          }}
+        />
+      )}
       {menu && (
         <div
           className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
-          onClick={(e) => e.stopPropagation()}
         >
           <button
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
