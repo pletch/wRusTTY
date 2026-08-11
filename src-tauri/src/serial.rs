@@ -14,7 +14,7 @@ use tauri::{AppHandle, State};
 use wr_serial::{PortInfo, SerialConfig, SerialConnector};
 
 use crate::connection_status::status_label;
-use crate::session_registry::{NoPrepare, SessionRegistry};
+use crate::session_registry::{NoPrepare, NoRestore, SessionRegistry};
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -75,6 +75,7 @@ pub async fn serial_connect(
                 let config = reconnect_config.clone();
                 async move { Ok(SerialConnector::new(config)) }
             }),
+            None::<NoRestore>,
         )
         .await;
     Ok(session_id)
@@ -123,6 +124,7 @@ pub async fn serial_connect_profile(
                 let profile_id = reconnect_profile_id.clone();
                 async move { resolve_profile_config(&app, &profile_id).map(SerialConnector::new) }
             }),
+            None::<NoRestore>,
         )
         .await;
     Ok(session_id)

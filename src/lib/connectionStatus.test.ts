@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { isDisconnect, parseReconnecting } from './connection'
+import {
+  isCleanDisconnect,
+  isDisconnect,
+  parseReconnecting,
+  shouldAutoClosePane,
+} from './connection'
 
 /** These two functions are one half of a wire contract — the other half is
  * `status_label` in src-tauri/src/connection_status.rs, which has its own tests
@@ -44,6 +49,52 @@ describe('isDisconnect', () => {
   it('does not treat a failure or an in-flight state as a disconnect', () => {
     for (const status of ['connected', 'connecting', 'waking', 'failed: nope', 'reconnecting: 1 in 1']) {
       expect(isDisconnect(status), status).toBe(false)
+    }
+  })
+})
+
+describe('isCleanDisconnect', () => {
+  it('separates a session that ended from one that was taken away', () => {
+    expect(isCleanDisconnect('disconnected')).toBe(true)
+    expect(isCleanDisconnect('lost')).toBe(false)
+  })
+})
+
+/**
+ * The rule behind `closeOnDisconnect`.
+ *
+ * Pinned because getting it wrong is invisible in the worst way: the setting is
+ * on by default, and closing the pane removes the session id, which is the very
+ * thing that stops a reconnect run. Firing it on `lost` therefore switched
+ * auto-reconnect off for most users while looking like an unrelated preference,
+ * and no test caught it because the two features were only ever exercised
+ * apart.
+ */
+describe('shouldAutoClosePane', () => {
+  it('closes the pane when the session ended cleanly and the setting is on', () => {
+    expect(shouldAutoClosePane('disconnected', true)).toBe(true)
+  })
+
+  it('leaves a lost transport alone, so auto-reconnect can have it', () => {
+    expect(shouldAutoClosePane('lost', true)).toBe(false)
+  })
+
+  it('closes nothing at all when the setting is off', () => {
+    expect(shouldAutoClosePane('disconnected', false)).toBe(false)
+    expect(shouldAutoClosePane('lost', false)).toBe(false)
+  })
+
+  it('never closes on a failure, which has to stay readable', () => {
+    for (const status of [
+      'failed: authentication failed',
+      // A run that used up its budget. The pane is where that message lives
+      // and where the Reconnect button is; closing it would take away both.
+      'failed: could not reconnect after 12 attempts',
+      'connecting',
+      'reconnecting: 2 in 4',
+      'connected',
+    ]) {
+      expect(shouldAutoClosePane(status, true), status).toBe(false)
     }
   })
 })

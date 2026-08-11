@@ -92,16 +92,45 @@ pub struct ForwardHandle {
     /// `cancel_tcpip_forward` when stopping, and the registry key to remove.
     remote: Option<(String, u16)>,
     registry: Option<RemoteForwardRegistry>,
+    /// The port actually bound, which is not always the one asked for: a
+    /// `bind_port` of 0 means "any", and the OS (or, for a remote forward, the
+    /// server) picks. Reported so a caller re-establishing this forward later
+    /// can ask for the same port again rather than silently landing on a
+    /// different one — a client pointed at the old number would otherwise
+    /// break while the forward looked healthy.
+    bound_port: u16,
 }
 
 impl ForwardHandle {
+    pub fn bound_port(&self) -> u16 {
+        self.bound_port
+    }
+
     pub async fn stop(self) -> Result<(), SshError> {
-        self.accept_task.abort();
-        if let Some((addr, port)) = self.remote {
-            if let Some(registry) = &self.registry {
+        let Self {
+            accept_task,
+            handle,
+            remote,
+            registry,
+            bound_port: _,
+        } = self;
+
+        accept_task.abort();
+        // Awaited, not merely aborted. `abort` only *asks*: the task keeps
+        // running until it next reaches an await point, and until it stops it
+        // still owns the `TcpListener`. That is invisible to a caller stopping
+        // a forward for good, and is exactly the race a caller stopping one in
+        // order to rebind the same port loses — which is what re-establishing a
+        // forward after a reconnect does. `Err` here is the cancellation
+        // itself, or a panic already reported by the task; neither is anything
+        // this can act on.
+        let _ = accept_task.await;
+
+        if let Some((addr, port)) = remote {
+            if let Some(registry) = &registry {
                 registry.lock().await.remove(&(addr.clone(), port));
             }
-            self.handle.cancel_tcpip_forward(addr, port as u32).await?;
+            handle.cancel_tcpip_forward(addr, port as u32).await?;
         }
         Ok(())
     }
@@ -150,6 +179,7 @@ async fn start_local(
     target_port: u16,
 ) -> Result<ForwardHandle, SshError> {
     let listener = TcpListener::bind((bind_host.as_str(), bind_port)).await?;
+    let bound_port = listener.local_addr()?.port();
     let handle_for_stop = handle.clone();
 
     let accept_task = tokio::spawn(async move {
@@ -182,6 +212,7 @@ async fn start_local(
         handle: handle_for_stop,
         remote: None,
         registry: None,
+        bound_port,
     })
 }
 
@@ -191,6 +222,7 @@ async fn start_dynamic(
     bind_port: u16,
 ) -> Result<ForwardHandle, SshError> {
     let listener = TcpListener::bind((bind_host.as_str(), bind_port)).await?;
+    let bound_port = listener.local_addr()?.port();
     let handle_for_stop = handle.clone();
 
     let accept_task = tokio::spawn(async move {
@@ -213,6 +245,7 @@ async fn start_dynamic(
         handle: handle_for_stop,
         remote: None,
         registry: None,
+        bound_port,
     })
 }
 
@@ -341,6 +374,7 @@ async fn start_remote(
         handle,
         remote: Some((bind_host, actual_port)),
         registry: Some(registry),
+        bound_port: actual_port,
     })
 }
 

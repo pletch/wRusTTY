@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 use wr_ssh::{
     AuthMethod, AuthPrompt, AuthPrompter, ForwardHandle, ForwardSpec, HostKeyPrompt, HostKeyStatus,
@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::connection_status::status_label;
 use crate::profiles;
-use crate::session_registry::{SessionRegistry, Slot};
+use crate::session_registry::{SessionRegistry, Slot, TransportPhase};
 use crate::vault::VaultState;
 use crate::wake::WakeOnLan;
 
@@ -100,14 +100,111 @@ pub struct SshState {
     /// Outstanding keyboard-interactive prompts. `None` cancels; otherwise one
     /// response per field of the prompt, in order.
     pending_auth: PendingMap<Option<Zeroizing<Vec<String>>>>,
-    /// Keyed by forward id; each entry also remembers its owning session id
-    /// so `ssh_disconnect` can stop every forward that session opened.
-    forwards: TokioMutex<HashMap<String, (String, ForwardHandle)>>,
+    /// Keyed by forward id. See [`Forward`] for why the spec is kept beside
+    /// the handle rather than thrown away once the forward is running.
+    forwards: TokioMutex<HashMap<String, Forward>>,
     /// Request and forward ids only. Session ids come from the registry's own
     /// counter now, so these three no longer share one — they never needed to,
     /// since the prefix is what makes an id unique.
     next_id: AtomicU64,
 }
+
+/// One port forward, live or not.
+///
+/// The spec is kept for the life of the forward, not consumed by starting it.
+/// A `ForwardHandle` is bound to the `client::Handle` it was opened on, so
+/// every forward on a session is dead the moment that connection goes — and
+/// auto-reconnect made that a state the app can now sit in for hours rather
+/// than a moment before everything is torn down. Re-establishing one means
+/// asking for it again from scratch, which needs the spec.
+///
+/// Keeping it here also makes this map the single answer to "what is this
+/// session forwarding". The panel used to hold that list in component state,
+/// so closing it lost track of forwards that were still running in here, with
+/// no way left to stop them.
+struct Forward {
+    /// The session that opened it, so `ssh_disconnect` can stop every forward
+    /// belonging to a pane that is going away.
+    session_id: String,
+    spec: ForwardSpec,
+    /// The port actually bound, once one has been. Not always what `spec`
+    /// asked for: a `bind_port` of 0 means "any", and the frontend produces
+    /// exactly that from an empty port field (`Number(bindPort) || 0`), so this
+    /// is an ordinary input rather than an exotic one. Re-establishing from the
+    /// spec alone would land on a *different* ephemeral port and quietly break
+    /// every client pointed at the old one.
+    bound_port: Option<u16>,
+    /// The running forward — kept even while the connection behind it is dead.
+    /// Dropping it without stopping it would leak the local listener and leave
+    /// the port bound with nothing able to reach it again; stopping it would
+    /// free that port for something else to take before the reconnect can
+    /// rebind. Holding it is what makes a successful restore the normal case.
+    handle: Option<ForwardHandle>,
+    /// Whether the *connection* behind the forward is alive. Deliberately not
+    /// derived from `handle.is_some()`: for the whole of an outage the handle
+    /// is still held (see above) while the `client::Handle` inside it is dead,
+    /// and reading liveness off the handle reported those forwards as working
+    /// — a local listener that accepts and carries nothing, which is the exact
+    /// state this whole change exists to make impossible.
+    live: bool,
+    /// Set while a re-establish is in flight, so a user-pressed retry and a
+    /// reconnect's restore cannot both work on one entry. Without it the loser
+    /// records its "address already in use" onto an entry the winner has just
+    /// brought up, producing a live forward wearing an error.
+    reestablishing: bool,
+    /// Why it is down, verbatim from whatever refused it — in practice "the
+    /// local port is taken", which is the one failure a user can act on.
+    error: Option<String>,
+}
+
+impl Forward {
+    /// What to ask for when opening this forward again: the spec, with the
+    /// port it actually got last time substituted in when it asked for "any".
+    fn spec_to_open(&self) -> ForwardSpec {
+        let Some(bound) = self.bound_port else {
+            return self.spec.clone();
+        };
+        let mut spec = self.spec.clone();
+        match &mut spec {
+            ForwardSpec::Local { bind_port, .. }
+            | ForwardSpec::Remote { bind_port, .. }
+            | ForwardSpec::Dynamic { bind_port, .. } => {
+                if *bind_port == 0 {
+                    *bind_port = bound;
+                }
+            }
+        }
+        spec
+    }
+}
+
+/// What the frontend sees of a [`Forward`]. The handle itself obviously can't
+/// cross the IPC boundary, and `active` is the only thing the panel needs from
+/// it: whether this row is carrying traffic or is a corpse with a reason.
+///
+/// `spec` carries the port actually bound rather than the one asked for, so a
+/// forward the user opened on "any port" names the port it is really listening
+/// on. The panel renders the spec verbatim; sending the literal `0` back would
+/// have it draw `:0`, which is not an address anything can connect to.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardInfo {
+    id: String,
+    spec: ForwardSpec,
+    active: bool,
+    error: Option<String>,
+}
+
+/// The event a panel refetches on.
+///
+/// Status events cannot carry this. `Connected` is emitted from inside
+/// `SshConnector::connect` (`wr-ssh/src/session.rs`), which is *before*
+/// `supervise` publishes the session and before the restore hook runs — so a
+/// panel refetching on the status change reads the forward list as it stood
+/// before the reconnect touched it, and nothing afterwards tells it to look
+/// again. The same race runs the other way at `Lost`. This fires after each
+/// phase has finished writing, so what the panel reads is settled.
+const FORWARDS_CHANGED_EVENT: &str = "ssh-forwards-changed";
 
 impl Default for SshState {
     fn default() -> Self {
@@ -591,6 +688,20 @@ where
         }
     });
 
+    // Given to every SSH session, not only the ones that reconnect
+    // unattended: a session that cannot come back still has forwards that die
+    // with its connection, and saying so is the whole point of the `Lost`
+    // phase. Cheap for a session that forwards nothing — it finds no entries.
+    let on_transport = {
+        let app = app.clone();
+        let session_id = session_id.clone();
+        move |phase| {
+            let app = app.clone();
+            let session_id = session_id.clone();
+            async move { on_transport_phase(&app, &session_id, phase).await }
+        }
+    };
+
     state
         .sessions
         .spawn_connect(
@@ -608,6 +719,7 @@ where
                 }
             }),
             reconnect,
+            Some(on_transport),
         )
         .await;
 
@@ -663,11 +775,11 @@ pub async fn ssh_disconnect(
         let mut forwards = state.forwards.lock().await;
         let ids: Vec<String> = forwards
             .iter()
-            .filter(|(_, (owner, _))| *owner == session_id)
+            .filter(|(_, forward)| forward.session_id == session_id)
             .map(|(id, _)| id.clone())
             .collect();
         ids.into_iter()
-            .filter_map(|id| forwards.remove(&id).map(|(_, handle)| handle))
+            .filter_map(|id| forwards.remove(&id).and_then(|forward| forward.handle))
             .collect()
     };
     for handle in stale {
@@ -699,21 +811,43 @@ pub async fn ssh_add_forward(
     if !confirmed && !wr_ssh::is_loopback_bind_host(spec.bind_host()) {
         return Err(NON_LOOPBACK_BIND_ERROR.to_string());
     }
-    let session = lookup(&state, &session_id).await?;
-    let forward = session
+    let handle = open_forward(&state, &session_id, spec.clone()).await?;
+    let forward_id = state.next_forward_id();
+    state.forwards.lock().await.insert(
+        forward_id.clone(),
+        Forward {
+            session_id,
+            spec,
+            bound_port: Some(handle.bound_port()),
+            handle: Some(handle),
+            live: true,
+            reestablishing: false,
+            error: None,
+        },
+    );
+    Ok(forward_id)
+}
+
+/// Starts one forward on whatever connection `session_id` holds right now.
+///
+/// Shared by the three things that open one — adding, retrying, and restoring
+/// after a reconnect — because "right now" is the whole point: a reconnect
+/// leaves the session id pointing at a different `client::Handle`, and every
+/// caller here wants the current one rather than any it may have seen before.
+async fn open_forward(
+    state: &State<'_, SshState>,
+    session_id: &str,
+    spec: ForwardSpec,
+) -> Result<ForwardHandle, String> {
+    let session = lookup(state, session_id).await?;
+    let handle = session
         .lock()
         .await
         .ready()?
         .add_forward(spec)
         .await
         .map_err(|e| e.to_string())?;
-    let forward_id = state.next_forward_id();
-    state
-        .forwards
-        .lock()
-        .await
-        .insert(forward_id.clone(), (session_id, forward));
-    Ok(forward_id)
+    Ok(handle)
 }
 
 #[tauri::command]
@@ -722,10 +856,203 @@ pub async fn ssh_remove_forward(
     state: State<'_, SshState>,
 ) -> Result<(), String> {
     let entry = state.forwards.lock().await.remove(&forward_id);
-    if let Some((_, handle)) = entry {
+    // `None` for a forward that is already down — removing one of those is
+    // dismissing a row, and there is nothing left to stop.
+    if let Some(handle) = entry.and_then(|forward| forward.handle) {
         handle.stop().await.map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Every forward this session has, live or down.
+///
+/// The backend is the authority on this rather than the panel, which is a
+/// change of ownership and not just an added command: the panel is unmounted
+/// while closed, so a list it kept in component state disappeared with it and
+/// left forwards running that nothing could name, let alone stop.
+#[tauri::command]
+pub async fn ssh_list_forwards(
+    session_id: String,
+    state: State<'_, SshState>,
+) -> Result<Vec<ForwardInfo>, String> {
+    let forwards = state.forwards.lock().await;
+    let mut list: Vec<ForwardInfo> = forwards
+        .iter()
+        .filter(|(_, forward)| forward.session_id == session_id)
+        .map(|(id, forward)| ForwardInfo {
+            id: id.clone(),
+            spec: forward.spec_to_open(),
+            active: forward.live,
+            error: forward.error.clone(),
+        })
+        .collect();
+    // A `HashMap` has no order to offer, and rows that shuffle every time the
+    // panel is opened are hard to read. The counter behind the ids only goes
+    // up, so sorting by it is the order they were added in.
+    list.sort_by_key(|info| forward_sequence(&info.id));
+    Ok(list)
+}
+
+/// The number in a `fwd-N` id, for ordering. An id that somehow doesn't parse
+/// sorts first rather than failing the listing — a wrongly ordered row is a
+/// smaller problem than a panel that won't open.
+fn forward_sequence(id: &str) -> u64 {
+    id.rsplit_once('-')
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Tries a forward that is down again, against the session's current
+/// connection.
+///
+/// The failure this exists for is a local port taken by something else while
+/// the session was away: nothing the app can resolve on the user's behalf, and
+/// entirely fixable by them — so the answer is to say so and offer the retry,
+/// rather than to keep retrying in the background against a port that is not
+/// coming free on its own.
+#[tauri::command]
+pub async fn ssh_retry_forward(
+    forward_id: String,
+    state: State<'_, SshState>,
+) -> Result<(), String> {
+    reestablish(&state, &forward_id).await
+}
+
+/// Re-opens one forward, replacing whatever handle it holds, and records the
+/// outcome on the entry either way.
+async fn reestablish(state: &State<'_, SshState>, forward_id: &str) -> Result<(), String> {
+    let claimed = {
+        let mut forwards = state.forwards.lock().await;
+        match forwards.get_mut(forward_id) {
+            None => None,
+            // Claimed under the same lock that reads it, so two callers cannot
+            // both decide they own this entry.
+            Some(forward) if forward.reestablishing => {
+                return Err("this forward is already being re-established".to_string())
+            }
+            Some(forward) => {
+                forward.reestablishing = true;
+                Some((
+                    forward.session_id.clone(),
+                    forward.spec_to_open(),
+                    forward.handle.take(),
+                ))
+            }
+        }
+    };
+    let Some((session_id, spec, old)) = claimed else {
+        // Stopped while this was being scheduled. Nothing to re-open, and
+        // re-inserting it would resurrect a forward the user closed.
+        return Ok(());
+    };
+
+    // Stopped *before* rebinding, not after. A local or dynamic forward's
+    // listener owns its port until its accept task actually stops, and that
+    // port is the one about to be asked for again — so stopping afterwards, or
+    // not waiting for the stop, fails every restore with "address in use".
+    // Errors are expected and ignored here: a remote forward's cancel is sent
+    // to the connection that just died.
+    if let Some(old) = old {
+        let _ = old.stop().await;
+    }
+
+    let result = open_forward(state, &session_id, spec).await;
+
+    let mut forwards = state.forwards.lock().await;
+    let Some(entry) = forwards.get_mut(forward_id) else {
+        // Stopped while the handshake ran. The handle just opened has no entry
+        // to belong to, so close it rather than leaking a listener nothing
+        // lists.
+        drop(forwards);
+        if let Ok(handle) = result {
+            let _ = handle.stop().await;
+        }
+        return Ok(());
+    };
+    entry.reestablishing = false;
+    match result {
+        Ok(handle) => {
+            entry.bound_port = Some(handle.bound_port());
+            entry.handle = Some(handle);
+            entry.live = true;
+            entry.error = None;
+            Ok(())
+        }
+        Err(message) => {
+            entry.live = false;
+            entry.error = Some(message.clone());
+            Err(message)
+        }
+    }
+}
+
+/// Marks every forward on `session_id` as down, without touching its handle.
+///
+/// Run when the transport dies. The handle stays because both alternatives are
+/// worse: dropping it leaks the local listener, which keeps the port bound with
+/// nothing able to reach it again, and stopping it frees that port for anything
+/// else on the machine to take during the outage — turning a restore that
+/// would have succeeded into the one failure the user cannot fix from here.
+/// So the listener keeps the port warm and this records the truth beside it.
+async fn mark_lost(state: &State<'_, SshState>, session_id: &str) {
+    let mut forwards = state.forwards.lock().await;
+    for forward in forwards.values_mut() {
+        if forward.session_id == session_id {
+            forward.live = false;
+            // Overwrites nothing worth keeping: an error from an earlier failed
+            // attempt describes a connection that has now gone anyway.
+            forward.error = Some("connection lost".to_string());
+        }
+    }
+}
+
+/// What this session's port forwards do when its connection dies and when one
+/// replaces it. Run from the registry's `on_transport` hook.
+///
+/// Without it a reconnect leaves every forward bound to a `client::Handle` that
+/// is gone: the local listener still accepts, the panel still lists it, and
+/// nothing that connects through it goes anywhere. That was invisible before
+/// auto-reconnect, because a dropped session was on its way to being torn down
+/// with its forwards; now the pane comes back and they do not.
+///
+/// Both phases end by emitting [`FORWARDS_CHANGED_EVENT`], which is the only
+/// thing that makes an open panel accurate — see that constant for why the
+/// status events it used to refetch on always arrive too early.
+pub(crate) async fn on_transport_phase(app: &AppHandle, session_id: &str, phase: TransportPhase) {
+    let state = app.state::<SshState>();
+    match phase {
+        TransportPhase::Lost => mark_lost(&state, session_id).await,
+        TransportPhase::Restored => restore_forwards(&state, session_id).await,
+    }
+    // The id, so a panel can ignore other panes' sessions.
+    let _ = app.emit(FORWARDS_CHANGED_EVENT, session_id.to_string());
+}
+
+/// Re-establishes every forward on `session_id` against the connection that
+/// just came back.
+///
+/// One at a time rather than concurrently. These are a handful of binds, the
+/// failures are per-forward and want to be reported as such, and doing them in
+/// order means the panel's rows settle in the order they are listed in.
+async fn restore_forwards(state: &State<'_, SshState>, session_id: &str) {
+    let ids: Vec<String> = {
+        let forwards = state.forwards.lock().await;
+        let mut ids: Vec<String> = forwards
+            .iter()
+            .filter(|(_, forward)| forward.session_id == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort_by_key(|id| forward_sequence(id));
+        ids
+    };
+    for id in ids {
+        if let Err(message) = reestablish(state, &id).await {
+            // Reported on the entry, which is where the panel reads it. Logged
+            // as well because the panel may not be open: a forward that did not
+            // come back is worth being able to find afterwards.
+            log::warn!("could not re-establish forward {id} after reconnect: {message}");
+        }
+    }
 }
 
 #[tauri::command]
@@ -833,4 +1160,102 @@ pub(crate) async fn lookup(
     session_id: &str,
 ) -> Result<Arc<TokioMutex<Slot<SshSession>>>, String> {
     state.sessions.lookup(session_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn forward(spec: ForwardSpec, bound_port: Option<u16>) -> Forward {
+        Forward {
+            session_id: "ssh-0".to_string(),
+            spec,
+            bound_port,
+            handle: None,
+            live: false,
+            reestablishing: false,
+            error: None,
+        }
+    }
+
+    /// A forward opened on "any port" must be re-opened on the port it actually
+    /// got, not on 0 again.
+    ///
+    /// This is not an exotic input: `ForwardPanel` builds `bindPort` as
+    /// `Number(bindPort) || 0`, so an empty port field produces exactly this.
+    /// Replaying the spec verbatim would rebind somewhere else on every
+    /// reconnect, breaking every client pointed at the old number while the row
+    /// still claimed the forward was healthy.
+    #[test]
+    fn a_forward_bound_to_any_port_is_reopened_on_the_port_it_got() {
+        let f = forward(
+            ForwardSpec::Local {
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 0,
+                target_host: "db.internal".to_string(),
+                target_port: 5432,
+            },
+            Some(49_812),
+        );
+        assert!(matches!(
+            f.spec_to_open(),
+            ForwardSpec::Local {
+                bind_port: 49_812,
+                ..
+            }
+        ));
+    }
+
+    /// An explicitly chosen port is never rewritten, even though the bound port
+    /// is recorded for it too — the user asked for that number and a reconnect
+    /// that quietly moved it would be the same bug in the other direction.
+    #[test]
+    fn an_explicit_port_is_left_alone() {
+        let f = forward(
+            ForwardSpec::Dynamic {
+                bind_host: "127.0.0.1".to_string(),
+                bind_port: 1080,
+            },
+            Some(1080),
+        );
+        assert!(matches!(
+            f.spec_to_open(),
+            ForwardSpec::Dynamic {
+                bind_port: 1080,
+                ..
+            }
+        ));
+    }
+
+    /// Nothing bound yet — an entry that has never come up has no better answer
+    /// than the one it was asked for.
+    #[test]
+    fn without_a_bound_port_the_spec_is_used_as_written() {
+        let f = forward(
+            ForwardSpec::Remote {
+                bind_host: "0.0.0.0".to_string(),
+                bind_port: 0,
+                target_host: "localhost".to_string(),
+                target_port: 22,
+            },
+            None,
+        );
+        assert!(matches!(
+            f.spec_to_open(),
+            ForwardSpec::Remote { bind_port: 0, .. }
+        ));
+    }
+
+    /// Ids share one counter with request ids, so the sequence numbers a
+    /// session's forwards carry are not contiguous — only increasing.
+    #[test]
+    fn forwards_are_ordered_by_the_counter_behind_their_ids() {
+        let mut ids = vec![
+            "fwd-12".to_string(),
+            "fwd-3".to_string(),
+            "fwd-7".to_string(),
+        ];
+        ids.sort_by_key(|id| forward_sequence(id));
+        assert_eq!(ids, vec!["fwd-3", "fwd-7", "fwd-12"]);
+    }
 }

@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 use wr_telnet::{TelnetConfig, TelnetConnector};
 
 use crate::connection_status::status_label;
-use crate::session_registry::{NoPrepare, SessionRegistry};
+use crate::session_registry::{NoPrepare, NoRestore, SessionRegistry};
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -67,6 +67,7 @@ pub async fn telnet_connect(
                 let config = reconnect_config.clone();
                 async move { Ok(TelnetConnector::new(config)) }
             }),
+            None::<NoRestore>,
         )
         .await;
     Ok(session_id)

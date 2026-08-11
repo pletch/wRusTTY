@@ -279,6 +279,30 @@ async fn removed<S>(sessions: &SlotMap<S>, session_id: &str) {
 /// passes can't be named at all.
 pub type NoPrepare = fn(mpsc::Sender<ConnectionEvent>) -> std::future::Ready<Result<(), String>>;
 
+/// What has happened to the connection under a session id that is staying put.
+///
+/// Both halves matter to anything bound to the *connection* rather than to the
+/// id. Reporting only [`TransportPhase::Restored`] was the original mistake:
+/// between a drop and the reconnect landing — up to the whole backoff budget,
+/// so minutes — such a thing is already dead, and a caller with no way to hear
+/// about it goes on describing it as healthy for exactly as long.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportPhase {
+    /// The transport died. Whatever was attached to it is dead now, whether or
+    /// not a reconnect is coming — this fires even for a session that cannot
+    /// reconnect unattended, because the thing being reported is the loss, not
+    /// the retry.
+    Lost,
+    /// A reconnect published a new session. Whatever was attached to the old
+    /// connection can be re-established against this one.
+    Restored,
+}
+
+/// The type `None` needs when a transport has nothing attached to a connection,
+/// for the same reason [`NoPrepare`] exists. Telnet and serial pass it: neither
+/// has anything hanging off a connection but the session itself.
+pub type NoRestore = fn(TransportPhase) -> std::future::Ready<()>;
+
 /// The pause before the first retry, doubling from there.
 ///
 /// A second, because the overwhelming majority of real drops are a few seconds
@@ -522,12 +546,20 @@ impl<C: Connector> SessionRegistry<C> {
     /// baked in when the pane first opened. It is also where a credential is
     /// fetched and dropped again per attempt, rather than being held live for
     /// the session's whole lifetime.
-    // Nine arguments, two past clippy's threshold, and the last two are the
-    // ones that earn it: both are optional capabilities of the connection
+    ///
+    /// `on_transport` reports the connection dying and a reconnect replacing
+    /// it — see [`TransportPhase`]. It is for whatever was attached to the
+    /// *connection* rather than to the session id. SSH passes one, to mark its
+    /// port forwards dead and then re-establish them against the handle that
+    /// came back; telnet and serial pass `None` because nothing of theirs
+    /// outlives a transport. It never fires for the first connect, which has
+    /// nothing attached to it yet.
+    // Ten arguments, three past clippy's threshold, and the last three are the
+    // ones that earn it: all are optional capabilities of the connection
     // rather than parts of it. Grouping them would mean a struct built once at
     // each of four call sites and destructured immediately here.
     #[allow(clippy::too_many_arguments)]
-    pub async fn spawn_connect<E, F, P, Fut, MakeC, MakeFut>(
+    pub async fn spawn_connect<E, F, P, Fut, MakeC, MakeFut, R, RFut>(
         &self,
         app: AppHandle,
         session_id: String,
@@ -537,6 +569,7 @@ impl<C: Connector> SessionRegistry<C> {
         make_status: F,
         prepare: Option<P>,
         reconnect: Option<MakeC>,
+        on_transport: Option<R>,
     ) where
         E: Serialize + Clone + Send + 'static,
         F: Fn(&ConnectionStatus) -> E + Send + 'static,
@@ -547,6 +580,8 @@ impl<C: Connector> SessionRegistry<C> {
         // to be `Send`.
         MakeC: Fn() -> MakeFut + Send + Sync + 'static,
         MakeFut: std::future::Future<Output = Result<C, String>> + Send,
+        R: Fn(TransportPhase) -> RFut + Send + Sync + 'static,
+        RFut: std::future::Future<Output = ()> + Send,
     {
         let slot = Arc::new(TokioMutex::new(Slot::Connecting {
             input: Vec::new(),
@@ -627,7 +662,14 @@ impl<C: Connector> SessionRegistry<C> {
             }
 
             supervise(
-                sessions, session_id, slot, tx, down_rx, connector, reconnect,
+                sessions,
+                session_id,
+                slot,
+                tx,
+                down_rx,
+                connector,
+                reconnect,
+                on_transport,
             )
             .await;
 
@@ -658,7 +700,8 @@ impl<C: Connector> SessionRegistry<C> {
 // Owned rather than borrowed so it can be driven as a task of its own — which
 // is how its tests reach it, since a reconnect run is only observable by
 // watching one from the outside while the map and the slot are poked.
-async fn supervise<C, MakeC, MakeFut>(
+#[allow(clippy::too_many_arguments)]
+async fn supervise<C, MakeC, MakeFut, R, RFut>(
     sessions: SlotMap<C::Session>,
     session_id: String,
     slot: SharedSlot<C::Session>,
@@ -666,16 +709,20 @@ async fn supervise<C, MakeC, MakeFut>(
     mut down_rx: mpsc::UnboundedReceiver<()>,
     connector: C,
     reconnect: Option<MakeC>,
+    on_transport: Option<R>,
 ) where
     C: Connector,
     MakeC: Fn() -> MakeFut,
     MakeFut: std::future::Future<Output = Result<C, String>>,
+    R: Fn(TransportPhase) -> RFut,
+    RFut: std::future::Future<Output = ()>,
 {
     let sessions = &sessions;
     let session_id = session_id.as_str();
     let slot = &slot;
     let tx = &tx;
     let reconnect = reconnect.as_ref();
+    let on_transport = on_transport.as_ref();
     // Attempt zero is the connector the caller already built; every one after
     // it comes from the factory.
     let mut pending = Some(connector);
@@ -743,9 +790,28 @@ async fn supervise<C, MakeC, MakeFut>(
                     // The pane went away mid-handshake. Nothing to supervise.
                     return;
                 }
+                let reconnected = ever_connected;
                 ever_connected = true;
                 attempt = 0;
                 run_started = std::time::Instant::now();
+
+                // Only after a reconnect: on a first connect there is nothing
+                // yet attached to the connection, and running it there would
+                // mean every transport's step had to recognise and ignore its
+                // own opening move.
+                //
+                // Awaited rather than spawned, so a second drop during the
+                // restore is seen *after* it rather than raced with it —
+                // otherwise a forward could be re-established onto a handle
+                // that has itself already died, and be recorded as live. The
+                // cost is that `down_rx` is not being read meanwhile; it is
+                // unbounded and a session reports its death once, so nothing
+                // is lost by arriving at it a moment later.
+                if reconnected {
+                    if let Some(on_transport) = on_transport {
+                        on_transport(TransportPhase::Restored).await;
+                    }
+                }
 
                 // Wait for this session to end, or for the pane to close.
                 tokio::select! {
@@ -757,6 +823,17 @@ async fn supervise<C, MakeC, MakeFut>(
 
                 // Only a `Lost` disconnect reaches `down_rx`, so the transport
                 // went away without being asked to.
+                //
+                // Reported before the retry is even considered, and reported
+                // for a session that will never retry too. What died is the
+                // connection, and anything bound to it died with it whether or
+                // not something is coming to replace it — a caller told only
+                // about the replacement describes a dead thing as healthy for
+                // the whole outage, which for a port forward means a local
+                // listener that still accepts and carries nothing.
+                if let Some(on_transport) = on_transport {
+                    on_transport(TransportPhase::Lost).await;
+                }
                 if reconnect.is_none() {
                     return;
                 }
@@ -1481,6 +1558,7 @@ mod tests {
                 script: script.clone(),
             },
             Some(script.factory()),
+            None::<NoRestore>,
         ));
 
         // The first handshake lands.
@@ -1512,6 +1590,121 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
     }
 
+    /// Records every phase the transport hook was told about, in order.
+    type PhaseLog = Arc<std::sync::Mutex<Vec<TransportPhase>>>;
+
+    fn phase_recorder(log: PhaseLog) -> impl Fn(TransportPhase) -> std::future::Ready<()> {
+        move |phase| {
+            log.lock().unwrap().push(phase);
+            std::future::ready(())
+        }
+    }
+
+    /// The transport hook reports the loss *and* the replacement, in that
+    /// order, and neither on the first connect.
+    ///
+    /// The order is the whole point, and getting it wrong was the bug. SSH
+    /// marks its port forwards dead on `Lost` and re-establishes them on
+    /// `Restored`; a hook that reported only the second leaves them described
+    /// as healthy for the entire outage — which, for a forward, means a local
+    /// listener still accepting connections it cannot carry. Asserting only
+    /// that the restore eventually ran is what let that through.
+    #[tokio::test(start_paused = true)]
+    async fn the_transport_hook_reports_the_loss_before_the_replacement() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        let script = Script::shared();
+        let (tx, _rx) = mpsc::channel(64);
+        let (down_tx, down_rx) = mpsc::unbounded_channel();
+
+        let log: PhaseLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let run = tokio::spawn(supervise(
+            registry.sessions.clone(),
+            "fake-0".to_string(),
+            slot.clone(),
+            tx,
+            down_rx,
+            FakeConnector {
+                script: script.clone(),
+            },
+            Some(script.factory()),
+            Some(phase_recorder(log.clone())),
+        ));
+
+        // The first handshake lands — and reports nothing.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(slot.lock().await.ready().is_ok());
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "a first connect has nothing attached to it yet"
+        );
+
+        down_tx.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        assert!(
+            slot.lock().await.ready().is_ok(),
+            "it should have come back"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![TransportPhase::Lost, TransportPhase::Restored],
+            "the loss must be reported when it happens, not implied by the recovery"
+        );
+
+        registry.disconnect("fake-0").await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
+    }
+
+    /// A session that cannot reconnect still loses its connection, and whatever
+    /// was bound to it still has to be told. Reporting `Lost` only on the path
+    /// that leads to a retry would leave a keyboard-interactive session's
+    /// forwards looking live forever, since nothing is ever coming to correct
+    /// the record.
+    #[tokio::test(start_paused = true)]
+    async fn a_session_that_cannot_reconnect_still_reports_the_loss() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        let script = Script::shared();
+        let (tx, _rx) = mpsc::channel(64);
+        let (down_tx, down_rx) = mpsc::unbounded_channel();
+
+        let log: PhaseLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let run = tokio::spawn(supervise::<
+            FakeConnector,
+            fn() -> std::future::Ready<Result<FakeConnector, String>>,
+            _,
+            _,
+            _,
+        >(
+            registry.sessions.clone(),
+            "fake-0".to_string(),
+            slot.clone(),
+            tx,
+            down_rx,
+            FakeConnector {
+                script: script.clone(),
+            },
+            None,
+            Some(phase_recorder(log.clone())),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        down_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(60), run)
+            .await
+            .expect("the run must end")
+            .unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![TransportPhase::Lost],
+            "the loss is reported even though nothing will replace it"
+        );
+    }
+
     /// Keystrokes typed at a pane mid-reconnect are the same case as
     /// keystrokes typed at one mid-handshake, and get the same treatment for
     /// free — which is the reason `Connecting` was the right state to reuse.
@@ -1534,6 +1727,7 @@ mod tests {
                 script: script.clone(),
             },
             Some(script.factory()),
+            None::<NoRestore>,
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1574,6 +1768,7 @@ mod tests {
                 script: script.clone(),
             },
             Some(script.factory()),
+            None::<NoRestore>,
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1612,6 +1807,7 @@ mod tests {
                 script: script.clone(),
             },
             Some(script.factory()),
+            None::<NoRestore>,
         )
         .await;
 
@@ -1643,6 +1839,7 @@ mod tests {
                 script: script.clone(),
             },
             Some(script.factory()),
+            None::<NoRestore>,
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1691,6 +1888,7 @@ mod tests {
                 script: script.clone(),
             },
             Some(script.factory()),
+            None::<NoRestore>,
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1728,6 +1926,8 @@ mod tests {
             FakeConnector,
             fn() -> std::future::Ready<Result<FakeConnector, String>>,
             _,
+            NoRestore,
+            _,
         >(
             registry.sessions.clone(),
             "fake-0".to_string(),
@@ -1737,6 +1937,7 @@ mod tests {
             FakeConnector {
                 script: script.clone(),
             },
+            None,
             None,
         ));
 

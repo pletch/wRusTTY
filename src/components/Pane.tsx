@@ -27,6 +27,10 @@ interface Props {
   onClosePane: (paneId: string) => void
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
+  /** Each pane's connection status. Passed down for the forward panel, which
+   *  has to re-read its list when a pane reconnects — the forwards are
+   *  re-established behind it and some may not have come back. */
+  statusByPane: Record<string, string>
   filesOpenByPane: Record<string, boolean>
   /** The directory each pane's host last *reported*, where it reported one.
    *  The Files panel opens there rather than at the remote home — the same
@@ -105,6 +109,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onClosePane,
     vaultUnlocked,
     forwardsOpenByPane,
+    statusByPane,
     filesOpenByPane,
     cwdByPane,
     titleByPane,
@@ -289,7 +294,11 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         />
       )}
       {forwardsOpenByPane[node.id] && sessionId && (
-        <ForwardPanel sessionId={sessionId} onClose={() => onCloseForwards(node.id)} />
+        <ForwardPanel
+          sessionId={sessionId}
+          status={statusByPane[node.id]}
+          onClose={() => onCloseForwards(node.id)}
+        />
       )}
       {filesOpenByPane[node.id] && sessionId && (
         <FilesPanel

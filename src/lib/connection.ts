@@ -220,6 +220,39 @@ export function isDisconnect(status: string): boolean {
   return status === 'disconnected' || status === 'lost'
 }
 
+/** A connection that *ended*, as opposed to one that was taken away.
+ *
+ * The remote shell exited, or the server hung up. Nothing is coming back on its
+ * own, and nothing should try. */
+export function isCleanDisconnect(status: string): boolean {
+  return status === 'disconnected'
+}
+
+/** Whether the `closeOnDisconnect` setting should close this pane now.
+ *
+ * **Only a clean end counts.** This used to fire on `lost` as well, which made
+ * the setting silently switch auto-reconnect off altogether: closing the pane
+ * removes the session id, and removing the session id is precisely what stops a
+ * reconnect run. Anyone with the box ticked — it is on by default — got none of
+ * the reconnect behaviour, and there was no way to have both.
+ *
+ * They were never in conflict. The setting's own description is "when a
+ * connection ends cleanly (the remote shell exits or the server hangs up)", and
+ * that is a different event from the transport dying under a live session. One
+ * closes the pane because the work is over; the other is the case auto-reconnect
+ * exists for. `disconnected` and `lost` are separate words on the wire for
+ * exactly this reason (see `status_label` in connection_status.rs) — this simply
+ * stopped throwing the distinction away.
+ *
+ * A `lost` transport that cannot come back — a session whose credential must be
+ * typed, or a retry run that exhausts its budget — therefore leaves the pane
+ * open on its disconnect overlay rather than closing it. That is deliberate:
+ * the pane is the only place the failure is visible, and the Reconnect button
+ * there is the answer to it. */
+export function shouldAutoClosePane(status: string, closeOnDisconnect: boolean): boolean {
+  return closeOnDisconnect && isCleanDisconnect(status)
+}
+
 export function sourceLabel(source: ConnectionSource): string {
   switch (source.protocol) {
     case 'ssh':

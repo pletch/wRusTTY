@@ -65,6 +65,8 @@ pub fn run() {
             ssh::ssh_forget_host,
             ssh::ssh_add_forward,
             ssh::ssh_remove_forward,
+            ssh::ssh_list_forwards,
+            ssh::ssh_retry_forward,
             wake::wake_host,
             sftp::sftp_list_dir,
             sftp::sftp_canonicalize,

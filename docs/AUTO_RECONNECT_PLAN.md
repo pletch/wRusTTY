@@ -2,7 +2,8 @@
 
 Implementation plan for a session that survives its transport going away.
 
-**Phase 1 is built.** Phases 2 and 3 are not. The three decisions below were
+**Phase 1 is built, and Phase 2's port forwards with it.** The rest of Phase 2
+and all of Phase 3 are not. The three decisions below were
 taken as written and are now load-bearing in the code; what changed on contact
 is recorded under "What Phase 1 actually did" at the end.
 
@@ -153,17 +154,72 @@ COM port from the adapter's USB identity at connect time rather than from a
 stored port name, so unplug-and-replug reconnection works with no serial-
 specific logic at all.
 
-## Phase 2 — what a live session was holding *(not built)*
+## Phase 2 — what a live session was holding *(port forwards built)*
 
 Phase 1 restores the shell. These are the things that were attached to the old
 connection and are silently dead without further work.
 
-- **Port forwards.** `SshState.forwards` (`src-tauri/src/ssh.rs:105`) holds
-  `ForwardHandle`s bound to the old `client::Handle`. After a reconnect they are
-  dead and nothing says so — the panel still lists them. The `ForwardSpec`s have
-  to be kept so each can be re-established against the new handle, and a forward
-  that cannot be re-established (its local port taken in the meantime) has to
-  report that rather than vanish.
+- ~~**Port forwards.**~~ **Built**, as planned: the `ForwardSpec` is kept beside
+  the handle, each is re-established against the new `client::Handle`, and one
+  that cannot be — its local port taken in the meantime — says so instead of
+  vanishing. Six things the plan did not foresee:
+  - **The registry needed a hook, and it needed *two* phases.** `spawn_connect`
+    and `supervise` take an `on_transport` step called with
+    `TransportPhase::Lost` and then `Restored`, never on the first connect
+    (`NoRestore` is telnet's and serial's answer, since nothing of theirs
+    outlives a transport). It is awaited rather than spawned, so a second drop
+    during the restore is seen after it rather than raced with it — otherwise a
+    forward could be re-established onto a handle that had itself already died,
+    and recorded as live.
+    - **Reporting only `Restored` was the first version, and it was wrong.**
+      Between the drop and the reconnect landing — up to the whole backoff
+      budget, so minutes — every forward was still described as healthy, which
+      is the precise "listener accepts and carries nothing" state this work
+      exists to eliminate, just relocated. `Lost` fires even for a session that
+      can *never* reconnect: what died is the connection, and nothing is coming
+      to correct the record.
+  - **Liveness cannot be read off the handle.** The obvious `handle.is_some()`
+    is wrong in both directions. The handle is deliberately *kept* through an
+    outage — dropping it leaks the local listener (the port stays bound with
+    nothing able to reach it), and stopping it frees that port for anything else
+    on the machine to take, turning a restore that would have worked into the
+    one failure the user cannot fix from the app. So the handle stays, holding
+    the port warm, and a separate `live` flag carries the truth beside it.
+  - **The panel cannot refetch on a status change.** `Connected` is emitted from
+    inside `SshConnector::connect`, *before* `supervise` publishes the session
+    and before the hook runs, so a refetch triggered by it reads the list as it
+    stood before the reconnect touched it — and nothing afterwards said to look
+    again. The backend emits `ssh-forwards-changed` once each phase has finished
+    writing; that is what the panel actually trusts.
+  - **`ForwardHandle::stop` had to start awaiting its aborted accept task.**
+    `abort` only asks; until the task actually stops it still owns the
+    `TcpListener`, and that listener holds the very port the restore is about to
+    rebind. Stopping without waiting failed every local and dynamic restore with
+    "address in use" — and the bug was invisible before, because nothing had
+    ever stopped a forward in order to immediately reopen it.
+  - **The frontend was the second owner of the list, and had to stop being.**
+    `ForwardPanel` kept its forwards in component state while being unmounted on
+    close, so closing the panel lost track of forwards still running in the
+    backend, with no way left to stop them. That was a live bug independent of
+    reconnects, and it is also what made "the panel still lists them" only
+    half-true. `ssh_list_forwards` makes the backend the authority; the panel
+    re-reads on open and whenever the pane's connection status changes, which is
+    how it learns a reconnect happened.
+  - **Retrying a dead forward is a button, not a loop.** The failure that
+    actually occurs is a local port taken by something else, which no amount of
+    background retrying frees. `ssh_retry_forward` re-opens one against the
+    session's current connection, and the panel shows the backend's answer
+    rather than assuming the retry worked. A `reestablishing` flag keeps that
+    button and a reconnect's restore off the same entry: without it the loser
+    records "address already in use" onto a forward the winner has just brought
+    up, and returns that error for something that is working.
+  - **A forward remembers the port it *got*, not the one it asked for.**
+    `bind_port: 0` means "any", and the panel produces exactly that from an
+    empty port field (`Number(bindPort) || 0`) — so this is an ordinary input,
+    not an exotic one. Replaying the spec verbatim rebinds somewhere else on
+    every reconnect, breaking every client pointed at the old number while the
+    row still claims the forward is healthy. `ForwardHandle::bound_port` reports
+    what was actually bound, and the row displays that rather than `:0`.
 - ~~**The SFTP `OnceCell`s must be reset.**~~ **Done in Phase 1.**
   `SshSession::disconnect` reset `sftp` but not `transfer_sftp`. Harmless while
   a disconnected session was always on its way to being dropped, and exactly the
@@ -217,9 +273,12 @@ replay ordering can all be pinned without a transport.
   The UI has to be honest about this rather than implying continuity: a marker
   in the scrollback saying where the connection dropped and where it came back
   is probably the minimum.
-- **Interaction with `closeOnDisconnect`.** A pane set to auto-close on
-  disconnect and also set to auto-reconnect is a contradiction. Phase 3 has to
-  pick a precedence and say so.
+- ~~**Interaction with `closeOnDisconnect`.**~~ **Decided** — and the premise
+  here was the mistake. "A pane set to auto-close on disconnect and also set to
+  auto-reconnect is a contradiction" is only true if *disconnect* means both
+  kinds at once. It does not: a shell that exited and a transport that vanished
+  are different events, and the setting was always documented as covering the
+  first. See "What Phase 1 actually did" above.
 - **The rekey corner.** `PROJECT_PLAN.md` lists rekey behaviour on a long-lived
   session as untested, and calls it the same session-lifetime question asked
   earlier. That is right, but this plan does not test it — it only makes the
@@ -256,10 +315,34 @@ The three decisions held. Five things the plan did not foresee:
   session that *was* up. Retrying a connect the user just pressed, silently, for
   four minutes behind a "failed" message is not what they asked for.
 
-- **`closeOnDisconnect` wins, for now.** Phase 3 still has to decide this
-  properly, but shipping Phase 1 needed an answer today: a pane the user has
-  asked to close when the connection goes is not one they want quietly brought
-  back. Closing removes the session id, which stops the run.
+- ~~**`closeOnDisconnect` wins, for now.**~~ **Settled, and the expedient was
+  wrong.** The reasoning above — "a pane the user asked to close when the
+  connection goes is not one they want quietly brought back" — quietly assumed
+  the two settings were in conflict. They are not, and the setting's own
+  description said so all along: *"when a connection ends cleanly (the remote
+  shell exits or the server hangs up)"* (`lib/settings.ts`). That is a different
+  event from the transport dying under a live session, and `disconnected` and
+  `lost` are separate words on the wire precisely so the difference can be acted
+  on. The implementation threw the distinction away and applied the setting to
+  both.
+
+  The cost was total rather than cosmetic: the setting is **on by default**, and
+  closing a pane removes the session id, which is exactly what stops a reconnect
+  run. So every user with the default had no auto-reconnect at all, and no way
+  to have both. Found by running the manual test with a real transport — the
+  first drop closed the pane 800 ms later and there was nothing left to observe.
+
+  Now: a clean end closes the pane, a lost transport is left to reconnect
+  (`shouldAutoClosePane` in `lib/connection.ts`, with the rule pinned in
+  `connectionStatus.test.ts`). A `lost` transport that cannot come back — a
+  credential that must be typed, or a run that spends its budget — leaves the
+  pane open on its disconnect overlay rather than closing it, deliberately: that
+  pane is the only place the failure is legible and the only place the Reconnect
+  button lives.
+
+  The suppression of the disconnect overlay had to move with it. It keyed off
+  the *setting* rather than off what the setting would do, so a `lost` pane with
+  auto-close on ended up showing neither an overlay nor a close.
 
 Also settled in passing: a run of retries produces one toast, not twelve. Each
 attempt reports its own failure from inside the transport, so the frontend

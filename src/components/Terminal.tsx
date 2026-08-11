@@ -22,7 +22,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
-import { isDisconnect, parseReconnecting } from '../lib/connection'
+import { isDisconnect, parseReconnecting, shouldAutoClosePane } from '../lib/connection'
 import type { AuthPromptField, ConnectionSource, ConnEvent, Reconnecting } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import { createPtyResizeSender } from '../lib/ptyResize'
@@ -1227,9 +1227,16 @@ export function Terminal({
               term.writeln('\r\n[reconnected — this is a new shell]')
             }
             setReconnecting(null)
-          } else if (isDisconnect(event.status) && !settingsRef.current.closeOnDisconnect) {
-            // When auto-close is on, App closes the pane instead — no overlay
-            // (it'd only flash for the ~800ms before the pane vanishes).
+          } else if (
+            isDisconnect(event.status) &&
+            !shouldAutoClosePane(event.status, settingsRef.current.closeOnDisconnect)
+          ) {
+            // Suppressed only when the pane is actually about to close, where
+            // the overlay would flash for the ~800ms before it vanishes.
+            // Keying that off the *setting* rather than off what the setting
+            // will do left a `lost` pane with auto-close on showing nothing at
+            // all — no overlay, and no close either, since only a clean
+            // disconnect closes now.
             setReconnecting(null)
             setDisconnected(true)
           }

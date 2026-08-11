@@ -465,8 +465,8 @@ export function SettingsDialog({
                       <Toggle
                         checked={settings.closeOnDisconnect}
                         onChange={(v) => onChange({ ...settings, closeOnDisconnect: v })}
-                        label="Close pane on disconnect"
-                        hint="When a connection is lost, close the pane automatically instead of showing Reconnect actions."
+                        label="Close pane when the session ends"
+                        hint="When the remote shell exits or the server hangs up, close the pane instead of leaving it open on Reconnect actions. A connection that drops unexpectedly is not affected — that one reconnects on its own."
                       />
                       <Toggle
                         checked={settings.confirmCloseWithConnection}

@@ -34,7 +34,7 @@ import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
 import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
-import { isDisconnect, parseReconnecting, sourceLabel } from './lib/connection'
+import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/connection'
 import { loadSettings, saveSettings } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
@@ -1285,6 +1285,7 @@ function App() {
                 onClosePane={(paneId) => closePane(tab.id, paneId)}
                 vaultUnlocked={vaultStatus === 'unlocked'}
                 forwardsOpenByPane={forwardsOpenByPane}
+                statusByPane={statusByPane}
                 filesOpenByPane={filesOpenByPane}
                 cwdByPane={cwdByPane}
                 titleByPane={titleByPane}
@@ -1411,13 +1412,13 @@ function App() {
                     // update above committed, so the check 800ms later still
                     // read the pane as connected.
                     //
-                    // Both kinds of disconnect, and so closeOnDisconnect wins
-                    // over auto-reconnect: a pane the user has asked to close
-                    // when the connection goes is not a pane they want quietly
-                    // brought back, and the two settings are otherwise a
-                    // contradiction. Closing removes the session id, which is
-                    // what stops the reconnect run in its tracks.
-                    if (isDisconnect(s) && terminalSettings.closeOnDisconnect) {
+                    // A *clean* disconnect only — see `shouldAutoClosePane`.
+                    // This used to fire on `lost` too, which meant the setting
+                    // quietly disabled auto-reconnect for everyone who had it
+                    // on (it is on by default): closing the pane removes the
+                    // session id, and that is exactly what stops a reconnect
+                    // run. The two were never actually in conflict.
+                    if (shouldAutoClosePane(s, terminalSettings.closeOnDisconnect)) {
                       setTimeout(() => closePaneNow(tab.id, leaf.id), 800)
                     }
                   }}

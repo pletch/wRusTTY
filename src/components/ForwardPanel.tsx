@@ -1,18 +1,20 @@
-import { useState } from 'react'
-import { X, ArrowLeftRight, Square } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
+import { X, ArrowLeftRight, Square, RotateCw, AlertTriangle } from 'lucide-react'
 import * as forward from '../lib/forward'
-import type { ForwardSpec } from '../lib/forward'
+import type { ForwardInfo, ForwardSpec } from '../lib/forward'
 import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
 import { useDismissable } from '../hooks/useDismissable'
 
-interface ActiveForward {
-  id: string
-  spec: ForwardSpec
-}
-
 interface Props {
   sessionId: string
+  /** The pane's connection status. Watched rather than displayed: a reconnect
+   *  re-establishes this session's forwards in the backend, and one that could
+   *  not be re-established is exactly what this panel now has to show. Without
+   *  this the list would keep claiming a forward was live until the panel
+   *  happened to be closed and reopened. */
+  status?: string
   onClose: () => void
 }
 
@@ -30,17 +32,50 @@ function describe(spec: ForwardSpec): string {
   return `${spec.bindHost}:${spec.bindPort} ${arrow} ${spec.targetHost}:${spec.targetPort}`
 }
 
-export function ForwardPanel({ sessionId, onClose }: Props) {
+export function ForwardPanel({ sessionId, status, onClose }: Props) {
   const confirm = useConfirm()
   // Rendered only while open, so it is always dismissable while mounted.
   useDismissable(true, onClose, { within: '[data-forward-panel], [data-forward-toggle]' })
-  const [active, setActive] = useState<ActiveForward[]>([])
+  const [active, setActive] = useState<ForwardInfo[]>([])
   const [type, setType] = useState<ForwardSpec['type']>('local')
   const [bindHost, setBindHost] = useState('127.0.0.1')
   const [bindPort, setBindPort] = useState('8080')
   const [targetHost, setTargetHost] = useState('')
   const [targetPort, setTargetPort] = useState('80')
   const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      setActive(await forward.listForwards(sessionId))
+    } catch {
+      // A session that has gone has no forwards to list, and the pane is
+      // already saying so far more clearly than a line in here could.
+    }
+  }, [sessionId])
+
+  // On open, and again on every status change.
+  //
+  // The status change alone is *not* enough, and relying on it was a real bug:
+  // `connected` is emitted from inside the SSH handshake, before the backend
+  // has re-established anything, so refetching on it reads the list as it stood
+  // a moment before the reconnect touched it — and nothing afterwards said to
+  // look again. Kept anyway because it costs one cheap call and covers first
+  // mount; the event below is what makes the answer right.
+  useEffect(() => {
+    void refresh()
+  }, [refresh, status])
+
+  // Emitted by the backend once it has finished writing, at both ends of an
+  // outage: the forwards being marked dead, and the attempt to bring them back.
+  useEffect(() => {
+    const pending = listen<string>('ssh-forwards-changed', (event) => {
+      // Every pane's session emits on the same channel.
+      if (event.payload === sessionId) void refresh()
+    })
+    return () => {
+      void pending.then((unlisten) => unlisten())
+    }
+  }, [sessionId, refresh])
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
@@ -58,7 +93,7 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
     try {
       const id = await addForwardConfirmingIfNeeded(spec)
       if (id === null) return
-      setActive((prev) => [...prev, { id, spec }])
+      setActive((prev) => [...prev, { id, spec, active: true, error: null }])
       toast.success(`Forwarding ${describe(spec)}`)
     } catch (err) {
       setError(String(err))
@@ -100,7 +135,22 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
     const f = active.find((a) => a.id === id)
     await forward.removeForward(id).catch(() => {})
     setActive((prev) => prev.filter((a) => a.id !== id))
-    if (f) toast.info(`Stopped ${describe(f.spec)}`)
+    // "Stopped" would be a lie for a forward that was already down — that row
+    // was dismissed, not stopped.
+    if (f) toast.info(`${f.active ? 'Stopped' : 'Dismissed'} ${describe(f.spec)}`)
+  }
+
+  async function retry(id: string) {
+    setError(null)
+    try {
+      await forward.retryForward(id)
+      toast.success('Forward re-established')
+    } catch (err) {
+      setError(String(err))
+    }
+    // Either way — the backend records the outcome on the entry, so the list
+    // is the truth about what happened rather than what was hoped for.
+    await refresh()
   }
 
   return (
@@ -124,17 +174,41 @@ export function ForwardPanel({ sessionId, onClose }: Props) {
       {active.length > 0 && (
         <ul className="mb-2 space-y-1">
           {active.map((f) => (
-            <li
-              key={f.id}
-              className="flex items-center justify-between gap-2 rounded bg-black/20 px-2 py-1.5"
-            >
-              <span className="truncate text-white/70">{describe(f.spec)}</span>
-              <button
-                onClick={() => remove(f.id)}
-                className="flex shrink-0 items-center gap-1 text-white/40 transition-colors duration-100 hover:text-red-300"
-              >
-                <Square size={10} /> stop
-              </button>
+            <li key={f.id} className="rounded bg-black/20 px-2 py-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={`flex min-w-0 items-center gap-1.5 truncate ${
+                    f.active ? 'text-white/70' : 'text-amber-300/80'
+                  }`}
+                >
+                  {!f.active && <AlertTriangle size={11} className="shrink-0" />}
+                  <span className="truncate">{describe(f.spec)}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {!f.active && (
+                    <button
+                      onClick={() => retry(f.id)}
+                      className="flex items-center gap-1 text-white/40 transition-colors duration-100 hover:text-sky-300"
+                    >
+                      <RotateCw size={10} /> retry
+                    </button>
+                  )}
+                  <button
+                    onClick={() => remove(f.id)}
+                    className="flex items-center gap-1 text-white/40 transition-colors duration-100 hover:text-red-300"
+                  >
+                    <Square size={10} /> {f.active ? 'stop' : 'dismiss'}
+                  </button>
+                </span>
+              </div>
+              {/* The reason, not just the state. In practice it is "the local
+                  port is taken", which is the difference between something the
+                  user can fix in ten seconds and a mystery. */}
+              {!f.active && (
+                <p className="mt-1 break-words text-[11px] leading-snug text-amber-300/60">
+                  {f.error ?? 'not connected'}
+                </p>
+              )}
             </li>
           ))}
         </ul>

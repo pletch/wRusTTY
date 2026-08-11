@@ -137,7 +137,14 @@ mosh, RDP) means adding a crate, not touching the UI.
 - **Jump host / ProxyJump chains** — table stakes for anyone on a bastion
   **(shipped)**
 - **Port forwarding** — local, remote, and dynamic (SOCKS); PuTTY parity
-  requires it **(shipped)**, with a management panel
+  requires it **(shipped)**, with a management panel. **The backend owns the
+  list** (`ssh_list_forwards`), which is not a detail: the panel used to hold it
+  in component state while being unmounted on close, so closing the panel lost
+  track of forwards that were still running and left no way to stop them. It
+  also means a forward survives a reconnect — it is re-established against the
+  connection that came back, and one that cannot be is shown as down, with the
+  reason and a retry, instead of being drawn like a working tunnel that silently
+  carries nothing
 - **Keepalive** with visible connection state per tab **(shipped — per-profile
   interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect **(partial —
   the session comes back; what it was holding does not, and there is no
@@ -616,10 +623,10 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
    `SshSession::disconnect` resets *both* SFTP cells, `transfer_sftp` included).
    What is left is the part that was always transfer-shaped: nothing notices the
    reconnect and restarts the transfer against the channel that came back. The
-   resume machinery to do it with already exists. See phase 2 of
-   `docs/AUTO_RECONNECT_PLAN.md`, which also covers port forwards — those are
-   bound to the old `client::Handle` and are silently dead after a reconnect
-   while the panel still lists them.
+   resume machinery to do it with already exists, and so, now, does the hook to
+   trigger it from: the registry's `restore` step runs after a reconnect
+   publishes its session, and port forwards — the other half of phase 2 of
+   `docs/AUTO_RECONNECT_PLAN.md` — are re-established from it already.
 2. **The edit save still reads its local file whole.** The download half of that
    round trip streams; the re-upload on save calls `write` with a `Vec<u8>` read
    from the temp copy. Bounded by whatever the user just saved rather than by a
@@ -724,11 +731,21 @@ progress UI to put on the other channel anyway.
   **not** closed — see Phase 6, "what is not", item 1. Still open, and worth
   keeping on this list rather than declaring the capability done:
 
-  - **Phase 2** — port forwards are dead after a reconnect and the panel still
-    lists them; nothing restarts an in-flight transfer onto the new channel.
+  - **Phase 2** — **port forwards are done**: they are marked dead the moment
+    the transport goes, re-established against the connection that comes back,
+    and one that cannot be (its local port taken meanwhile) is shown as down
+    with the reason and a retry, rather than listed as though it were carrying
+    traffic. Both ends of that matter — reporting only the recovery leaves a
+    forward described as healthy for the whole outage, which is the same lie in
+    a longer window. What is left of this phase is the transfer half: nothing
+    restarts an in-flight transfer onto the new channel.
   - **Phase 3** — no per-profile toggle or limits. Auto-reconnect is on for
-    every session that can reconnect unattended, and `closeOnDisconnect`
-    currently wins over it by fiat rather than by a decision anyone made.
+    every session that can reconnect unattended. The `closeOnDisconnect`
+    clash is **resolved**: it closes a pane whose session *ended* and leaves a
+    *lost* transport to reconnect, which is what the setting always claimed to
+    do. It previously fired on both, and since it is on by default and closing
+    a pane drops the session id that a reconnect run needs, most users had
+    auto-reconnect silently switched off.
   - **Untested against a real drop.** The registry's logic is pinned against a
     scripted fake connector, but whether SSH, telnet and serial each classify a
     *genuine* drop as `Lost` rather than `Closed` is a judgement about `russh`
