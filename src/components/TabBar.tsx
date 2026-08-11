@@ -513,12 +513,33 @@ export function TabBar({
                 )}
               </span>
               <span className="truncate">{tab.title}</span>
+              {/* Always visible on the active tab, hover-revealed on the rest.
+               *
+               * Hover-gating it everywhere made it unreliable to click, and not
+               * because of hit-testing — an `opacity-0` button still takes
+               * clicks. The problem is that you cannot aim at what you cannot
+               * see. Cancelling a confirmation is the clearest case: while the
+               * dialog is up its overlay is what the pointer is over, so the
+               * tab beneath is not hovered, and the browser does not re-evaluate
+               * `:hover` until the pointer *moves*. Cancel, go straight back to
+               * the ✕, and it is invisible — hit it and the tab closes, miss by
+               * a few pixels and you land on the tab body, which re-selects an
+               * already-active tab and looks like the click did nothing.
+               *
+               * The active tab is the one most likely to be closed, and showing
+               * its ✕ unconditionally is also what Edge and Windows Terminal do.
+               * `p-1` over `p-0.5` for the same reason: 13px of icon is a small
+               * target to hit twice. */}
               <button
+                aria-label={`Close ${tab.title}`}
+                data-tab-close
                 onClick={(e) => {
                   e.stopPropagation()
                   onClose(tab.id)
                 }}
-                className="ml-auto shrink-0 rounded p-0.5 text-white/40 opacity-0 transition-opacity duration-150 hover:bg-white/10 hover:text-white group-hover:opacity-100"
+                className={`ml-auto shrink-0 rounded p-1 text-white/40 transition-opacity duration-150 hover:bg-white/10 hover:text-white ${
+                  active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                }`}
               >
                 <X size={13} strokeWidth={2} />
               </button>
