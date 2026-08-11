@@ -2,12 +2,12 @@
 
 Implementation plan for a session that survives its transport going away.
 
-**Phase 1 is built, and Phase 2's port forwards with it.** The rest of Phase 2
-is not, and Phase 3 is a decision short of a feature: its precedence question —
-what `closeOnDisconnect` should do to a reconnect — is settled and shipped, but
-the per-profile toggle and the limits are not built. The three decisions below
-were taken as written and are now load-bearing in the code; what changed on
-contact is recorded under "What Phase 1 actually did" at the end.
+**Phases 1 and 2 are built.** Phase 3 is a decision short of a feature: its
+precedence question — what `closeOnDisconnect` should do to a reconnect — is
+settled and shipped, but the per-profile toggle and the limits are not built.
+The three decisions below were taken as written and are now load-bearing in the
+code; what changed on contact is recorded under "What Phase 1 actually did" at
+the end.
 
 This document was written against the code as it stood after the
 keyboard-interactive auth work, and every file and line reference below was
@@ -156,7 +156,7 @@ COM port from the adapter's USB identity at connect time rather than from a
 stored port name, so unplug-and-replug reconnection works with no serial-
 specific logic at all.
 
-## Phase 2 — what a live session was holding *(port forwards built)*
+## Phase 2 — what a live session was holding *(built)*
 
 Phase 1 restores the shell. These are the things that were attached to the old
 connection and are silently dead without further work.
@@ -229,9 +229,31 @@ connection and are silently dead without further work.
   reused across a reconnect — so it could not wait for Phase 2. The reconnect
   path closes the displaced session rather than dropping it, which is what runs
   this.
-- **In-flight transfers resume onto the new channel.** The retry-and-resume work
-  that already shipped does the hard part; what is missing is the trigger and
-  the new channel to resume onto.
+- ~~**In-flight transfers resume onto the new channel.**~~ **Built**, and it was
+  as small as this line hoped, because the two things it needed had both
+  arrived: the trigger is the `on_transport` hook the port forwards added, and
+  the new channel comes for free — `transfer_client` re-resolves through the
+  session's `OnceCell`, which a disconnect resets, so simply *calling the
+  command again* opens on the connection that came back. The restart is
+  therefore "run it again with `resume: true`", which is exactly what the Retry
+  button already did; what changed is that nobody has to press it.
+  - **The id is reused**, which is the difference between a row that carries on
+    and a row that dies beside a new one. The two `begin` commands were split
+    from their bodies so a restart can supply an id instead of minting one.
+  - **`Lost` copies rather than moves.** It races the transfer's own task
+    noticing the dead channel and removing its entry, so the description of the
+    job is set aside in a second map and the task still ends the way it always
+    did. Whichever wins, the record survives.
+  - **A drag-and-drop upload cannot be resumed, and says so.** Its bytes arrive
+    as chunks from the webview, which holds a `File` the backend has no path
+    for — there is nothing to read them from a second time. That is the same
+    asymmetry that already stops a drop sending a folder, and the honest answer
+    is to tell the user, since only they can drag it again.
+  - **Interrupted is not failed.** They ask for opposite things: a failure wants
+    the user to fix something and offers Retry, while this wants them to do
+    nothing because the reconnect is already running. A row saying "failed"
+    would send someone to fix what is about to fix itself, and a Retry pressed
+    mid-outage only fails again.
 - **SFTP edit watchers survive deliberately.** They are keyed by session id and
   the remote file is still there; a reconnect should not discard someone's open
   editor. They pick up the new channel through `get_or_open_sftp` once the cell

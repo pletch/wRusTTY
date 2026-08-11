@@ -53,6 +53,13 @@ export type SftpEvent =
   | { type: 'transferDone'; transferId: string; remotePath: string }
   | { type: 'transferCancelled'; transferId: string }
   | { type: 'transferFailed'; transferId: string; remotePath: string; error: string }
+  /** The connection dropped under this transfer and it is waiting for the
+   *  session to come back. Not a failure: nothing is being asked of the user,
+   *  and the transfer resumes by itself. See `TransferInterrupted` in sftp.rs. */
+  | { type: 'transferInterrupted'; transferId: string }
+  /** The session came back and the transfer is running again from where it got
+   *  to, under the same id — so the row carries on rather than being replaced. */
+  | { type: 'transferResumed'; transferId: string }
 
 export function listDir(sessionId: string, path: string) {
   return invoke<RemoteEntry[]>('sftp_list_dir', { sessionId, path })

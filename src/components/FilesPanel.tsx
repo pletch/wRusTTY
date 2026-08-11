@@ -112,6 +112,17 @@ interface Transfer {
   restart: () => void
   /** The error, once there is one. The row stays on screen holding it. */
   failed?: string
+  /**
+   * The connection went away and this transfer is waiting for it.
+   *
+   * Deliberately separate from `failed`, because the two ask the user for
+   * opposite things. A failure wants them to do something — free some disk,
+   * fix a permission, press Retry. This wants them to do nothing at all: the
+   * reconnect is already running and the transfer picks up on its own. Showing
+   * it as failed would send someone to fix what is about to fix itself, and a
+   * Retry pressed during the outage only fails again.
+   */
+  interrupted?: boolean
 }
 
 // A row is created with `id: null` and gets its real one a round trip later.
@@ -299,10 +310,28 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
           // to, which for a folder is the whole difference between "it failed"
           // and "it failed on this one" — and the row is where Retry lives.
           setTransfers((list) =>
-            list.map((t) => (t.id === event.transferId ? { ...t, failed: event.error } : t)),
+            list.map((t) =>
+              t.id === event.transferId ? { ...t, failed: event.error, interrupted: false } : t,
+            ),
           )
           toast.error(`Transfer failed: ${event.error}`)
           if (cwdRef.current) void load(cwdRef.current)
+          break
+        case 'transferInterrupted':
+          setTransfers((list) =>
+            list.map((t) => (t.id === event.transferId ? { ...t, interrupted: true } : t)),
+          )
+          // No toast. The pane behind this is already saying the connection
+          // dropped and counting down to the next attempt; a second notice
+          // about the same event, for something that needs nothing from the
+          // user, is noise on top of the news they already have.
+          break
+        case 'transferResumed':
+          setTransfers((list) =>
+            list.map((t) =>
+              t.id === event.transferId ? { ...t, interrupted: false, failed: undefined } : t,
+            ),
+          )
           break
       }
     }
@@ -918,7 +947,14 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                     // whether the transfer is still running: cancel it, or
                     // dismiss the record of one that already stopped.
                     if (t.failed) dropTransfer(t.key)
-                    else if (t.id) void sftp.cancelTransfer(t.id).catch(() => {})
+                    // An interrupted transfer has no live task to cancel — it
+                    // is waiting in the backend — so giving up on it is
+                    // dismissing the row, which also drops it from the queue
+                    // the reconnect would otherwise resume.
+                    else if (t.interrupted && t.id) {
+                      void sftp.cancelTransfer(t.id).catch(() => {})
+                      dropTransfer(t.key)
+                    } else if (t.id) void sftp.cancelTransfer(t.id).catch(() => {})
                   }}
                   title={t.failed ? 'Dismiss' : 'Cancel this transfer'}
                   className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
@@ -929,7 +965,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
               <div className="h-1 overflow-hidden rounded-full bg-white/10">
                 <div
                   className={`h-full transition-[width] duration-150 ${
-                    t.failed ? 'bg-red-400/70' : 'bg-sky-400'
+                    t.failed ? 'bg-red-400/70' : t.interrupted ? 'bg-amber-400/70' : 'bg-sky-400'
                   }`}
                   style={{
                     width: `${
@@ -940,6 +976,14 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
               </div>
               {t.failed ? (
                 <span className="text-red-300/90">{t.failed}</span>
+              ) : t.interrupted ? (
+                // Says the byte count is standing still on purpose. Without
+                // this the row is a stalled progress bar, which is the one
+                // thing a progress bar must never be without explanation.
+                <span className="text-amber-300/80">
+                  connection lost — resuming when it comes back (
+                  {formatBytes(t.transferred)} so far)
+                </span>
               ) : (
                 <span className="flex items-baseline gap-2 text-white/40">
                   <span className="shrink-0">

@@ -129,6 +129,23 @@ pub enum SftpEvent {
         remote_path: String,
         error: String,
     },
+    /// The connection went away under this transfer, and it is waiting for the
+    /// session to come back rather than needing anything from the user.
+    ///
+    /// Distinct from `TransferFailed` because the two ask for opposite things.
+    /// A failure wants attention — a full disk, a permission, a name that will
+    /// not do — and its row offers Retry. This wants none: the reconnect is
+    /// already running, and the transfer picks up by itself when it lands. A
+    /// row that says "failed" here would send the user to fix something that is
+    /// about to fix itself, and a Retry pressed mid-outage only fails again.
+    TransferInterrupted {
+        transfer_id: String,
+    },
+    /// The session came back and this transfer is running again, from where it
+    /// got to. Sent under the *same* transfer id, so the row continues.
+    TransferResumed {
+        transfer_id: String,
+    },
 }
 
 /// One live edit watch, as reported to the frontend by `sftp_list_edits`.
@@ -167,6 +184,16 @@ pub struct SftpState {
     /// cancel arriving late finds nothing and does nothing, which is the right
     /// outcome rather than a missing case.
     transfers: TokioMutex<HashMap<String, TransferEntry>>,
+    /// Transfers whose connection went away under them, waiting for it to come
+    /// back. Keyed by the same transfer id, which is what lets the restart
+    /// continue the row the user is already watching.
+    ///
+    /// A separate map rather than a flag on the entry above, because the two
+    /// have opposite lifetimes: a live entry is removed by whichever path ends
+    /// the transfer, and the whole point here is to hold on to something *after*
+    /// that has happened. The running task still tears itself down normally; it
+    /// simply does so having already been copied here.
+    interrupted: TokioMutex<HashMap<String, InterruptedTransfer>>,
     next_id: AtomicU64,
 }
 
@@ -1672,6 +1699,50 @@ struct TransferEntry {
     /// the file does, so the flag below is the whole of their control.
     tx: Option<mpsc::Sender<Vec<u8>>>,
     cancel: Arc<AtomicBool>,
+    /// The session carrying it, so a reconnect can find the transfers its own
+    /// drop interrupted rather than every transfer in the app.
+    session_id: String,
+    /// How to run this transfer again, or `None` for one that cannot be.
+    /// See [`RestartSpec`].
+    restart: Option<RestartSpec>,
+    /// Where this transfer reports. Kept so a restart continues on the same
+    /// channel, and so the row the user is watching carries on rather than a
+    /// second one appearing beside it.
+    channel: Channel<SftpEvent>,
+}
+
+/// What it takes to run a transfer again from the top.
+///
+/// Only the arguments, deliberately — not a captured client or a half-finished
+/// job. Re-running goes back through the same command body, and that body
+/// re-resolves its SFTP client from the session; the `OnceCell` behind it is
+/// reset when a session disconnects, so after a reconnect the second run opens
+/// a channel on the connection that came back rather than the one that died.
+/// That is the whole reason this can be as simple as "call it again".
+///
+/// A restart always passes `resume: true`, which is the same thing the Retry
+/// button does: skip what already looks copied, so a folder that died on file
+/// 400 of 500 costs the remaining hundred.
+/// A transfer waiting for its session to come back.
+struct InterruptedTransfer {
+    session_id: String,
+    spec: RestartSpec,
+    channel: Channel<SftpEvent>,
+}
+
+#[derive(Clone)]
+enum RestartSpec {
+    /// Covers a single file and a folder alike: the command stats the path and
+    /// decides which it is, so one variant is honestly enough for both.
+    Download {
+        remote_path: String,
+        local_path: String,
+    },
+    Upload {
+        remote_dir: String,
+        local_path: String,
+        overwrite: bool,
+    },
 }
 
 /// How many chunks may be queued ahead of the network. Four is enough to keep
@@ -1718,6 +1789,14 @@ pub async fn sftp_upload_begin(
         TransferEntry {
             tx: Some(tx),
             cancel: cancel.clone(),
+            session_id: session_id.clone(),
+            // The one kind that cannot be re-run. Its bytes arrive from the
+            // webview, which is holding a `File` the backend has no path for —
+            // there is nothing here to read them from a second time. A drop
+            // during one of these is reported as needing the user, because it
+            // does: only they can drag the file again.
+            restart: None,
+            channel: channel.clone(),
         },
     );
 
@@ -1771,6 +1850,36 @@ pub async fn sftp_upload_path(
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<String, String> {
+    begin_upload_path(
+        app,
+        &ssh_state,
+        &sftp_state,
+        session_id,
+        remote_dir,
+        local_path,
+        overwrite,
+        resume,
+        channel,
+        None,
+    )
+    .await
+}
+
+/// The body of [`sftp_upload_path`]. See [`begin_download`] for why the
+/// transfer id can be supplied rather than minted.
+#[allow(clippy::too_many_arguments)]
+async fn begin_upload_path(
+    app: AppHandle,
+    ssh_state: &State<'_, SshState>,
+    sftp_state: &State<'_, SftpState>,
+    session_id: String,
+    remote_dir: String,
+    local_path: String,
+    overwrite: bool,
+    resume: bool,
+    channel: Channel<SftpEvent>,
+    existing_id: Option<String>,
+) -> Result<String, String> {
     let local = PathBuf::from(&local_path);
     let name = local
         .file_name()
@@ -1784,8 +1893,8 @@ pub async fn sftp_upload_path(
         let plan = plan_local_tree(&local).await?;
         return start_upload_tree(
             app,
-            &ssh_state,
-            &sftp_state,
+            ssh_state,
+            sftp_state,
             &session_id,
             &remote_dir,
             &name,
@@ -1793,6 +1902,7 @@ pub async fn sftp_upload_path(
             plan,
             resume,
             channel,
+            existing_id,
         )
         .await;
     }
@@ -1806,9 +1916,9 @@ pub async fn sftp_upload_path(
     let total = file.metadata().await.map(|m| m.len()).unwrap_or(0);
 
     let (sftp, remote_path, part_path, exists) =
-        prepare_upload(&ssh_state, &session_id, &remote_dir, &name, overwrite).await?;
+        prepare_upload(ssh_state, &session_id, &remote_dir, &name, overwrite).await?;
 
-    let transfer_id = sftp_state.next_transfer_id();
+    let transfer_id = existing_id.unwrap_or_else(|| sftp_state.next_transfer_id());
     let cancel = Arc::new(AtomicBool::new(false));
     // No chunk sender: the bytes are read here, not sent in. The flag is the
     // whole of this transfer's control.
@@ -1817,6 +1927,13 @@ pub async fn sftp_upload_path(
         TransferEntry {
             tx: None,
             cancel: cancel.clone(),
+            session_id: session_id.clone(),
+            restart: Some(RestartSpec::Upload {
+                remote_dir: remote_dir.clone(),
+                local_path: local_path.clone(),
+                overwrite,
+            }),
+            channel: channel.clone(),
         },
     );
 
@@ -1863,6 +1980,7 @@ async fn start_upload_tree(
     plan: TreePlan,
     resume: bool,
     channel: Channel<SftpEvent>,
+    existing_id: Option<String>,
 ) -> Result<String, String> {
     if !is_usable_remote_name(name) {
         return Err(format!("{name} is not a usable directory name"));
@@ -1870,13 +1988,24 @@ async fn start_upload_tree(
     let remote_root = format!("{}/{name}", remote_dir.trim_end_matches('/'));
     let sftp = transfer_client(ssh_state, session_id).await?;
 
-    let transfer_id = sftp_state.next_transfer_id();
+    let transfer_id = existing_id.unwrap_or_else(|| sftp_state.next_transfer_id());
     let cancel = Arc::new(AtomicBool::new(false));
     sftp_state.transfers.lock().await.insert(
         transfer_id.clone(),
         TransferEntry {
             tx: None,
             cancel: cancel.clone(),
+            session_id: session_id.to_string(),
+            // The *parent* directory and the local root, which is what
+            // `sftp_upload_path` takes — re-running it walks the tree again and
+            // rebuilds the plan, rather than replaying a plan made against a
+            // local directory that may have changed meanwhile.
+            restart: Some(RestartSpec::Upload {
+                remote_dir: remote_dir.to_string(),
+                local_path: local_root.to_string_lossy().into_owned(),
+                overwrite: false,
+            }),
+            channel: channel.clone(),
         },
     );
 
@@ -2154,12 +2283,44 @@ pub async fn sftp_download_begin(
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<String, String> {
+    begin_download(
+        app,
+        &ssh_state,
+        &sftp_state,
+        session_id,
+        remote_path,
+        local_path,
+        resume,
+        channel,
+        None,
+    )
+    .await
+}
+
+/// The body of [`sftp_download_begin`], reachable without an IPC call.
+///
+/// `existing_id` reuses a transfer id rather than minting one, which is what a
+/// restart after a reconnect passes: the frontend is already showing a row
+/// under that id, and continuing it says "this is the same job, still going"
+/// where a new id would say "the old one died and here is another".
+#[allow(clippy::too_many_arguments)]
+async fn begin_download(
+    app: AppHandle,
+    ssh_state: &State<'_, SshState>,
+    sftp_state: &State<'_, SftpState>,
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+    resume: bool,
+    channel: Channel<SftpEvent>,
+    existing_id: Option<String>,
+) -> Result<String, String> {
     let local = PathBuf::from(&local_path);
     // Validates the destination name before anything is created, and is what
     // the per-file staging will use.
     part_path_for(&local)?;
 
-    let sftp = transfer_client(&ssh_state, &session_id).await?;
+    let sftp = transfer_client(ssh_state, &session_id).await?;
 
     // Before creating anything locally, so a path that isn't there fails with
     // the remote's own words and leaves no debris.
@@ -2177,13 +2338,19 @@ pub async fn sftp_download_begin(
     };
     let total = plan.as_ref().map_or(stat.size, |p| p.total_bytes);
 
-    let transfer_id = sftp_state.next_transfer_id();
+    let transfer_id = existing_id.unwrap_or_else(|| sftp_state.next_transfer_id());
     let cancel = Arc::new(AtomicBool::new(false));
     sftp_state.transfers.lock().await.insert(
         transfer_id.clone(),
         TransferEntry {
             tx: None,
             cancel: cancel.clone(),
+            session_id: session_id.clone(),
+            restart: Some(RestartSpec::Download {
+                remote_path: remote_path.clone(),
+                local_path: local_path.clone(),
+            }),
+            channel: channel.clone(),
         },
     );
 
@@ -2668,15 +2835,220 @@ pub(crate) async fn stop_watching_session(sftp_state: &SftpState, session_id: &s
         .retain(|_, e| e.session_id != session_id);
 }
 
+/// Sets aside the transfers a dropped connection has just killed, so the
+/// reconnect can pick them up.
+///
+/// Called the moment the transport is reported lost, which is a race worth
+/// being explicit about: the transfer's own task is at the same time failing on
+/// its next SFTP call and taking its entry out of the map. That is why this
+/// copies rather than moves — the running task still ends the way it always
+/// did, and this only needs the description of the job, which nothing else
+/// wants. Whichever of the two goes first, the record survives.
+///
+/// A chunk-fed upload has no [`RestartSpec`] and is passed over. Its bytes came
+/// from a `File` in the webview that the backend never had a path for, so there
+/// is nothing to read them from a second time; the user is told, because only
+/// they can drag the file again.
+pub(crate) async fn interrupt_session_transfers(app: &AppHandle, session_id: &str) {
+    let state = app.state::<SftpState>();
+    let live = state.transfers.lock().await;
+    let mut waiting = state.interrupted.lock().await;
+    for (id, entry) in live.iter() {
+        if entry.session_id != session_id {
+            continue;
+        }
+        match &entry.restart {
+            Some(spec) => {
+                let _ = entry.channel.send(SftpEvent::TransferInterrupted {
+                    transfer_id: id.clone(),
+                });
+                waiting.insert(
+                    id.clone(),
+                    InterruptedTransfer {
+                        session_id: entry.session_id.clone(),
+                        spec: spec.clone(),
+                        channel: entry.channel.clone(),
+                    },
+                );
+            }
+            None => {
+                let _ = entry.channel.send(SftpEvent::TransferFailed {
+                    transfer_id: id.clone(),
+                    remote_path: String::new(),
+                    error: "the connection dropped, and a dropped file cannot be sent again on its own — drop it again to retry".to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Runs the transfers that were waiting on this session, against the connection
+/// that came back.
+///
+/// Always with `resume: true`, which is the same thing the Retry button does:
+/// keep what already landed and copy the rest. The id is reused, so the row the
+/// user is watching carries on rather than being replaced by a second one.
+///
+/// One at a time. They share a single SFTP channel, so starting five at once
+/// would only interleave them on the same wire, and the failures want to be
+/// reported one at a time anyway.
+pub(crate) async fn resume_session_transfers(app: &AppHandle, session_id: &str) {
+    let waiting: Vec<(String, InterruptedTransfer)> = {
+        let state = app.state::<SftpState>();
+        let mut interrupted = state.interrupted.lock().await;
+        let ids: Vec<String> = interrupted
+            .iter()
+            .filter(|(_, t)| t.session_id == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| interrupted.remove(&id).map(|t| (id, t)))
+            .collect()
+    };
+
+    for (transfer_id, t) in waiting {
+        // Taken fresh inside the loop: `State` borrows the app, and holding two
+        // across the awaits below would keep them alive for the whole run.
+        let ssh_state = app.state::<SshState>();
+        let sftp_state = app.state::<SftpState>();
+        let outcome = match t.spec.clone() {
+            RestartSpec::Download {
+                remote_path,
+                local_path,
+            } => {
+                begin_download(
+                    app.clone(),
+                    &ssh_state,
+                    &sftp_state,
+                    session_id.to_string(),
+                    remote_path,
+                    local_path,
+                    true,
+                    t.channel.clone(),
+                    Some(transfer_id.clone()),
+                )
+                .await
+            }
+            RestartSpec::Upload {
+                remote_dir,
+                local_path,
+                overwrite,
+            } => {
+                begin_upload_path(
+                    app.clone(),
+                    &ssh_state,
+                    &sftp_state,
+                    session_id.to_string(),
+                    remote_dir,
+                    local_path,
+                    overwrite,
+                    true,
+                    t.channel.clone(),
+                    Some(transfer_id.clone()),
+                )
+                .await
+            }
+        };
+
+        if outcome.is_ok() {
+            // After the restart has taken the row, not before: if the call had
+            // failed, "resumed" followed immediately by "failed" would be two
+            // claims about one moment, and the first of them wrong.
+            let _ = t.channel.send(SftpEvent::TransferResumed {
+                transfer_id: transfer_id.clone(),
+            });
+        }
+
+        if let Err(error) = outcome {
+            // The restart never got far enough to own the row, so nothing else
+            // is going to report this. Says what it was rather than only that
+            // it failed: after a reconnect the likely causes are a remote path
+            // that has moved and a local one that is no longer writable, and
+            // neither is guessable from "restart failed".
+            let _ = t.channel.send(SftpEvent::TransferFailed {
+                transfer_id: transfer_id.clone(),
+                remote_path: String::new(),
+                error: format!("could not resume after reconnecting: {error}"),
+            });
+        }
+    }
+}
+
+/// Forgets a session's waiting transfers, for a pane that is going away.
+///
+/// Without this they would sit in the map for the life of the process, and a
+/// later session reusing the id — ids come from one counter, so it cannot —
+/// is not the risk. The leak is.
+pub(crate) async fn forget_interrupted_transfers(
+    sftp_state: &State<'_, SftpState>,
+    session_id: &str,
+) {
+    sftp_state
+        .interrupted
+        .lock()
+        .await
+        .retain(|_, t| t.session_id != session_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         absorb_listing, is_already_there, is_inert_to_open, is_unsafe_windows_filename,
         is_usable_remote_name, parse_editor_command, part_path_for, rename_target, ChunkReader,
-        TreePlan,
+        SftpEvent, TreePlan,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
+
+    /// The wire names of the two events a reconnect sends.
+    ///
+    /// Pinned because a mismatch here is silent on both sides: the enum renames
+    /// its variants and fields, the frontend matches on the result as string
+    /// literals, and nothing compiles against both. The same reasoning — and the
+    /// same class of bug, which once made port forwarding unusable — is written
+    /// up beside `ForwardSpec`'s own contract test in wr-ssh.
+    #[test]
+    fn the_reconnect_events_serialize_as_the_panel_reads_them() {
+        let interrupted = serde_json::to_string(&SftpEvent::TransferInterrupted {
+            transfer_id: "transfer-3".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            interrupted,
+            r#"{"type":"transferInterrupted","transferId":"transfer-3"}"#
+        );
+
+        let resumed = serde_json::to_string(&SftpEvent::TransferResumed {
+            transfer_id: "transfer-3".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            resumed,
+            r#"{"type":"transferResumed","transferId":"transfer-3"}"#
+        );
+    }
+
+    /// A resumed transfer keeps its id, and that is the point rather than a
+    /// detail: the panel is already showing a row under it, so continuing it
+    /// says "the same job, still going" where a fresh id would say "that one
+    /// died, here is another". The two events above therefore have to name the
+    /// id the row already knows.
+    #[test]
+    fn a_resumed_transfer_is_reported_under_the_id_the_row_already_has() {
+        let id = "transfer-7".to_string();
+        for json in [
+            serde_json::to_string(&SftpEvent::TransferInterrupted {
+                transfer_id: id.clone(),
+            })
+            .unwrap(),
+            serde_json::to_string(&SftpEvent::TransferResumed {
+                transfer_id: id.clone(),
+            })
+            .unwrap(),
+        ] {
+            assert!(json.contains(&id), "{json}");
+        }
+    }
 
     /// The device-name half is the one with teeth: without it a remote file
     /// called `NUL` is written to the null device, and every later edit is

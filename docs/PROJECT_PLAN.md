@@ -7,10 +7,10 @@ over SFTP have since landed — files and whole folders move in both directions,
 streamed, with progress and cancellation; rename, delete, new folder and chmod
 are in the panel's context menu; a failed transfer can be retried and resumes
 where it stopped; and a save can no longer quietly overwrite a remote file that
-changed underneath it. What Phase 6 still holds is a transfer surviving the
-*connection* going away — the session itself now does (see auto-reconnect
-below), but nothing yet resumes an in-flight transfer onto the channel that
-comes back — and an SCP fallback for hosts with no SFTP subsystem.
+changed underneath it. A transfer now survives the *connection* going away too:
+it is set aside when the transport drops and resumed, from where it got to, onto
+the channel the reconnect brings back. What Phase 6 still holds is an SCP
+fallback for hosts with no SFTP subsystem.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -615,19 +615,21 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 #### What is not, roughly in the order it matters
 
-1. **Surviving a dropped connection**, which is the half of "retry" that is
-   still not built — though the reason has changed. Resume and the Retry button
-   cover a transfer that *failed*; neither covers the connection itself going
-   away. The two blockers named here were the session not coming back and the
-   `OnceCell` handing out a dead channel forever; both are now gone
-   (auto-reconnect phase 1 reconnects under the same session id, and
-   `SshSession::disconnect` resets *both* SFTP cells, `transfer_sftp` included).
-   What is left is the part that was always transfer-shaped: nothing notices the
-   reconnect and restarts the transfer against the channel that came back. The
-   resume machinery to do it with already exists, and so, now, does the hook to
-   trigger it from: the registry's `restore` step runs after a reconnect
-   publishes its session, and port forwards — the other half of phase 2 of
-   `docs/AUTO_RECONNECT_PLAN.md` — are re-established from it already.
+1. ~~**Surviving a dropped connection.**~~ **Built.** A transfer whose transport
+   goes is set aside rather than failed, and re-run with `resume` when the
+   session comes back — under the same transfer id, so the row the user is
+   watching carries on. It cost little because everything it needed had already
+   arrived: the trigger is the `on_transport` hook the port forwards added, and
+   the fresh channel comes free, since re-running the command re-resolves the
+   SFTP client through a `OnceCell` that a disconnect resets.
+   - **A drag-and-drop upload is the exception, and says so.** Its bytes come as
+     chunks from the webview, which holds a `File` the backend has no path for,
+     so there is nothing to read them from a second time. Same asymmetry that
+     already stops a drop sending a folder.
+   - **"Interrupted" is a different state from "failed"** — one asks the user to
+     do nothing because the reconnect is running, the other asks them to fix
+     something and offers Retry. Collapsing them would send people to repair
+     what is about to repair itself.
 2. **The edit save still reads its local file whole.** The download half of that
    round trip streams; the re-upload on save calls `write` with a `Vec<u8>` read
    from the temp copy. Bounded by whatever the user just saved rather than by a
@@ -728,9 +730,9 @@ progress UI to put on the other channel anyway.
   `SessionRegistry` is generic over `Connector`.
 
   Of the three hats: the disconnect overlay now has something better than a
-  button; the rekey corner is survivable but still untested; the transfer one is
-  **not** closed — see Phase 6, "what is not", item 1. Still open, and worth
-  keeping on this list rather than declaring the capability done:
+  button; the transfer one is closed (Phase 6, item 1); the rekey corner is
+  survivable but still untested. Worth keeping on this list rather than
+  declaring the capability done, for what is left:
 
   - **Phase 2** — **port forwards are done**: they are marked dead the moment
     the transport goes, re-established against the connection that comes back,
@@ -738,8 +740,10 @@ progress UI to put on the other channel anyway.
     with the reason and a retry, rather than listed as though it were carrying
     traffic. Both ends of that matter — reporting only the recovery leaves a
     forward described as healthy for the whole outage, which is the same lie in
-    a longer window. What is left of this phase is the transfer half: nothing
-    restarts an in-flight transfer onto the new channel.
+    a longer window. **In-flight transfers are done too**: set aside on the drop
+    and resumed under the same id when the session returns, except a
+    drag-and-drop upload, whose bytes the backend never had a path for. So this
+    phase is complete.
   - **Phase 3** — no per-profile toggle or limits. Auto-reconnect is on for
     every session that can reconnect unattended. The `closeOnDisconnect`
     clash is **resolved**: it closes a pane whose session *ended* and leaves a

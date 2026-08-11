@@ -787,6 +787,9 @@ pub async fn ssh_disconnect(
     }
 
     crate::sftp::stop_watching_session(&sftp_state, &session_id).await;
+    // A pane that is gone is not coming back for its interrupted transfers, and
+    // nothing else would ever take them out of the map.
+    crate::sftp::forget_interrupted_transfers(&sftp_state, &session_id).await;
 
     Ok(())
 }
@@ -1021,8 +1024,17 @@ async fn mark_lost(state: &State<'_, SshState>, session_id: &str) {
 pub(crate) async fn on_transport_phase(app: &AppHandle, session_id: &str, phase: TransportPhase) {
     let state = app.state::<SshState>();
     match phase {
-        TransportPhase::Lost => mark_lost(&state, session_id).await,
-        TransportPhase::Restored => restore_forwards(&state, session_id).await,
+        TransportPhase::Lost => {
+            mark_lost(&state, session_id).await;
+            // Before the forwards are touched, and deliberately: this races the
+            // transfer's own task noticing the dead channel and tearing its
+            // entry down, so the sooner it runs the more it catches.
+            crate::sftp::interrupt_session_transfers(app, session_id).await;
+        }
+        TransportPhase::Restored => {
+            restore_forwards(&state, session_id).await;
+            crate::sftp::resume_session_transfers(app, session_id).await;
+        }
     }
     // The id, so a panel can ignore other panes' sessions.
     let _ = app.emit(FORWARDS_CHANGED_EVENT, session_id.to_string());
