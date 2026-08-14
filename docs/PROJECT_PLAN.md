@@ -435,7 +435,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   signing **not built** — the two that have to be settled before any public
   release
 
-### Phase 6 — Files (extended capability) — **browse, edit, transfer, folders, mutations, retry and resume all ship; surviving a dropped connection and SCP do not**
+### Phase 6 — Files (extended capability) — **browse, edit, transfer, folders, mutations, retry, resume and surviving a dropped connection all ship; SCP does not**
 
 #### What is built
 
