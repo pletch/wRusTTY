@@ -29,6 +29,30 @@ export interface TerminalSettings {
    * the pane open showing Reconnect / connection-settings actions instead.
    * On by default — the long-standing behavior. */
   closeOnDisconnect: boolean
+  /** A connection that goes away without being asked to comes back on its
+   * own, under the same session id — the pane keeps its engine, scrollback,
+   * logging sink, port forwards and running transfers across the drop.
+   *
+   * On by default, and off is a real choice rather than a safety valve: a
+   * reconnected shell is *not* the same shell (SSH has no session resumption),
+   * so the remote process is gone and the working directory is back to the
+   * login default. Someone who would rather see that the link dropped than
+   * find a fresh prompt where their half-typed command was turns this off.
+   *
+   * Only ever subtractive, at three levels: this switch, the profile's own
+   * `autoReconnect`, and the backend's refusal to reconnect a session whose
+   * credential has to be typed. Any one of the three saying no is no. */
+  autoReconnect: boolean
+  /** Consecutive attempts one reconnect run gets before it gives up and the
+   * pane shows its Reconnect button. Clamped to 1–100 backend-side; these are
+   * loop bounds and the webview is not a trusted source of one. */
+  reconnectMaxAttempts: number
+  /** ...and the wall clock the same run may spend, whichever binds first.
+   * Both are needed: the delay doubles to a 30s ceiling, so the attempt count
+   * alone would let a saturated schedule run far longer than its number
+   * suggests, and the clock alone would allow an unbounded number of fast
+   * early attempts. Clamped to 5–3600 seconds. */
+  reconnectMaxSeconds: number
   /** Session logs strip terminal escape sequences (colors, cursor moves,
    * title sequences) so the file is readable text. Off logs the raw PTY
    * stream verbatim (PuTTY "all session output" style) for exact fidelity /
@@ -178,6 +202,13 @@ const defaults: TerminalSettings = {
   copyOnSelect: true,
   rightClickPaste: true,
   closeOnDisconnect: true,
+  autoReconnect: true,
+  // Twelve attempts across five minutes, which is the schedule the backend
+  // shipped with and the one its comments reason about. Duplicated here rather
+  // than fetched because a default that needs a round trip is a default the
+  // Settings dialog cannot render before it has one.
+  reconnectMaxAttempts: 12,
+  reconnectMaxSeconds: 300,
   logPlainText: true,
   notifyOnCommandComplete: true,
   bellMarksTab: true,
@@ -248,6 +279,24 @@ export function scrollbackTierForRows(rows: number): number {
   return TIER_ROWS_AT_80_COLS[TIER_ROWS_AT_80_COLS.length - 1][0]
 }
 
+/**
+ * The ranges the two reconnect bounds are held to, mirroring `ATTEMPTS_RANGE`
+ * and `ELAPSED_SECONDS_RANGE` in src-tauri/src/session_registry.rs.
+ *
+ * The backend is the enforcement point — it clamps whatever arrives, because a
+ * loop bound off the IPC boundary is not something to take on trust. These
+ * exist so the Settings dialog offers and stores the number that will actually
+ * be used, rather than one silently corrected on the way through.
+ */
+export const RECONNECT_ATTEMPTS_RANGE = { min: 1, max: 100 } as const
+export const RECONNECT_SECONDS_RANGE = { min: 5, max: 3600 } as const
+
+function clampSetting(value: unknown, fallback: number, range: { min: number; max: number }) {
+  const n = Math.round(Number(value))
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(Math.max(n, range.min), range.max)
+}
+
 export function loadSettings(): TerminalSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
@@ -266,6 +315,16 @@ export function loadSettings(): TerminalSettings {
     if (!SCROLLBACK_FOOTPRINT_TIERS_MB.includes(merged.scrollbackBudgetMB)) {
       merged.scrollbackBudgetMB = defaults.scrollbackBudgetMB
     }
+    merged.reconnectMaxAttempts = clampSetting(
+      merged.reconnectMaxAttempts,
+      defaults.reconnectMaxAttempts,
+      RECONNECT_ATTEMPTS_RANGE,
+    )
+    merged.reconnectMaxSeconds = clampSetting(
+      merged.reconnectMaxSeconds,
+      defaults.reconnectMaxSeconds,
+      RECONNECT_SECONDS_RANGE,
+    )
     delete merged.scrollback
     return merged
   } catch {

@@ -37,6 +37,17 @@ export interface SessionProfile {
   keepaliveSeconds: number | null
   /** How to wake this host before connecting, or null to just connect. */
   wakeOnLan: WakeOnLan | null
+  /** Whether this session may reconnect itself when its transport drops.
+   * `null` — which every profile saved before this field existed reads as —
+   * follows the global `autoReconnect` setting, and `false` opts this one
+   * session out of it.
+   *
+   * Opt-out only, deliberately: `true` cannot switch reconnect *on* for a
+   * profile when the global setting is off, and neither value can make a
+   * session reconnect whose credential has to be typed in each time. A
+   * per-profile "always" would therefore be a promise the app cannot keep in
+   * two of the three cases it appears to cover. See `reconnectPolicy`. */
+  autoReconnect: boolean | null
   /** Serial only — null for SSH and telnet. */
   serial: SerialProfile | null
 }

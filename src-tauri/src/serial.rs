@@ -14,7 +14,7 @@ use tauri::{AppHandle, State};
 use wr_serial::{PortInfo, SerialConfig, SerialConnector};
 
 use crate::connection_status::status_label;
-use crate::session_registry::{NoPrepare, NoRestore, SessionRegistry};
+use crate::session_registry::{NoPrepare, NoRestore, ReconnectPolicy, SessionRegistry};
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -51,8 +51,10 @@ pub async fn serial_connect(
     config: SerialConfig,
     channel: Channel<SerialEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    reconnect: Option<ReconnectPolicy>,
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
+    let policy = reconnect.unwrap_or_default().sanitized();
     let session_id = state.sessions.next_session_id();
     // A one-off connection names its port directly, so there is nothing to
     // re-resolve — replugging into a different socket gives a different COM
@@ -76,6 +78,7 @@ pub async fn serial_connect(
                 async move { Ok(SerialConnector::new(config)) }
             }),
             None::<NoRestore>,
+            policy,
         )
         .await;
     Ok(session_id)
@@ -94,8 +97,10 @@ pub async fn serial_connect_profile(
     profile_id: String,
     channel: Channel<SerialEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    reconnect: Option<ReconnectPolicy>,
     state: State<'_, SerialState>,
 ) -> Result<String, String> {
+    let policy = reconnect.unwrap_or_default().sanitized();
     let config = resolve_profile_config(&app, &profile_id)?;
 
     let session_id = state.sessions.next_session_id();
@@ -125,6 +130,7 @@ pub async fn serial_connect_profile(
                 async move { resolve_profile_config(&app, &profile_id).map(SerialConnector::new) }
             }),
             None::<NoRestore>,
+            policy,
         )
         .await;
     Ok(session_id)

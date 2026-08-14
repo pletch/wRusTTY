@@ -138,6 +138,11 @@ export interface ConnectDraft {
   termType: string
   termCustom: boolean
   backspace: string
+  /** Whether this session may reconnect itself. Only ever stored as `false`
+   * (opt out) or `null` (follow the global setting) — see `savedAutoReconnect`
+   * in ConnectDialog — so the checkbox reads "unless I say otherwise" rather
+   * than promising something the global switch can overrule. */
+  autoReconnect: boolean
   label: string
   folder: string
   isNewFolder: boolean
@@ -169,6 +174,7 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     // into the free-text field, rather than silently snapping to the default.
     termCustom: Boolean(initial?.termType) && !TERM_TYPES.some((t) => t.value === initial?.termType),
     backspace: initial?.backspaceSendsCtrlH ? 'ctrlh' : 'del',
+    autoReconnect: initial?.autoReconnect !== false,
     label: initial?.label ?? '',
     folder: initial?.folder ?? '',
     isNewFolder: false,

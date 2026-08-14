@@ -676,7 +676,7 @@ function App() {
     paneId: string,
     source: ConnectionSource,
     logSession = false,
-    paneOptions?: { backspaceSendsCtrlH: boolean | null },
+    paneOptions?: { backspaceSendsCtrlH: boolean | null; autoReconnect: boolean | null },
   ) {
     // Set logging state before the source, so the Terminal mounts with logging
     // already armed and captures output from the first byte (batched with the
@@ -689,6 +689,7 @@ function App() {
       paneId,
       source,
       backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
+      autoReconnect: paneOptions?.autoReconnect ?? null,
     })
   }
 
@@ -1359,6 +1360,7 @@ function App() {
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
                   settings={terminalSettings}
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
+                  autoReconnect={leaf.autoReconnect}
                   logging={loggingByPane[leaf.id] ?? false}
                   active={leaf.id === tab.activePaneId}
                   paneId={leaf.id}

@@ -36,6 +36,7 @@ const jumpProfile: SessionProfile = {
   jumpProfileId: null,
   termType: null,
   backspaceSendsCtrlH: null,
+  autoReconnect: null,
   keepaliveSeconds: null,
   wakeOnLan: null,
   serial: null,
@@ -183,5 +184,62 @@ describe('the "ask each time" auth option', () => {
       await user.click(screen.getByText('Ask each time'))
     })
     expect(source.config?.auth.type).toBe('KeyboardInteractive')
+  })
+})
+
+/**
+ * The per-session auto-reconnect opt-out.
+ *
+ * Both halves are worth pinning because the checkbox is deliberately *not* a
+ * mirror of the stored value: ticked stores `null` (follow the global setting)
+ * rather than `true`. A stored `true` would read as an override, and it cannot
+ * be one — the global switch and the backend's credential rule both still
+ * apply — so writing it down would make the profile claim something the app
+ * cannot honour.
+ */
+describe('the auto-reconnect opt-out', () => {
+  /** Fills in a session, sets the checkbox, saves, and returns the profile. */
+  async function saveWith(tick: boolean, initial?: Record<string, unknown>) {
+    let saved: SessionProfile | null = null
+    const user = userEvent.setup()
+    render(
+      dialog({
+        initial: initial as never,
+        onSaveProfile: (p: SessionProfile) => void (saved = p),
+      }),
+    )
+    if (!initial) {
+      await user.type(screen.getByPlaceholderText('host'), 'example.net')
+      await user.type(screen.getByPlaceholderText('username'), 'tim')
+      await user.click(screen.getByLabelText('Save as session'))
+    }
+    const box = screen.getByLabelText(/Reconnect automatically/i) as HTMLInputElement
+    if (box.checked !== tick) await user.click(box)
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    return saved as SessionProfile | null
+  }
+
+  it('is ticked by default, and stores nothing when it is', async () => {
+    expect((await saveWith(true))?.autoReconnect).toBe(null)
+  })
+
+  it('stores the opt-out when it is unticked', async () => {
+    expect((await saveWith(false))?.autoReconnect).toBe(false)
+  })
+
+  it('opens a session that opted out with the box already clear', () => {
+    render(dialog({ initial: { host: 'example.net', autoReconnect: false } }))
+    const box = screen.getByLabelText(/Reconnect automatically/i) as HTMLInputElement
+    expect(box.checked).toBe(false)
+  })
+
+  // The reassurance only makes sense while the box is clear — shown always, it
+  // would read as a warning about the default.
+  it('explains the consequence only while the box is clear', async () => {
+    const user = userEvent.setup()
+    render(dialog())
+    expect(screen.queryByText(/stay down until you reconnect it by hand/i)).toBeNull()
+    await user.click(screen.getByLabelText(/Reconnect automatically/i))
+    expect(screen.getByText(/stay down until you reconnect it by hand/i)).toBeTruthy()
   })
 })

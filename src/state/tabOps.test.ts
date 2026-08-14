@@ -40,6 +40,7 @@ function profile(overrides: Partial<SessionProfile> = {}): SessionProfile {
     jumpProfileId: null,
     termType: null,
     backspaceSendsCtrlH: null,
+    autoReconnect: null,
     ...overrides,
   }
 }

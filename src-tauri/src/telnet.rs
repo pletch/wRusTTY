@@ -12,7 +12,7 @@ use tauri::{AppHandle, State};
 use wr_telnet::{TelnetConfig, TelnetConnector};
 
 use crate::connection_status::status_label;
-use crate::session_registry::{NoPrepare, NoRestore, SessionRegistry};
+use crate::session_registry::{NoPrepare, NoRestore, ReconnectPolicy, SessionRegistry};
 
 #[derive(Clone, Serialize)]
 #[serde(
@@ -44,8 +44,10 @@ pub async fn telnet_connect(
     config: TelnetConfig,
     channel: Channel<TelnetEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    reconnect: Option<ReconnectPolicy>,
     state: State<'_, TelnetState>,
 ) -> Result<String, String> {
+    let policy = reconnect.unwrap_or_default().sanitized();
     let session_id = state.sessions.next_session_id();
     // Nothing to re-resolve and nothing secret to hold: a telnet connection is
     // a host and a port, both of which are already here. The config is cloned
@@ -68,6 +70,7 @@ pub async fn telnet_connect(
                 async move { Ok(TelnetConnector::new(config)) }
             }),
             None::<NoRestore>,
+            policy,
         )
         .await;
     Ok(session_id)

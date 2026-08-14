@@ -28,6 +28,7 @@ export type TabsAction =
       paneId: string
       source: ConnectionSource
       backspaceSendsCtrlH: boolean | null
+      autoReconnect: boolean | null
     }
   | { type: 'paneDisconnected'; tabId: string; paneId: string }
   | { type: 'paneFocused'; tabId: string; paneId: string }
@@ -133,6 +134,7 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
               ...l,
               source: action.source,
               backspaceSendsCtrlH: action.backspaceSendsCtrlH,
+              autoReconnect: action.autoReconnect,
             })),
           }),
         ),
@@ -242,6 +244,7 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
               source: action.source ?? l.source,
               initial: action.initial,
               backspaceSendsCtrlH: action.initial?.backspaceSendsCtrlH ?? null,
+              autoReconnect: action.initial?.autoReconnect ?? null,
             })),
           }),
         ),

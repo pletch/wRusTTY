@@ -469,6 +469,69 @@ export function SettingsDialog({
                         hint="When the remote shell exits or the server hangs up, close the pane instead of leaving it open on Reconnect actions. A connection that drops unexpectedly is not affected — that one reconnects on its own."
                       />
                       <Toggle
+                        checked={settings.autoReconnect}
+                        onChange={(v) => onChange({ ...settings, autoReconnect: v })}
+                        label="Reconnect a dropped connection automatically"
+                        hint="A link that goes away without being asked to comes back on its own, under the same pane — its scrollback, logging, port forwards and running transfers all survive. Note that the shell itself does not: SSH cannot resume a session, so the remote process is gone and the working directory is back to the login default. Individual saved sessions can opt out."
+                      />
+                      {/* Only under the switch they qualify. Shown as a pair
+                          because both bind and neither alone describes the
+                          leash: the delay doubles to a 30s ceiling, so twelve
+                          attempts is four minutes early on and much longer once
+                          it saturates. */}
+                      {settings.autoReconnect && (
+                        <div className="space-y-2 pl-8">
+                          <label className="flex items-center justify-between gap-3 text-white/85">
+                            <span>Give up after</span>
+                            <select
+                              className={selectClass}
+                              value={settings.reconnectMaxAttempts}
+                              onChange={(e) =>
+                                onChange({
+                                  ...settings,
+                                  reconnectMaxAttempts: Number(e.target.value),
+                                })
+                              }
+                            >
+                              {[3, 6, 12, 25, 50].map((n) => (
+                                <option key={n} value={n}>
+                                  {n} attempts
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex items-center justify-between gap-3 text-white/85">
+                            <span>...or after</span>
+                            <select
+                              className={selectClass}
+                              value={settings.reconnectMaxSeconds}
+                              onChange={(e) =>
+                                onChange({
+                                  ...settings,
+                                  reconnectMaxSeconds: Number(e.target.value),
+                                })
+                              }
+                            >
+                              {[
+                                [60, '1 minute'],
+                                [120, '2 minutes'],
+                                [300, '5 minutes'],
+                                [900, '15 minutes'],
+                                [3600, '1 hour'],
+                              ].map(([seconds, label]) => (
+                                <option key={seconds} value={seconds}>
+                                  {label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <p className="leading-relaxed text-white/40">
+                            Whichever comes first. The wait doubles from one second to a
+                            thirty-second ceiling, so the clock is usually the one that decides.
+                          </p>
+                        </div>
+                      )}
+                      <Toggle
                         checked={settings.confirmCloseWithConnection}
                         onChange={(v) => onChange({ ...settings, confirmCloseWithConnection: v })}
                         label="Confirm before closing a live connection"

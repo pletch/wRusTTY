@@ -211,6 +211,8 @@ pub fn to_profile(session: &PuttySession, id: String) -> Option<SessionProfile> 
         // PuTTY has no Wake-on-LAN setting to carry across — waking is
         // something its users do with a separate tool.
         wake_on_lan: None,
+        // PuTTY has no equivalent setting, so an import follows the global one.
+        auto_reconnect: None,
         serial: None,
     })
 }
@@ -265,6 +267,8 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
         keepalive_seconds: None,
         // Nor anything to wake: the adapter is on the end of a cable.
         wake_on_lan: None,
+        // PuTTY has no equivalent setting, so an import follows the global one.
+        auto_reconnect: None,
         serial: Some(crate::profiles::SerialProfile {
             identity: wr_serial::PortIdentity {
                 port_name,

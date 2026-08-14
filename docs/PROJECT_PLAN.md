@@ -146,10 +146,11 @@ mosh, RDP) means adding a crate, not touching the UI.
   reason and a retry, instead of being drawn like a working tunnel that silently
   carries nothing
 - **Keepalive** with visible connection state per tab **(shipped — per-profile
-  interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect **(partial —
-  the session comes back, and so do its port forwards; an in-flight file
-  transfer does not, and there is no per-profile toggle yet. See the watch item
-  in §5)**.
+  interval, see `SshConfig::keepalive_seconds`)**. Auto-reconnect **(shipped —
+  the session comes back, and so do its port forwards and its in-flight file
+  transfers; a global switch, a per-profile opt-out and both run limits are in
+  Settings. See `docs/AUTO_RECONNECT_PLAN.md`, and the watch item in §5 for
+  what a reconnected session deliberately does *not* restore)**.
 - **Wake-on-LAN** — a per-profile MAC, sent before connecting to a host that
   isn't answering **(shipped — `src-tauri/src/wake.rs`, run from the registry's
   pre-connect hook)**. Probes first, so an already-awake host is never sent
@@ -744,13 +745,20 @@ progress UI to put on the other channel anyway.
     and resumed under the same id when the session returns, except a
     drag-and-drop upload, whose bytes the backend never had a path for. So this
     phase is complete.
-  - **Phase 3** — no per-profile toggle or limits. Auto-reconnect is on for
-    every session that can reconnect unattended. The `closeOnDisconnect`
-    clash is **resolved**: it closes a pane whose session *ended* and leaves a
-    *lost* transport to reconnect, which is what the setting always claimed to
-    do. It previously fired on both, and since it is on by default and closing
-    a pane drops the session id that a reconnect run needs, most users had
-    auto-reconnect silently switched off.
+  - **Phase 3 — done.** A global switch, a per-profile opt-out, and both run
+    limits (attempts and wall clock), all beside `closeOnDisconnect` in
+    Settings. Everything subtracts and nothing adds: the global setting, the
+    profile, and the backend's refusal to reconnect a session whose credential
+    has to be typed in are three ways to say no with no fourth that says yes,
+    which is why a profile stores `false` or nothing and never `true`. The
+    limits are clamped on arrival — they are loop bounds coming off the IPC
+    boundary. `AUTO_RECONNECT_PLAN.md` has the reasoning.
+    - The `closeOnDisconnect` clash was **resolved earlier**, as part of the
+      same phase but ahead of it: the setting closes a pane whose session
+      *ended* and leaves a *lost* transport to reconnect, which is what it
+      always claimed to do. It previously fired on both, and since it is on by
+      default and closing a pane drops the session id that a reconnect run
+      needs, most users had auto-reconnect silently switched off.
   - **Tested against a real drop — for SSH.** This said "untested", and called
     it the part most likely to be right for the wrong reason. It has since been
     run: a live SSH session to a real host, severed by a TCP reset from a relay

@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, Mutex as TokioMutex};
@@ -315,15 +315,100 @@ const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
 /// something a person is waiting through and the pane may as well be idle.
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
-/// How many consecutive attempts a run gets. With the schedule above, twelve
-/// spans roughly four minutes.
+/// How many consecutive attempts a run gets by default. With the schedule
+/// above, twelve spans roughly four minutes.
 const RECONNECT_MAX_ATTEMPTS: u32 = 12;
 
-/// ...and the wall-clock bound on the same run, which is the one that actually
-/// binds once the delay saturates. Both are needed: the attempt count alone
-/// would let a saturated schedule run for six minutes, and the clock alone
-/// would allow an unbounded number of fast early attempts.
-const RECONNECT_MAX_ELAPSED: Duration = Duration::from_secs(300);
+/// ...and the default wall-clock bound on the same run, which is the one that
+/// actually binds once the delay saturates. Both are needed: the attempt count
+/// alone would let a saturated schedule run for six minutes, and the clock
+/// alone would allow an unbounded number of fast early attempts.
+const RECONNECT_MAX_ELAPSED_SECONDS: u64 = 300;
+
+/// The range a caller-supplied attempt bound is held to.
+///
+/// One at the bottom rather than zero, because zero is not a shorter leash —
+/// it is "off", and off is [`ReconnectPolicy::enabled`]. A policy of zero
+/// attempts would end the run at the first `schedule_retry` and report "could
+/// not reconnect after 1 attempts", which describes something that never
+/// happened. The top is generous: it is there to keep a corrupt settings blob
+/// from producing an unbounded loop, not to second-guess someone who wants a
+/// long leash.
+const ATTEMPTS_RANGE: std::ops::RangeInclusive<u32> = 1..=100;
+
+/// ...and the range for the wall-clock bound, in seconds. The floor is five
+/// seconds because the first delay is one, so anything less would spend the
+/// budget before the first retry landed and turn every drop into an immediate
+/// failure. The ceiling is an hour.
+const ELAPSED_SECONDS_RANGE: std::ops::RangeInclusive<u64> = 5..=3600;
+
+/// What a reconnect run is allowed to spend, and whether it may run at all.
+///
+/// Deserialized straight off the IPC boundary, which is why [`Self::sanitized`]
+/// exists: these are loop bounds, and the webview is not a trusted source of
+/// one. Every field is optional on the wire and every absent field falls back
+/// to the default, so a caller that sends nothing gets exactly the behaviour
+/// that shipped before this type existed.
+///
+/// The *policy* is only ever subtractive. `enabled: false` is the user saying
+/// no; it can never make a session reconnect that the backend has already
+/// decided cannot — a credential that must be typed is refused in `ssh.rs`
+/// regardless of what arrives here, and that check stays there precisely
+/// because it is not the webview's to make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReconnectPolicy {
+    /// Whether an unattended reconnect may be attempted at all. False is the
+    /// user's own off switch — global, or a single profile opting out — and is
+    /// indistinguishable here from a session that has no factory to rebuild a
+    /// connector with. Both mean "this pane keeps its manual Reconnect button".
+    pub enabled: bool,
+    /// Consecutive attempts one run gets before it gives up.
+    pub max_attempts: u32,
+    /// ...and the wall clock the same run may spend, whichever binds first.
+    pub max_elapsed_seconds: u64,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_attempts: RECONNECT_MAX_ATTEMPTS,
+            max_elapsed_seconds: RECONNECT_MAX_ELAPSED_SECONDS,
+        }
+    }
+}
+
+impl ReconnectPolicy {
+    /// The same policy with both bounds clamped into a range a supervisor can
+    /// be handed safely. Clamped rather than rejected: a settings blob that has
+    /// been hand-edited or written by a later version should cost the user a
+    /// leash of a different length, not a session that refuses to open.
+    pub fn sanitized(self) -> Self {
+        Self {
+            enabled: self.enabled,
+            max_attempts: self
+                .max_attempts
+                .clamp(*ATTEMPTS_RANGE.start(), *ATTEMPTS_RANGE.end()),
+            max_elapsed_seconds: self
+                .max_elapsed_seconds
+                .clamp(*ELAPSED_SECONDS_RANGE.start(), *ELAPSED_SECONDS_RANGE.end()),
+        }
+    }
+
+    fn max_elapsed(&self) -> Duration {
+        Duration::from_secs(self.max_elapsed_seconds)
+    }
+
+    /// How long to wait before `attempt`, or `None` once the run has spent
+    /// either bound.
+    fn next_delay(&self, attempt: u32, elapsed: Duration) -> Option<Duration> {
+        if attempt > self.max_attempts || elapsed >= self.max_elapsed() {
+            return None;
+        }
+        Some(jittered(backoff_delay(attempt), clock_spread()))
+    }
+}
 
 /// How far either side of the nominal delay a retry may land, as a fraction.
 ///
@@ -368,15 +453,6 @@ fn clock_spread() -> f64 {
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     (nanos % 2001) as f64 / 1000.0 - 1.0
-}
-
-/// How long to wait before `attempt`, or `None` once the run has spent either
-/// bound.
-fn next_delay(attempt: u32, elapsed: Duration) -> Option<Duration> {
-    if attempt > RECONNECT_MAX_ATTEMPTS || elapsed >= RECONNECT_MAX_ELAPSED {
-        return None;
-    }
-    Some(jittered(backoff_delay(attempt), clock_spread()))
 }
 
 /// The delay as the status line should say it: whole seconds, never zero,
@@ -554,7 +630,11 @@ impl<C: Connector> SessionRegistry<C> {
     /// came back; telnet and serial pass `None` because nothing of theirs
     /// outlives a transport. It never fires for the first connect, which has
     /// nothing attached to it yet.
-    // Ten arguments, three past clippy's threshold, and the last three are the
+    ///
+    /// `policy` is the user's half of the same decision — see
+    /// [`ReconnectPolicy`]. It only ever subtracts: a disabled policy cancels a
+    /// factory, and no policy can supply one.
+    // Eleven arguments, four past clippy's threshold, and the last four are the
     // ones that earn it: all are optional capabilities of the connection
     // rather than parts of it. Grouping them would mean a struct built once at
     // each of four call sites and destructured immediately here.
@@ -570,6 +650,7 @@ impl<C: Connector> SessionRegistry<C> {
         prepare: Option<P>,
         reconnect: Option<MakeC>,
         on_transport: Option<R>,
+        policy: ReconnectPolicy,
     ) where
         E: Serialize + Clone + Send + 'static,
         F: Fn(&ConnectionStatus) -> E + Send + 'static,
@@ -670,6 +751,7 @@ impl<C: Connector> SessionRegistry<C> {
                 connector,
                 reconnect,
                 on_transport,
+                policy,
             )
             .await;
 
@@ -710,6 +792,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
     connector: C,
     reconnect: Option<MakeC>,
     on_transport: Option<R>,
+    policy: ReconnectPolicy,
 ) where
     C: Connector,
     MakeC: Fn() -> MakeFut,
@@ -721,6 +804,12 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
     let session_id = session_id.as_str();
     let slot = &slot;
     let tx = &tx;
+    // The user's off switch lands here, in the one place that already means
+    // "this session does not reconnect unattended" — rather than as a second
+    // condition beside every use of the factory, where the two could disagree.
+    // It can only take the factory away: an opted-out session and one whose
+    // credential has to be typed are the same thing from here on.
+    let reconnect = policy.enabled.then_some(reconnect).flatten();
     let reconnect = reconnect.as_ref();
     let on_transport = on_transport.as_ref();
     // Attempt zero is the connector the caller already built; every one after
@@ -766,7 +855,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                         // Straight to the backoff: there is nothing to hand a
                         // handshake, but this still spends an attempt.
                         if let Some(delay) =
-                            schedule_retry(tx, &mut attempt, run_started.elapsed()).await
+                            schedule_retry(tx, &mut attempt, run_started.elapsed(), &policy).await
                         {
                             tokio::select! {
                                 _ = tokio::time::sleep(delay) => continue,
@@ -865,7 +954,8 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
             }
         }
 
-        let Some(delay) = schedule_retry(tx, &mut attempt, run_started.elapsed()).await else {
+        let Some(delay) = schedule_retry(tx, &mut attempt, run_started.elapsed(), &policy).await
+        else {
             give_up(sessions, session_id, slot, tx, attempt, build_error).await;
             return;
         };
@@ -883,9 +973,10 @@ async fn schedule_retry(
     tx: &mpsc::Sender<ConnectionEvent>,
     attempt: &mut u32,
     elapsed: Duration,
+    policy: &ReconnectPolicy,
 ) -> Option<Duration> {
     *attempt += 1;
-    let delay = next_delay(*attempt, elapsed)?;
+    let delay = policy.next_delay(*attempt, elapsed)?;
     let _ = tx
         .send(ConnectionEvent::Status(ConnectionStatus::Reconnecting {
             attempt: *attempt,
@@ -1427,9 +1518,83 @@ mod tests {
     /// an unbounded number of fast early attempts.
     #[test]
     fn a_run_is_bounded_by_attempts_and_by_the_clock_separately() {
-        assert!(next_delay(RECONNECT_MAX_ATTEMPTS, Duration::ZERO).is_some());
-        assert!(next_delay(RECONNECT_MAX_ATTEMPTS + 1, Duration::ZERO).is_none());
-        assert!(next_delay(1, RECONNECT_MAX_ELAPSED).is_none());
+        let policy = ReconnectPolicy::default();
+        assert!(policy
+            .next_delay(policy.max_attempts, Duration::ZERO)
+            .is_some());
+        assert!(policy
+            .next_delay(policy.max_attempts + 1, Duration::ZERO)
+            .is_none());
+        assert!(policy.next_delay(1, policy.max_elapsed()).is_none());
+    }
+
+    /// The bounds are the caller's to shorten, and shortening either one
+    /// alone must end the run — otherwise a user who asks for a shorter leash
+    /// gets the default one whenever the *other* bound is the looser of the
+    /// two.
+    #[test]
+    fn a_shortened_bound_is_the_one_that_binds() {
+        let fewer = ReconnectPolicy {
+            max_attempts: 3,
+            ..ReconnectPolicy::default()
+        };
+        assert!(fewer.next_delay(3, Duration::ZERO).is_some());
+        assert!(fewer.next_delay(4, Duration::ZERO).is_none());
+
+        let briefer = ReconnectPolicy {
+            max_elapsed_seconds: 30,
+            ..ReconnectPolicy::default()
+        };
+        assert!(briefer.next_delay(1, Duration::from_secs(29)).is_some());
+        assert!(briefer.next_delay(1, Duration::from_secs(30)).is_none());
+    }
+
+    /// These are loop bounds arriving from the webview, so the range they are
+    /// held to is the thing being asserted — not that some clamp exists.
+    #[test]
+    fn a_policy_off_the_wire_is_clamped_rather_than_refused() {
+        let absurd = ReconnectPolicy {
+            enabled: true,
+            max_attempts: u32::MAX,
+            max_elapsed_seconds: u64::MAX,
+        }
+        .sanitized();
+        assert_eq!(absurd.max_attempts, *ATTEMPTS_RANGE.end());
+        assert_eq!(absurd.max_elapsed_seconds, *ELAPSED_SECONDS_RANGE.end());
+
+        // Zero is not a shorter leash — it is `enabled: false`, and reading it
+        // as a bound would end every run at the first retry with "could not
+        // reconnect after 1 attempts", describing something that never
+        // happened.
+        let zeroed = ReconnectPolicy {
+            enabled: true,
+            max_attempts: 0,
+            max_elapsed_seconds: 0,
+        }
+        .sanitized();
+        assert_eq!(zeroed.max_attempts, *ATTEMPTS_RANGE.start());
+        assert_eq!(zeroed.max_elapsed_seconds, *ELAPSED_SECONDS_RANGE.start());
+        assert!(
+            zeroed.enabled,
+            "clamping a bound must not change the switch"
+        );
+    }
+
+    /// A field the frontend does not send falls back to the default, so a
+    /// caller that sends nothing gets exactly the behaviour that shipped
+    /// before the policy existed.
+    #[test]
+    fn an_absent_field_keeps_the_default() {
+        let partial: ReconnectPolicy = serde_json::from_str(r#"{"maxAttempts": 4}"#).unwrap();
+        assert_eq!(partial.max_attempts, 4);
+        assert_eq!(
+            partial.max_elapsed_seconds,
+            ReconnectPolicy::default().max_elapsed_seconds
+        );
+        assert!(partial.enabled);
+
+        let empty: ReconnectPolicy = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, ReconnectPolicy::default());
     }
 
     /// "reconnecting in 0s" reads as a bug rather than as "imminently", and
@@ -1559,6 +1724,7 @@ mod tests {
             },
             Some(script.factory()),
             None::<NoRestore>,
+            ReconnectPolicy::default(),
         ));
 
         // The first handshake lands.
@@ -1630,6 +1796,7 @@ mod tests {
             },
             Some(script.factory()),
             Some(phase_recorder(log.clone())),
+            ReconnectPolicy::default(),
         ));
 
         // The first handshake lands — and reports nothing.
@@ -1689,6 +1856,7 @@ mod tests {
             },
             None,
             Some(phase_recorder(log.clone())),
+            ReconnectPolicy::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1728,6 +1896,7 @@ mod tests {
             },
             Some(script.factory()),
             None::<NoRestore>,
+            ReconnectPolicy::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1769,6 +1938,7 @@ mod tests {
             },
             Some(script.factory()),
             None::<NoRestore>,
+            ReconnectPolicy::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1808,6 +1978,7 @@ mod tests {
             },
             Some(script.factory()),
             None::<NoRestore>,
+            ReconnectPolicy::default(),
         )
         .await;
 
@@ -1840,6 +2011,7 @@ mod tests {
             },
             Some(script.factory()),
             None::<NoRestore>,
+            ReconnectPolicy::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1889,6 +2061,7 @@ mod tests {
             },
             Some(script.factory()),
             None::<NoRestore>,
+            ReconnectPolicy::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1939,6 +2112,7 @@ mod tests {
             },
             None,
             None,
+            ReconnectPolicy::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1949,5 +2123,117 @@ mod tests {
             .expect("the run must end")
             .unwrap();
         assert_eq!(script.attempts(), 1, "no unattended retry may be made");
+    }
+
+    /// The user's off switch reaches the same end as having no factory — a
+    /// session that *could* reconnect and has been told not to.
+    ///
+    /// The `Lost` phase is the half worth pinning. Turning auto-reconnect off
+    /// says nothing about port forwards, and a hook that stopped firing with
+    /// the switch would leave a forward on an opted-out session described as
+    /// live for the rest of the pane's life, since nothing else is ever coming
+    /// to correct the record. Off means "do not dial", not "do not report".
+    #[tokio::test(start_paused = true)]
+    async fn a_disabled_policy_stops_the_run_but_still_reports_the_loss() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        let script = Script::shared();
+        let (tx, _rx) = mpsc::channel(64);
+        let (down_tx, down_rx) = mpsc::unbounded_channel();
+
+        let log: PhaseLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // A perfectly good factory, which is the point: nothing but the policy
+        // stops this session coming back.
+        let run = tokio::spawn(supervise(
+            registry.sessions.clone(),
+            "fake-0".to_string(),
+            slot.clone(),
+            tx,
+            down_rx,
+            FakeConnector {
+                script: script.clone(),
+            },
+            Some(script.factory()),
+            Some(phase_recorder(log.clone())),
+            ReconnectPolicy {
+                enabled: false,
+                ..ReconnectPolicy::default()
+            },
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        down_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(60), run)
+            .await
+            .expect("the run must end rather than sit in a backoff")
+            .unwrap();
+
+        assert_eq!(
+            script.attempts(),
+            1,
+            "the factory must not be called once the user has said no"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![TransportPhase::Lost],
+            "the drop is still news to whatever was bound to the connection"
+        );
+    }
+
+    /// A shortened attempt bound is honoured end to end, not merely by
+    /// `next_delay` in isolation — the supervisor has two paths into the
+    /// backoff (a failed handshake and a factory that will not build) and only
+    /// one of them is exercised by asserting on the pure function.
+    #[tokio::test(start_paused = true)]
+    async fn a_shortened_policy_gives_up_sooner_than_the_default_would() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        let script = Script::shared();
+        let (tx, mut rx) = mpsc::channel(256);
+        let (down_tx, down_rx) = mpsc::unbounded_channel();
+
+        let run = tokio::spawn(supervise(
+            registry.sessions.clone(),
+            "fake-0".to_string(),
+            slot.clone(),
+            tx,
+            down_rx,
+            FakeConnector {
+                script: script.clone(),
+            },
+            Some(script.factory()),
+            None::<NoRestore>,
+            ReconnectPolicy {
+                max_attempts: 2,
+                ..ReconnectPolicy::default()
+            },
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        script.fail_first.store(u64::MAX, Ordering::Relaxed);
+        down_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(600), run)
+            .await
+            .expect("the run must end on its own")
+            .unwrap();
+
+        // The first connect, plus the two retries the policy allows.
+        assert_eq!(
+            script.attempts(),
+            3,
+            "the shortened bound must be the one that binds"
+        );
+
+        let statuses = drain(&mut rx).await;
+        assert!(
+            statuses.iter().any(|s| matches!(
+                s,
+                ConnectionStatus::Failed(msg) if msg.contains("after 3 attempts")
+            )),
+            "giving up early still has to be reported, and say how many: {statuses:?}"
+        );
     }
 }

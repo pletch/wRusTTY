@@ -44,6 +44,7 @@ function profile(id: string, label: string): SessionProfile {
     jumpProfileId: null,
     termType: null,
     backspaceSendsCtrlH: null,
+    autoReconnect: null,
     keepaliveSeconds: null,
     wakeOnLan: null,
     serial: null,

@@ -6,6 +6,8 @@ import {
   cursorStyleSequence,
   scrollbackTierForRows,
   SCROLLBACK_FOOTPRINT_TIERS_MB,
+  RECONNECT_ATTEMPTS_RANGE,
+  RECONNECT_SECONDS_RANGE,
 } from './settings'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
@@ -176,5 +178,44 @@ describe('scrollback settings migration', () => {
   it('migrates a payload found under the pre-rebrand key too', () => {
     localStorage.setItem(PREVIOUS_STORAGE_KEY, JSON.stringify({ scrollback: 30000 }))
     expect(loadSettings().scrollbackBudgetMB).toBe(64)
+  })
+})
+
+describe('the reconnect bounds', () => {
+  it('default to the schedule the backend reasons about', () => {
+    const settings = loadSettings()
+    expect(settings.autoReconnect).toBe(true)
+    expect(settings.reconnectMaxAttempts).toBe(12)
+    expect(settings.reconnectMaxSeconds).toBe(300)
+  })
+
+  // These are loop bounds. The backend clamps them on arrival because the
+  // webview is not a trusted source of one; this clamp exists so the dialog
+  // shows the number that will actually be used rather than one silently
+  // corrected on the way through.
+  it('are clamped into range rather than passed on as stored', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ reconnectMaxAttempts: 100000, reconnectMaxSeconds: 0 }),
+    )
+    const settings = loadSettings()
+    expect(settings.reconnectMaxAttempts).toBe(RECONNECT_ATTEMPTS_RANGE.max)
+    expect(settings.reconnectMaxSeconds).toBe(RECONNECT_SECONDS_RANGE.min)
+  })
+
+  it('fall back to the default when a stored value is not a number at all', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ reconnectMaxAttempts: 'lots' }))
+    expect(loadSettings().reconnectMaxAttempts).toBe(12)
+  })
+
+  // The switch is not a bound and must survive a blob whose bounds are junk.
+  it('leave the switch alone while clamping', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ autoReconnect: false, reconnectMaxAttempts: -5 }),
+    )
+    const settings = loadSettings()
+    expect(settings.autoReconnect).toBe(false)
+    expect(settings.reconnectMaxAttempts).toBe(RECONNECT_ATTEMPTS_RANGE.min)
   })
 })

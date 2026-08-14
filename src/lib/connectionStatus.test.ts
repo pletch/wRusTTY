@@ -3,6 +3,7 @@ import {
   isCleanDisconnect,
   isDisconnect,
   parseReconnecting,
+  reconnectPolicy,
   shouldAutoClosePane,
 } from './connection'
 
@@ -96,5 +97,47 @@ describe('shouldAutoClosePane', () => {
     ]) {
       expect(shouldAutoClosePane(status, true), status).toBe(false)
     }
+  })
+})
+
+describe('reconnectPolicy', () => {
+  const settings = { autoReconnect: true, reconnectMaxAttempts: 12, reconnectMaxSeconds: 300 }
+
+  it('carries the bounds through unchanged', () => {
+    expect(reconnectPolicy(settings, null)).toEqual({
+      enabled: true,
+      maxAttempts: 12,
+      maxElapsedSeconds: 300,
+    })
+  })
+
+  it('treats a profile with no preference as following the global setting', () => {
+    expect(reconnectPolicy(settings, null).enabled).toBe(true)
+    expect(reconnectPolicy(settings, undefined).enabled).toBe(true)
+    expect(reconnectPolicy({ ...settings, autoReconnect: false }, null).enabled).toBe(false)
+  })
+
+  it('lets a single profile opt out while the global setting stays on', () => {
+    expect(reconnectPolicy(settings, false).enabled).toBe(false)
+  })
+
+  // The half that would be easy to get backwards. Both sides subtract: the
+  // global switch is the one place someone turns the whole behaviour off, and
+  // a profile that could re-enable it there would make that switch useless
+  // without auditing every saved session.
+  it('does not let a profile re-enable what the global setting turned off', () => {
+    expect(reconnectPolicy({ ...settings, autoReconnect: false }, true).enabled).toBe(false)
+  })
+
+  // The bounds are sent whatever the switch says. They describe the run, not
+  // whether there is one, and dropping them when disabled would mean the
+  // backend silently substituting its own the moment the switch came back on
+  // mid-session — which it cannot, since the policy is fixed at connect time.
+  it('still reports the bounds when reconnecting is switched off', () => {
+    expect(reconnectPolicy({ ...settings, autoReconnect: false }, null)).toEqual({
+      enabled: false,
+      maxAttempts: 12,
+      maxElapsedSeconds: 300,
+    })
   })
 })

@@ -84,6 +84,10 @@ interface Props {
    * Per-connection rather than a global preference, because one machine
    * routinely has both kinds of host open at once. */
   backspaceSendsCtrlH?: boolean | null
+  /** `false` opts this pane's session out of auto-reconnect; null/absent
+   * follows the global setting. Resolved from the session profile where the
+   * profile is known — see `PaneLeaf.autoReconnect`. */
+  autoReconnect?: boolean | null
   logging?: boolean
   /** Whether this is the focused pane within its (possibly split) tab. */
   active?: boolean
@@ -190,6 +194,7 @@ export function Terminal({
   label,
   settings,
   backspaceSendsCtrlH,
+  autoReconnect,
   logging,
   active,
   paneId,
@@ -340,6 +345,13 @@ export function Terminal({
   // which must not re-run (and tear down the session) when this changes.
   const backspaceRef = useRef(backspaceSendsCtrlH)
   backspaceRef.current = backspaceSendsCtrlH
+
+  // And again, for the same reason: the connection effect reads this when it
+  // dials, and a change to it must not tear the session down to apply — it
+  // describes what happens to the *next* drop, which the running supervisor
+  // was already told about when it started.
+  const autoReconnectRef = useRef(autoReconnect)
+  autoReconnectRef.current = autoReconnect
 
   // Same reason again: the paste guard is raised from a DOM listener installed
   // by the connection effect, which must not re-run when the provider's
@@ -1393,7 +1405,14 @@ export function Terminal({
 
     function connectWith(cols: number, rows: number) {
     conn
-      .connect(source, onEvent, onData, cols, rows)
+      .connect(
+        source,
+        onEvent,
+        onData,
+        cols,
+        rows,
+        conn.reconnectPolicy(settingsRef.current, autoReconnectRef.current),
+      )
       .then((id) => {
         if (disposed) {
           conn.disconnect(source, id).catch(() => {})

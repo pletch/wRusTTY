@@ -2,12 +2,9 @@
 
 Implementation plan for a session that survives its transport going away.
 
-**Phases 1 and 2 are built.** Phase 3 is a decision short of a feature: its
-precedence question — what `closeOnDisconnect` should do to a reconnect — is
-settled and shipped, but the per-profile toggle and the limits are not built.
-The three decisions below were taken as written and are now load-bearing in the
-code; what changed on contact is recorded under "What Phase 1 actually did" at
-the end.
+**All three phases are built.** The three decisions below were taken as written
+and are now load-bearing in the code; what changed on contact is recorded under
+"What Phase 1 actually did" at the end.
 
 This document was written against the code as it stood after the
 keyboard-interactive auth work, and every file and line reference below was
@@ -259,13 +256,13 @@ connection and are silently dead without further work.
   editor. They pick up the new channel through `get_or_open_sftp` once the cell
   is reset.
 
-## Phase 3 — policy *(the precedence is decided; the controls are not built)*
+## Phase 3 — policy *(built)*
 
-A per-profile toggle, attempt and backoff limits, alongside the existing
-`closeOnDisconnect` setting, which is the nearest neighbour and the obvious
-place for it to live.
+A global switch, a per-profile opt-out, and the two limits — sitting beside
+`closeOnDisconnect` in Settings, which is the nearest neighbour and where the
+precedence question was settled.
 
-**The precedence half is done**, and was the urgent half — see "What Phase 1
+**The precedence half came first**, and was the urgent half — see "What Phase 1
 actually did" below. `closeOnDisconnect` fired on both kinds of disconnect,
 which meant the setting silently switched auto-reconnect off for everyone who
 had it on, and it is on by default. It now acts on a session that *ended* and
@@ -273,8 +270,62 @@ leaves a *lost* transport to reconnect. That is what the setting always
 described itself as doing, so it needed no new control to fix — which is why it
 did not wait for the rest of this phase.
 
-What is left is genuinely a feature rather than a correction: per-profile opt
-out, and limits for someone who wants a shorter leash than the built-in budget.
+### Everything subtracts; nothing adds
+
+Three things can say no, and there is no fourth that says yes:
+
+1. **The global setting** (`autoReconnect` in `lib/settings.ts`), on by default.
+2. **The profile's own `autoReconnect`**, `null` by default — "follow the
+   global setting" — and `false` to opt one session out.
+3. **The backend's credential rule**, which refuses a session whose credential
+   has to be typed in (`reconnects_unattended` in `ssh.rs`), and refuses a
+   one-off connection holding a secret it would have to retain
+   (`keeps_no_secret`).
+
+**A profile stores `false` or nothing, never `true`.** The connect dialog's
+checkbox is ticked by default and stores `null` when ticked, which is why it is
+worded as an opt-out. A stored `true` would read as an override and cannot be
+one: it could not overrule the global switch without making that switch useless
+to anyone who has not audited every saved session, and it could not overrule
+rule 3 at all. Writing it down would be the profile claiming something the app
+cannot honour in two of the three cases where it appears to mean anything.
+
+The first two are resolved in the frontend, by `reconnectPolicy` in
+`lib/connection.ts`, and arrive as one `enabled` bit. That is a deliberate
+split rather than an oversight about where the profile is read: the global half
+is a webview setting and the profile half is a stored field, and resolving them
+in different places is how the two come to disagree. Rule 3 stays in the
+backend, where the credential is, and is not the webview's to make.
+
+`ReconnectPolicy::enabled` is therefore indistinguishable, inside `supervise`,
+from having no factory at all — the switch simply takes the factory away, in
+the one place that already means "this session does not come back on its own".
+
+### The limits are loop bounds off an IPC boundary
+
+`max_attempts` and `max_elapsed_seconds` are clamped to 1–100 and 5–3600 on
+arrival (`ReconnectPolicy::sanitized`), and `loadSettings` mirrors the same
+ranges so the dialog offers the number that will actually be used rather than
+one silently corrected on the way through. The backend is the enforcement
+point; the frontend clamp is a display concern.
+
+**Zero attempts is not a shorter leash.** It is "off", and off is `enabled`.
+Read as a bound it would end every run at the first `schedule_retry` and report
+"could not reconnect after 1 attempts", describing something that never
+happened — so it clamps up to one rather than being honoured.
+
+**Both bounds are still needed, and a shortened one must bind.** The delay
+doubles to a 30s ceiling, so an attempt count alone lets a saturated schedule
+run far longer than its number suggests, and a clock alone allows an unbounded
+number of fast early attempts.
+
+### What the switch does not turn off
+
+`TransportPhase::Lost` still fires for an opted-out session. Turning
+auto-reconnect off says nothing about port forwards, and a hook that stopped
+firing with the switch would leave a forward on that session described as live
+for the rest of the pane's life, since nothing else is ever coming to correct
+the record. Off means "do not dial", not "do not report".
 
 ---
 

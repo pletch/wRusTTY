@@ -51,12 +51,48 @@ export interface AuthPromptField {
   echo: boolean
 }
 
+/** What a reconnect run is allowed to spend, and whether it may run at all.
+ *
+ * Mirrors `ReconnectPolicy` in src-tauri/src/session_registry.rs, which clamps
+ * both bounds on arrival — these are loop bounds and the webview is not a
+ * trusted source of one. Sent on every connect command; a command that receives
+ * none uses the backend's own defaults. */
+export interface ReconnectPolicy {
+  enabled: boolean
+  maxAttempts: number
+  maxElapsedSeconds: number
+}
+
+/** Resolves the two halves of the user's intent — the global setting and the
+ * profile's own opt-out — into the policy a connect command carries.
+ *
+ * Both halves subtract and neither adds, which is why this is an `&&` rather
+ * than a precedence table: a profile cannot switch reconnect on when the global
+ * setting is off, because the global setting is the one place someone turns the
+ * whole behaviour off and expecting them to then audit every saved session
+ * would make it useless.
+ *
+ * The third subtraction is not here and cannot be: the backend refuses to
+ * reconnect a session whose credential has to be typed in, and that check stays
+ * where the credential is — this can only ever ask. */
+export function reconnectPolicy(
+  settings: { autoReconnect: boolean; reconnectMaxAttempts: number; reconnectMaxSeconds: number },
+  profileAutoReconnect: boolean | null | undefined,
+): ReconnectPolicy {
+  return {
+    enabled: settings.autoReconnect && profileAutoReconnect !== false,
+    maxAttempts: settings.reconnectMaxAttempts,
+    maxElapsedSeconds: settings.reconnectMaxSeconds,
+  }
+}
+
 export function connect(
   source: ConnectionSource,
   onEvent: (event: ConnEvent) => void,
   onData: (bytes: Uint8Array) => void,
   cols: number,
   rows: number,
+  reconnect: ReconnectPolicy,
 ) {
   const channel = new Channel<ConnEvent>()
   channel.onmessage = onEvent
@@ -83,6 +119,7 @@ export function connect(
         dataChannel,
         cols,
         rows,
+        reconnect,
       })
     case 'sshProfile':
       return invoke<string>('ssh_connect_profile', {
@@ -91,9 +128,15 @@ export function connect(
         dataChannel,
         cols,
         rows,
+        reconnect,
       })
     case 'telnet':
-      return invoke<string>('telnet_connect', { config: source.config, channel, dataChannel })
+      return invoke<string>('telnet_connect', {
+        config: source.config,
+        channel,
+        dataChannel,
+        reconnect,
+      })
     case 'serial': {
       // inputMode is frontend-only (see lib/serial.ts) — Rust only ever
       // needs to know whether it should echo written bytes back itself,
@@ -101,7 +144,7 @@ export function connect(
       // handled entirely client-side and look like 'Normal' to the backend.
       const { inputMode, ...rest } = source.config
       const config = { ...rest, localEcho: inputMode === 'LocalEcho' }
-      return invoke<string>('serial_connect', { config, channel, dataChannel })
+      return invoke<string>('serial_connect', { config, channel, dataChannel, reconnect })
     }
     case 'serialProfile':
       // No config sent: the backend resolves the adapter's USB identity to
@@ -111,6 +154,7 @@ export function connect(
         profileId: source.profileId,
         channel,
         dataChannel,
+        reconnect,
       })
   }
 }

@@ -50,7 +50,7 @@ interface Props {
     paneId: string,
     source: ConnectionSource,
     logSession: boolean,
-    paneOptions?: { backspaceSendsCtrlH: boolean | null },
+    paneOptions?: { backspaceSendsCtrlH: boolean | null; autoReconnect: boolean | null },
   ) => void
   onSelectSession: (paneId: string, profile: SessionProfile) => void
   onEditSession: (paneId: string, profile: SessionProfile) => void

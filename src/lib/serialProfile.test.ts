@@ -79,6 +79,7 @@ describe('profileSubtitle for serial sessions', () => {
       jumpProfileId: null,
       termType: null,
       backspaceSendsCtrlH: null,
+      autoReconnect: null,
       keepaliveSeconds: null,
       wakeOnLan: null,
       serial: serialProfileFrom(config(), usb),

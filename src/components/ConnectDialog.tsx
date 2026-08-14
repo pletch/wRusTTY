@@ -41,6 +41,9 @@ export interface ConnectDialogInitial {
   jumpProfileId?: string | null
   termType?: string | null
   backspaceSendsCtrlH?: boolean | null
+  /** `false` opts this session out of auto-reconnect; null/absent follows the
+   * global setting. */
+  autoReconnect?: boolean | null
   /** Seconds between SSH keepalives — null/absent means the 60s default. */
   keepaliveSeconds?: number | null
   /** How to wake this host before connecting — null/absent means don't. */
@@ -68,7 +71,7 @@ interface Props {
   onConnect: (
     source: ConnectionSource,
     logSession: boolean,
-    paneOptions?: { backspaceSendsCtrlH: boolean | null },
+    paneOptions?: { backspaceSendsCtrlH: boolean | null; autoReconnect: boolean | null },
   ) => void
   /** Saved workspaces, listed above the sessions. Absent hides the section. */
   workspaces?: Workspace[]
@@ -161,6 +164,7 @@ export function ConnectDialog({
     termType,
     termCustom,
     backspace,
+    autoReconnect,
     label,
     folder,
     isNewFolder,
@@ -189,6 +193,16 @@ export function ConnectDialog({
   const setPassword = (v: string) => dispatch({ type: 'fieldSet', field: 'password', value: v })
   const setTermType = (v: string) => dispatch({ type: 'fieldSet', field: 'termType', value: v })
   const setBackspace = (v: string) => dispatch({ type: 'fieldSet', field: 'backspace', value: v })
+  const setAutoReconnect = (v: boolean) =>
+    dispatch({ type: 'fieldSet', field: 'autoReconnect', value: v })
+
+  // Ticked stores `null` — "follow the global setting" — rather than `true`.
+  // A stored `true` would look like an override, and it cannot be one: turning
+  // auto-reconnect off globally must not leave individual sessions still
+  // dialling, and a session whose credential has to be typed in cannot come
+  // back regardless of what any setting says. Only the opt-out is real, so
+  // only the opt-out is written down.
+  const savedAutoReconnect = autoReconnect ? null : false
   const setLabel = (v: string) => dispatch({ type: 'fieldSet', field: 'label', value: v })
   const setFolder = (v: string) => dispatch({ type: 'fieldSet', field: 'folder', value: v })
   const setJumpProfileId = (v: string) => dispatch({ type: 'fieldSet', field: 'jumpProfileId', value: v })
@@ -226,7 +240,10 @@ export function ConnectDialog({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    const paneOptions = { backspaceSendsCtrlH: backspace === 'ctrlh' }
+    const paneOptions = {
+      backspaceSendsCtrlH: backspace === 'ctrlh',
+      autoReconnect: savedAutoReconnect,
+    }
 
     if (protocol === 'ssh') {
       const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
@@ -347,6 +364,7 @@ export function ConnectDialog({
           keyPath: authType === 'PublicKey' && !usingVaultKey ? keyPath : null,
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
+          autoReconnect: savedAutoReconnect,
           // Otherwise preserves a prior credential's flag across an unrelated
           // edit — there's no "forget stored credential" affordance yet, so
           // saving shouldn't silently lose track of one that already exists.
@@ -424,6 +442,7 @@ export function ConnectDialog({
           jumpProfileId: null,
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
+          autoReconnect: savedAutoReconnect,
           // Telnet has no keepalive of its own.
           keepaliveSeconds: null,
           // Waking is wired into the SSH connect path only, so far.
@@ -460,6 +479,7 @@ export function ConnectDialog({
           jumpProfileId: null,
           termType: null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
+          autoReconnect: savedAutoReconnect,
           // No idle timeout on a wire, and nothing to wake at the end of one.
           keepaliveSeconds: null,
           wakeOnLan: null,
@@ -846,6 +866,26 @@ export function ConnectDialog({
             ))}
           </select>
         </label>
+
+        {/* Every protocol reconnects, so this sits with Backspace rather than
+            in the SSH block. Worded as an opt-out because that is all it is:
+            ticked stores nothing and follows Settings, and neither state can
+            make a session come back whose credential has to be typed in. */}
+        <label className="flex items-center gap-2 text-xs text-white/70">
+          <input
+            type="checkbox"
+            className="accent-sky-400"
+            checked={autoReconnect}
+            onChange={(e) => setAutoReconnect(e.target.checked)}
+          />
+          Reconnect automatically if the link drops
+        </label>
+        {!autoReconnect && (
+          <p className="text-xs text-white/40">
+            This session will stay down until you reconnect it by hand, whatever the global setting
+            says.
+          </p>
+        )}
 
         {/* Serial is saveable now. It wasn't, because a COM number stops
             meaning anything once the adapter moves socket — but the profile

@@ -69,6 +69,20 @@ pub struct SessionProfile {
     /// before this field existed still parse.
     #[serde(rename = "wakeOnLan", default)]
     pub wake_on_lan: Option<crate::wake::WakeOnLan>,
+    /// Whether this profile may reconnect itself when its transport drops.
+    /// `None` — which every profile saved before this field existed reads as —
+    /// means "follow the global setting", and `Some(false)` opts this one
+    /// session out of it.
+    ///
+    /// Stored but never read here: the connect commands are handed an already
+    /// resolved [`crate::session_registry::ReconnectPolicy`], because the
+    /// global half of the same decision is a frontend setting and resolving
+    /// the two in different places is how they come to disagree. What this
+    /// field needs from the backend is to survive a save, which is the whole
+    /// reason it is declared — `save_session` takes a typed profile, so a
+    /// field missing from this struct is a field dropped from `sessions.json`.
+    #[serde(rename = "autoReconnect", default)]
+    pub auto_reconnect: Option<bool>,
     /// Serial only — `None` for SSH and telnet, which use `host`/`port`.
     ///
     /// Serial used to be ad-hoc precisely because a COM number stops being

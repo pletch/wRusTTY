@@ -19,6 +19,15 @@ export interface PaneLeaf {
    * simply emits a different byte. It applies to SSH, telnet, and serial
    * alike, which is why it isn't a field on any one protocol's config. */
   backspaceSendsCtrlH?: boolean | null
+  /** Per-pane opt-out of auto-reconnect, resolved at connect time from the
+   * session profile or the connect form. `null`/absent follows the global
+   * setting; `false` means this session stays down when its link does.
+   *
+   * On the pane for the same reason as the field above: it is resolved once,
+   * where the profile is known, and the Terminal cannot look a profile up. It
+   * is combined with the global setting by `reconnectPolicy` and sent with
+   * the connect command — nothing reads it after that. */
+  autoReconnect?: boolean | null
 }
 
 /** Always exactly 2 children — nesting splits produces arbitrary layouts,

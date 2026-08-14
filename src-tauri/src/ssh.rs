@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::connection_status::status_label;
 use crate::profiles;
-use crate::session_registry::{SessionRegistry, Slot, TransportPhase};
+use crate::session_registry::{ReconnectPolicy, SessionRegistry, Slot, TransportPhase};
 use crate::vault::VaultState;
 use crate::wake::WakeOnLan;
 
@@ -351,6 +351,7 @@ pub async fn ssh_connect(
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     cols: u16,
     rows: u16,
+    reconnect_policy: Option<ReconnectPolicy>,
     state: State<'_, SshState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
@@ -386,6 +387,7 @@ pub async fn ssh_connect(
         rows,
         &state,
         reconnect,
+        reconnect_policy.unwrap_or_default().sanitized(),
     )
     .await
 }
@@ -430,6 +432,7 @@ pub async fn ssh_connect_profile(
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     cols: u16,
     rows: u16,
+    reconnect_policy: Option<ReconnectPolicy>,
     state: State<'_, SshState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
@@ -472,6 +475,7 @@ pub async fn ssh_connect_profile(
         rows,
         &state,
         reconnect,
+        reconnect_policy.unwrap_or_default().sanitized(),
     )
     .await
 }
@@ -620,7 +624,7 @@ fn build_connector(
         .map_err(|e| e.to_string())
 }
 
-// Nine, two past clippy's threshold, and every one of them is already the
+// Ten, three past clippy's threshold, and every one of them is already the
 // shape the two commands above hold — a struct here would exist only to be
 // built twice and destructured once.
 #[allow(clippy::too_many_arguments)]
@@ -640,6 +644,7 @@ async fn start_connection<MakeCfg, Fut>(
     // resolved credential alive for a long-lived session's whole life to make
     // retries cheap would quietly reverse that for every pane in the app.
     reconnect_config: Option<MakeCfg>,
+    policy: ReconnectPolicy,
 ) -> Result<String, String>
 where
     MakeCfg: Fn() -> Fut + Send + Sync + 'static,
@@ -720,6 +725,7 @@ where
             }),
             reconnect,
             Some(on_transport),
+            policy,
         )
         .await;
 
