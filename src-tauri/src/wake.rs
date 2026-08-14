@@ -552,15 +552,9 @@ mod tests {
         assert!(port_open("127.0.0.1", port, Duration::from_secs(2)).await);
     }
 
-    /// Dropping the listener first frees a port we know nothing else claimed,
-    /// which is as close to "definitely closed" as a test can get.
     #[tokio::test]
     async fn port_open_reports_a_closed_port_as_closed() {
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let port = closed_port().await;
         assert!(!port_open("127.0.0.1", port, Duration::from_secs(2)).await);
     }
 
@@ -593,12 +587,76 @@ mod tests {
         std::iter::from_fn(|| sink.recv_from(&mut buf).ok()).count()
     }
 
-    /// A port that nothing is listening on, by taking one and giving it back.
+    /// Where [`closed_port`] looks. Chosen to sit **below the OS's ephemeral
+    /// range** — 49152–65535 on Windows, 32768–60999 on typical Linux — which
+    /// is the whole point of naming a band rather than asking for port 0.
+    ///
+    /// Also above 1024, so nothing here needs privileges to bind, and clear of
+    /// the handful of registered services that cluster on round numbers.
+    const CLOSED_PORT_BAND: std::ops::Range<u16> = 20480..20736;
+
+    /// A loopback TCP port that nothing is listening on.
+    ///
+    /// The obvious version of this — bind port 0, note what you were given,
+    /// drop it — is what `port_open_reports_a_closed_port_as_closed` used to
+    /// do, and it is the reason that test was intermittently failing. Its
+    /// comment claimed the freed port was "as close to 'definitely closed' as a
+    /// test can get", which is true of a test running alone and false here: the
+    /// number comes out of a pool the whole machine shares, so between the drop
+    /// and the probe *anything* — another test, a browser, the dev server —
+    /// may be handed it, and then something really is listening.
+    ///
+    /// The window is what makes it rare and what makes it worse under load.
+    /// Nothing bounds the gap between dropping the listener and the connect,
+    /// and with the whole suite running in parallel that gap is scheduler
+    /// latency rather than microseconds.
+    ///
+    /// It is rare because Windows hands out ephemeral ports *sequentially*:
+    /// twelve consecutive bind/close cycles measured 56816, 56817, ... 56827,
+    /// so a just-freed port is the last one to come back rather than the first.
+    /// Reuse needs the cursor to wrap the whole dynamic range — measured at
+    /// 15,732 allocations before a freed port was handed out again. A test run
+    /// on a quiet machine never gets near that, which is why this reproduces
+    /// under a browser and a dev server and not on demand. It also corrects the
+    /// note this fix came from, which blamed the neighbouring `wake` tests
+    /// racing each other: there are six of them, four orders of magnitude short.
+    /// The pool is machine-wide, and so is whatever wraps it.
+    ///
+    /// So: take the port from outside the range any ephemeral allocation can be
+    /// handed, and the race has nothing left to be won by — none of those
+    /// 15,732 allocations landed in this band, and none can. Binding first is
+    /// what proves the port is free rather than assuming it; dropping reopens
+    /// the same window in principle, but now only a program deliberately
+    /// binding this exact number could fill it, which is not something the test
+    /// suite does to itself.
+    /// Hands each *call* its own slot in the band. The first version of this
+    /// offset by the process id alone, which separates two test binaries and
+    /// makes every caller inside one agree — the worst of both, and it
+    /// reproduced the very race being removed: three tests here call this, all
+    /// three picked the same port, and one test's bind-probe was still
+    /// listening when another's `wake_and_wait` probed the same number and
+    /// concluded the host was already awake. The stress loop caught it on the
+    /// 28th run.
+    ///
+    /// So the port has to be free *and* nobody else's. The counter is what
+    /// makes it nobody else's; the pid keeps two binaries from starting in the
+    /// same place. Three callers against 256 slots means the first try
+    /// effectively always lands.
+    static NEXT_CLOSED_PORT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
     async fn closed_port() -> u16 {
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        listener.local_addr().unwrap().port()
+        let len = CLOSED_PORT_BAND.len();
+        let start = std::process::id() as usize
+            + NEXT_CLOSED_PORT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..len {
+            let port = CLOSED_PORT_BAND.start + ((start + i) % len) as u16;
+            if let Ok(listener) = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+                drop(listener);
+                return port;
+            }
+        }
+        panic!("nothing free in {CLOSED_PORT_BAND:?} — is something listening across the band?");
     }
 
     /// The reason a MAC can be left on a profile permanently: connecting to a

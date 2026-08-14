@@ -43,23 +43,45 @@ Raised while reorganising settings into a dialog.
 - **Custom theme colours.** Presets only, no import of an existing scheme.
 - Lower still: selection word separators, scroll sensitivity, rebindable keys.
 
-## Flake: `port_open_reports_a_closed_port_as_closed`
+## ~~Flake: `port_open_reports_a_closed_port_as_closed`~~ — fixed
 
-`src-tauri/src/wake.rs:564`. Fails intermittently under `cargo test --workspace`
-and passes every time `wake::` is run on its own, which is the tell.
+Kept for the correction, because the diagnosis recorded here was wrong in a way
+that would have sent the next person at the wrong thing.
 
-The test binds an ephemeral port, drops the listener, and asserts nothing
-answers on that number. Its own comment calls this "as close to 'definitely
-closed' as a test can get" — and that is true of a test running alone. It is
-not true here: the neighbouring `wake` tests bind ephemeral ports of their own
-in parallel, the OS is free to hand the just-freed number straight back to one
-of them, and then something *is* listening on it.
+The conclusion held: the test took an ephemeral port, dropped the listener, and
+assumed the number stayed closed, and that assumption is genuinely violable. The
+*mechanism* did not. This blamed "the neighbouring `wake` tests binding
+ephemeral ports of their own in parallel" — there are six of them, and the
+numbers say that cannot be it. Windows hands out ephemeral ports **sequentially**
+(twelve consecutive bind/close cycles measured 56816, 56817, ... 56827), so a
+just-freed port is the *last* to come back, not the first. Handing it out again
+took **15,732 allocations** — a full wrap of the dynamic range. Six tests are
+four orders of magnitude short.
 
-So the assumption to fix is the sharing, not the assertion. Either take the
-port from a range nothing else in the file can be handed, or stop the `wake`
-tests racing each other for ephemeral ports. Resist the urge to widen the
-timeout — the failure is a port that is genuinely open, not one that answered
-slowly.
+What actually does it is that the pool is **machine-wide**: a browser, a dev
+server and a relay harness churn ports fast enough to wrap it, and the test's
+window between the drop and the probe is scheduler latency, not microseconds,
+once the whole suite runs in parallel. That is why it showed up under
+`--workspace` on a busy machine and would not reproduce on demand — 28 clean
+runs while hunting it.
+
+Fixed by taking the port from a band *below* the ephemeral range
+(`CLOSED_PORT_BAND` in `wake.rs`), where no ephemeral allocation can ever be
+handed it: none of those 15,732 landed there. The two other tests that used the
+same bind-and-drop helper were on the same footing and are fixed with it.
+
+**The first attempt at the fix reproduced the race it was removing**, which is
+the more useful half of the story. It picked the band slot from the process id,
+which separates two test binaries and makes every caller *inside* one agree — so
+all three tests chose the same port, and one test's bind-probe was still
+listening when another probed that number and concluded the host was awake. A
+stress loop caught it on the 28th run. The port has to be free *and* nobody
+else's; an atomic per-call counter is what supplies the second half.
+
+**The general lesson, worth keeping:** a test that frees a resource back to a
+shared pool and then asserts the pool did not reissue it is asserting something
+about the whole machine, not about itself. There is no timeout to widen — the
+failure is a port that is genuinely open.
 
 ## Performance: one open question, and it is not the baseline
 
