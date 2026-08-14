@@ -13,7 +13,7 @@
  * binary, update this file and that README in the same commit as the `.wasm`.
  *
  * There is deliberately no runtime interrogation of the engine here. The wasm
- * exports no version symbol (see `main/abi.ts` — 200 functions, none of them a
+ * exports no version symbol (see `main/abi.ts` — 199 functions, none of them a
  * version), and `XTVERSION` is a callback *we* answer rather than something the
  * binary reports. Baked-in constants, verified against the bytes by a test, are
  * the only honest source available.
@@ -22,13 +22,13 @@ export const GHOSTTY_PIN = {
   /** The branch the pin is on. ghostty `main`, post-v1.3.1 — there is no
    *  upstream release number that describes this build. */
   upstream: 'main',
-  commit: '48d85eaeb06ac9fc49073815bda5bac97de655ca',
+  commit: '6b22215c5d46019f94b658f7665941f951d0de1e',
   /** Carried on top of the pin — see `patches/ghostty-main-esc-k.patch`. Worth
    *  showing: it changes parser behaviour, so "ghostty at <commit>" alone would
    *  not reproduce what the user is running. */
   patch: 'ghostty-main-esc-k.patch (#176)',
-  sha256: '54fa7b5339893ddb4247d3eb5e868cbdeeaa8cd236185bd8bd00daa0766c6d9e',
-  bytes: 1_308_136,
+  sha256: '34bc2d5ec7bdf67d5ef2431c6852cf1680df95f3cc61c3150c0b4f133528a1e7',
+  bytes: 1_318_661,
   zig: '0.16.0',
   buildFlags: '-Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast',
 } as const

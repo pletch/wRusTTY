@@ -4,6 +4,19 @@ Headless harnesses for measuring the Ghostty parse path and the JS OSC scan,
 outside the app and outside a browser. Plain `.mjs`, no build step — they are
 dev tools, not app code, which is why they live here rather than under `src/`.
 
+> **Both probes take two binaries, and the second one must be the v1.3.1
+> build.** They compare main's iterator against the batched `get_viewport` that
+> only the v1.3.1 ABI has, so the comparison arm needs
+> `src/lib/ghostty/vendor-131/ghostty-vt.wasm`.
+>
+> That second argument used to default to `src/lib/ghostty/vendor/ghostty-vt.wasm`,
+> which was the v1.3.1 build until the port put a **main** binary at that path.
+> From then on both probes died on
+> `ghostty_terminal_new_with_config is not a function` — the v1.3.1 ABI asked of
+> a main binary — which reads convincingly like "the probe is broken" or "the
+> new binary is bad" and is neither. Fixed on 2026-08-14 by pointing the default
+> at `vendor-131/`; the one-argument invocations below work again.
+
 Two things make this possible and are worth not breaking:
 
 - The vendored `ghostty-vt.wasm` keeps its **name section**, so V8 attributes
@@ -77,8 +90,9 @@ builds with different toolchains:
 git clone --depth 1 --branch main https://github.com/ghostty-org/ghostty.git
 cd ghostty
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-# -> zig-out/bin/ghostty-vt.wasm   (202 exports at 48d85eae, 187 when first
-#    measured, 84 in the vendored build — main's surface is still moving)
+# -> zig-out/bin/ghostty-vt.wasm   (201 exports at 6b22215c, 202 at 48d85eae,
+#    187 when first measured, 84 in the vendored build — still moving, and it
+#    can move down: 48d85eae -> 6b22215c removed mode_get/mode_set)
 ```
 
 No patch is needed for this — the 133-line patch `ghostty-web` carries on top of

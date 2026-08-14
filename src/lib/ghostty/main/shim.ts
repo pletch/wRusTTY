@@ -493,13 +493,28 @@ class MainShim {
           : 0,
       ghostty_terminal_has_mouse_tracking: (term) =>
         this.tGet(term, abi.T_DATA_MOUSE_TRACKING) && this.dv().getUint8(this.scratch) !== 0 ? 1 : 0,
+      // Two shape differences from our API, not one:
+      //
       // The `is_ansi` flag is not an argument on main — it is bit 15 of the
       // mode. Passing it as one drops the out pointer off the end of the call.
-      ghostty_terminal_get_mode: (term, mode, isAnsi) =>
-        ex.ghostty_terminal_mode_get(term, abi.ansiMode(mode, isAnsi !== 0), this.scratch) ===
-          abi.GHOSTTY_SUCCESS && this.dv().getUint8(this.scratch) !== 0
+      //
+      // And there is no longer a dedicated mode getter: upstream `cfc19e805`
+      // removed `ghostty_terminal_mode_get`/`_mode_set` and folded them into
+      // the ordinary `ghostty_terminal_get`/`_set` under `T_DATA_MODE`. That
+      // key is *in/out* — the mode goes into the scratch before the call, and
+      // the core writes the answer back into the same struct.
+      ghostty_terminal_get_mode: (term, mode, isAnsi) => {
+        this.dv().setUint16(
+          this.scratch + abi.MODE_CONFIG_MODE_OFFSET,
+          abi.ansiMode(mode, isAnsi !== 0),
+          true,
+        )
+        return ex.ghostty_terminal_get(term, abi.T_DATA_MODE, this.scratch) ===
+          abi.GHOSTTY_SUCCESS &&
+          this.dv().getUint8(this.scratch + abi.MODE_CONFIG_VALUE_OFFSET) !== 0
           ? 1
-          : 0,
+          : 0
+      },
       // Both wrap questions are one `grid_ref` lookup apart: ours splits the
       // active screen from scrollback, main addresses them in one space.
       ghostty_terminal_is_row_wrapped: (term, y) =>

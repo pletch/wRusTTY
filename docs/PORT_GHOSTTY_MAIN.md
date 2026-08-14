@@ -24,28 +24,49 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 48d85eaeb06ac9fc49073815bda5bac97de655ca
+ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e
 ```
 
 Chosen deliberately, not merely "what was current":
 
-- It is the commit every measurement and every ABI fact below was verified
-  against.
-- It is **7 commits behind `main`** as of 2026-08-04, and those seven touch only
-  `macos/`, `src/datastruct/` and `src/input/Binding.zig` — **nothing under
-  `src/terminal/` or `include/ghostty/`**. The VT library is unchanged.
-- It is the only commit we hold a **built binary** for, and rebuilding needs Zig
-  0.16.0 on Linux/WSL, which this machine does not have. Re-pinning later means
-  re-measuring, so it should be a deliberate act.
+- It is the commit every ABI fact below was verified against.
+- It is the commit we hold a **built binary** for. Rebuilding needs Zig 0.16.0
+  on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
-`main`'s surface has been moving — 187 exports when first measured, 202 at the
-pin — so re-pin only with a reason and re-run the probes when you do.
+`main`'s surface keeps moving — 187 exports when first measured, 202 at the
+previous pin, **201 here** — so re-pin only with a reason and re-run the checks
+when you do. Note the count went *down*: see the ABI break below.
+
+### Moving from the previous pin (`48d85eae`, 2026-08-04)
+
+This pin is 294 commits ahead, a clean fast-forward. Three things matter:
+
+- **ABI BREAKING (upstream `cfc19e805`).** `ghostty_terminal_mode_get` and
+  `_mode_set` are **gone**, folded into the generic
+  `ghostty_terminal_get`/`_set` under `GHOSTTY_TERMINAL_DATA_MODE = 37`, which
+  is an *in/out* key taking a `GhosttyTerminalModeConfig`. This is the whole
+  export-count decrease (−2), partly offset by `+ghostty_terminal_vt_write_until_ground`.
+  `main/shim.ts` does the struct dance; `main/abi.ts` carries the offsets.
+- **wasm now builds with `simd128` by default** (upstream `87f69a12e`), and the
+  batched parse path is no longer gated on `build_options.simd`. Same build
+  command, different code. See `../src/lib/ghostty/vendor/README.md`.
+- **Measurements below are from the previous pin unless stated.** Upstream
+  landed a large wasm-embedder performance push in this range (`vt_write`
+  1.4x-13x, full-screen cell reads ~10x via a new bulk row API). Nothing here
+  has been re-benchmarked against it, so treat the numbers as conservative
+  rather than current.
+
+Note also that both `tools/parse-probes` scripts need the **v1.3.1** binary as
+their comparison arm (`vendor-131/`), not `vendor/` — that path has held a
+*main* build since the port, and passing it produces
+`ghostty_terminal_new_with_config is not a function`, which looks like a bad
+build and is not one. The default was corrected on 2026-08-14.
 
 ### Building the pinned binary
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 48d85eaeb06ac9fc49073815bda5bac97de655ca
+cd ghostty && git checkout 6b22215c5d46019f94b658f7665941f951d0de1e
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm

@@ -16,11 +16,18 @@
  * two renderers producing similar-looking screens, and it is asserted directly
  * in `ViewportReader.test.ts`.
  *
- * The cost is that this cannot amortise anything `get_viewport` does in one
- * call — but that was measured (`tools/parse-probes/iter.mjs`) at 1.4x-2.5x of a
- * 0.21 ms worst case, against an 8.3 ms frame, and skipping clean rows goes the
- * other way at 0.05x-0.14x. The handles are held across frames here because
+ * The cost used to be that this could not amortise anything `get_viewport` does
+ * in one call — measured (`tools/parse-probes/iter.mjs`) at 1.4x-2.5x of a
+ * 0.21 ms worst case, against an 8.3 ms frame, with skipping clean rows going
+ * the other way at 0.05x-0.14x. The handles are held across frames here because
  * allocating them per frame would cost more than the difference.
+ *
+ * **The `6b22215c` pin narrows that.** `RS_ROW_DATA_CELLS_RAW` hands back the
+ * row's packed cells as one borrowed run, so the raw value no longer costs a
+ * call per cell. On codepoints alone that mode measures **0.1x** of the batched
+ * `get_viewport` — but this reader is not codepoint-only, so it keeps the cells
+ * iterator for styles, resolved colours and grapheme lengths and banks one
+ * saved call out of the per-cell handful rather than the full 10x.
  *
  * ## What it cannot carry
  *
@@ -207,10 +214,27 @@ export class MainViewportReader implements ViewportSource {
       )
       const cells = this.dv().getUint32(this.cellsSlot, true)
 
+      // The row's packed cells in one call, instead of one `CELLS_RAW` get per
+      // cell. The cells iterator is still advanced in lockstep below because
+      // styles, resolved colours and grapheme lengths are managed data that
+      // only it can reach — this replaces the *raw* fetch, not the iterator.
+      //
+      // Borrowed and frame-local: valid only until the next `render_state_update`,
+      // which is why it is re-fetched per row per frame rather than cached.
+      abi.expectOk(
+        ex.ghostty_render_state_row_get(iter, abi.RS_ROW_DATA_CELLS_RAW, this.scratch),
+        'row_get CELLS_RAW',
+      )
+      const rd = this.dv()
+      const rawPtr = rd.getUint32(this.scratch + abi.CELLS_VIEW_OFF_PTR, true)
+      const rawLen = rd.getUint32(this.scratch + abi.CELLS_VIEW_OFF_LEN, true)
+
       let x = 0
       while (x < cols && ex.ghostty_render_state_row_cells_next(cells)) {
         const at = bufPtr + (y * cols + x) * CELL_BYTES
-        this.packCell(cells, at, defFg, defBg)
+        // Guard rather than trust: a view shorter than the row would otherwise
+        // read whatever follows it in linear memory as cell data.
+        this.packCell(cells, at, defFg, defBg, x < rawLen ? rawPtr + x * abi.CELL_U64_BYTES : 0)
         x++
         written++
       }
@@ -219,14 +243,26 @@ export class MainViewportReader implements ViewportSource {
     return written
   }
 
-  /** One cell, into the 16 bytes at `at`. */
-  private packCell(cells: number, at: number, defFg: number, defBg: number): void {
+  /**
+   * One cell, into the 16 bytes at `at`.
+   *
+   * `rawAt` addresses this cell inside the row's borrowed `CELLS_RAW` view, or
+   * is 0 when the view did not cover it — in which case the raw value is
+   * fetched per cell the old way. Reading it from the view is what makes the
+   * bulk path worth having; the fallback keeps a short view from reading
+   * neighbouring memory as cell data.
+   */
+  private packCell(cells: number, at: number, defFg: number, defBg: number, rawAt: number): void {
     const { ex } = this
 
-    abi.expectOk(ex.ghostty_render_state_row_cells_get(cells, abi.RS_CELLS_RAW, this.scratch), 'cells_get RAW')
     let d = this.dv()
-    const lo = d.getUint32(this.scratch, true)
-    const hi = d.getUint32(this.scratch + 4, true)
+    if (rawAt === 0) {
+      abi.expectOk(ex.ghostty_render_state_row_cells_get(cells, abi.RS_CELLS_RAW, this.scratch), 'cells_get RAW')
+      d = this.dv()
+    }
+    const from = rawAt === 0 ? this.scratch : rawAt
+    const lo = d.getUint32(from, true)
+    const hi = d.getUint32(from + 4, true)
     const raw = (BigInt(hi) << 32n) | BigInt(lo)
 
     abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_CONTENT_TAG, this.scratch), 'cell_get CONTENT_TAG')

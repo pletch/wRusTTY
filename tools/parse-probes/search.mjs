@@ -31,7 +31,10 @@ import { fileURLToPath } from 'url'
 
 const WASM = process.argv[2]
 if (!WASM) throw new Error('usage: search.mjs <main.wasm> [vendored.wasm] [mode]')
-const VENDORED = process.argv[3] ?? 'src/lib/ghostty/vendor/ghostty-vt.wasm'
+// See the note in `iter.mjs`: this must be the **v1.3.1** build, and defaulting
+// it to `vendor/ghostty-vt.wasm` broke both probes when the port put a main
+// binary at that path.
+const VENDORED = process.argv[3] ?? 'src/lib/ghostty/vendor-131/ghostty-vt.wasm'
 const ONLY = process.argv[4] ?? null
 
 const enc = new TextEncoder()

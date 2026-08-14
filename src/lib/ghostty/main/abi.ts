@@ -6,10 +6,12 @@
  * imports from there or is imported by it, so the two can coexist until the
  * read path moves over.
  *
- * Pinned to ghostty-org/ghostty @ 48d85eaeb06ac9fc49073815bda5bac97de655ca.
+ * Pinned to ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e.
  * Every value below is transcribed from that commit's headers and exercised
  * against that commit's binary by `main/abi.parity.test.ts`. Re-pinning means
- * re-checking: the export surface moved from 187 to 202 in the weeks before it.
+ * re-checking: the export surface moved from 187 to 202 in the weeks before the
+ * previous pin, and to 201 at this one — it can go *down*, as it did here when
+ * upstream removed the two `mode_get`/`mode_set` entry points.
  *
  * Where `main` replaces one of our named getters with a key, the old name is
  * given so the mapping stays greppable from both directions.
@@ -265,6 +267,31 @@ export const RS_ROW_DATA_DIRTY = 1 // was render_state_is_row_dirty
 export const RS_ROW_DATA_RAW = 2
 export const RS_ROW_DATA_CELLS = 3
 export const RS_ROW_DATA_SELECTION = 4
+/**
+ * New in the `6b22215c` pin. Writes a `GhosttyCellsView`, giving a **borrowed**
+ * contiguous run of the row's packed u64 cells — one call per row where
+ * `RS_CELLS_RAW` costs one per cell.
+ *
+ * Borrowed is the whole hazard: the run is invalidated by the next
+ * `render_state_update`, so it must be consumed inside the frame that fetched
+ * it and never cached across one. It also points into wasm linear memory, so a
+ * `DataView` over it is stale after any allocation that grows memory.
+ *
+ * Measured with `tools/parse-probes/iter.mjs` on this binary, codepoints only:
+ * **0.1x** of the v1.3.1 batched `get_viewport` (1.9µs vs 14.1µs at 80x24,
+ * 10.3µs vs 90.1µs at 200x60), and 5.8x-11.4x faster than the per-cell
+ * `RS_CELLS_RAW`. A consumer that also needs styles or resolved colours still
+ * pays the per-cell iterator for those — see `ViewportReader`.
+ */
+export const RS_ROW_DATA_CELLS_RAW = 5
+
+/**
+ * `GhosttyCellsView` layout, wasm32: `{ const GhosttyCell *ptr; size_t len; }`
+ * — two u32s. `ptr` addresses `len` contiguous `CELL_U64_BYTES` cells.
+ */
+export const CELLS_VIEW_SIZE = 8
+export const CELLS_VIEW_OFF_PTR = 0
+export const CELLS_VIEW_OFF_LEN = 4
 
 /** `GhosttyRenderStateRowCellsData` — keys for `..._row_cells_get`. */
 export const RS_CELLS_RAW = 1
@@ -305,6 +332,13 @@ export const T_DATA_SELECTION = 31
 export const T_DATA_VIEWPORT_ACTIVE = 32
 export const T_DATA_VT_PROCESSING_ERROR = 33
 export const T_DATA_SCROLLBACK_MAX_BYTES = 34
+/**
+ * In/out key, unlike every other `T_DATA_*`: the caller writes a
+ * `GhosttyTerminalModeConfig` in and the core fills its `value` field.
+ * See `MODE_CONFIG_*` below. Replaces `ghostty_terminal_mode_get`/`_mode_set`,
+ * removed upstream in `cfc19e805` (flagged ABI BREAKING).
+ */
+export const T_DATA_MODE = 37
 export const T_DATA_SCROLLBACK_MAX_LINES = 35
 
 /**
@@ -355,6 +389,23 @@ export const T_OPT_SCROLLBACK_MAX_BYTES = 27
 export const T_OPT_SCROLLBACK_MAX_LINES = 28
 export const T_OPT_DESKTOP_NOTIFICATION = 29
 export const T_OPT_PROGRESS_REPORT = 30
+/**
+ * Enable answering `CSI 21 t` (report window title). **Leave this off.**
+ *
+ * We never set it, and this constant exists to document *why* rather than to be
+ * used. Before upstream `38e891e6c` (landed in this pin) there was no switch:
+ * merely registering the PTY write callback — which `MainEffects` must do, or
+ * every query a program makes waits out its timeout — also made the terminal
+ * echo the window title back into the input stream. A remote host that can set
+ * a title via OSC 0/2 could then read it back as if the user had typed it,
+ * which is command injection with one keystroke of user interaction. We connect
+ * to remote hosts for a living, so this was our exposure, not a theoretical one.
+ *
+ * Upstream now defaults it to disabled and gates it behind this option.
+ * `effects.test.ts` asserts the default holds with the callback installed, so
+ * turning it on — here or upstream — fails the suite rather than shipping.
+ */
+export const T_OPT_TITLE_REPORT = 32
 
 /**
  * `GhosttyColorRgb` is **3 packed bytes**, no padding, so a 256-entry palette is
@@ -380,16 +431,32 @@ export const PALETTE_BYTES = PALETTE_ENTRIES * COLOR_RGB_BYTES
  * `GhosttyMode` folds our `(mode, is_ansi)` pair into one number: a DEC private
  * mode is its bare number, an ANSI mode is the number with bit 15 set.
  *
- * `GhosttyMode` is declared in a header we do not vendor, so this was probed:
- * after `ESC [ 4 h` (IRM, an ANSI mode), `4` reads back false — because DEC 4
- * also exists and is unset — while `4 | 0x8000` reads back true. An unknown
- * mode returns INVALID_VALUE, which is how the encoding is distinguishable from
- * a plain miss at all.
+ * This was originally probed rather than read, because `GhosttyMode` lived in a
+ * header we did not vendor: after `ESC [ 4 h` (IRM, an ANSI mode), `4` reads
+ * back false — because DEC 4 also exists and is unset — while `4 | 0x8000` reads
+ * back true. The probe was right, and upstream's `modes.h` now states it
+ * outright: `typedef uint16_t GhosttyMode`, built by
+ * `ghostty_mode_new(value, ansi) => (value & 0x7FFF) | (ansi << 15)`.
  */
 export const MODE_ANSI_BIT = 0x8000
 export function ansiMode(mode: number, isAnsi: boolean): number {
   return isAnsi ? mode | MODE_ANSI_BIT : mode
 }
+
+/**
+ * `GhosttyTerminalModeConfig` — the in/out struct for `T_DATA_MODE`. Upstream
+ * documents the layout as frozen ("will not gain fields in future versions"):
+ *
+ * ```c
+ * typedef struct { GhosttyMode mode; bool value; } GhosttyTerminalModeConfig;
+ * ```
+ *
+ * `GhosttyMode` is `uint16_t`, so `value` sits at offset 2 and the struct is
+ * 4 bytes after tail padding to the u16 alignment.
+ */
+export const MODE_CONFIG_MODE_OFFSET = 0
+export const MODE_CONFIG_VALUE_OFFSET = 2
+export const MODE_CONFIG_SIZE = 4
 
 /** `active_screen` values for `T_DATA_ACTIVE_SCREEN`. */
 export const SCREEN_PRIMARY = 0
@@ -435,18 +502,20 @@ export interface GhosttyMainExports {
   ghostty_terminal_get(term: number, key: number, out: number): number
   ghostty_terminal_get_multi(term: number, n: number, keys: number, values: number, written: number): number
   ghostty_terminal_set(term: number, key: number, value: number): number
-  /**
-   * **Three arguments, not four.** Our ABI takes the mode number and an
-   * `is_ansi` flag; main folds both into one `GhosttyMode` — see
-   * `ansiMode` below.
-   *
-   * The four-argument form fails in the worst available way: JS drops the extra
-   * argument, so the *out pointer* lands in the mode slot and the write goes to
-   * address 0. The call returns `GHOSTTY_SUCCESS`, the caller reads whatever
-   * was already in its own buffer, and a mode query answers "still set" forever.
-   */
-  ghostty_terminal_mode_get(term: number, mode: number, out: number): number
-  ghostty_terminal_mode_set(term: number, mode: number, value: number): number
+  // `ghostty_terminal_mode_get`/`_mode_set` used to be declared here. Upstream
+  // `cfc19e805` removed them — flagged ABI BREAKING — in favour of the generic
+  // accessors above under `T_DATA_MODE`, so that mode work can gain fields
+  // without breaking the ABI again. `shim.ts` does the in/out struct dance.
+  //
+  // Kept as a note because the old signature was a live trap and someone
+  // reading a pre-pin call site needs to know why it vanished: it took **three**
+  // arguments, not four, since main folds our `(mode, is_ansi)` pair into one
+  // `GhosttyMode` (see `ansiMode` above). Calling it with four failed in the
+  // worst available way — JS drops the extra argument, so the *out pointer*
+  // landed in the mode slot, the write went to address 0, the call still
+  // returned `GHOSTTY_SUCCESS`, and the mode query answered "still set"
+  // forever. The same folding applies to the replacement, so the trap moved
+  // rather than closed.
   ghostty_terminal_scroll_viewport(term: number, tag: number, delta: number): number
 
   /* render state */

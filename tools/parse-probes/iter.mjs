@@ -48,7 +48,13 @@ import { fileURLToPath } from 'url'
 
 const WASM = process.argv[2]
 if (!WASM) throw new Error('usage: iter.mjs <ghostty-vt.wasm from ghostty main> [vendored.wasm]')
-const VENDORED = process.argv[3] ?? 'src/lib/ghostty/vendor/ghostty-vt.wasm'
+// The v1.3.1 build, which is what "today" means here — these probes exist to
+// compare main's iterator against the batched `get_viewport` that only the
+// v1.3.1 ABI has. This defaulted to `vendor/ghostty-vt.wasm` until the port
+// landed and put a *main* binary at that path, at which point both probes died
+// on `ghostty_terminal_new_with_config is not a function` — the v1.3.1 ABI
+// asked of a main binary. That read as "the probes are broken"; they were not.
+const VENDORED = process.argv[3] ?? 'src/lib/ghostty/vendor-131/ghostty-vt.wasm'
 /** Set by the parent when it spawns a child to measure exactly one mode. */
 const ONLY = process.argv[4] ?? null
 
@@ -57,6 +63,18 @@ const DATA_ROW_ITERATOR = 4
 // GhosttyRenderStateRowData / GhosttyRenderStateRowOption
 const ROW_DATA_DIRTY = 1
 const ROW_DATA_CELLS = 3
+/**
+ * `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS_RAW`, new in the 6b22215c pin.
+ *
+ * Writes a `GhosttyCellsView { const GhosttyCell *ptr; size_t len; }` — on
+ * wasm32 two u32s — giving a borrowed, contiguous run of `len` packed u64 cells
+ * for the current row. So a whole row costs **one** call instead of one per
+ * cell, and the unpack becomes plain JS over linear memory. Borrowed: it is
+ * invalidated by the next `render_state_update`.
+ */
+const ROW_DATA_CELLS_RAW = 5
+const CELLS_VIEW_OFF_PTR = 0
+const CELLS_VIEW_OFF_LEN = 4
 const ROW_OPTION_DIRTY = 0
 // GhosttyRenderStateRowCellsData
 const CELL_RAW = 1
@@ -278,7 +296,8 @@ function measureMain(mode) {
         return lo
       },
     }
-    const perCell = cellFns[mode === 'steady' ? 'raw' : mode]
+    const bulkRow = mode === 'rowRaw'
+    const perCell = bulkRow ? () => 0 : cellFns[mode === 'steady' ? 'raw' : mode]
     if (!perCell) throw new Error(`unknown mode ${mode}`)
     const dirtyOnly = mode === 'steady'
 
@@ -300,6 +319,20 @@ function measureMain(mode) {
           // its consumer, not by the next update. Without this every row reads
           // dirty from the second frame on and the mode measures nothing.
           ok(ex.ghostty_render_state_row_set(iter.h, ROW_OPTION_DIRTY, falsePtr), 'row_set DIRTY')
+        }
+        if (bulkRow) {
+          // One call for the whole row, then a pure-JS walk. No cells iterator
+          // is involved at all — that is the entire point of the mode.
+          ok(ex.ghostty_render_state_row_get(iter.h, ROW_DATA_CELLS_RAW, cellOut), 'row_get CELLS_RAW')
+          const ptr = view.getUint32(cellOut + CELLS_VIEW_OFF_PTR, true)
+          const len = view.getUint32(cellOut + CELLS_VIEW_OFF_LEN, true)
+          for (let i = 0; i < len; i++) {
+            n++
+            // Low word only, matching `raw`: the codepoint lives in bits 2-22
+            // and never crosses the word boundary, so this stays off BigInt.
+            acc += view.getUint32(ptr + i * 8, true)
+          }
+          continue
         }
         ok(ex.ghostty_render_state_row_get(iter.h, ROW_DATA_CELLS, cells.slot), 'row_get CELLS')
         while (ex.ghostty_render_state_row_cells_next(cells.h)) {
@@ -356,6 +389,7 @@ const MODES = [
   ['raw', 'one RAW get, unpacked in JS'],
   ['raw3', 'one get_multi {RAW, fg, bg}'],
   ['rawStyled', 'RAW, fg/bg only when the cell is styled'],
+  ['rowRaw', 'one CELLS_RAW get per ROW, unpacked in JS'],
 ]
 const results = Object.fromEntries(MODES.map(([m]) => [m, run(m)]))
 
@@ -403,5 +437,8 @@ for (const [c, r] of GRIDS) {
 
 console.log('\n(u = microseconds per frame, best of five; each mode measured in its own process)')
 console.log('"today" = the vendored 1.3.1 build: update + one batched get_viewport + the JS walk')
-console.log('RAW is per cell, not per row — GhosttyCell is a u64 value, not a pointer into the row')
+console.log('RAW is per cell — GhosttyCell is a u64 value, not a pointer into the row.')
+console.log('rowRaw is the 6b22215c CELLS_RAW view: one call per row over a borrowed run of those')
+console.log('u64s, so the per-cell call boundary disappears entirely. Codepoints only — a consumer')
+console.log('that also needs styles or resolved colors still pays for those separately.')
 console.log('rawStyled: the workload styles every row, so it is that mode\'s worst case, not its best')

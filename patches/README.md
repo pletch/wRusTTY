@@ -30,6 +30,13 @@ one-row edit **0.05x-0.14x**. So the render API is no longer the thing that
 pins us to the tag; the numbers and their caveats are in
 `tools/parse-probes/README.md`.
 
+**The `6b22215c` pin closes it outright.** `RS_ROW_DATA_CELLS_RAW` returns the
+row's packed cells as one borrowed run, taking the per-cell call boundary out
+entirely: **0.1x** of the batched read on codepoints alone (1.9µs vs 14.1µs at
+80x24, 10.3µs vs 90.1µs at 200x60), which is 5.8x-11.4x better than the
+per-cell `RAW` above. `ViewportReader` uses it, though it still pays the cells
+iterator for styles and resolved colours, so it banks less than that headline.
+
 The rebase itself changed nothing on this side: it landed **byte-identical to
 the previous ghostty-web build at 79 exports, same names**, so `GhosttyEngine.ts`
 and `wasmBindings.ts` needed no changes. The exports under "What we added on

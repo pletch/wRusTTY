@@ -11,17 +11,17 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ 48d85eaeb06ac9fc49073815bda5bac97de655ca
+ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  dc089738809e60da7dc804cf7437344da9afabab0218582db9eeeb9ee1edf4e9
-Size     5,259,398 bytes
+SHA-256  664d610b837c697802d0384d485261154c2b7f87451173c58317d75481ad0d94
+Size     5,174,080 bytes
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-Exports  202 (200 functions) — the patch adds none
+Exports  201 (199 functions) — the patch adds none
 ```
 
 **This build is patched.** The unpatched one hashed
-`7b45ec3079dafd702bfc8d122de94769d5622e70ec3004b84640dd509f271ea0` at 5,258,953
-bytes; the 445-byte difference is the added parser state. `abi.parity.test.ts`
+`2c061884103606b9e4aaba1e45c3cd12619f145682463a7c046197b08d373a67` at 5,173,518
+bytes; the 562-byte difference is the added parser state. `abi.parity.test.ts`
 asserts `ESC k` payloads are *swallowed*, which only holds with the patch — so
 the suite fails loudly if a rebuild skips it.
 
@@ -46,7 +46,7 @@ Rebuilding needs **Zig 0.16.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 48d85eaeb06ac9fc49073815bda5bac97de655ca
+git fetch -q --depth 1 origin 6b22215c5d46019f94b658f7665941f951d0de1e
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch
@@ -62,10 +62,20 @@ Zig cache; after that it is quick.
 
 If you rebuild at a **different commit**, re-run the probes before trusting any
 number in `docs/PORT_GHOSTTY_MAIN.md` or `tools/parse-probes/README.md`: the
-export surface moved from 187 to 202 in the weeks before this pin.
+export surface moved from 187 to 202 in the weeks before the previous pin, and
+this pin took it to 201 by *removing* `ghostty_terminal_mode_get`/`_mode_set`
+(upstream `cfc19e805`, flagged ABI BREAKING). Export count going *down* is not
+evidence of a bad build.
 
 ```sh
 npx vitest run abi.parity
+npx vitest run                                    # the actual gate
 node tools/parse-probes/search.mjs <here>/ghostty-vt.wasm  # includes `check`
 node tools/parse-probes/iter.mjs   <here>/ghostty-vt.wasm
 ```
+
+Both probes need the **v1.3.1** binary as their comparison arm. That is now the
+default (`vendor-131/`), but if you pass a second argument make sure it is not
+`vendor/ghostty-vt.wasm` — that path holds a *main* build since the port, and
+feeding it back in fails with `ghostty_terminal_new_with_config is not a
+function`, which looks like a bad binary and is not one.

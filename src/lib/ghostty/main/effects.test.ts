@@ -62,6 +62,24 @@ run('query responses via OPT_WRITE_PTY', () => {
     effects.dispose()
   })
 
+  it('does not echo the window title back for CSI 21 t, even with the callback installed', () => {
+    // The security property from upstream `38e891e6c`. Registering WRITE_PTY
+    // used to be enough to make the terminal answer title queries, so a remote
+    // host could set a title with OSC 2 and read it back into its own input
+    // stream — command injection after one keystroke. The title report is now
+    // opt-in via `T_OPT_TITLE_REPORT` and we never opt in.
+    //
+    // Asserting the negative here is the point: if a future pin flips the
+    // default back, or someone sets the option, this fails.
+    const { ex, term, write } = boot()
+    const effects = new MainEffects({ ex, term })
+    write('\x1b]2;pwned\x07')
+    effects.takeResponses()
+    write('\x1b[21t')
+    expect(decode(effects.takeResponses())).toEqual([])
+    effects.dispose()
+  })
+
   it('answers a cursor position report once installed', () => {
     const { ex, term, write } = boot()
     const effects = new MainEffects({ ex, term })

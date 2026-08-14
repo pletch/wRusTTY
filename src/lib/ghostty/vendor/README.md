@@ -11,9 +11,9 @@ comparison oracle.
 ## The expected artifact
 
 ```text
-SHA-256  54fa7b5339893ddb4247d3eb5e868cbdeeaa8cd236185bd8bd00daa0766c6d9e
-Size     1,308,136 bytes
-Source   ghostty-org/ghostty @ 48d85eaeb06ac9fc49073815bda5bac97de655ca
+SHA-256  34bc2d5ec7bdf67d5ef2431c6852cf1680df95f3cc61c3150c0b4f133528a1e7
+Size     1,318,661 bytes
+Source   ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e
          + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
@@ -51,7 +51,7 @@ unicode table generator. Build under `~`, not `/mnt/c`.
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 48d85eaeb06ac9fc49073815bda5bac97de655ca
+git fetch -q --depth 1 origin 6b22215c5d46019f94b658f7665941f951d0de1e
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
@@ -135,9 +135,9 @@ instance.
 
 ## The binary is stripped of DWARF, but keeps its name section
 
-As built, the module is 5,259 kB, of which **3,951 kB (75.1%) is `.debug_*`**.
+As built, the module is 5,174 kB, of which **3,855 kB (74.5%) is `.debug_*`**.
 `tools/strip-wasm-debug.mjs` removes the DWARF sections and keeps everything
-else, taking it to **1,308 kB**. (The v1.3.1 build stripped to 742 kB; `main`'s
+else, taking it to **1,319 kB**. (The v1.3.1 build stripped to 742 kB; `main`'s
 VT library is simply larger, and that ~566 kB is the whole size cost of the
 port.)
 
@@ -150,7 +150,7 @@ step whenever the binary is rebuilt.
 
 Nothing is lost by it. V8 attributes profiler ticks to real Zig symbols from the
 **name section**, which is kept — `tools/parse-probes/names.mjs` reads that
-section and no other, and still resolves all 444 functions after the strip.
+section and no other, and still resolves all 914 functions after the strip.
 `ReleaseFast` code is untouched, so parse throughput is unaffected and the
 argument above for not using `ReleaseSmall` still stands. What DWARF actually
 buys is source-level stepping in DevTools via the C/C++ debugging extension —
@@ -159,10 +159,28 @@ ever wanted, vendor both binaries and select on
 `import.meta.env.VITE_WRUSTTY_INSTRUMENTS`, the same dual-artifact pattern the
 JS instrumentation already uses.
 
-Do not reach for `-Dcpu=generic+simd128`: it was measured at +0.5-2%, which is
-noise. Ghostty's real SIMD paths are C++ (Google Highway, simdutf, utfcpp) and
-its own build config disables them for wasm outright —
-`if (target.result.cpu.arch.isWasm()) break :simd false;` in
-`src/build/Config.zig`. Forcing `-Dsimd=true` fails to compile those
-dependencies for `wasm32-freestanding`. Native SIMD throughput is not
-reachable from a `.wasm` at all; it needs native `libghostty` in the backend.
+## SIMD: upstream now enables `simd128` by default, and it is no longer noise
+
+This section used to say "do not reach for `-Dcpu=generic+simd128`: it was
+measured at +0.5-2%, which is noise." **That is no longer true**, and the
+reasoning behind it was overtaken by upstream `87f69a12e` (in this pin):
+
+- **wasm targets now default to the `simd128` CPU feature.** The build command
+  above is unchanged, but it now produces a simd128 binary. Opt out with
+  `-Dcpu=generic`. The module validates in Node 24 and every browser engine has
+  supported simd128 for years, so the WebView2 runtime Tauri uses is fine.
+- **The old measurement was of the wrong thing.** It was true that ghostty's C++
+  SIMD paths (Google Highway, simdutf, utfcpp) are disabled for wasm — that part
+  still holds. But upstream has since added a *Zig* vectorized ASCII bulk path in
+  `utf8DecodeUntilControlSeq` that is written against wasm `simd128`, and made
+  the batched parse path (bulk UTF-8 decode, `print_slice` runs) unconditional
+  rather than gated on `build_options.simd`. Enabling the CPU feature now
+  actually reaches vectorized code, where before it reached none.
+
+Upstream measures `ghostty_terminal_vt_write` at 1.4x to 13x faster on wasm
+depending on input. **We have not re-benchmarked that on our own flood payload**,
+and the throughput figures quoted in the `ReleaseFast` section above are from the
+previous pin and are now stale in the conservative direction.
+
+Native SIMD throughput is still not reachable from a `.wasm`; that needs native
+`libghostty` in the backend.
