@@ -201,5 +201,45 @@ side of the call boundary (200x60, µs/frame): `iterate` 44.3 -> 38.5, per-cell
 real gain there is the new bulk row read, which has no equivalent on the old pin
 at all: **10.3µs**, against 112.9µs for the per-cell `raw` it replaces.
 
+### In the app
+
+The above is headless. `/#bench` was then run on both pins on one machine in one
+session — RTX 3070 via ANGLE, 120 Hz, **no DevTools attached** (see the note in
+`.claude/skills/run-wrustty/SKILL.md`: an attached debugger drops V8 to Liftoff
+and costs ~2.75x, which is enough to invent or erase every number here).
+
+| workload | `48d85eae` | `6b22215c` | |
+|---|---|---|---|
+| Parse: printable | 70.5 MB/s | 420.4 MB/s | **6.0x** |
+| Large cat (flood) | 76.0 MB/s | 171.8 MB/s | **2.3x** |
+| Parse: short SGR | 144.3 MB/s | 178.8 MB/s | 1.2x |
+| Parse: long SGR | 126.7 MB/s | 153.2 MB/s | 1.2x |
+
+The harness's own write-phase totals, over the same 63.72 MB in 1264 writes:
+**720 ms -> 364 ms** inside `write` (88.5 -> 175.1 MB/s), of which `coreWrite`
+is **664 ms -> 304 ms**. The parse is where all of it lands; `copy`, `alloc`,
+`free` and `scan` are unchanged and were never the cost.
+
+**The xterm.js arm is the control and it did not move** — flood 48.5 vs 48.6
+MB/s, printable 42.9 vs 45.1 MB/s across the two runs. That is what makes the
+comparison worth anything: the machine held still and the engine moved.
+
+**Interactive, streaming and TUI redraw did not change** — 16.4 vs 16.5 ms,
+≈2 frames on both pins. Those workloads are bound by frame presentation, not by
+the parser, so a faster parser has nothing to give them. Ghostty still beats
+xterm.js there (≈2 frames against ≈3), but that gap predates this pin and is not
+evidence for it. **Do not quote this pin as a latency improvement**; it is a
+throughput one, and floods and bulk output are where it shows.
+
+xterm.js still edges `Parse: long SGR` — 153.0 MB/s against 126.7 old and 153.2
+new. This pin closes that to a tie rather than taking the lead.
+
+Reproducing it needs the previous pin's **TypeScript** as well as its binary:
+the mode migration means the current shim cannot drive the old `.wasm` at all.
+`git checkout <pin-commit>^ -- src/lib/ghostty/main/{shim,ViewportReader,abi}.ts
+src/lib/ghostty/vendor/ghostty-vt.wasm` is enough, and the harness refuses to
+report numbers when the core fails to load rather than publishing a zero — which
+is what it does if you swap only the binary.
+
 Native SIMD throughput is still not reachable from a `.wasm`; that needs native
 `libghostty` in the backend.
