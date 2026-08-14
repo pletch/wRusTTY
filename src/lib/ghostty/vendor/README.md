@@ -178,9 +178,28 @@ reasoning behind it was overtaken by upstream `87f69a12e` (in this pin):
   actually reaches vectorized code, where before it reached none.
 
 Upstream measures `ghostty_terminal_vt_write` at 1.4x to 13x faster on wasm
-depending on input. **We have not re-benchmarked that on our own flood payload**,
-and the throughput figures quoted in the `ReleaseFast` section above are from the
-previous pin and are now stale in the conservative direction.
+depending on input. Measured here, previous pin against this one, same payloads
+through `vt_write` at 200x60 in Node 24 — best of five, each binary in its own
+process, both verified to leave the same 417 rows of scrollback so neither is
+skipping work:
+
+| payload | `48d85eae` | `6b22215c` | |
+|---|---|---|---|
+| ASCII text | 75.5 MB/s | 780.7 MB/s | **10.3x** |
+| SGR-heavy | 69.3 MB/s | 172.1 MB/s | **2.5x** |
+| mixed plain/SGR | 67.6 MB/s | 331.1 MB/s | **4.9x** |
+| grapheme-heavy (ZWJ, flags, modifiers) | 30.0 MB/s | 118.3 MB/s | **3.9x** |
+
+So the throughput figures in the `ReleaseFast` section above — 74.1 vs 83.4 MB/s
+— are from the v1.3.1 build and are now off by an order of magnitude on ASCII.
+They are left as written because the `ReleaseFast`-vs-`ReleaseSmall` *ratio* is
+what that section argues, and that comparison has not been redone.
+
+Render-state reads moved far less, because most of that work was already on our
+side of the call boundary (200x60, µs/frame): `iterate` 44.3 -> 38.5, per-cell
+`raw` 112.9 -> 100.7, `multi4` 272.0 -> 168.2, `rawStyled` 222.2 -> 191.7. The
+real gain there is the new bulk row read, which has no equivalent on the old pin
+at all: **10.3µs**, against 112.9µs for the per-cell `raw` it replaces.
 
 Native SIMD throughput is still not reachable from a `.wasm`; that needs native
 `libghostty` in the backend.
