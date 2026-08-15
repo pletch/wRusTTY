@@ -136,6 +136,27 @@ describe('readRows, through its three callers', () => {
     expect(engine.getSelection()).toBe('one\ntwo\nthree')
   })
 
+  /**
+   * A line too long for the pane is several rows on screen and one line in the
+   * buffer. Copying it used to put a newline at each wrap point, so a command
+   * copied from a narrow pane pasted back as several broken ones.
+   */
+  it('does not break a soft-wrapped line at the wrap point', async () => {
+    const line = 'echo "' + 'x'.repeat(50) + '"' // 58 columns across a 40-column pane
+    const { engine, inner } = await engineWith(line)
+    select(inner, { x: 0, y: 0 }, { x: inner._cols - 1, y: 1 })
+    expect(engine.getSelection()).toBe(line)
+  })
+
+  /** The join is per wrap flag, not per selection: a wrapped line followed by a
+   *  real newline keeps the one break the buffer actually has. */
+  it('keeps the real newline after a wrapped line', async () => {
+    const long = 'a'.repeat(45)
+    const { engine, inner } = await engineWith(long + '\r\nnext')
+    select(inner, { x: 0, y: 0 }, { x: inner._cols - 1, y: 2 })
+    expect(engine.getSelection()).toBe(long + '\nnext')
+  })
+
   /** Every row of a column selection ends at the same arbitrary column, so
    *  none of them keeps its padding. */
   it('trims every row of a rectangular selection', async () => {

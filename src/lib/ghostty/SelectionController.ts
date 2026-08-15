@@ -34,6 +34,8 @@ export interface Selection {
 export interface SelectionHost {
   /** Absolute rows `from..to` inclusive. */
   readRows(from: number, to: number): RowText[]
+  /** Which of the absolute rows `from..to` continue the row above them. */
+  readWrapFlags(from: number, to: number): boolean[]
   /** Cell under the pointer in absolute buffer coordinates. */
   coords(e: MouseEvent): Point
   /** The canvas, for hit-testing a drag against its edges. `null` before
@@ -282,6 +284,14 @@ export class SelectionController {
    * exactly that, and keeping it pasted a command followed by a screenful of
    * spaces. A column selection never keeps them either; every one of its rows
    * ends at the same arbitrary column.
+   *
+   * Rows are joined by a newline only where the buffer actually has one. A line
+   * too long for the pane is stored as several rows joined by a wrap flag, and
+   * putting a `\n` at each of those wrap points is how a copied command came
+   * back as several broken ones when pasted into a narrower pane — the reader
+   * has no way to tell an inserted break from a typed one. A rectangular
+   * selection is the exception: its rows are separate by construction, and the
+   * wrap flags say nothing about the columns it kept.
    */
   text(): string {
     const sel = this.host.getSelection()
@@ -302,7 +312,11 @@ export class SelectionController {
     const cols = this.host.cols()
 
     const rows = this.host.readRows(selStart.y, selEnd.y)
-    const parts: string[] = []
+    // One row past the end, because what matters for row `i` is whether the row
+    // *after* it continues it. Skipped for a column selection, which never
+    // joins.
+    const wrapped = rectangular ? [] : this.host.readWrapFlags(selStart.y, selEnd.y + 1)
+    let out = ''
     for (let i = 0; i < rows.length; i++) {
       const abs = selStart.y + i
       const from = rectangular ? rectFrom : abs === selStart.y ? selStart.x : 0
@@ -314,10 +328,15 @@ export class SelectionController {
       const lo = Math.max(0, Math.min(from, cols))
       const hi = Math.max(lo, Math.min(to + 1, cols))
       const text = row.text.slice(row.colStart[lo], row.colStart[hi])
+      // A row the next one continues runs on: its tail is mid-line content, not
+      // the grid padding a short row out, so it is neither trimmed nor followed
+      // by a break.
+      const continues = wrapped[i + 1] === true && i + 1 < rows.length
       const endsMidRow = abs === selEnd.y && selEnd.x < cols - 1
-      const keepTrailing = !rectangular && endsMidRow
-      parts.push(keepTrailing ? text : text.replace(/\s+$/, ''))
+      const keepTrailing = !rectangular && (endsMidRow || continues)
+      out += keepTrailing ? text : text.replace(/\s+$/, '')
+      if (i + 1 < rows.length && !continues) out += '\n'
     }
-    return parts.join('\n')
+    return out
   }
 }

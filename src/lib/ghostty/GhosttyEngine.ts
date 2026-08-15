@@ -390,6 +390,7 @@ export class GhosttyEngine implements TerminalEngine {
     })
     this.selection = new SelectionController({
       readRows: (from, to) => this.readRows(from, to),
+      readWrapFlags: (from, to) => this.readWrapFlags(from, to),
       coords: (e) => this.getCoords(e),
       canvas: () => this.canvas,
       hasRenderer: () => !!this.renderer,
@@ -2170,7 +2171,12 @@ export class GhosttyEngine implements TerminalEngine {
     if (!this.wasm || !this.termPtr) return out
     const wasm = this.wasm
     const scrollbackCount = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
-    for (let abs = Math.max(0, fromAbs); abs <= toAbs; abs++) {
+    // Callers ask about the row *after* the last one they care about — copy
+    // does, to learn whether the selection's final row runs on — so the range
+    // can end one past the buffer. Those rows keep the `false` they start as
+    // rather than asking the core about a row it does not have.
+    const lastAbs = Math.min(toAbs, scrollbackCount + this._rows - 1)
+    for (let abs = Math.max(0, fromAbs); abs <= lastAbs; abs++) {
       out[abs - fromAbs] =
         abs < scrollbackCount
           ? wasm.exports.ghostty_terminal_is_scrollback_row_wrapped(this.termPtr, abs) !== 0
