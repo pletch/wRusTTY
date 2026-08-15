@@ -8,10 +8,12 @@ mod logging;
 mod profiles;
 mod putty_import;
 mod serial;
+mod session_import;
 mod session_lock;
 mod session_registry;
 mod sftp;
 mod ssh;
+mod ssh_config_import;
 mod telnet;
 mod vault;
 mod wake;
@@ -104,6 +106,8 @@ pub fn run() {
             profiles::reorder_sessions,
             putty_import::putty_sessions_available,
             putty_import::putty_import_sessions,
+            ssh_config_import::ssh_config_sessions_available,
+            ssh_config_import::ssh_config_import_sessions,
             workspaces::list_workspaces,
             workspaces::save_workspace,
             workspaces::delete_workspace,

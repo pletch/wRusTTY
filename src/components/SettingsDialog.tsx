@@ -25,8 +25,8 @@ import { GHOSTTY_PIN, GHOSTTY_COMMIT_SHORT } from '../lib/ghostty/vendorPin'
 import { revealLogs } from '../lib/logging'
 import { toast } from '../lib/toast'
 import { SHELL_SNIPPETS } from '../lib/shellSnippets'
-import { puttySessionCount } from '../lib/profiles'
-import { runPuttyImport } from '../lib/puttyBanner'
+import { puttySessionCount, sshConfigSessionCount } from '../lib/profiles'
+import { runPuttyImport, runSshConfigImport } from '../lib/sessionImport'
 import { exportVaultBundle, importVaultBundle } from '../lib/vaultTransfer'
 import { useConfirm } from './confirmContext'
 import { KnownHostsSection } from './KnownHostsSection'
@@ -170,32 +170,41 @@ export function SettingsDialog({
   const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [section, setSection] = useState<SectionId>('terminal')
-  // null while unknown, so the button can say "checking" rather than briefly
+  // null while unknown, so a button can say "checking" rather than briefly
   // claiming there is nothing to import.
   const [puttyCount, setPuttyCount] = useState<number | null>(null)
-  const [importing, setImporting] = useState(false)
+  const [sshConfigCount, setSshConfigCount] = useState<number | null>(null)
+  /** Which import is mid-flight, or null. One at a time: both write
+   * `sessions.json` through the same lock, and running them together would
+   * only queue one behind the other while showing two spinners. */
+  const [importing, setImporting] = useState<'putty' | 'sshConfig' | null>(null)
 
   // Re-checked whenever the section is opened rather than once at mount:
-  // PuTTY may have been installed, or sessions added, since the app started,
-  // and this is the screen someone opens *because* they want to import.
+  // PuTTY may have been installed, or `~/.ssh/config` edited, since the app
+  // started, and this is the screen someone opens *because* they want to
+  // import.
   useEffect(() => {
     if (!open || section !== 'import') return
     setPuttyCount(null)
+    setSshConfigCount(null)
     puttySessionCount()
       .then(setPuttyCount)
       .catch(() => setPuttyCount(0))
+    sshConfigSessionCount()
+      .then(setSshConfigCount)
+      .catch(() => setSshConfigCount(0))
   }, [open, section])
 
-  async function importPutty() {
-    setImporting(true)
-    const added = await runPuttyImport()
-    setImporting(false)
-    // The count deliberately isn't re-read here. It reports what PuTTY's
-    // registry holds, not what is left to import, so it doesn't move when we
-    // copy sessions out of it — re-reading would just show the same number
-    // and imply nothing happened. Running it again is harmless anyway: the
-    // import is additive and dedupes on label and host, so a second run says
-    // "no new sessions to import" and changes nothing.
+  async function runImport(which: 'putty' | 'sshConfig') {
+    setImporting(which)
+    const added = await (which === 'putty' ? runPuttyImport() : runSshConfigImport())
+    setImporting(null)
+    // The counts deliberately aren't re-read here. They report what PuTTY's
+    // registry and `~/.ssh/config` hold, not what is left to import, so they
+    // don't move when we copy sessions out of them — re-reading would just
+    // show the same number and imply nothing happened. Running one again is
+    // harmless anyway: an import is additive and dedupes on label and host, so
+    // a second run says "no new sessions to import" and changes nothing.
     if (added) onSessionsImported?.()
   }
 
@@ -736,19 +745,40 @@ export function SettingsDialog({
                       </div>
                       <button
                         type="button"
-                        disabled={importing || puttyCount === 0}
-                        onClick={importPutty}
+                        disabled={importing !== null || puttyCount === 0}
+                        onClick={() => void runImport('putty')}
                         className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                       >
                         <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
                         <span className="text-white/85">
-                          {importing ? 'Importing…' : 'Import from PuTTY'}
+                          {importing === 'putty' ? 'Importing…' : 'Import from PuTTY'}
                           <span className="mt-0.5 block text-white/40">
                             {puttyCount === null
                               ? 'Checking for saved PuTTY sessions…'
                               : puttyCount === 0
                                 ? 'No saved PuTTY sessions found on this machine.'
                                 : `${puttyCount} saved ${puttyCount === 1 ? 'session' : 'sessions'} found. Passwords aren't imported — PuTTY doesn't store them.`}
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={importing !== null || sshConfigCount === 0}
+                        onClick={() => void runImport('sshConfig')}
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                      >
+                        <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
+                        <span className="text-white/85">
+                          {importing === 'sshConfig' ? 'Importing…' : 'Import from your SSH config'}
+                          <span className="mt-0.5 block text-white/40">
+                            {sshConfigCount === null
+                              ? 'Checking ~/.ssh/config…'
+                              : sshConfigCount === 0
+                                ? 'No hosts found in ~/.ssh/config.'
+                                : // Named rather than counted-and-left-vague: what
+                                  // does and doesn't come across is the question
+                                  // someone has before pressing this.
+                                  `${sshConfigCount} ${sshConfigCount === 1 ? 'host' : 'hosts'} found in ~/.ssh/config. Host, port, user, identity file, ProxyJump and ServerAliveInterval come across; other settings don't.`}
                           </span>
                         </span>
                       </button>

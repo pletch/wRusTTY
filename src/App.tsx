@@ -1308,10 +1308,6 @@ function App() {
                 onEditSession={(paneId, profile) => editPaneFromProfile(tab.id, paneId, profile)}
                 onDeleteSession={deleteSessionProfile}
                 onWakeSession={wakeSessionProfile}
-                // The importer wrote straight to sessions.json rather than
-                // going through App's own save path, so the in-memory list
-                // has to be re-read rather than patched.
-                onSessionsImported={() => setProfilesVersion((v) => v + 1)}
                 onUnlockAndSelectSession={(paneId, profile, password) =>
                   unlockAndRun(password, { kind: 'connectProfile', tabId: tab.id, paneId, profile })
                 }

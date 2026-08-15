@@ -57,6 +57,9 @@ base64 = "0.22"
 zeroize = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 notify-debouncer-full = "0.3"
+# Locating `~/.ssh/config` for the OpenSSH session importer. Already in the
+# graph via wr-ssh, which uses it for the same home directory.
+dirs = "6"
 tempfile = "3"
 tauri-plugin-window-state = "2.4.1"
 # Acrylic blur-behind for the background-transparency setting. Builds on

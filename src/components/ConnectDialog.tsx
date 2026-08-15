@@ -104,8 +104,6 @@ interface Props {
   onDeleteSession?: (profile: SessionProfile) => void
   /** Sends a saved session its magic packet, without connecting. */
   onWakeSession?: (profile: SessionProfile) => void
-  /** Sessions were added by the PuTTY import — the owner re-reads the list. */
-  onSessionsImported?: () => void
   /** A session with a stored credential picked while the vault is locked
    * prompts for the master password inline instead of just falling back to
    * the manual form — this unlocks the vault and then behaves like
@@ -137,7 +135,6 @@ export function ConnectDialog({
   onEditSession,
   onDeleteSession,
   onWakeSession,
-  onSessionsImported,
   onUnlockAndSelectSession,
   osUnlockAvailable,
   onUnlockWithOsAndSelectSession,
@@ -514,7 +511,6 @@ export function ConnectDialog({
       onUnlockWithOsAndSelectSession={onUnlockWithOsAndSelectSession}
       onReorderSessions={onReorderSessions}
       vaultUnlocked={vaultUnlocked}
-      onSessionsImported={onSessionsImported}
     >
       {/* Scrolls in its own right now that the card is capped — without
           this a form taller than the cap would be clipped by the card's

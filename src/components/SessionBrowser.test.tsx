@@ -5,12 +5,6 @@ import userEvent from '@testing-library/user-event'
 import { SessionBrowser } from './SessionBrowser'
 import type { SessionProfile } from '../lib/profiles'
 
-vi.mock('../lib/puttyBanner', () => ({
-  isPuttyOfferSettled: () => true,
-  settlePuttyOffer: () => {},
-  runPuttyImport: async () => false,
-}))
-
 afterEach(cleanup)
 
 /**

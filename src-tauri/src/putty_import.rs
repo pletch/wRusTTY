@@ -24,10 +24,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::profiles::SessionProfile;
+use crate::session_import::{merge_into, next_id, ImportSummary};
 
 /// Where PuTTY and its forks keep saved sessions, under `HKEY_CURRENT_USER`.
 ///
@@ -311,92 +311,38 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
     })
 }
 
-/// What an import did, for the UI to report.
-#[derive(Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportSummary {
-    /// Profiles added.
-    pub imported: usize,
-    /// Sessions already present by label and host — see [`import_into`].
-    pub skipped_duplicates: usize,
-    /// Sessions this app can't represent (raw, rlogin, serial, hostless).
-    pub skipped_unsupported: usize,
-    /// Labels of what was imported, so the UI can show it rather than a count.
-    pub labels: Vec<String>,
-}
-
 /// Reads PuTTY's sessions and appends the ones that are new.
 ///
-/// Additive by design. A session already present — same label *and* same host —
-/// is left alone rather than overwritten, so running the import twice is
-/// harmless and a profile the user has since edited is never silently reverted
-/// to PuTTY's version of it. Matching on both fields rather than the label
-/// alone means an unrelated profile that happens to share a name doesn't block
-/// the import.
 /// The read-modify-write half, run under the profile lock by the command
 /// below — `next_id` and the duplicate check both depend on the list not
 /// changing underneath them, and the write would otherwise clobber a rename
-/// saved from the session browser in between.
+/// saved from the session browser in between. The appending itself is
+/// [`merge_into`], shared with the SSH-config importer.
 fn import_into(sessions: &[PuttySession], path: &PathBuf) -> Result<ImportSummary, String> {
     let mut existing = crate::profiles::read_profiles(path)?;
 
-    let mut summary = ImportSummary::default();
+    // Ids are minted against a growing list so that two PuTTY sessions in the
+    // same run can't be handed the same one.
+    let mut minted = existing.clone();
+    let mut candidates = Vec::new();
+    let mut skipped_unsupported = 0;
     for session in sessions {
-        let id = next_id(&existing);
+        let id = next_id(&minted, "putty");
         let Some(profile) = to_profile(session, id) else {
-            summary.skipped_unsupported += 1;
+            skipped_unsupported += 1;
             continue;
         };
-        if existing
-            .iter()
-            .any(|p| p.label == profile.label && p.host == profile.host)
-        {
-            summary.skipped_duplicates += 1;
-            continue;
-        }
-        summary.labels.push(profile.label.clone());
-        summary.imported += 1;
-        // Pushed as we go so `next_id` and the duplicate check both see
-        // everything imported so far — two PuTTY sessions with the same name
-        // and host would otherwise both import.
-        existing.push(profile);
+        minted.push(profile.clone());
+        candidates.push(profile);
     }
+
+    let mut summary = merge_into(&mut existing, candidates);
+    summary.skipped_unsupported = skipped_unsupported;
 
     if summary.imported > 0 {
         crate::profiles::write_profiles(path, &existing)?;
     }
     Ok(summary)
-}
-
-/// An id not already in use, and one that will never be minted again.
-///
-/// Profile ids are UUIDs when the frontend makes them, but nothing requires
-/// that — they are opaque strings compared for equality. The `putty-` prefix
-/// keeps an imported profile identifiable as such in `sessions.json`; the
-/// random suffix is what makes it safe.
-///
-/// This counted (`putty-0`, `putty-1`, …) and picked the first free number,
-/// which made ids *reusable*: deleting profiles frees their numbers, and the
-/// next import hands them to different hosts. A profile id is also its vault
-/// key — `resolve_auth` looks up `vault.get(&profile.id)` — and a credential
-/// can outlive its profile, because deleting a profile with the vault locked
-/// leaves the entry behind. A reused id therefore let a new profile silently
-/// authenticate to one host with the secret saved for another, which presents
-/// as a server-side problem rather than as a bug here.
-///
-/// Eight random bytes, the same shape as `wr-vault`'s `new_wrapper_id`. The
-/// existence check stays, and is now only a formality.
-fn next_id(existing: &[SessionProfile]) -> String {
-    loop {
-        let suffix: String = wr_vault::random_bytes::<8>()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        let candidate = format!("putty-{suffix}");
-        if !existing.iter().any(|p| p.id == candidate) {
-            return candidate;
-        }
-    }
 }
 
 /// How many PuTTY sessions this app could actually open, so the UI can offer
@@ -832,44 +778,6 @@ mod tests {
             to_profile(&s, "id-1".into()).unwrap().keepalive_seconds,
             None
         );
-    }
-
-    /// A profile id is also its vault key, so an id that can come back around
-    /// is a credential that can be inherited by a different host. Deleting
-    /// profiles used to free their numbers for the next import to hand out.
-    #[test]
-    fn a_deleted_imports_id_is_never_handed_out_again() {
-        let mut existing: Vec<SessionProfile> = (0..10)
-            .map(|_| {
-                let id = next_id(&[]);
-                to_profile(&session("h", &[("HostName", str_value("h"))]), id).unwrap()
-            })
-            .collect();
-
-        let retired: Vec<String> = existing.split_off(8).into_iter().map(|p| p.id).collect();
-
-        // The vault still holds an entry under each retired id: deleting a
-        // profile with the vault locked can't take its credential with it.
-        for _ in 0..64 {
-            let minted = next_id(&existing);
-            assert!(
-                !retired.contains(&minted),
-                "{minted} was reissued after its profile was deleted"
-            );
-            existing
-                .push(to_profile(&session("h", &[("HostName", str_value("h"))]), minted).unwrap());
-        }
-    }
-
-    /// The prefix is what keeps an imported profile identifiable as one in
-    /// `sessions.json`, and the suffix is what makes it unrepeatable.
-    #[test]
-    fn imported_ids_are_prefixed_and_random() {
-        let id = next_id(&[]);
-        let suffix = id.strip_prefix("putty-").expect("keeps the putty- prefix");
-        assert_eq!(suffix.len(), 16, "eight bytes as hex");
-        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(id, next_id(&[]));
     }
 
     #[test]

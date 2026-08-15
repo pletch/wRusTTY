@@ -202,13 +202,15 @@ export function reorderSessions(orderedIds: string[]) {
   return invoke<void>('reorder_sessions', { orderedIds })
 }
 
-/** What a PuTTY import did. */
-export interface PuttyImportSummary {
+/** What an import from another client did. */
+export interface SessionImportSummary {
   imported: number
-  /** Sessions already present by label and host — the import is additive and
+  /** Sessions already present by label and host — an import is additive and
    * never overwrites, so re-running it is harmless. */
   skippedDuplicates: number
-  /** Sessions this app can't represent: raw, rlogin, serial, or hostless. */
+  /** Sessions this app can't represent — for PuTTY, a raw/rlogin/hostless
+   * session; for an SSH config, nothing (wildcard blocks aren't sessions to
+   * begin with, so they aren't counted as skipped ones). */
   skippedUnsupported: number
   labels: string[]
 }
@@ -223,5 +225,19 @@ export function puttySessionCount() {
 /** Appends PuTTY's saved sessions to the session list. Additive: an existing
  * profile with the same label and host is left exactly as it is. */
 export function importPuttySessions() {
-  return invoke<PuttyImportSummary>('putty_import_sessions')
+  return invoke<SessionImportSummary>('putty_import_sessions')
+}
+
+/** How many `Host` blocks in `~/.ssh/config` would become sessions. Counts
+ * literal aliases only, so a config that is nothing but `Host *` defaults
+ * reports 0 — as does a machine that has never run `ssh`. */
+export function sshConfigSessionCount() {
+  return invoke<number>('ssh_config_sessions_available')
+}
+
+/** Appends `~/.ssh/config`'s hosts to the session list, on the same additive
+ * terms as the PuTTY import. `ProxyJump` is carried across where the hop it
+ * names is itself a saved session. */
+export function importSshConfigSessions() {
+  return invoke<SessionImportSummary>('ssh_config_import_sessions')
 }

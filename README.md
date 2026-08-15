@@ -153,17 +153,31 @@ session says so rather than guessing — opening a console on the wrong switch
 is worse than an error. A non-USB port, such as a PCI serial card, is still
 matched by name, which is correct: it doesn't move.
 
-**Importing from PuTTY.** If PuTTY's saved sessions are present on the machine,
-the connect screen offers to import them —
-`HKCU\Software\SimonTatham\PuTTY\Sessions`, read-only, PuTTY's own keys left
-untouched. SSH, telnet and serial sessions come across; `raw` and `rlogin` are
-skipped rather than silently imported as something they aren't. The import is
-additive: a session already saved here with the same name and host is left
-exactly as it is, so running it twice is harmless. Imported sessions land in an
-"Imported from PuTTY" folder. Passwords are not imported, because PuTTY doesn't
-store them — an SSH session with a key file comes across as key auth, and
-anything else as agent auth, which is what a PuTTY user running Pageant already
-has.
+**Importing your sessions from elsewhere.** Two one-time imports, both in
+Settings → Import and offered nowhere else — a migration is a thing you do once,
+so it is a button you go and press rather than a prompt on the screen you use
+most. Each says how much it would bring across before you press it, and neither
+runs on its own.
+
+*From PuTTY:* `HKCU\Software\SimonTatham\PuTTY\Sessions`, read-only, PuTTY's own
+keys left untouched. SSH, telnet and serial sessions come across; `raw` and
+`rlogin` are skipped rather than silently imported as something they aren't.
+Passwords are not imported, because PuTTY doesn't store them — an SSH session
+with a key file comes across as key auth, and anything else as agent auth, which
+is what a PuTTY user running Pageant already has.
+
+*From `~/.ssh/config`:* every literal `Host` block becomes a session, with
+`HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump` and
+`ServerAliveInterval` carried across; `Include` is followed, wildcards and all.
+A `ProxyJump` is linked to the session it names when that host is itself in the
+file (or already saved here). Wildcard blocks like `Host *` are settings rather
+than hosts, so they aren't imported as sessions — though their keywords still
+apply to the hosts that inherit them. Anything without an equivalent here
+(ciphers, `ControlMaster`, forwards) is left behind rather than half-translated.
+
+Both imports are additive: a session already saved here with the same name and
+host is left exactly as it is, so running one twice is harmless. Imported
+sessions land in an "Imported from PuTTY" or "Imported from SSH config" folder.
 
 **Broadcast input** sends what you type to every pane in a tab at once —
 SuperPuTTY's "send commands to all sessions", for when the same command has to

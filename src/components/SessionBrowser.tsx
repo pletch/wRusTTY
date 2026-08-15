@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Folder,
@@ -15,8 +15,7 @@ import {
   Zap,
 } from 'lucide-react'
 import type { SessionProfile } from '../lib/profiles'
-import { profileSubtitle, puttySessionCount } from '../lib/profiles'
-import { isPuttyOfferSettled, settlePuttyOffer, runPuttyImport } from '../lib/puttyBanner'
+import { profileSubtitle } from '../lib/profiles'
 import type { Workspace } from '../lib/workspaces'
 import { useDismissable } from '../hooks/useDismissable'
 import { menuAnchor } from '../lib/sessionMenu'
@@ -87,9 +86,6 @@ interface Props {
    * replaced entirely by the unlock card. Both states share the same outer
    * card chrome, which is why this component owns that chrome rather than
    * the caller. */
-  /** Sessions were added by the PuTTY import, so the caller should re-read
-   * the saved list — this component renders it but doesn't own it. */
-  onSessionsImported?: () => void
   children: ReactNode
 }
 
@@ -112,7 +108,6 @@ export function SessionBrowser({
   onUnlockWithOsAndSelectSession,
   onReorderSessions,
   vaultUnlocked,
-  onSessionsImported,
   children,
 }: Props) {
   const [menu, setMenu] = useState<{ profile: SessionProfile; x: number; y: number } | null>(null)
@@ -123,40 +118,6 @@ export function SessionBrowser({
   const [collapsedFolders, setCollapsedFolders] = useState(loadCollapsedFolders)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
-  // null until the check has run — the prompt must not flash on screen and
-  // disappear on the (overwhelmingly common) machine with no PuTTY installed.
-  const [puttyCount, setPuttyCount] = useState<number | null>(null)
-  const [importing, setImporting] = useState(false)
-
-  useEffect(() => {
-    // Asked at most once ever. Skipping the count entirely when the offer has
-    // already been settled also avoids a registry read on every pane opened
-    // for the rest of the app's life.
-    if (isPuttyOfferSettled()) {
-      setPuttyCount(0)
-      return
-    }
-    // Best-effort: a failed check just means the offer isn't made. This runs
-    // on a screen the user is looking at, so it must not raise anything.
-    puttySessionCount()
-      .then(setPuttyCount)
-      .catch(() => setPuttyCount(0))
-  }, [])
-
-  function dismissPuttyOffer() {
-    settlePuttyOffer()
-    setPuttyCount(0)
-  }
-
-  async function importFromPutty() {
-    setImporting(true)
-    // Hidden regardless of the outcome — the offer has been acted on, and a
-    // banner that stays put after the user acts on it reads as a failure.
-    const added = await runPuttyImport()
-    setPuttyCount(0)
-    setImporting(false)
-    if (added) onSessionsImported?.()
-  }
 
   // Escape only. Clicking away is the backdrop's job — see where it is
   // rendered for why a window listener cannot do it safely here.
@@ -417,50 +378,11 @@ export function SessionBrowser({
             })}
           </div>
         )}
-        <div className="flex min-w-0 flex-col">
-          {/* A one-time offer, not a standing notice. This is the screen you
-              see most, so an offer that reappears after you have already
-              decided against it is nagging — both buttons settle it for good,
-              and Settings → Import is where it lives from then on. Shown only
-              when there is genuinely something to import, and above the form
-              rather than in the sidebar because the sidebar doesn't render at
-              all with no saved sessions, which is exactly the state a
-              first-run migrating user is in. */}
-          {puttyCount !== null && puttyCount > 0 && (
-            // `w-0 min-w-full` is load-bearing: this is a flex sibling of the
-            // connect form, so a wider intrinsic size here would widen the
-            // whole column and push the form out with it. Zero intrinsic
-            // width means the column is sized by the form alone, and the
-            // min-width makes this render across whatever that turns out to
-            // be. Without it, the banner's text decides how wide the dialog
-            // is, which is nobody's intent.
-            <div className="w-0 min-w-full border-b border-white/10 bg-sky-400/[0.07] px-4 py-2.5 text-xs">
-              <p className="text-white/60">
-                Found <span className="text-white/90">{puttyCount}</span> saved PuTTY{' '}
-                {puttyCount === 1 ? 'session' : 'sessions'} on this machine.
-              </p>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={importing}
-                  onClick={importFromPutty}
-                  className="rounded bg-sky-500/90 px-2.5 py-1 font-medium text-white transition-colors duration-100 hover:bg-sky-500 disabled:opacity-50"
-                >
-                  {importing ? 'Importing...' : 'Import them'}
-                </button>
-                <button
-                  type="button"
-                  onClick={dismissPuttyOffer}
-                  className="rounded px-2 py-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
-                >
-                  Not now
-                </button>
-                <span className="ml-auto text-white/30">Settings → Import</span>
-              </div>
-            </div>
-          )}
-          {children}
-        </div>
+        {/* Importing from PuTTY or an SSH config lives in Settings → Import
+            and nowhere else. It used to be offered here too, on the screen you
+            see most, about a decision made once in the app's lifetime — see
+            `lib/sessionImport.ts`. */}
+        <div className="flex min-w-0 flex-col">{children}</div>
       </div>
 
       {/* Swallows the click that dismisses the menu.
