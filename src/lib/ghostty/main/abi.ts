@@ -629,6 +629,29 @@ export interface GhosttyMainExports {
    * and a exhausted iterator (0) as success.
    */
   ghostty_render_state_row_iterator_next(iter: number): number
+  /**
+   * Advances to the next row that needs redrawing, writing its **viewport y**
+   * to `outY`. Added upstream in `ad6e72ddc`.
+   *
+   * It writes the y because it *jumps*: unlike the sequential `next`, a caller
+   * cannot keep count itself. Honours the global dirty state — nothing when
+   * FALSE, clean rows skipped when PARTIAL, every row when FULL — and clears
+   * nothing, so the caller still has to consume the dirty state afterwards.
+   *
+   * A bool, not a result, with the same inversion hazard as `next`.
+   */
+  ghostty_render_state_row_iterator_next_dirty(iter: number, outY: number): number
+  /**
+   * Unsets **both** layers of dirty state — the global flag and every per-row
+   * flag — in one call.
+   *
+   * This is the fix for a trap `render.h` calls "an extremely important
+   * detail": the two layers are independent, and clearing the global one does
+   * not clear the rows. Setting `RS_OPTION_DIRTY` to FALSE, which is what
+   * `mark_clean` used to do alone, leaves all 24 rows of an 80x24 viewport
+   * still reading dirty — measured, not inferred.
+   */
+  ghostty_render_state_clean(state: number): number
   ghostty_render_state_row_get(iter: number, key: number, out: number): number
   ghostty_render_state_row_get_multi(iter: number, n: number, keys: number, values: number, written: number): number
   ghostty_render_state_row_set(iter: number, key: number, value: number): number

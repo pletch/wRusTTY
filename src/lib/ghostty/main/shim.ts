@@ -459,12 +459,23 @@ class MainShim {
   /* -------------------------------------------------------------- dirty */
 
   /**
-   * Per-row dirty, which `main` answers only through the row iterator — there
-   * is no "is row N dirty" call, so the rows are walked to N.
+   * Per-row dirty. `main` still has no "is row N dirty" call, but since
+   * `ad6e72ddc` it has one that jumps straight to the next dirty row, so this
+   * no longer walks every row up to `y`.
+   *
+   * It advances over dirty rows until it reaches or passes `y`: the rows come
+   * back in ascending viewport order, so the first one that is not less than
+   * `y` settles the question. That is O(dirty rows before y) rather than O(y),
+   * and on the case this exists for — a clean screen with one edited row — it
+   * is two calls instead of twenty-five.
+   *
+   * The `at > y` exit is an optimisation only: without it the loop scans the
+   * remaining dirty rows and returns the same answer, just slower. No test
+   * pins it, because there is no behaviour to pin.
    *
    * Nothing in the app calls this: the renderer redraws the whole viewport and
    * uses `mark_clean` alone. It is implemented rather than stubbed because a
-   * stub answering "clean" is exactly the shape of bug that hides itthis.
+   * stub answering "clean" is exactly the shape of bug that hides itself.
    */
   private rowDirty(term: number, y: number): boolean {
     const { ex } = this
@@ -480,14 +491,14 @@ class MainShim {
       return false
     }
     const iter = this.dv().getUint32(this.slot, true)
-    // A bool, not a result: truthy means it advanced.
-    for (let i = 0; i <= y; i++) {
-      if (!ex.ghostty_render_state_row_iterator_next(iter)) return false
+    // A bool, not a result: truthy means it advanced. `outY` is only written
+    // when it does, so the previous value must never be read on a false.
+    while (ex.ghostty_render_state_row_iterator_next_dirty(iter, this.scratch)) {
+      const at = this.dv().getUint16(this.scratch, true)
+      if (at === y) return true
+      if (at > y) return false
     }
-    if (ex.ghostty_render_state_row_get(iter, abi.RS_ROW_DATA_DIRTY, this.scratch) !== abi.GHOSTTY_SUCCESS) {
-      return false
-    }
-    return this.dv().getUint8(this.scratch) !== 0
+    return false
   }
 
   /* ------------------------------------------------------------- facade */
@@ -562,9 +573,13 @@ class MainShim {
       ghostty_render_state_mark_clean: (term) => {
         const st = this.state(term)
         if (!st) return
-        // The option takes a GhosttyRenderStateDirty, not a bool.
-        this.dv().setUint32(this.scratch, abi.RS_DIRTY_FALSE, true)
-        ex.ghostty_render_state_set(st.reader.state, abi.RS_OPTION_DIRTY, this.scratch)
+        // One call, and — more to the point — the *whole* thing. This used to
+        // set `RS_OPTION_DIRTY` to FALSE, which is only the global layer: the
+        // per-row flags are independent and survived it, so an 80x24 viewport
+        // stayed 24-rows-dirty forever after being marked clean. Nothing read
+        // them, so nothing broke; it would have broken the moment anything did,
+        // which is exactly what the dirty-row iterator is for.
+        ex.ghostty_render_state_clean(st.reader.state)
       },
 
       ghostty_render_state_get_viewport: (term, out, cells) => {
