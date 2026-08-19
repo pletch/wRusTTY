@@ -53,18 +53,27 @@ export type SuggestionMode = 'inline' | 'list'
  *   - **Right arrow** accepts only at the end of the line, where it would
  *     otherwise be a no-op. In the middle of a line it is a cursor move the
  *     user meant.
- *   - **Up and Down are never claimed.** They always reach the remote shell,
- *     so its own history recall never breaks. An earlier version took them
- *     while a list was open, on the reasoning that the *first* Up on a closed
- *     list would still reach the shell — which was wrong twice over. Recalling
- *     a command redraws the line, which used to open a list, so the second Up
- *     was captured by a popup the first Up had just conjured; and even without
- *     that, a list opened by typing then swallowed the arrows of someone who
- *     had moved on to hunting through history. Walking history is the single
- *     most common thing done at a prompt, and a completion list has no
- *     business interrupting it.
- *   - **Ctrl+Up/Ctrl+Down** move through the list instead. No shell binds
- *     them, and they are only claimed while a list is actually showing.
+ *   - **Up and Down belong to the shell**, except in the one state where the
+ *     user has explicitly asked for something else. Walking history is the
+ *     single most common thing done at a prompt, and an offer that appeared on
+ *     its own has no business interrupting it — which the inline view, needing
+ *     no keys at all, never does.
+ *
+ *     The list is different, because it exists only when it was summoned with
+ *     Ctrl+Space. Someone who has just opened a list of candidates wants to
+ *     move through it, and there is nothing to conflict with: they asked for
+ *     this, and Escape hands the arrows straight back. So plain Up/Down
+ *     navigate, but *only* in list mode.
+ *
+ *     This is the third rule these two keys have had, and the history is the
+ *     argument. They were first claimed whenever anything was showing, which
+ *     broke history recall — worse, recalling a command redrew the line, which
+ *     itself opened a list, so the second Up was eaten by a popup the first Up
+ *     had conjured. Then they were given up entirely, which was right while
+ *     anything could appear unbidden and needlessly strict once nothing could.
+ *   - **Ctrl+Up/Ctrl+Down** do the same thing, and are kept because Ctrl+Space
+ *     is how the list was opened: the modifier is often still held when the
+ *     first arrow is pressed, and that should not be a dead key.
  *   - **Ctrl+Space** opens the inline suggestion out into the list. Nothing
  *     at a shell prompt wants it (readline's `set-mark` is Ctrl+@, which is
  *     the same byte on some terminals — hence "only while a suggestion is
@@ -86,8 +95,8 @@ export function suggestionKeyAction(
   // before the unmodified keys below.
   if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
     if (e.key === ' ' || e.key === 'Spacebar') return 'expand'
-    // Navigation implies the list is already open; in the inline view there is
-    // nothing to move through, and the keys stay the remote's.
+    // Still held from Ctrl+Space, most likely. Same actions as the bare
+    // arrows below, and for the same reason: only in list mode.
     if (opts.mode === 'list' && e.key === 'ArrowDown') return 'next'
     if (opts.mode === 'list' && e.key === 'ArrowUp') return 'previous'
     return 'ignore'
@@ -98,6 +107,12 @@ export function suggestionKeyAction(
       return 'accept'
     case 'ArrowRight':
       return opts.atLineEnd ? 'accept' : 'ignore'
+    // Only in the list, which only exists because it was asked for. In the
+    // inline view these stay the shell's history keys.
+    case 'ArrowDown':
+      return opts.mode === 'list' ? 'next' : 'ignore'
+    case 'ArrowUp':
+      return opts.mode === 'list' ? 'previous' : 'ignore'
     case 'Escape':
       return 'dismiss'
     default:

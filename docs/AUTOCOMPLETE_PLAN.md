@@ -337,18 +337,20 @@ Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
   resolution: Tab accepts only when a suggestion is displayed and highlighted,
   and passes through untouched otherwise, so completing an unmatched prefix
   behaves exactly as it does today.
-- **Up/Down** — never claimed. They always reach the remote shell.
+- **Ctrl+Space** — open the inline suggestion out into the list.
+- **Up/Down** — the shell's, except inside the list, where they navigate.
 
-  This plan originally gave them to the list "only while it is open", on the
-  reasoning that the first Up on a closed list would still reach the shell.
-  That shipped and was wrong twice over. Recalling a command **redraws the
-  line**, which opened a list — so the second Up was eaten by a popup the first
-  Up had just conjured, and history recall stopped working after one press. And
-  even without that, a list opened by typing then swallowed the arrows of
-  someone who had given up typing and gone hunting through history instead.
-  Walking history is the single most common thing anyone does at a prompt.
-- **Ctrl+Up/Ctrl+Down** — move through the list. No shell binds them, and they
-  are claimed only while a list is showing.
+  Three rules in succession, and the history is the argument. They were first
+  claimed whenever anything was showing, which broke history recall — worse,
+  recalling a command **redraws the line**, which itself opened a list, so the
+  second Up was eaten by a popup the first Up had conjured. They were then
+  given up entirely, which was correct while a list could appear unbidden and
+  needlessly strict once it could not. Now that a list exists only because
+  Ctrl+Space summoned it, taking the arrows inside it is what the user is
+  asking for, there is nothing to conflict with, and Escape hands them back.
+  The inline view — which does appear on its own — still claims neither.
+- **Ctrl+Up/Ctrl+Down** — the same, kept because Ctrl+Space is how the list was
+  opened and the modifier is often still held when the first arrow is pressed.
 - **Esc** — dismiss, sending nothing.
 
 **A list only opens in response to typing.** The other half of the same fix,

@@ -13,9 +13,10 @@ import { placeSuggestions, type SuggestionView } from '../lib/autocomplete'
  * Anchored to the *origin* of the input rather than the cursor, so it stays
  * put as characters are typed instead of sliding right with every keystroke.
  *
- * It never takes the plain arrow keys — those belong to the shell's own
- * history recall, which is the most common thing anyone does at a prompt. Tab
- * or Right accepts, Ctrl+Up/Ctrl+Down move, Escape dismisses.
+ * Only ever shown because it was asked for, with Ctrl+Space — which is what
+ * earns it the arrow keys. Up/Down move through it, Tab or Right accepts,
+ * Escape dismisses and hands the arrows straight back to the shell. The
+ * inline view, which appears on its own, claims none of them.
  */
 export function SuggestionPopover({
   view,

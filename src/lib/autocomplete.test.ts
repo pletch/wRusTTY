@@ -36,15 +36,25 @@ describe('suggestionKeyAction', () => {
 
   /**
    * The most common thing anyone does at a shell prompt is walk their own
-   * history, and a completion list has no business interrupting it. Plain
-   * Up/Down therefore always reach the far end, list open or not.
+   * history, and an offer that appeared on its own has no business
+   * interrupting it. The inline view therefore leaves the arrows alone.
    */
-  it('never claims a bare Up or Down, even with a list showing', () => {
+  it('leaves the arrows to the shell while the suggestion is inline', () => {
     expect(suggestionKeyAction(key('ArrowUp'), open)).toBe('ignore')
     expect(suggestionKeyAction(key('ArrowDown'), open)).toBe('ignore')
   })
 
-  it('navigates the list with Ctrl+Up and Ctrl+Down once it is open', () => {
+  /**
+   * The list is the one state the user asked for by name, with Ctrl+Space.
+   * Having summoned a list of candidates they want to move through it, and
+   * Escape hands the keys straight back.
+   */
+  it('navigates with the bare arrows once the list has been summoned', () => {
+    expect(suggestionKeyAction(key('ArrowDown'), list)).toBe('next')
+    expect(suggestionKeyAction(key('ArrowUp'), list)).toBe('previous')
+  })
+
+  it('accepts Ctrl+arrows too, since Ctrl+Space is often still held', () => {
     expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), list)).toBe('next')
     expect(suggestionKeyAction(key('ArrowUp', { ctrlKey: true }), list)).toBe('previous')
     // Not in the inline view, where there is nothing to move through — the
@@ -219,11 +229,12 @@ describe('AutocompleteController', () => {
     await vi.waitFor(() => expect(controller.current).not.toBeNull())
 
     expect(controller.handleKey(key('a'))).toBe(false)
-    // Bare Down goes to the shell, always.
+    // Inline: both arrows go to the shell.
     expect(controller.handleKey(key('ArrowDown'))).toBe(false)
-    // Ctrl+Down does nothing until the list is open...
     expect(controller.handleKey(key('ArrowDown', { ctrlKey: true }))).toBe(false)
+    // Summon the list, and they become the list's.
     expect(controller.handleKey(key(' ', { ctrlKey: true }))).toBe(true)
+    expect(controller.handleKey(key('ArrowDown'))).toBe(true)
     expect(controller.handleKey(key('ArrowDown', { ctrlKey: true }))).toBe(true)
     expect(controller.handleKey(key('Escape'))).toBe(true)
     expect(controller.current).toBeNull()
