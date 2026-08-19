@@ -317,9 +317,18 @@ through font changes, DPI changes and re-fits" — turned out to be mostly
 already paid by the time it was wanted. `cellSize`, `cursorCell`, `viewportY`
 and the anchoring arithmetic all exist because the *list* needed them, so the
 inline view is a span positioned with the same numbers and the pane's own font
-settings. The residual risk is sub-pixel drift against the engine's own glyphs
-at odd DPI, which is cosmetically tolerable for dim text in a way it would not
-be for a selection highlight.
+settings. That residual risk — sub-pixel drift against the engine's own
+glyphs — turned up immediately and was not as tolerable as expected: over a
+fifty-character command the ghost text ended visibly short of the real text
+above it. Matching the font and size does not fix it, because the mismatch is
+in the *advance per character*: the engine paints every glyph at exactly its
+cell width, and a DOM text run advances by whatever the font says. The fix is
+to stop laying it out as a run at all — each character is boxed to exactly one
+cell (`lib/cellText.ts`), which is what the terminal itself does, so drift is
+impossible rather than merely small. The italic went with it: a monospace
+family usually has no true italic face, so the browser synthesises an oblique
+whose metrics differ again, and a slanted glyph leans out of its box and gets
+clipped.
 
 Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
 

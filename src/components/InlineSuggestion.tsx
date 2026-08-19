@@ -1,4 +1,5 @@
 import { suggestionSuffix, type SuggestionView } from '../lib/autocomplete'
+import { fitToCells, toCellUnits } from '../lib/cellText'
 
 /**
  * The suggestion as dim text sitting after the cursor, on the line itself.
@@ -19,6 +20,19 @@ import { suggestionSuffix, type SuggestionView } from '../lib/autocomplete'
  *
  * The list is still there, one Ctrl+Space away, for a prefix that really is
  * ambiguous. Much the same division PSReadLine draws with F2.
+ *
+ * **Drawn one cell at a time**, rather than as a run of text. Handing the
+ * whole string to the browser lays it out at the font's own advance per
+ * character, which is close to the engine's cell width and not equal to it —
+ * so the ghost text drifts a fraction of a pixel per character and ends
+ * visibly short of the real text above it by the end of a long command.
+ * Boxing each character to exactly one cell makes that impossible instead of
+ * merely unlikely, and is what the terminal itself does. See lib/cellText.ts.
+ *
+ * Not italic, for the same reason. A monospace family usually has no true
+ * italic face, so the browser synthesises an oblique whose metrics differ
+ * again — and once each character is boxed, a slanted glyph leans out of its
+ * box and gets clipped. Dimming alone reads clearly enough as "not yet real".
  */
 export function InlineSuggestion({
   view,
@@ -52,31 +66,44 @@ export function InlineSuggestion({
   // written here would wrap onto a row holding something else.
   const columnsLeft = cols - view.cursor.col
   if (columnsLeft <= 0) return null
+  // Trimmed to the columns actually left on the row, so a long suggestion
+  // stops at the edge of the grid rather than running past it — and never
+  // with half a wide character in the last column.
+  const units = fitToCells(toCellUnits(suffix), columnsLeft)
+  if (units.length === 0) return null
 
   return (
     <div
       // Never interactive. There is nothing to click, and taking a pointer
       // event here would put the cursor somewhere the user did not ask for.
-      className="pointer-events-none absolute select-none italic text-white/30"
+      className="pointer-events-none absolute select-none text-white/30"
       style={{
         left: view.cursor.col * cell.width,
         top: screenRow * cell.height,
         height: cell.height,
-        // Clipped to the columns actually remaining on the row, so a long
-        // suggestion stops at the edge of the grid instead of running past it.
-        maxWidth: columnsLeft * cell.width,
-        // The pane's own metrics. `whiteSpace: pre` keeps runs of spaces in a
-        // command from collapsing, which would put every character after them
-        // in the wrong column.
         fontFamily,
         fontSize,
         lineHeight: `${cell.height}px`,
+        // `pre` keeps a run of spaces inside a command from collapsing, which
+        // would put every character after it in the wrong column even with the
+        // per-cell boxes below.
         whiteSpace: 'pre',
-        overflow: 'hidden',
       }}
       aria-hidden
     >
-      {suffix}
+      {units.map((unit, i) => (
+        <span
+          key={i}
+          style={{
+            display: 'inline-block',
+            width: unit.cells * cell.width,
+            // Nothing may lean into its neighbour's column.
+            overflow: 'hidden',
+          }}
+        >
+          {unit.text}
+        </span>
+      ))}
     </div>
   )
 }
