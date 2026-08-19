@@ -249,8 +249,22 @@ host still gets that host's commands.
 
 Frecency in the usual form: the score decays with age and increments on use,
 and accepting a suggestion counts for more than merely typing the command.
-Prefix matches first; a subsequence match as a second-rank fallback, ordered
-strictly below every prefix hit so the top suggestion is never surprising.
+Prefix matches first, then a **word-initials** match as a second-rank fallback,
+ordered strictly below every prefix hit so the top suggestion is never
+surprising.
+
+Initials, and not the plain subsequence this plan originally called for. A
+subsequence test shipped and was wrong in practice: a command line is long and
+full of common letters, so almost any short input matched almost everything —
+typing `exit` matched `/home/tim/Repos/xrdp/xrdp_accel_assist/...` on the `e`
+of *home*, the `x` of *xrdp*, and an `i` and `t` out of *assist*. Ordering it
+below prefix hits was not enough, because when nothing matches by prefix the
+whole list is noise, and a list that answers something other than what was
+typed is worse than an empty one. Two rules fix it: every matched character has
+to begin a word, and the first has to begin the command — so `gcm` still
+reaches `git commit -m`, and whatever is offered always starts with the letter
+that was typed. Once a space has been typed the input is a command line being
+written rather than an acronym, and only prefix matching applies.
 
 Never suggest the line currently being edited back to itself, and never
 suggest anything that is not strictly longer than what is typed.

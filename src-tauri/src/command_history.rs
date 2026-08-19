@@ -272,14 +272,54 @@ pub fn score(entry: &HistoryEntry, now_ms: i64, cwd: Option<&str>) -> f64 {
 enum MatchRank {
     Prefix = 0,
     PrefixIgnoringCase = 1,
-    Subsequence = 2,
+    Initials = 2,
 }
 
 /// Whether `needle`'s characters all appear in `haystack`, in order — the
 /// fuzzy fallback, so `gcm` can reach `git commit -m`.
-fn is_subsequence(needle: &str, haystack: &str) -> bool {
-    let mut chars = haystack.chars();
-    needle.chars().all(|want| chars.any(|have| have == want))
+/// Characters that end a word, so the next one starts a new one.
+const WORD_BOUNDARIES: &[char] = &[
+    ' ', '\t', '-', '_', '/', '.', ':', '=', ',', ';', '|', '&', '"', '\'', '(', '[', '{', '$',
+];
+
+/// Whether `needle` is the sequence of *word initials* of `haystack`, starting
+/// at its very first character — so `gcm` reaches `git commit -m`.
+///
+/// This replaced a plain subsequence test, which was far too loose to be
+/// useful and produced exactly the failure it was meant to avoid. A command
+/// line is long and full of common letters, so almost any short input matched
+/// almost everything: typing `exit` matched
+/// `/home/tim/Repos/xrdp/xrdp_accel_assist/...` (the `e` of *home*, the `x` of
+/// *xrdp*, an `i` and a `t` from *assist*), and with no real prefix hits to
+/// outrank them the whole list was noise. A suggestion list that answers
+/// something other than what was typed is worse than an empty one.
+///
+/// Two rules keep it predictable. Every matched character has to begin a word,
+/// and the first one has to begin the *command* — so whatever is offered
+/// always starts with the letter that was typed.
+fn matches_initials(command_lower: &str, needle_lower: &str) -> bool {
+    // Once a space has been typed the input is a command line being written,
+    // not an acronym, and matching initials across it invites nonsense.
+    if needle_lower.is_empty() || needle_lower.contains(' ') {
+        return false;
+    }
+    let mut needle = needle_lower.chars().peekable();
+    if command_lower.chars().next() != needle.peek().copied() {
+        return false;
+    }
+    let mut previous: Option<char> = None;
+    for current in command_lower.chars() {
+        // `is_none_or` would read better and postdates this crate's MSRV.
+        let starts_a_word = match previous {
+            None => true,
+            Some(p) => WORD_BOUNDARIES.contains(&p),
+        };
+        if starts_a_word && !WORD_BOUNDARIES.contains(&current) && needle.peek() == Some(&current) {
+            needle.next();
+        }
+        previous = Some(current);
+    }
+    needle.peek().is_none()
 }
 
 fn match_rank(command: &str, typed: &str, typed_lower: &str) -> Option<MatchRank> {
@@ -295,8 +335,8 @@ fn match_rank(command: &str, typed: &str, typed_lower: &str) -> Option<MatchRank
     if command_lower.starts_with(typed_lower) {
         return Some(MatchRank::PrefixIgnoringCase);
     }
-    if is_subsequence(typed_lower, &command_lower) {
-        return Some(MatchRank::Subsequence);
+    if matches_initials(&command_lower, typed_lower) {
+        return Some(MatchRank::Initials);
     }
     None
 }
@@ -1030,18 +1070,55 @@ mod tests {
     }
 
     #[test]
-    fn an_exact_prefix_beats_a_better_scoring_fuzzy_match() {
-        let entries = vec![entry("git status", 1, 0), entry("grep -ri todo src", 50, 0)];
-        // Both match: a prefix of the first, and — less obviously — a
-        // subsequence of the second, whose letters really do appear in order
-        // (g-rep -r*i* *t*odo *s*rc). The fuzzy hit carries fifty times the
-        // weight and still comes second, which is the whole point: rank is
-        // ordered above score, so the top suggestion stays predictable from
-        // what was typed.
+    fn an_exact_prefix_beats_a_better_scoring_initials_match() {
+        let entries = vec![entry("git status", 1, 0), entry("git commit -m x", 50, 0)];
+        // `gcm` reaches the second by its word initials; typing it out reaches
+        // the first by prefix. Rank is ordered above score, so the prefix hit
+        // wins despite fifty times the weight — the top suggestion stays
+        // predictable from what was typed.
         assert_eq!(
-            suggest(&entries, "git s", None, NOW, 5),
-            vec!["git status", "grep -ri todo src"],
+            suggest(&entries, "gcm", None, NOW, 1),
+            vec!["git commit -m x"]
         );
+        assert_eq!(suggest(&entries, "git s", None, NOW, 5), vec!["git status"]);
+    }
+
+    /// The bug this rule exists to prevent, from a real screenshot: typing
+    /// `exit` offered a screenful of unrelated commands, because a plain
+    /// subsequence test found `e`, `x`, `i` and `t` scattered through long
+    /// paths. A command line is long and full of common letters, so almost any
+    /// short input matched almost everything — and with no prefix hits to
+    /// outrank them, the entire list was noise.
+    #[test]
+    fn a_short_word_does_not_match_every_long_command_it_shares_letters_with() {
+        let entries = vec![
+            entry(
+                "sudo cp /home/tim/Repos/xrdp/xrdp_accel_assist/.libs/xrdp-accel-assist /usr/local/libexec/xrdp/xrdp-accel-assist",
+                5,
+                0,
+            ),
+            entry("git commit -m \"Improve tab-bar multi-pane indication\"", 5, 0),
+            entry("md5sum /usr/local/libexec/xrdp/xrdp-accel-assist", 5, 0),
+        ];
+        assert!(suggest(&entries, "exit", None, NOW, 5).is_empty());
+        // Nor do the odd letters of a path pull in a match that starts
+        // somewhere other than where the user's own typing does.
+        assert!(suggest(&entries, "sst", None, NOW, 5).is_empty());
+    }
+
+    #[test]
+    fn initials_have_to_start_words_and_the_first_has_to_start_the_command() {
+        let command = "docker compose logs -f";
+        assert!(matches_initials(command, "dcl"));
+        // `ocl` skips the command's own first letter, so whatever is offered
+        // would not begin with what was typed.
+        assert!(!matches_initials(command, "ocl"));
+        // `dol` takes its `o` from the middle of `docker`, not the start of a
+        // word.
+        assert!(!matches_initials(command, "dol"));
+        // Once a space is typed the input is a command line being written, not
+        // an acronym.
+        assert!(!matches_initials(command, "d c"));
     }
 
     #[test]
