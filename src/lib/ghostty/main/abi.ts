@@ -67,8 +67,21 @@ export const POINT_TAG_HISTORY = 3
  * returning column 1 of row 0.
  *
  * The struct is passed **by pointer** despite being by-value in C.
+ *
+ * **`POINT_SIZE` was 16 until the manifest was consulted; it is 24.** The
+ * offsets above were probed correctly — `value` really does begin at +8 — but
+ * the probe could only find where the fields *are*, never where the struct
+ * *ends*, and the union is 16 bytes rather than the 8 its coordinate arm uses.
+ * Nothing was visibly wrong: the core reads 24 bytes from what we allocated as
+ * 16, the surplus is the union's unused tail, and `grid_ref` returns SUCCESS
+ * either way (checked, both sizes). What it did break was the zeroing loop in
+ * `ScrollbackReader.resolve`, which cleared 16 of 24 bytes while its own
+ * comment explained that a stale byte in the union is read as part of it.
+ *
+ * `abi.manifest.test.ts` now asserts every one of these against
+ * `ghostty_type_json`, so the next one of these is caught rather than probed.
  */
-export const POINT_SIZE = 16
+export const POINT_SIZE = 24
 export const POINT_OFF_TAG = 0
 export const POINT_OFF_X = 8
 export const POINT_OFF_Y = 12

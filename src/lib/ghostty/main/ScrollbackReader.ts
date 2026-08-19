@@ -156,8 +156,14 @@ export class MainScrollbackReader {
   /**
    * Points the ref at (x, y) in `tag`'s coordinate space.
    *
-   * Zeroes the whole point first: it is 16 bytes with a hole between the tag
-   * and the value, and a stale byte in there is read as part of the union.
+   * Zeroes the whole point first: there is a hole between the tag and the
+   * value, and a stale byte in there is read as part of the union.
+   *
+   * "The whole point" is 24 bytes, not the 16 this said until the layout was
+   * checked against `ghostty_type_json` — so this loop used to leave the last
+   * eight bytes of the union exactly as stale as the comment warned about,
+   * and the allocation it clears was eight bytes shorter than what the core
+   * reads. `abi.manifest.test.ts` pins the size now.
    */
   private resolve(tag: number, x: number, y: number): boolean {
     const d = this.dv()
