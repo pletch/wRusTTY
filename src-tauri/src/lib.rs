@@ -1,6 +1,7 @@
 mod atomic_file;
 mod attention;
 mod coalesce;
+mod command_history;
 mod connection_status;
 #[cfg(target_os = "windows")]
 mod hello;
@@ -50,6 +51,7 @@ pub fn run() {
         .manage(telnet::TelnetState::default())
         .manage(serial::SerialState::default())
         .manage(profiles::ProfileState::default())
+        .manage(command_history::HistoryState::default())
         .manage(workspaces::WorkspaceState::default())
         .manage(vault::VaultState::default())
         .manage(logging::LoggingState::default())
@@ -104,6 +106,12 @@ pub fn run() {
             profiles::save_session,
             profiles::delete_session,
             profiles::reorder_sessions,
+            command_history::command_history_record,
+            command_history::command_history_suggest,
+            command_history::command_history_accepted,
+            command_history::command_history_list,
+            command_history::command_history_forget,
+            command_history::command_history_forget_imported,
             putty_import::putty_sessions_available,
             putty_import::putty_import_sessions,
             ssh_config_import::ssh_config_sessions_available,

@@ -9,6 +9,7 @@ import {
   Plug,
   Bell,
   ScrollText,
+  History,
   Upload,
   Download,
   ShieldCheck,
@@ -30,6 +31,7 @@ import { runPuttyImport, runSshConfigImport } from '../lib/sessionImport'
 import { exportVaultBundle, importVaultBundle } from '../lib/vaultTransfer'
 import { useConfirm } from './confirmContext'
 import { KnownHostsSection } from './KnownHostsSection'
+import { CommandHistorySection } from './CommandHistorySection'
 import { useDismissable } from '../hooks/useDismissable'
 import type { VaultStatus } from '../lib/vault'
 
@@ -58,6 +60,7 @@ const SECTIONS = [
   { id: 'files', label: 'Remote files', icon: FolderOpen },
   { id: 'hostkeys', label: 'Host keys', icon: ShieldCheck },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'autocomplete', label: 'Autocomplete', icon: History },
   { id: 'shell', label: 'Shell integration', icon: ClipboardCopy },
   { id: 'logging', label: 'Logging', icon: ScrollText },
   { id: 'import', label: 'Backup & import', icon: Upload },
@@ -622,6 +625,18 @@ export function SettingsDialog({
                         label="Bell plays a sound"
                         hint="A short tone on every bell, including from the pane you're watching. Off by default — some shells ring the bell on every ambiguous tab-completion."
                       />
+                    </>
+                  )}
+
+                  {section === 'autocomplete' && (
+                    <>
+                      <Toggle
+                        checked={settings.autocompleteEnabled}
+                        onChange={(v) => onChange({ ...settings, autocompleteEnabled: v })}
+                        label="Suggest recent commands"
+                        hint="As you type at a remote prompt, offer commands you have run on that host before. Turning this on means command lines are saved to this machine — off means none are kept, and none are suggested."
+                      />
+                      <CommandHistorySection />
                     </>
                   )}
 

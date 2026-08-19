@@ -169,6 +169,22 @@ export interface TerminalSettings {
    * is still typing in.
    */
   externalEditor: string
+  /** Suggest recently-run commands as you type at a remote prompt, from a
+   * per-host store of what you have run there before (see
+   * docs/AUTOCOMPLETE_PLAN.md and lib/commandHistory.ts).
+   *
+   * Off by default, and deliberately not the kind of default that gets
+   * flipped later: turning it on means the app starts *remembering* command
+   * lines to disk, which is a new thing for it to hold and one people should
+   * choose rather than discover. Off means off — nothing is captured, nothing
+   * is stored, and nothing is suggested.
+   *
+   * Does not cover reading the shell's own history file from the remote host.
+   * That is a separate switch (Phase 6), because it is a separate question:
+   * this one is about remembering what you type in front of us, and that one
+   * is about reaching out and reading a file on a server that is often not
+   * yours alone. */
+  autocompleteEnabled: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -228,6 +244,7 @@ const defaults: TerminalSettings = {
   // setup at all, and that is the better default even though it can report
   // nothing back. This is the trade to opt into, not out of.
   externalEditor: '',
+  autocompleteEnabled: false,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

@@ -8,8 +8,16 @@ path completion, not flag descriptions. Those are separate features with
 separate storage and separate risks, and the command half is both the most
 useful and the one this codebase is already most of the way to.
 
-Not started. Written against the engine as it stands after the ghostty-main
-port, `readRows`/`RowText`, and the OSC 133 `CommandTracker`.
+**Phase 1 is in**, as `src-tauri/src/command_history.rs`,
+`src/lib/commandHistory.ts` and the Settings section behind it. Nothing fills
+the store yet — that is Phase 2. Two things settled during it, both noted at
+the phase they belong to: the ranking runs backend-side and is queried per
+keystroke rather than shipped to the webview, and the store is a plain
+`wr-fs`-replaced file for now, with the API shaped so encrypting it later
+changes nothing above it.
+
+Phases 2–6 not started. Written against the engine as it stands after the
+ghostty-main port, `readRows`/`RowText`, and the OSC 133 `CommandTracker`.
 
 ## What Termius actually does, and how much of it we want
 
@@ -102,6 +110,7 @@ Notes that will otherwise be rediscovered:
   silently and permanently for that session, not retry.
 - **`exec` is not always allowed.** `ForceCommand`, restricted shells and
   appliances will return something unusable. Detect and give up.
+
 **Gated behind its own setting, separate from the feature's.** Every other
 tier records what the user types in front of us. This one reaches out and
 reads a file on their server that they never asked us to open, on a host that
@@ -290,10 +299,20 @@ Decisions to make explicitly rather than by default:
 
 ## Phases
 
-1. **Store and settings.** The Rust-side store — scoped by host, frecency,
-   redaction on write, atomic replace — plus the settings toggle and the
-   view/clear UI. Nothing captures anything yet. The ranking and redaction
-   tests are pure and go in first.
+1. **Store and settings.** *(Done.)* The Rust-side store — scoped by host,
+   frecency, redaction on write, atomic replace — plus the settings toggle and
+   the view/clear UI. Nothing captures anything yet. The ranking and redaction
+   tests are pure and went in first.
+
+   Two decisions taken here rather than deferred. **The ranking runs in Rust
+   and is queried per keystroke**, instead of shipping each host's entries to
+   the frontend once and ranking there. The round trip buys keeping every
+   command the user has ever run out of the webview — the same process that
+   renders untrusted remote output — and handing it only the strings about to
+   be shown. **The store is a plain `wr-fs`-replaced file**, not vault
+   encrypted, because suggestions that need an unlock before they work are
+   suggestions that feel broken; the command surface is shaped so that
+   encrypting it later is a change to one module and nothing above it.
 2. **Tier 2 capture.** Route `CommandResult.command` into the store; add
    OSC 633 `E` to `shellSnippets.ts` and to `docs/SHELL_INTEGRATION.md` (they
    are canonical copies of each other, and changing one without the other is
