@@ -36,6 +36,15 @@ import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
+import {
+  historyKeyForSource,
+  recordAccepted,
+  recordCommand,
+  suggestCommands,
+} from '../lib/commandHistory'
+import { PromptInputTracker } from '../lib/promptInput'
+import { AutocompleteController, type SuggestionView } from '../lib/autocomplete'
+import { SuggestionPopover } from './SuggestionPopover'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 import { parseOsc9, parseOsc777, ProgressTracker } from '../lib/appProgress'
 import { parseWindowTitle, parseCwd, parseCwdProperty, guessCwdFromTitle } from '../lib/remoteIdentity'
@@ -264,6 +273,13 @@ export function Terminal({
    * take. Reading only OSC 7 meant a session that plainly showed its
    * directory still had none as far as a drop was concerned.
    */
+  /** What autocomplete is currently offering, or null. Held in React state
+   * because the popover is DOM; the controller that owns the decision lives in
+   * the connection effect and pushes here. */
+  const [suggestion, setSuggestion] = useState<SuggestionView | null>(null)
+  /** Reached by the pane's key handler, which is installed in the same effect
+   * that builds the controller but has to keep working across its lifetime. */
+  const autocompleteRef = useRef<AutocompleteController | null>(null)
   const remoteCwdRef = useRef<string | null>(null)
   /** A directory *guessed* out of the window title. Never a destination on its
    *  own — only the prefill for the prompt. */
@@ -1054,8 +1070,24 @@ export function Terminal({
     }
     thumb.addEventListener('mousedown', onThumbMouseDown)
 
-    const scrollListener = term.onScroll(() => updateThumb())
-    const writeParsedListener = term.onWriteParsed(() => updateThumb())
+    const scrollListener = term.onScroll(() => {
+      updateThumb()
+      // A list drawn against a line that has just moved is worse than no list:
+      // it would sit over unrelated text and complete a prompt that is no
+      // longer on screen. Clearing also forgets the last query, so the next
+      // parsed write re-offers if the prompt is still there.
+      autocomplete.clear()
+    })
+    const writeParsedListener = term.onWriteParsed(() => {
+      updateThumb()
+      // Where a pending `B` origin is finally measured — the OSC scanner runs
+      // ahead of the parser, so at marker time the prompt is not on the grid
+      // yet. Also the moment the offered list is re-checked against what the
+      // line now says, which is how a suggestion goes away when the far end
+      // redraws underneath it.
+      promptInput.noteParsed()
+      autocomplete.refresh()
+    })
 
     // Shell integration. Nothing here fires unless the far end is actually
     // emitting OSC 133/633 — an un-integrated shell (or a switch console,
@@ -1069,7 +1101,32 @@ export function Terminal({
         if (!disposed) onActivityRef.current?.(activity)
       },
       onComplete: (result) => {
-        if (!disposed) onCommandCompleteRef.current?.(result)
+        if (disposed) return
+        onCommandCompleteRef.current?.(result)
+        // Tier 2 capture. The command line arrives here already verbatim —
+        // the shell said what it ran, via OSC 633 `E` — so there is nothing to
+        // reconstruct and nothing that can be mistaken for a password: a
+        // shell that reports its command lines does not report the reply to
+        // `read -s`.
+        //
+        // Recorded on completion rather than on start, because that is where
+        // the tracker hands the text over, and because a line that never
+        // reached `D` is one the session dropped under — a half-run command
+        // nobody wants offered back. Its exit code is deliberately ignored:
+        // a command that failed is still one you may want to recall and fix,
+        // and under a partial integration the code is often null anyway.
+        if (!settingsRef.current.autocompleteEnabled || !result.command) return
+        void recordCommand({
+          host: historyKeyForSource(source),
+          command: result.command,
+          cwd: remoteCwdRef.current,
+          source: 'integration',
+        }).catch(() => {
+          // Best-effort, and deliberately silent. Autocomplete failing to
+          // remember a command is not something to interrupt a terminal
+          // session over, and the store is offline entirely under `npm run
+          // dev`, where there is no backend to invoke.
+        })
       },
     })
     // What a program on the far end last reported through OSC 9;4, so a
@@ -1084,6 +1141,65 @@ export function Terminal({
         if (!disposed) onProgressCompleteRef.current?.(durationMs)
       },
     })
+
+    // What is being typed at the prompt right now, read off the grid rather
+    // than modelled from keystrokes — see lib/promptInput.ts for why that is
+    // the only version of this that works.
+    const promptInput = new PromptInputTracker(term)
+    const autocomplete = new AutocompleteController({
+      tracker: promptInput,
+      suggest: (typed, limit) =>
+        suggestCommands({
+          host: historyKeyForSource(source),
+          typed,
+          cwd: remoteCwdRef.current,
+          limit,
+        }),
+      send: (text) => {
+        const id = sessionIdRef.current
+        if (id) conn.write(source, id, new TextEncoder().encode(text)).catch(() => {})
+      },
+      noteAccepted: (command) => {
+        void recordAccepted(historyKeyForSource(source), command).catch(() => {})
+      },
+      enabled: () => settingsRef.current.autocompleteEnabled,
+      onChange: (view) => {
+        if (!disposed) setSuggestion(view)
+      },
+    })
+    autocompleteRef.current = autocomplete
+
+    /**
+     * Tier 3 capture: remember a command on a host that never said it ran one.
+     *
+     * Only for hosts with no shell integration — where there is one, its `E`
+     * report is verbatim and this reconstruction could only be worse. The
+     * two conditions below are what make it safe rather than merely
+     * plausible:
+     *
+     *   - **Everything typed has to have shown up.** If less is visible than
+     *     went out, something swallowed it, and the thing that swallows
+     *     keystrokes is a password prompt. One unechoed character disqualifies
+     *     the whole line.
+     *   - **The text comes off the grid**, so what gets stored is what was on
+     *     screen — never a keystroke buffer that might hold something the
+     *     screen never showed.
+     */
+    function captureTypedLine() {
+      if (!settingsRef.current.autocompleteEnabled) return
+      // An integrated host reports its own command lines; recording this one
+      // too would only add a worse copy of the same thing.
+      if (promptInput.exact) return
+      const input = promptInput.read()
+      if (!input || input.text.trim() === '') return
+      if (input.text.length < promptInput.typedCount) return
+      void recordCommand({
+        host: historyKeyForSource(source),
+        command: input.text,
+        cwd: remoteCwdRef.current,
+        source: 'screen',
+      }).catch(() => {})
+    }
 
     const oscListeners = [133, 633].map((ident) =>
       term.registerOscHandler(ident, (data) => {
@@ -1103,6 +1219,10 @@ export function Terminal({
         // road, and plenty of hosts take only this one.
         const reported = parseCwdProperty(data)
         if (reported) noteRemoteCwd(reported)
+        // Same markers, a second reader: `A`/`B` say where the prompt ends and
+        // the typed line begins, and `C`/`D` say when there is no line to
+        // complete because something is running.
+        promptInput.handleOsc(data)
         return tracker.handleOsc(data)
       }),
     )
@@ -1193,6 +1313,8 @@ export function Terminal({
     // eventually reports can be recognized as "you quit an editor", not "a
     // batch job you were waiting on has landed".
     const bufferListener = term.onBufferChange((isAlternate) => {
+      promptInput.setAltScreen(isAlternate)
+      if (isAlternate) autocomplete.clear()
       tracker.setAltScreen(isAlternate)
     })
     const bellListener = term.onBell(() => {
@@ -1494,6 +1616,27 @@ export function Terminal({
     // out the *string*, which is more machinery than a case nobody has hit is
     // worth. Noted here rather than silently.
     const inputListener = term.onInput((data) => {
+      // Autocomplete's view of typing. `onInput` rather than `onData` because
+      // this must not be fed by mouse reports or the replies the core sends to
+      // host queries — neither is someone typing at a prompt.
+      //
+      // Enter and `^C` end the line: whatever was being composed is gone, and
+      // the next thing on screen is output or a fresh prompt. Everything else
+      // is a keystroke that may have started a line on a host with no markers
+      // to say so.
+      if (!lineEditor) {
+        const submitted = data.some((b) => b === 0x0d || b === 0x0a)
+        const abandoned = data.some((b) => b === 0x03)
+        if (submitted) captureTypedLine()
+        if (submitted || abandoned) {
+          // `^C` throws the line away rather than running it, so it is an end
+          // of line for tracking purposes but never something to remember.
+          promptInput.reset()
+          autocomplete.reset()
+        } else {
+          promptInput.noteInput(data)
+        }
+      }
       // A line-edited session (telnet without remote echo) sends whole lines
       // from the local editor, not keystrokes; there is nothing here to fan
       // out until the line is finished, and the keystrokes themselves would
@@ -1605,6 +1748,16 @@ export function Terminal({
     container.addEventListener('contextmenu', onContextMenu)
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // Autocomplete first, and only ever while a suggestion is actually on
+      // screen: `handleKey` returns false for everything else, so Tab, the
+      // arrows and Escape reach the far end untouched the rest of the time.
+      // Consumed the same way as the chords below — `GhosttyInputHandler`
+      // skips any event that has been `preventDefault`ed.
+      if (autocompleteRef.current?.handleKey(e)) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       // Ctrl+Shift+C is what every terminal binds copy to, precisely because
       // plain Ctrl+C has to stay available as SIGINT. Until now the only copy in
       // the app was copy-on-select, so turning that setting off left no way to
@@ -1811,6 +1964,9 @@ export function Terminal({
       initErrorListener?.dispose()
       bellListener.dispose()
       bufferListener.dispose()
+      autocompleteRef.current = null
+      autocomplete.reset()
+      promptInput.resetAll()
       for (const listener of oscListeners) listener.dispose()
       // Reported directly rather than through the tracker (whose own reset
       // is a no-op when nothing was running) so a pane torn down mid-command
@@ -1872,6 +2028,19 @@ export function Terminal({
       )}
     </div>
   )
+
+  // Geometry for the suggestion list, read at render time rather than carried
+  // in the controller's state: cell size and scroll position change for
+  // reasons that have nothing to do with what is being suggested (a resize, a
+  // font change, scrolling back through history), and a copy taken when the
+  // list opened would be stale for all three.
+  const suggestionAnchor = (() => {
+    if (!suggestion) return null
+    const term = termRef.current
+    const cell = term?.cellSize?.()
+    if (!term || !cell || cell.width <= 0 || cell.height <= 0) return null
+    return { cell, viewportY: term.viewportY, rows: term.rows }
+  })()
 
   return (
     <div
@@ -1941,7 +2110,29 @@ export function Terminal({
       {broadcasting && (
         <div className="pointer-events-none absolute inset-0 z-30 rounded-sm ring-2 ring-inset ring-amber-400/70" />
       )}
-      <div ref={containerRef} className="relative h-full w-full" />
+      <div ref={containerRef} className="relative h-full w-full">
+        {/* Inside the container so it is positioned against the grid itself,
+            and after it so it paints over the canvas. `pointer-events-none` on
+            the wrapper keeps the rest of the pane clickable — the list itself
+            re-enables them for its own rows. */}
+        {suggestion && suggestionAnchor && (
+          <div className="pointer-events-none absolute inset-0">
+            <SuggestionPopover
+              view={suggestion}
+              cell={suggestionAnchor.cell}
+              viewportY={suggestionAnchor.viewportY}
+              rows={suggestionAnchor.rows}
+              onPick={(index) => {
+                const controller = autocompleteRef.current
+                if (!controller?.current) return
+                controller.move(index - controller.current.index)
+                controller.accept()
+                termRef.current?.focus()
+              }}
+            />
+          </div>
+        )}
+      </div>
       {connecting && (
         <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">
           <Loader2 size={20} className="animate-spin text-sky-400" />

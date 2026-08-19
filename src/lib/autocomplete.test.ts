@@ -1,0 +1,246 @@
+import { describe, it, expect, vi } from 'vitest'
+import { AutocompleteController, suggestionKeyAction, type SuggestionView } from './autocomplete'
+import type { PromptInput, PromptInputTracker } from './promptInput'
+
+function key(k: string, mods: Partial<Record<'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey', boolean>> = {}) {
+  return { key: k, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods }
+}
+
+describe('suggestionKeyAction', () => {
+  const open = { open: true, atLineEnd: true }
+
+  it('claims nothing at all while no suggestion is showing', () => {
+    // The whole safety property of taking Tab and the arrows: with nothing on
+    // screen they belong entirely to the far end, so remote tab-completion and
+    // shell history recall behave exactly as they always did.
+    const closed = { open: false, atLineEnd: true }
+    for (const k of ['Tab', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape']) {
+      expect(suggestionKeyAction(key(k), closed)).toBe('ignore')
+    }
+  })
+
+  it('takes Tab and the arrows while one is showing', () => {
+    expect(suggestionKeyAction(key('Tab'), open)).toBe('accept')
+    expect(suggestionKeyAction(key('ArrowRight'), open)).toBe('accept')
+    expect(suggestionKeyAction(key('ArrowDown'), open)).toBe('next')
+    expect(suggestionKeyAction(key('ArrowUp'), open)).toBe('previous')
+    expect(suggestionKeyAction(key('Escape'), open)).toBe('dismiss')
+  })
+
+  it('leaves Right alone when it is a real cursor move', () => {
+    // Mid-line, Right means "move right". Only at the end of the line, where
+    // it would otherwise do nothing, does it accept.
+    expect(suggestionKeyAction(key('ArrowRight'), { open: true, atLineEnd: false })).toBe('ignore')
+  })
+
+  it('ignores every modified form', () => {
+    for (const mod of ['ctrlKey', 'altKey', 'metaKey', 'shiftKey'] as const) {
+      expect(suggestionKeyAction(key('Tab', { [mod]: true }), open)).toBe('ignore')
+      expect(suggestionKeyAction(key('ArrowUp', { [mod]: true }), open)).toBe('ignore')
+    }
+  })
+
+  it('ignores ordinary typing', () => {
+    for (const k of ['a', 'Enter', 'Backspace', 'Home', 'F5']) {
+      expect(suggestionKeyAction(key(k), open)).toBe('ignore')
+    }
+  })
+})
+
+/** A tracker stub whose read is set by the test. */
+function fakeTracker(input: PromptInput | null) {
+  const state = { input }
+  const tracker = { read: () => state.input } as unknown as PromptInputTracker
+  return { tracker, state }
+}
+
+function promptInput(text: string, atEnd = true): PromptInput {
+  return {
+    text,
+    atEnd,
+    origin: { row: 3, col: 12 },
+    cursor: { row: 3, col: 12 + text.length },
+  }
+}
+
+function makeController(
+  input: PromptInput | null,
+  items: string[],
+  overrides: { enabled?: boolean } = {},
+) {
+  const { tracker, state } = fakeTracker(input)
+  const views: (SuggestionView | null)[] = []
+  const sent: string[] = []
+  const accepted: string[] = []
+  const controller = new AutocompleteController({
+    tracker,
+    suggest: async () => items,
+    send: (text) => sent.push(text),
+    noteAccepted: (command) => accepted.push(command),
+    enabled: () => overrides.enabled ?? true,
+    onChange: (view) => views.push(view),
+  })
+  return { controller, state, views, sent, accepted }
+}
+
+describe('AutocompleteController', () => {
+  it('offers what the store returns for what is typed', async () => {
+    const { controller } = makeController(promptInput('git s'), ['git status', 'git stash'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    expect(controller.current?.items).toEqual(['git status', 'git stash'])
+    expect(controller.current?.index).toBe(0)
+  })
+
+  it('offers nothing mid-line, where accepting would splice', async () => {
+    // The cursor is inside the line, so appending a completion would put text
+    // in the middle of the command.
+    const { controller } = makeController(promptInput('git s', false), ['git status'])
+    controller.refresh()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(controller.current).toBeNull()
+  })
+
+  it('offers nothing at an empty prompt', async () => {
+    const { controller } = makeController(promptInput(''), ['git status'])
+    controller.refresh()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(controller.current).toBeNull()
+  })
+
+  it('offers nothing when the feature is off', async () => {
+    const { controller } = makeController(promptInput('git s'), ['git status'], { enabled: false })
+    controller.refresh()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(controller.current).toBeNull()
+  })
+
+  it('sends only the missing suffix when a suggestion is taken', async () => {
+    const { controller, sent, accepted } = makeController(promptInput('git s'), ['git status'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    controller.accept()
+    // Never the whole command: what the user typed stays on the line, and
+    // there is no path here that deletes it and retypes it.
+    expect(sent).toEqual(['tatus'])
+    expect(accepted).toEqual(['git status'])
+    expect(controller.current).toBeNull()
+  })
+
+  /**
+   * The property that makes a wrong origin harmless. Between the list being
+   * drawn and Tab being pressed, output can arrive and redraw the line — so
+   * acceptance re-reads rather than trusting what it offered a moment ago.
+   */
+  it('sends nothing when the line moved under the suggestion', async () => {
+    const { controller, state, sent } = makeController(promptInput('git s'), ['git status'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+
+    // The far end redrew the line as something else entirely.
+    state.input = promptInput('sudo reboot')
+    controller.accept()
+    expect(sent).toEqual([])
+    expect(controller.current).toBeNull()
+  })
+
+  it('sends nothing when the line vanished entirely', async () => {
+    const { controller, state, sent } = makeController(promptInput('git s'), ['git status'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    state.input = null
+    controller.accept()
+    expect(sent).toEqual([])
+  })
+
+  it('moves through the list and wraps', async () => {
+    const { controller } = makeController(promptInput('g'), ['a', 'b', 'c'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    controller.move(1)
+    expect(controller.current?.index).toBe(1)
+    controller.move(-1)
+    expect(controller.current?.index).toBe(0)
+    // Backwards off the front lands on the last, rather than doing nothing —
+    // a key that silently does nothing reads as broken.
+    controller.move(-1)
+    expect(controller.current?.index).toBe(2)
+    controller.move(1)
+    expect(controller.current?.index).toBe(0)
+  })
+
+  it('consumes the keys it claims and passes the rest through', async () => {
+    const { controller, sent } = makeController(promptInput('git s'), ['git status'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+
+    expect(controller.handleKey(key('a'))).toBe(false)
+    expect(controller.handleKey(key('ArrowDown'))).toBe(true)
+    expect(controller.handleKey(key('Escape'))).toBe(true)
+    expect(controller.current).toBeNull()
+    // Dismissed: Tab now belongs to the far end again.
+    expect(controller.handleKey(key('Tab'))).toBe(false)
+    expect(sent).toEqual([])
+  })
+
+  it('drops a reply that arrives after the line has moved on', async () => {
+    const { tracker, state } = fakeTracker(promptInput('git s'))
+    const views: (SuggestionView | null)[] = []
+    let release: (items: string[]) => void = () => {}
+    const controller = new AutocompleteController({
+      tracker,
+      suggest: () => new Promise<string[]>((resolve) => (release = resolve)),
+      send: () => {},
+      noteAccepted: () => {},
+      enabled: () => true,
+      onChange: (v) => views.push(v),
+    })
+    controller.refresh()
+    // The user kept typing while the store was being asked.
+    state.input = promptInput('git stash pop')
+    controller.reset()
+    release(['git status'])
+    await new Promise((r) => setTimeout(r, 0))
+    expect(controller.current).toBeNull()
+  })
+
+  it('goes quiet rather than erroring when the store is unreachable', async () => {
+    const { tracker } = fakeTracker(promptInput('git s'))
+    const controller = new AutocompleteController({
+      tracker,
+      suggest: async () => {
+        throw new Error('no backend')
+      },
+      send: () => {},
+      noteAccepted: () => {},
+      enabled: () => true,
+      onChange: () => {},
+    })
+    controller.refresh()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(controller.current).toBeNull()
+  })
+
+  it('does not re-ask the store for a line it has already asked about', async () => {
+    const { tracker } = fakeTracker(promptInput('git s'))
+    const asked: string[] = []
+    const controller = new AutocompleteController({
+      tracker,
+      suggest: async (typed) => {
+        asked.push(typed)
+        return ['git status']
+      },
+      send: () => {},
+      noteAccepted: () => {},
+      enabled: () => true,
+      onChange: () => {},
+    })
+    // Called on every parsed write as well as every keystroke, so an idle
+    // prompt must not turn into a stream of queries.
+    controller.refresh()
+    controller.refresh()
+    controller.refresh()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(asked).toEqual(['git s'])
+  })
+})

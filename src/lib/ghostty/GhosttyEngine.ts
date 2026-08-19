@@ -2227,6 +2227,43 @@ export class GhosttyEngine implements TerminalEngine {
   /** Where the terminal's own cursor is, in absolute buffer coordinates. The
    *  core reports it relative to the active screen, which always sits at the
    *  end of the buffer however far the view is scrolled back. */
+  /**
+   * Rebuild the core's render snapshot, so a read that is not riding on a
+   * drawn frame sees the current grid rather than the last painted one.
+   *
+   * `cursorCell` and `readRowText` both come off that snapshot, which is
+   * otherwise only refreshed in `drawFrame`. Every existing caller (copy,
+   * search, links) runs long after a frame has drawn and never noticed;
+   * prompt-input tracking reads on the keystroke, which is inside the same
+   * turn as the write that echoed it and well before the next frame.
+   *
+   * `mark_clean` deliberately isn't called here — that is what resets the
+   * damage state, and resetting it outside the renderer would cost the pane
+   * the repaint it was about to do.
+   */
+  /** Cell size in CSS pixels, for anything that has to place a DOM overlay on
+   *  a grid cell. Null before the renderer exists. */
+  cellSize(): { width: number; height: number } | null {
+    return this.renderer ? this.renderer.getCellSize() : null
+  }
+
+  syncReadState(): void {
+    if (!this.wasm || !this.termPtr) return
+    this.wasm.exports.ghostty_render_state_update(this.termPtr)
+  }
+
+  cursorCell(): { x: number; y: number } {
+    return this.terminalCursorCell()
+  }
+
+  /** `readRows` under the name the engine interface uses. Public because
+   *  prompt-input tracking reads the line being typed straight off the grid
+   *  rather than modelling the remote shell's line editor — see
+   *  lib/promptInput.ts. */
+  readRowText(fromAbs: number, toAbs: number): RowText[] {
+    return this.readRows(fromAbs, toAbs)
+  }
+
   private terminalCursorCell(): { x: number; y: number } {
     if (!this.wasm) return { x: 0, y: 0 }
     const screenTop = Math.max(0, this.scrollbackLength - this._rows)

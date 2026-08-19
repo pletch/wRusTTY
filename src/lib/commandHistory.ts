@@ -11,6 +11,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import type { ConnectionSource } from './connection'
 
 /** Where an entry came from. Matches `HistorySource` in the Rust module. */
 export type HistorySource = 'harvest' | 'integration' | 'screen'
@@ -53,6 +54,47 @@ export function historyKey(opts: {
   const user = opts.username ? `${opts.username}@` : ''
   const port = opts.port ? `:${opts.port}` : ''
   return `${opts.protocol}://${user}${opts.host}${port}`
+}
+
+/**
+ * The key for a live pane, from the connection it was opened with.
+ *
+ * A saved session files under its **profile id** rather than its host. That is
+ * deliberate, and it is the one place this scheme is not simply "the host":
+ * a profile is the thing the user thinks of as "that machine", and it survives
+ * the host being renamed, re-addressed or moved to a new port — all of which
+ * would otherwise silently fork the history in two. The cost is that the same
+ * box reached ad-hoc through the connect dialog keeps a separate history from
+ * the saved session pointing at it. That is the right way round: merging them
+ * would mean trusting a typed hostname to mean the same machine as a stored
+ * one, and it is far better to under-share a history than to offer one host's
+ * commands at another's prompt.
+ */
+export function historyKeyForSource(source: ConnectionSource): string {
+  switch (source.protocol) {
+    case 'ssh':
+      return historyKey({
+        protocol: 'ssh',
+        host: source.config.host,
+        port: source.config.port,
+        username: source.config.username,
+      })
+    case 'telnet':
+      return historyKey({
+        protocol: 'telnet',
+        host: source.config.host,
+        port: source.config.port,
+      })
+    case 'serial':
+      return historyKey({ protocol: 'serial', host: source.config.portName })
+    // Both profile forms carry only an id — for sshProfile because the host
+    // lives in the saved profile, and for serialProfile because the COM port
+    // is resolved backend-side at connect time and deliberately isn't here.
+    case 'sshProfile':
+      return `profile://${source.profileId}`
+    case 'serialProfile':
+      return `profile://${source.profileId}`
+  }
 }
 
 /** Fold a command into a host's history. Resolves false when the backend

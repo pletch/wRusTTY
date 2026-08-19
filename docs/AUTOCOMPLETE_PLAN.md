@@ -8,16 +8,29 @@ path completion, not flag descriptions. Those are separate features with
 separate storage and separate risks, and the command half is both the most
 useful and the one this codebase is already most of the way to.
 
-**Phase 1 is in**, as `src-tauri/src/command_history.rs`,
-`src/lib/commandHistory.ts` and the Settings section behind it. Nothing fills
-the store yet — that is Phase 2. Two things settled during it, both noted at
-the phase they belong to: the ranking runs backend-side and is queried per
-keystroke rather than shipped to the webview, and the store is a plain
-`wr-fs`-replaced file for now, with the API shaped so encrypting it later
-changes nothing above it.
+**Phases 1–5 are in.** The feature works end to end: it learns commands from
+both sources, reads the line being typed off the grid, offers completions in a
+list under the prompt, and sends only the missing suffix when one is taken.
+Phase 6 — importing the remote host's own shell history over an `exec` channel
+— is not built, and is the only part that reaches out to a server.
 
-Phases 2–6 not started. Written against the engine as it stands after the
-ghostty-main port, `readRows`/`RowText`, and the OSC 133 `CommandTracker`.
+What shipped differs from this plan in four places, each noted at the phase it
+belongs to:
+
+- **Phase 2 was smaller than budgeted.** The snippets already emit OSC 633
+  `E`; only the routing was missing.
+- **Phase 3 needed two engine additions this plan did not anticipate** — a
+  render-snapshot sync, and deferring the `B` origin measurement until after
+  the parse. Both are consequences of the OSC scanner running ahead of the
+  parser, which is written up under "The hard part".
+- **Phase 4 added a line-end condition** the plan did not state: a suggestion
+  is only offered when the cursor is at the end of the line.
+- **Phase 5's echo rule became a counting rule**, plus a store-side refusal of
+  lines with no alphanumerics — which is what catches a password prompt that
+  masks with `*` rather than echoing nothing.
+
+Written against the engine as it stands after the ghostty-main port,
+`readRows`/`RowText`, and the OSC 133 `CommandTracker`.
 
 ## What Termius actually does, and how much of it we want
 
@@ -144,11 +157,18 @@ Two consequences for the implementation:
 
 ### Tier 2 — OSC 633 `E`, free where shell integration is installed
 
-`CommandTracker` already produces this. The work is to route
-`CommandResult.command` into the store instead of dropping it after the
-notification, and to add `E` emission to the snippets in
-`src/lib/shellSnippets.ts` (they currently emit 133 `A`/`B`/`C`/`D` plus
-OSC 7, but not 633 `E`). Both halves are small.
+`CommandTracker` already produces this, and — corrected from an earlier draft
+of this plan, which claimed otherwise — the snippets in
+`src/lib/shellSnippets.ts` already *emit* it. All three (bash's DEBUG-trap
+preexec, zsh's `preexec` hook, fish's `fish_preexec`) print
+`OSC 633 ; E ; <cmdline>` with the escaping the parser expects, and
+`docs/SHELL_INTEGRATION.md` documents it in its sequence table. So a host set
+up for shell integration has been reporting every command line it runs all
+along, and this app has been parsing it and using it only to title a
+notification.
+
+The work is therefore routing alone: take `CommandResult.command` where the
+tracker already hands it over and record it, instead of dropping it.
 
 This tier is exact — no reconstruction, no guessing, no risk of recording
 something that was never typed.
@@ -313,22 +333,42 @@ Decisions to make explicitly rather than by default:
    encrypted, because suggestions that need an unlock before they work are
    suggestions that feel broken; the command surface is shaped so that
    encrypting it later is a change to one module and nothing above it.
-2. **Tier 2 capture.** Route `CommandResult.command` into the store; add
-   OSC 633 `E` to `shellSnippets.ts` and to `docs/SHELL_INTEGRATION.md` (they
-   are canonical copies of each other, and changing one without the other is
-   the documented mistake). At the end of this phase the app is learning, with
-   no UI.
-3. **Input tracking.** Expose the cursor cell and row reads on
-   `TerminalEngine`; build the current-input reader against the grid, with the
-   OSC 133 `B` origin and the inferred fallback. Live tests in the style of
-   `src/lib/ghostty/*Live.test.ts`, which already drive the real wasm engine.
-4. **UI and acceptance.** Popover, key handling, grid-revalidated acceptance.
-   The first phase a user can see.
-5. **Tier 3 passive capture.** Conservative recording from the grid for hosts
-   with no shell integration, including the rule that every typed character
-   must have visibly landed.
-6. **Tier 1 harvest.** Its own setting and the per-host override first, then
-   the `exec` channel behind them, per-shell history parsing, bounds and
+2. **Tier 2 capture.** *(Done.)* Route `CommandResult.command` into the store. Smaller
+   than budgeted: the snippets already emit `E`, so no shell-side change is
+   needed at all. At the end of this phase the app is learning, with no UI.
+3. **Input tracking.** *(Done — `src/lib/promptInput.ts`.)* Four optional
+   members on `TerminalEngine`, not the two budgeted: `cursorCell`,
+   `readRowText`, `cellSize`, and `syncReadState`.
+
+   The two extra ones are the same discovery from opposite ends. **The core's
+   read snapshot is only rebuilt on a drawn frame**, so a read taken on the
+   keystroke that caused it sees the previous frame; `syncReadState` rebuilds
+   it on demand. And **the OSC scanner dispatches ahead of the parser** — at
+   the moment `B` arrives the prompt it terminates has not been drawn, so
+   measuring the origin there puts it at the *start* of the prompt and every
+   read would include the prompt text as if the user had typed it. The
+   measurement is deferred to `onWriteParsed` instead. The live test found
+   both; the fake-grid unit tests could not have.
+4. **UI and acceptance.** *(Done — `src/lib/autocomplete.ts` and
+   `src/components/SuggestionPopover.tsx`.)* Popover, key handling,
+   grid-revalidated acceptance.
+
+   One rule added: **nothing is offered unless the cursor is at the end of the
+   line.** Acceptance appends, so offering after a left-arrow or Home would
+   splice text into the middle of the command and send something the user
+   never composed. `PromptInput.atEnd` carries it.
+5. **Tier 3 passive capture.** *(Done — `captureTypedLine` in Terminal.tsx.)*
+   The "every typed character must visibly land" rule is implemented by
+   counting printable bytes out against visible columns back: less on screen
+   than went out means something swallowed it, and the thing that swallows
+   keystrokes is a password prompt.
+
+   That test has one blind spot the plan missed — a prompt that masks each
+   character with `*` satisfies it exactly, since every character *did*
+   appear. So the store refuses any line containing no letter or digit, which
+   is a property no real command has and every mask does.
+6. **Tier 1 harvest.** *(Not started.)* Its own setting and the per-host
+   override first, then the `exec` channel behind them, per-shell history parsing, bounds and
    failure handling, and "forget imported history". Last, deliberately: it is
    the largest new surface, it is the only part that touches the SSH crate,
    the only part that reads anything on the remote host, and everything before

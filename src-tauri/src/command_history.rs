@@ -1,8 +1,11 @@
 //! Recent-command history — the store autocomplete suggests from.
 //!
-//! Phase 1 of docs/AUTOCOMPLETE_PLAN.md: the store, and nothing that fills it.
-//! `record` exists and is tested, but no capture path calls it yet; that is
-//! Phase 2 (OSC 633 `E`) and Phase 5 (passive capture from the grid).
+//! docs/AUTOCOMPLETE_PLAN.md. Filled from two directions: a host with shell
+//! integration reports its own command lines verbatim through OSC 633 `E`
+//! (`HistorySource::Integration`), and one without has its prompt line read off
+//! the terminal grid when Enter is pressed (`HistorySource::Screen`). The third
+//! source, a one-off import of the remote shell's own history file, is Phase 6
+//! and not built.
 //!
 //! **Why the ranking lives here rather than in the webview.** Suggesting runs
 //! on every keystroke, so the obvious design ships each host's entries to the
@@ -214,6 +217,15 @@ pub fn redact(command: &str) -> Option<String> {
         }
     }
     if trimmed.split_whitespace().any(looks_like_token) {
+        return None;
+    }
+    // Every real command contains a letter or a digit somewhere. A line with
+    // none is not one — and the case this actually catches is a password
+    // prompt that masks each character with `*` or a bullet rather than
+    // echoing nothing at all. Passive capture (see Terminal.tsx) checks that
+    // everything typed showed up, which a masking prompt satisfies exactly,
+    // so this is the check that stops `********` being stored as a command.
+    if !trimmed.chars().any(|c| c.is_alphanumeric()) {
         return None;
     }
     Some(trimmed.to_string())
@@ -666,6 +678,19 @@ mod tests {
     fn bare_dash_p_is_a_flag_and_attached_dash_p_is_a_password() {
         assert!(redact("mkdir -p one/two").is_some());
         assert!(redact("mysqldump -pS3cret db").is_none());
+    }
+
+    /// What a masking password prompt puts on the screen. Passive capture
+    /// cannot tell this from a command by echo alone — every character typed
+    /// did appear — so the store is the thing that has to refuse it.
+    #[test]
+    fn a_line_of_mask_characters_is_not_a_command() {
+        assert_eq!(redact("********"), None);
+        assert_eq!(redact("\u{2022}\u{2022}\u{2022}\u{2022}"), None);
+        assert_eq!(redact("...."), None);
+        // ...but a real command made mostly of punctuation still is one.
+        assert!(redact("cd ..").is_some());
+        assert!(redact("./configure").is_some());
     }
 
     #[test]

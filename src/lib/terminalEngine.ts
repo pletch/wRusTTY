@@ -1,4 +1,5 @@
 import type { CursorStyleSetting } from './settings'
+import type { RowText } from './ghostty/rowText'
 
 /**
  * Structurally identical to xterm's `IDisposable`, declared here rather than
@@ -182,6 +183,30 @@ export interface TerminalEngine {
   toggleHintMode?(): void
   isHintMode?(): boolean
   onHintModeChange?(cb: (active: boolean) => void): IDisposable
+  /**
+   * Where the terminal's own cursor is, in absolute buffer coordinates — the
+   * same space `readRowText` and `scrollbackLength` use, so a row noted at one
+   * moment still names the same row after output has scrolled.
+   *
+   * Optional as a group with `readRowText`: together they are what lets
+   * something outside the engine read the line being typed off the screen
+   * rather than model the remote shell's line editor. See lib/promptInput.ts.
+   */
+  /** Cell size in CSS pixels, for placing a DOM overlay on a grid cell —
+   * with `viewportY` and `cursorCell`, enough to put something exactly where
+   * the cursor is. Null before the renderer exists. */
+  cellSize?(): { width: number; height: number } | null
+  /** Rebuild the core's read snapshot before `cursorCell`/`readRowText`, for
+   * a caller that is not riding on a drawn frame. */
+  syncReadState?(): void
+  cursorCell?(): { x: number; y: number }
+  /**
+   * The text of rows `fromAbs..=toAbs`, in absolute buffer coordinates, with
+   * per-column offsets so a caller can slice by column without re-deriving
+   * where grapheme clusters and wide characters begin.
+   */
+  readRowText?(fromAbs: number, toAbs: number): RowText[]
+
   /** The URL under a pointer event, for a context menu. */
   linkAtPointer?(e: MouseEvent): string | null
   /** Open a URL that came back from `linkAtPointer`. Goes through the engine
