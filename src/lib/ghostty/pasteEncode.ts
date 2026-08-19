@@ -59,13 +59,13 @@ export function pasteIsSafe(wasm: GhosttyWasm, text: string): boolean {
   const ex = exportsOf(wasm)
   const bytes = utf8.encode(text)
   if (bytes.length === 0) return true
-  const ptr = ex.ghostty_wasm_alloc_u8_array(bytes.length)
+  const ptr = ex.ghostty_wasm_alloc(bytes.length)
   if (ptr === 0) return false
   try {
     new Uint8Array(ex.memory.buffer, ptr, bytes.length).set(bytes)
     return ex.ghostty_paste_is_safe(ptr, bytes.length) !== 0
   } finally {
-    ex.ghostty_wasm_free_u8_array(ptr, bytes.length)
+    ex.ghostty_wasm_free(ptr, bytes.length)
   }
 }
 
@@ -84,12 +84,12 @@ export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean)
   // to be refillable: a retry re-copies from `bytes` rather than reusing
   // whatever the failed call left behind.
   const dataLen = bytes.length
-  const dataPtr = ex.ghostty_wasm_alloc_u8_array(Math.max(1, dataLen))
-  const lenSlot = ex.ghostty_wasm_alloc_usize()
+  const dataPtr = ex.ghostty_wasm_alloc(Math.max(1, dataLen))
+  const lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
   // Sized so the common case is a single call: stripping never grows the text
   // and bracketing is the only thing that adds to it.
   let outSize = dataLen + BRACKET_OVERHEAD
-  let outPtr = ex.ghostty_wasm_alloc_u8_array(outSize)
+  let outPtr = ex.ghostty_wasm_alloc(outSize)
 
   try {
     if (dataLen > 0) new Uint8Array(ex.memory.buffer, dataPtr, dataLen).set(bytes)
@@ -104,9 +104,9 @@ export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean)
     let written = new DataView(ex.memory.buffer).getUint32(lenSlot, true)
 
     if (result === abi.GHOSTTY_OUT_OF_SPACE) {
-      ex.ghostty_wasm_free_u8_array(outPtr, outSize)
+      ex.ghostty_wasm_free(outPtr, outSize)
       outSize = written
-      outPtr = ex.ghostty_wasm_alloc_u8_array(Math.max(1, outSize))
+      outPtr = ex.ghostty_wasm_alloc(Math.max(1, outSize))
       // Refilled, because the call above consumed it in place.
       if (dataLen > 0) new Uint8Array(ex.memory.buffer, dataPtr, dataLen).set(bytes)
       result = ex.ghostty_paste_encode(
@@ -125,8 +125,8 @@ export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean)
     // can move under a view that outlives the call.
     return new Uint8Array(ex.memory.buffer, outPtr, written).slice()
   } finally {
-    ex.ghostty_wasm_free_u8_array(dataPtr, Math.max(1, dataLen))
-    ex.ghostty_wasm_free_u8_array(outPtr, Math.max(1, outSize))
-    ex.ghostty_wasm_free_usize(lenSlot)
+    ex.ghostty_wasm_free(dataPtr, Math.max(1, dataLen))
+    ex.ghostty_wasm_free(outPtr, Math.max(1, outSize))
+    ex.ghostty_wasm_free(lenSlot, abi.USIZE_BYTES)
   }
 }

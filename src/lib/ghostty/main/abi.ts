@@ -6,12 +6,17 @@
  * imports from there or is imported by it, so the two can coexist until the
  * read path moves over.
  *
- * Pinned to ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e.
+ * Pinned to ghostty-org/ghostty @ d9ffbbf17c11f570897a49d4c722130e8698d93b.
  * Every value below is transcribed from that commit's headers and exercised
- * against that commit's binary by `main/abi.parity.test.ts`. Re-pinning means
- * re-checking: the export surface moved from 187 to 202 in the weeks before the
- * previous pin, and to 201 at this one — it can go *down*, as it did here when
- * upstream removed the two `mode_get`/`mode_set` entry points.
+ * against that commit's binary by `main/abi.parity.test.ts`, and the struct
+ * layouts are checked against the binary itself by `main/abi.manifest.test.ts`.
+ *
+ * Re-pinning means re-checking, and the surface keeps moving *down* as upstream
+ * consolidates: 187 -> 202, then 201 (`mode_get`/`mode_set` folded into the
+ * generic accessors), now **180** — this pin retired the type-specific wasm
+ * allocators for one generic `ghostty_wasm_alloc`, and `render_state_colors_get`
+ * for a `RS_DATA_COLORS` key. A falling export count is consolidation, not a
+ * broken build.
  *
  * Where `main` replaces one of our named getters with a key, the old name is
  * given so the mapping stays greppable from both directions.
@@ -252,6 +257,18 @@ export const RS_DATA_CURSOR_VIEWPORT_HAS_VALUE = 14
 export const RS_DATA_CURSOR_VIEWPORT_X = 15 // was render_state_get_cursor_x
 export const RS_DATA_CURSOR_VIEWPORT_Y = 16 // was render_state_get_cursor_y
 export const RS_DATA_CURSOR_VIEWPORT_WIDE_TAIL = 17
+/**
+ * Structured reads added upstream in `16c833c5f`. A renderer reconstructing the
+ * cursor used to need eight separate `render_state_get` calls, which showed up
+ * per frame in wasm profiles; these return the whole thing at once. The same
+ * commit removed the dedicated `ghostty_render_state_colors_get` in favour of
+ * `RS_DATA_COLORS` below.
+ *
+ * Declared, not yet used: the shim still reads the individual keys, and moving
+ * it over is a separate change with its own parity check.
+ */
+export const RS_DATA_CURSOR = 18
+export const RS_DATA_COLORS = 19
 
 /** `GhosttyRenderStateDirty`. */
 export const RS_DIRTY_FALSE = 0
@@ -485,16 +502,34 @@ export const SCREEN_ALTERNATE = 1
  * signature of, which is the property that made the current `wasmBindings.ts`
  * worth trusting.
  */
+/**
+ * What the retired `ghostty_wasm_alloc_usize` reserved: `size_t` on wasm32.
+ * Call sites that used it now ask `ghostty_wasm_alloc` for this many bytes and
+ * hand the same number back to `ghostty_wasm_free`.
+ */
+export const USIZE_BYTES = 4
+
 export interface GhosttyMainExports {
   memory: WebAssembly.Memory
 
-  /* allocation */
-  ghostty_wasm_alloc_u8_array(len: number): number
-  ghostty_wasm_free_u8_array(ptr: number, len: number): void
-  ghostty_wasm_alloc_usize(): number
-  ghostty_wasm_free_usize(ptr: number): void
+  /* allocation.
+   *
+   * One generic byte allocator since upstream `a8e9b413f`, which removed the
+   * type-specific `_u8_array` / `_usize` pairs (a dozen-odd exports, and the
+   * bulk of this pin's 201 -> 180 drop). The returned address is aligned to the
+   * target's maximum C ABI alignment, so a buffer from here is safe to hand to
+   * any struct-shaped out-parameter — which the old `alloc_u8_array` did not
+   * promise, and several call sites here quietly relied on.
+   *
+   * `free` needs the original length back. `USIZE_BYTES` is what the retired
+   * `alloc_usize` reserved. */
+  ghostty_wasm_alloc(len: number): number
+  ghostty_wasm_free(ptr: number, len: number): void
   ghostty_wasm_alloc_opaque(): number
   ghostty_wasm_free_opaque(ptr: number): void
+  /** Reads the pointer a constructor wrote into a slot, replacing a manual
+   *  `DataView.getUint32(slot, true)` at every call site. */
+  ghostty_wasm_take_opaque(slot: number): number
 
   /* terminal lifecycle. Note the four-argument constructor: no options struct,
    * and scrollback is a `set` option rather than a constructor argument. */
@@ -538,7 +573,6 @@ export interface GhosttyMainExports {
   ghostty_render_state_get(state: number, key: number, out: number): number
   ghostty_render_state_get_multi(state: number, n: number, keys: number, values: number, written: number): number
   ghostty_render_state_set(state: number, key: number, value: number): number
-  ghostty_render_state_colors_get(state: number, key: number, out: number): number
 
   /* row iteration */
   ghostty_render_state_row_iterator_new(alloc: number, slot: number): number

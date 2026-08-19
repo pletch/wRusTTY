@@ -8,6 +8,7 @@
  * survive a deeper buffer. Measures resolve-only cost at increasing depth.
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 
 const MAIN = process.argv[2]
 const COLS = 200, ROWS = 60
@@ -15,7 +16,7 @@ const SB = Number(process.argv[3] ?? 40000)
 const enc = new TextEncoder()
 
 const inst = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(MAIN)), { env: { log: () => {} } })
-const ex = inst.exports, mem = ex.memory
+const ex = withAllocCompat(inst.exports), mem = ex.memory
 let v = new DataView(mem.buffer)
 const dv = () => { if (v.buffer !== mem.buffer) v = new DataView(mem.buffer); return v }
 

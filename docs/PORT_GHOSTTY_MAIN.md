@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e
+ghostty-org/ghostty @ d9ffbbf17c11f570897a49d4c722130e8698d93b
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -33,11 +33,38 @@ Chosen deliberately, not merely "what was current":
 - It is the commit we hold a **built binary** for. Rebuilding needs Zig 0.16.0
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
-`main`'s surface keeps moving — 187 exports when first measured, 202 at the
-previous pin, **201 here** — so re-pin only with a reason and re-run the checks
-when you do. Note the count went *down*: see the ABI break below.
+`main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
+**180 here** — so re-pin only with a reason and re-run the checks when you do.
+It keeps going *down*, and that is consolidation rather than a broken build: see
+the ABI breaks below.
 
-### Moving from the previous pin (`48d85eae`, 2026-08-04)
+### Moving from `6b22215c` (2026-08-14) to this pin
+
+120 commits, another clean fast-forward, and **two more ABI breaks**:
+
+- **`a8e9b413f`** retired the type-specific wasm allocators.
+  `ghostty_wasm_alloc_u8_array` / `_free_u8_array` / `_alloc_usize` /
+  `_free_usize` are gone; there is one `ghostty_wasm_alloc(len)` /
+  `ghostty_wasm_free(ptr, len)`, plus a new `ghostty_wasm_take_opaque(slot)` that
+  replaces reading the slot with a `DataView`. Buffers are now aligned to the
+  target's maximum C ABI alignment (16), which several call sites here were
+  quietly assuming. This is most of the 201 -> 180 drop.
+- **`16c833c5f`** removed `ghostty_render_state_colors_get` in favour of an
+  `RS_DATA_COLORS` key, and added `RS_DATA_CURSOR` — a structured cursor read
+  that replaces the eight separate gets a renderer needed per frame.
+
+Note the split this exposed: `KeyEncoder`, `MouseEncoder` and `pasteEncode` live
+outside `main/` but talk to the **raw** `main` ABI, not the shimmed one. They are
+easy to miss when migrating and the failure is a load-time
+`ghostty_wasm_alloc_u8_array is not a function`. `tools/parse-probes/` boot both
+binaries in one process, so they keep the legacy names and get them supplied over
+whichever API the binary has — see `tools/parse-probes/allocCompat.mjs`.
+
+Two things adopted but not yet used: `RS_DATA_CURSOR`/`RS_DATA_COLORS`, and
+upstream's `-Dvt-features` (`1fdbb8c91`) for trimming the binary. The shipped
+`.wasm` fell 22% on its own (1,319 kB -> 1,030 kB) without it.
+
+### Moving from `48d85eae` (2026-08-04) to `6b22215c`
 
 This pin is 294 commits ahead, a clean fast-forward. Three things matter:
 
@@ -66,7 +93,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 6b22215c5d46019f94b658f7665941f951d0de1e
+cd ghostty && git checkout d9ffbbf17c11f570897a49d4c722130e8698d93b
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm
@@ -80,12 +107,21 @@ Zig `ftruncate`/`FileTooBig` bug in the unicode table generator.
 
 None of these are derivable by reading the headers, and each fails *silently*.
 
-- **`GhosttyPoint` is `tag@0, x@+8, y@+12`, 16 bytes, passed by pointer.**
-  `point.h` declares `{ tag; value }` over `{ uint16_t x; uint32_t y; }`, which
-  reads as `x@+4, y@+8`. The union carries an 8-aligned member so `value` starts
-  at +8. Get it wrong and the coordinates land in each other's fields — you read
-  a real cell from the wrong place, with no error. The tell is `y=1` returning
-  column 1 of row 0.
+- **`GhosttyPoint` is `tag@0, x@+8, y@+12`, and it is 24 bytes, passed by
+  pointer.** `point.h` declares `{ tag; value }` over
+  `{ uint16_t x; uint32_t y; }`, which reads as `x@+4, y@+8`. The union carries
+  an 8-aligned member so `value` starts at +8. Get the offsets wrong and the
+  coordinates land in each other's fields — you read a real cell from the wrong
+  place, with no error. The tell is `y=1` returning column 1 of row 0.
+
+  **The size said 16 here until 2026-08-19 and that was wrong.** The union is 16
+  bytes, not the 8 its coordinate arm uses, so the struct runs to 24. Probing
+  found every offset and could not find the size, because a field nobody reads
+  has no observable position. Nothing broke — the core over-read into the unused
+  arm — but `ScrollbackReader` under-allocated it and zeroed two thirds of what
+  its own comment said had to be zeroed. This class of error is now caught by
+  `src/lib/ghostty/main/abi.manifest.test.ts`, which asserts every layout here
+  against `ghostty_type_json`; prefer that over probing for anything new.
 - **`GhosttyCell` is a `uint64_t`**, the same packed cell as
   `ROW_CELLS_DATA_RAW` — not an opaque handle. `codepoint = (lo >>> 2) & 0x1FFFFF`.
   It is passed to `ghostty_cell_get` **by value**, i.e. as an i64 argument.

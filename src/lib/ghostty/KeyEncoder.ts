@@ -145,18 +145,18 @@ export class KeyEncoder {
     this.event = this.view.getUint32(slot, true)
     ex.ghostty_wasm_free_opaque(slot)
 
-    this.buf = ex.ghostty_wasm_alloc_u8_array(BUF_BYTES)
-    this.utf8Buf = ex.ghostty_wasm_alloc_u8_array(UTF8_BYTES)
-    this.lenSlot = ex.ghostty_wasm_alloc_usize()
+    this.buf = ex.ghostty_wasm_alloc(BUF_BYTES)
+    this.utf8Buf = ex.ghostty_wasm_alloc(UTF8_BYTES)
+    this.lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
 
     // The one option `setopt_from_terminal` cannot derive, and it resets this
     // to false on every call anyway. Set once for the record: there is no
     // option key on the platform this ships to, and treating a hypothetical
     // one as Alt is the behaviour a terminal wants.
-    const optSlot = ex.ghostty_wasm_alloc_u8_array(1)
+    const optSlot = ex.ghostty_wasm_alloc(1)
     new Uint8Array(ex.memory.buffer, optSlot, 1)[0] = 0
     ex.ghostty_key_encoder_setopt(this.encoder, KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, optSlot)
-    ex.ghostty_wasm_free_u8_array(optSlot, 1)
+    ex.ghostty_wasm_free(optSlot, 1)
   }
 
   /**
@@ -246,14 +246,14 @@ export class KeyEncoder {
       // buffer is not kept: paying an allocation on a keystroke that will
       // likely never happen again beats holding the memory for the pane's
       // life.
-      const big = ex.ghostty_wasm_alloc_u8_array(len)
+      const big = ex.ghostty_wasm_alloc(len)
       try {
         result = ex.ghostty_key_encoder_encode(this.encoder, this.event, big, len, this.lenSlot)
         len = this.dv().getUint32(this.lenSlot, true)
         if (result !== abi.GHOSTTY_SUCCESS || len === 0) return null
         return new Uint8Array(ex.memory.buffer, big, len).slice()
       } finally {
-        ex.ghostty_wasm_free_u8_array(big, len)
+        ex.ghostty_wasm_free(big, len)
       }
     }
 
@@ -267,9 +267,9 @@ export class KeyEncoder {
     const { ex } = this
     ex.ghostty_key_encoder_free(this.encoder)
     ex.ghostty_key_event_free(this.event)
-    ex.ghostty_wasm_free_u8_array(this.buf, BUF_BYTES)
-    ex.ghostty_wasm_free_u8_array(this.utf8Buf, UTF8_BYTES)
-    ex.ghostty_wasm_free_usize(this.lenSlot)
+    ex.ghostty_wasm_free(this.buf, BUF_BYTES)
+    ex.ghostty_wasm_free(this.utf8Buf, UTF8_BYTES)
+    ex.ghostty_wasm_free(this.lenSlot, abi.USIZE_BYTES)
   }
 }
 

@@ -15,6 +15,7 @@
  * Run: node tools/parse-probes/sgrdiff.mjs <a.wasm> <b.wasm>
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 
 const PROBE_BYTES = 2 * 1024 * 1024
 const enc = new TextEncoder()
@@ -58,7 +59,7 @@ function load(path) {
   const inst = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(path)), {
     env: { log: () => { logs++ } },
   })
-  return inst.exports
+  return withAllocCompat(inst.exports)
 }
 
 let logs = 0

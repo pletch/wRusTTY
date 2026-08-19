@@ -10,6 +10,7 @@
  *    two.
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 
 const WASM = process.argv[2]
 const ITERS = Number(process.argv[3] ?? 25)
@@ -48,7 +49,7 @@ const PROBES = [
 const mod = new WebAssembly.Module(readFileSync(WASM))
 let logCalls = 0
 const inst = new WebAssembly.Instance(mod, { env: { log: () => { logCalls++ } } })
-const ex = inst.exports
+const ex = withAllocCompat(inst.exports)
 const mem = ex.memory
 
 function newTerminal(cols, rows, scrollbackLines) {

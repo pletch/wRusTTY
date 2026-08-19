@@ -13,6 +13,7 @@
  * dominate a profile that is supposed to be about the parser.
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 
 const WASM = process.argv[2] ?? 'src/lib/ghostty/vendor/ghostty-vt.wasm'
 const ONLY = process.argv[3] ?? 'all'
@@ -43,7 +44,7 @@ const PROBES = {
 
 const mod = new WebAssembly.Module(readFileSync(WASM))
 const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-const ex = inst.exports
+const ex = withAllocCompat(inst.exports)
 const mem = ex.memory
 
 /** 80-byte config: scrollbackLimit, fg, bg, cursor, then 16 palette entries. */

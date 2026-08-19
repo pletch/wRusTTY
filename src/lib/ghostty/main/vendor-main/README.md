@@ -11,17 +11,17 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e
+ghostty-org/ghostty @ d9ffbbf17c11f570897a49d4c722130e8698d93b
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  664d610b837c697802d0384d485261154c2b7f87451173c58317d75481ad0d94
-Size     5,174,080 bytes
+SHA-256  c5c275a70c58a82ee2e00141498d6b29c548519ebcd4b66d570911c5ebc30a55
+Size     4,245,258 bytes
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-Exports  201 (199 functions) — the patch adds none
+Exports  180 (178 functions) — the patch adds none
 ```
 
 **This build is patched.** The unpatched one hashed
-`2c061884103606b9e4aaba1e45c3cd12619f145682463a7c046197b08d373a67` at 5,173,518
-bytes; the 562-byte difference is the added parser state. `abi.parity.test.ts`
+`18d5cc646ebc75d0a2663fb1fc2decf6de9f1951f383291b6ac97954e63177d8` at 4,244,714
+bytes; the 544-byte difference is the added parser state. `abi.parity.test.ts`
 asserts `ESC k` payloads are *swallowed*, which only holds with the patch — so
 the suite fails loudly if a rebuild skips it.
 
@@ -46,7 +46,7 @@ Rebuilding needs **Zig 0.16.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 6b22215c5d46019f94b658f7665941f951d0de1e
+git fetch -q --depth 1 origin d9ffbbf17c11f570897a49d4c722130e8698d93b
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch
@@ -63,8 +63,11 @@ Zig cache; after that it is quick.
 If you rebuild at a **different commit**, re-run the probes before trusting any
 number in `docs/PORT_GHOSTTY_MAIN.md` or `tools/parse-probes/README.md`: the
 export surface moved from 187 to 202 in the weeks before the previous pin, and
-this pin took it to 201 by *removing* `ghostty_terminal_mode_get`/`_mode_set`
-(upstream `cfc19e805`, flagged ABI BREAKING). Export count going *down* is not
+the two pins since have both taken it *down*: 201 by removing
+`ghostty_terminal_mode_get`/`_mode_set` (upstream `cfc19e805`), then **180** by
+retiring the type-specific wasm allocators for one generic `ghostty_wasm_alloc`
+(`a8e9b413f`) and `render_state_colors_get` for a key (`16c833c5f`). Both were
+flagged ABI BREAKING upstream. Export count going *down* is consolidation, not
 evidence of a bad build.
 
 ```sh

@@ -151,8 +151,8 @@ export class MainViewportReader implements ViewportSource {
     this.cellsSlot = ex.ghostty_wasm_alloc_opaque()
     abi.expectOk(ex.ghostty_render_state_row_cells_new(0, this.cellsSlot), 'row_cells_new')
 
-    this.scratch = ex.ghostty_wasm_alloc_u8_array(16)
-    this.stylePtr = ex.ghostty_wasm_alloc_u8_array(abi.STYLE_SIZE)
+    this.scratch = ex.ghostty_wasm_alloc(16)
+    this.stylePtr = ex.ghostty_wasm_alloc(abi.STYLE_SIZE)
   }
 
   /** Re-made only when linear memory growth has detached the previous one. */
@@ -352,8 +352,8 @@ export class MainViewportReader implements ViewportSource {
 
   dispose(): void {
     const { ex } = this
-    ex.ghostty_wasm_free_u8_array(this.stylePtr, abi.STYLE_SIZE)
-    ex.ghostty_wasm_free_u8_array(this.scratch, 16)
+    ex.ghostty_wasm_free(this.stylePtr, abi.STYLE_SIZE)
+    ex.ghostty_wasm_free(this.scratch, 16)
     ex.ghostty_wasm_free_opaque(this.cellsSlot)
     ex.ghostty_wasm_free_opaque(this.iterSlot)
     ex.ghostty_render_state_free(this.state)

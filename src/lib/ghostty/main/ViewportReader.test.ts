@@ -86,7 +86,7 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
     const term = new DataView(ex.memory.buffer).getUint32(slot, true)
 
     // Same palette and defaults as the vendored side, or no colour matches.
-    const pal = ex.ghostty_wasm_alloc_u8_array(abi.PALETTE_BYTES)
+    const pal = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
     const bytes = new Uint8Array(ex.memory.buffer)
     for (let i = 0; i < abi.PALETTE_ENTRIES; i++) {
       const rgb = PALETTE_256[i]
@@ -95,7 +95,7 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
       bytes[pal + i * 3 + 2] = rgb & 0xff
     }
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_COLOR_PALETTE, pal), 'set palette')
-    const c = ex.ghostty_wasm_alloc_u8_array(3)
+    const c = ex.ghostty_wasm_alloc(3)
     const setColor = (key: number, rgb: number) => {
       const b = new Uint8Array(ex.memory.buffer)
       b[c] = (rgb >> 16) & 0xff
@@ -107,11 +107,11 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
     setColor(abi.T_OPT_COLOR_BACKGROUND, DEFAULT_BG)
 
     const data = new TextEncoder().encode(input)
-    const p = ex.ghostty_wasm_alloc_u8_array(data.length)
+    const p = ex.ghostty_wasm_alloc(data.length)
     new Uint8Array(ex.memory.buffer).set(data, p)
     ex.ghostty_terminal_vt_write(term, p, data.length)
 
-    const buf = ex.ghostty_wasm_alloc_u8_array(CELLS * CELL_BYTES)
+    const buf = ex.ghostty_wasm_alloc(CELLS * CELL_BYTES)
     new Uint8Array(ex.memory.buffer, buf, CELLS * CELL_BYTES).fill(0)
     const reader = new MainViewportReader({ ex, term })
     // Update and read are separate for the same reason the vendored side's are:

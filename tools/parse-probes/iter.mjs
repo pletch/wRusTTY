@@ -43,6 +43,7 @@
  * Run: node tools/parse-probes/iter.mjs <main-ghostty-vt.wasm> [vendored.wasm]
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 
@@ -134,7 +135,7 @@ const editRow = (rows) => `\x1b[${(rows >> 1) + 1};1Hchanged line, redraw me`
 function measureVendored(mode) {
   const mod = new WebAssembly.Module(readFileSync(VENDORED))
   const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-  const ex = inst.exports
+  const ex = withAllocCompat(inst.exports)
   const mem = ex.memory
 
   const write = (term, s) => {
@@ -184,7 +185,7 @@ function measureVendored(mode) {
 function measureMain(mode) {
   const mod = new WebAssembly.Module(readFileSync(WASM))
   const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-  const ex = inst.exports
+  const ex = withAllocCompat(inst.exports)
   const mem = ex.memory
   /**
    * One DataView, refreshed only when linear memory grows and detaches it.

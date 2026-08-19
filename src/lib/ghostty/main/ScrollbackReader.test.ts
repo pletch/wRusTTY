@@ -83,13 +83,13 @@ run('MainScrollbackReader against get_scrollback_line, byte for byte', () => {
     abi.expectOk(ex.ghostty_terminal_new(0, slot, COLS, ROWS), 'terminal_new')
     const term = new DataView(ex.memory.buffer).getUint32(slot, true)
 
-    const v = ex.ghostty_wasm_alloc_usize()
+    const v = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
     new DataView(ex.memory.buffer).setUint32(v, 512 * 1024 * 1024, true)
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_SCROLLBACK_MAX_BYTES, v), 'set sb bytes')
     new DataView(ex.memory.buffer).setUint32(v, 100000, true)
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_SCROLLBACK_MAX_LINES, v), 'set sb lines')
 
-    const pal = ex.ghostty_wasm_alloc_u8_array(abi.PALETTE_BYTES)
+    const pal = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
     const bytes = new Uint8Array(ex.memory.buffer)
     for (let i = 0; i < abi.PALETTE_ENTRIES; i++) {
       const rgb = PALETTE_256[i]
@@ -98,7 +98,7 @@ run('MainScrollbackReader against get_scrollback_line, byte for byte', () => {
       bytes[pal + i * 3 + 2] = rgb & 0xff
     }
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_COLOR_PALETTE, pal), 'set palette')
-    const c = ex.ghostty_wasm_alloc_u8_array(3)
+    const c = ex.ghostty_wasm_alloc(3)
     const setColor = (key: number, rgb: number) => {
       const b = new Uint8Array(ex.memory.buffer)
       b[c] = (rgb >> 16) & 0xff
@@ -110,15 +110,15 @@ run('MainScrollbackReader against get_scrollback_line, byte for byte', () => {
     setColor(abi.T_OPT_COLOR_BACKGROUND, DEFAULT_BG)
 
     const data = new TextEncoder().encode(input)
-    const p = ex.ghostty_wasm_alloc_u8_array(data.length)
+    const p = ex.ghostty_wasm_alloc(data.length)
     new Uint8Array(ex.memory.buffer).set(data, p)
     ex.ghostty_terminal_vt_write(term, p, data.length)
 
-    const out = ex.ghostty_wasm_alloc_u8_array(16)
+    const out = ex.ghostty_wasm_alloc(16)
     abi.expectOk(ex.ghostty_terminal_get(term, abi.T_DATA_SCROLLBACK_ROWS, out), 'get sb rows')
     const count = new DataView(ex.memory.buffer).getUint32(out, true)
 
-    const buf = ex.ghostty_wasm_alloc_u8_array(COLS * CELL_BYTES)
+    const buf = ex.ghostty_wasm_alloc(COLS * CELL_BYTES)
     const reader = new MainScrollbackReader({ ex, term })
     const rows: Uint8Array[] = []
     for (let y = 0; y < count; y++) {
@@ -219,18 +219,18 @@ run('MainScrollbackReader against get_scrollback_line, byte for byte', () => {
     const slot = ex.ghostty_wasm_alloc_opaque()
     abi.expectOk(ex.ghostty_terminal_new(0, slot, COLS, ROWS), 'terminal_new')
     const t2 = new DataView(ex.memory.buffer).getUint32(slot, true)
-    const v = ex.ghostty_wasm_alloc_usize()
+    const v = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
     new DataView(ex.memory.buffer).setUint32(v, 512 * 1024 * 1024, true)
     ex.ghostty_terminal_set(t2, abi.T_OPT_SCROLLBACK_MAX_BYTES, v)
     new DataView(ex.memory.buffer).setUint32(v, 100000, true)
     ex.ghostty_terminal_set(t2, abi.T_OPT_SCROLLBACK_MAX_LINES, v)
     const data = new TextEncoder().encode(input)
-    const p = ex.ghostty_wasm_alloc_u8_array(data.length)
+    const p = ex.ghostty_wasm_alloc(data.length)
     new Uint8Array(ex.memory.buffer).set(data, p)
     ex.ghostty_terminal_vt_write(t2, p, data.length)
 
     const reader = new MainScrollbackReader({ ex, term: t2 })
-    const gbuf = ex.ghostty_wasm_alloc_u8_array(16 * 4)
+    const gbuf = ex.ghostty_wasm_alloc(16 * 4)
     const m = reader.graphemes(1, 0, gbuf, 16)
     const newCps: number[] = []
     for (let i = 0; i < m; i++) {

@@ -25,6 +25,7 @@
  * Run: node tools/parse-probes/viewport.mjs [wasmPath]
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 
 const WASM = process.argv[2] ?? 'src/lib/ghostty/vendor/ghostty-vt.wasm'
 const CELL_BYTES = 16
@@ -32,7 +33,7 @@ const enc = new TextEncoder()
 
 const mod = new WebAssembly.Module(readFileSync(WASM))
 const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-const ex = inst.exports
+const ex = withAllocCompat(inst.exports)
 const mem = ex.memory
 
 function newTerminal(cols, rows) {

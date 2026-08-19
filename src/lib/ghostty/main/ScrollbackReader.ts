@@ -104,14 +104,14 @@ export class MainScrollbackReader {
     this.ex = ex
     this.term = term
     this.view = new DataView(ex.memory.buffer)
-    this.ptPtr = ex.ghostty_wasm_alloc_u8_array(abi.POINT_SIZE)
-    this.refPtr = ex.ghostty_wasm_alloc_u8_array(abi.GRID_REF_SIZE)
-    this.cellPtr = ex.ghostty_wasm_alloc_u8_array(abi.CELL_U64_BYTES)
-    this.rowPtr = ex.ghostty_wasm_alloc_u8_array(8)
-    this.scratch = ex.ghostty_wasm_alloc_u8_array(16)
-    this.stylePtr = ex.ghostty_wasm_alloc_u8_array(abi.STYLE_SIZE)
-    this.palPtr = ex.ghostty_wasm_alloc_u8_array(abi.PALETTE_BYTES)
-    this.gbufPtr = ex.ghostty_wasm_alloc_u8_array(GRAPHEME_SCRATCH * 4)
+    this.ptPtr = ex.ghostty_wasm_alloc(abi.POINT_SIZE)
+    this.refPtr = ex.ghostty_wasm_alloc(abi.GRID_REF_SIZE)
+    this.cellPtr = ex.ghostty_wasm_alloc(abi.CELL_U64_BYTES)
+    this.rowPtr = ex.ghostty_wasm_alloc(8)
+    this.scratch = ex.ghostty_wasm_alloc(16)
+    this.stylePtr = ex.ghostty_wasm_alloc(abi.STYLE_SIZE)
+    this.palPtr = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
+    this.gbufPtr = ex.ghostty_wasm_alloc(GRAPHEME_SCRATCH * 4)
   }
 
   private dv(): DataView {
@@ -322,13 +322,13 @@ export class MainScrollbackReader {
 
   dispose(): void {
     const { ex } = this
-    ex.ghostty_wasm_free_u8_array(this.gbufPtr, GRAPHEME_SCRATCH * 4)
-    ex.ghostty_wasm_free_u8_array(this.palPtr, abi.PALETTE_BYTES)
-    ex.ghostty_wasm_free_u8_array(this.stylePtr, abi.STYLE_SIZE)
-    ex.ghostty_wasm_free_u8_array(this.scratch, 16)
-    ex.ghostty_wasm_free_u8_array(this.rowPtr, 8)
-    ex.ghostty_wasm_free_u8_array(this.cellPtr, abi.CELL_U64_BYTES)
-    ex.ghostty_wasm_free_u8_array(this.refPtr, abi.GRID_REF_SIZE)
-    ex.ghostty_wasm_free_u8_array(this.ptPtr, abi.POINT_SIZE)
+    ex.ghostty_wasm_free(this.gbufPtr, GRAPHEME_SCRATCH * 4)
+    ex.ghostty_wasm_free(this.palPtr, abi.PALETTE_BYTES)
+    ex.ghostty_wasm_free(this.stylePtr, abi.STYLE_SIZE)
+    ex.ghostty_wasm_free(this.scratch, 16)
+    ex.ghostty_wasm_free(this.rowPtr, 8)
+    ex.ghostty_wasm_free(this.cellPtr, abi.CELL_U64_BYTES)
+    ex.ghostty_wasm_free(this.refPtr, abi.GRID_REF_SIZE)
+    ex.ghostty_wasm_free(this.ptPtr, abi.POINT_SIZE)
   }
 }

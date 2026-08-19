@@ -160,9 +160,9 @@ class MainShim {
   constructor(ex: MainExports) {
     this.ex = ex
     this.view = new DataView(ex.memory.buffer)
-    this.scratch = ex.ghostty_wasm_alloc_u8_array(16)
+    this.scratch = ex.ghostty_wasm_alloc(16)
     this.slot = ex.ghostty_wasm_alloc_opaque()
-    this.palette = ex.ghostty_wasm_alloc_u8_array(abi.PALETTE_BYTES)
+    this.palette = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
   }
 
   /** Re-made only when linear memory growth has detached the previous one. */
@@ -546,8 +546,8 @@ class MainShim {
         return n
       },
 
-      ghostty_wasm_alloc_u8_array: (len) => ex.ghostty_wasm_alloc_u8_array(len),
-      ghostty_wasm_free_u8_array: (ptr, len) => ex.ghostty_wasm_free_u8_array(ptr, len),
+      ghostty_wasm_alloc_u8_array: (len) => ex.ghostty_wasm_alloc(len),
+      ghostty_wasm_free_u8_array: (ptr, len) => ex.ghostty_wasm_free(ptr, len),
     }
   }
 }

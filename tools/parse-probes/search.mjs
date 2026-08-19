@@ -26,6 +26,7 @@
  * usage: node search.mjs <main.wasm> [vendored.wasm] [mode]
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 
@@ -77,7 +78,7 @@ const bench = (fn, iters) => {
 function boot(file) {
   const mod = new WebAssembly.Module(readFileSync(file))
   const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-  const ex = inst.exports
+  const ex = withAllocCompat(inst.exports)
   const mem = ex.memory
   let view = new DataView(mem.buffer)
   const dv = () => { if (view.buffer !== mem.buffer) view = new DataView(mem.buffer); return view }

@@ -113,11 +113,11 @@ export class MouseEncoder {
     this.event = this.view.getUint32(slot, true)
     ex.ghostty_wasm_free_opaque(slot)
 
-    this.buf = ex.ghostty_wasm_alloc_u8_array(BUF_BYTES)
-    this.sizeBuf = ex.ghostty_wasm_alloc_u8_array(MOUSE_SIZE_BYTES)
-    this.posBuf = ex.ghostty_wasm_alloc_u8_array(MOUSE_POSITION_BYTES)
-    this.flagBuf = ex.ghostty_wasm_alloc_u8_array(1)
-    this.lenSlot = ex.ghostty_wasm_alloc_usize()
+    this.buf = ex.ghostty_wasm_alloc(BUF_BYTES)
+    this.sizeBuf = ex.ghostty_wasm_alloc(MOUSE_SIZE_BYTES)
+    this.posBuf = ex.ghostty_wasm_alloc(MOUSE_POSITION_BYTES)
+    this.flagBuf = ex.ghostty_wasm_alloc(1)
+    this.lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
   }
 
   /**
@@ -218,14 +218,14 @@ export class MouseEncoder {
       // `len` is the size required. Not kept, for the reason `KeyEncoder`
       // gives: no observed report needs it, so paying an allocation on the
       // event that does beats holding the memory for the pane's life.
-      const big = ex.ghostty_wasm_alloc_u8_array(len)
+      const big = ex.ghostty_wasm_alloc(len)
       try {
         result = ex.ghostty_mouse_encoder_encode(this.encoder, this.event, big, len, this.lenSlot)
         len = this.dv().getUint32(this.lenSlot, true)
         if (result !== abi.GHOSTTY_SUCCESS || len === 0) return null
         return new Uint8Array(ex.memory.buffer, big, len).slice()
       } finally {
-        ex.ghostty_wasm_free_u8_array(big, len)
+        ex.ghostty_wasm_free(big, len)
       }
     }
 
@@ -245,10 +245,10 @@ export class MouseEncoder {
     const { ex } = this
     ex.ghostty_mouse_encoder_free(this.encoder)
     ex.ghostty_mouse_event_free(this.event)
-    ex.ghostty_wasm_free_u8_array(this.buf, BUF_BYTES)
-    ex.ghostty_wasm_free_u8_array(this.sizeBuf, MOUSE_SIZE_BYTES)
-    ex.ghostty_wasm_free_u8_array(this.posBuf, MOUSE_POSITION_BYTES)
-    ex.ghostty_wasm_free_u8_array(this.flagBuf, 1)
-    ex.ghostty_wasm_free_usize(this.lenSlot)
+    ex.ghostty_wasm_free(this.buf, BUF_BYTES)
+    ex.ghostty_wasm_free(this.sizeBuf, MOUSE_SIZE_BYTES)
+    ex.ghostty_wasm_free(this.posBuf, MOUSE_POSITION_BYTES)
+    ex.ghostty_wasm_free(this.flagBuf, 1)
+    ex.ghostty_wasm_free(this.lenSlot, abi.USIZE_BYTES)
   }
 }

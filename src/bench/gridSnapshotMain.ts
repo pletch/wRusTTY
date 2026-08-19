@@ -106,7 +106,7 @@ export function snapshotViaGhosttyMain(input: SnapshotInput): GridSnapshot {
   // Both engines must be pinned to one palette before any colour is comparable
   // — see gridPalette.ts. The value is the array pointer itself, not a pointer
   // to it: passing the latter succeeds and leaves every colour black.
-  const palPtr = ex.ghostty_wasm_alloc_u8_array(abi.PALETTE_BYTES)
+  const palPtr = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
   const bytes = new Uint8Array(mem.buffer)
   // The whole 256 table, not the 16 the vendored side is configured with: that
   // ABI takes 16 and lets the core derive the cube and greys, whereas this one
@@ -123,10 +123,10 @@ export function snapshotViaGhosttyMain(input: SnapshotInput): GridSnapshot {
   abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_COLOR_PALETTE, palPtr), 'set palette')
 
   const write = (data: Uint8Array) => {
-    const p = ex.ghostty_wasm_alloc_u8_array(data.length)
+    const p = ex.ghostty_wasm_alloc(data.length)
     new Uint8Array(mem.buffer).set(data, p)
     ex.ghostty_terminal_vt_write(term, p, data.length) // returns void
-    ex.ghostty_wasm_free_u8_array(p, data.length)
+    ex.ghostty_wasm_free(p, data.length)
   }
   if (input.setup) write(input.setup)
   write(concat(input.events))
@@ -145,8 +145,8 @@ export function snapshotViaGhosttyMain(input: SnapshotInput): GridSnapshot {
   const cellsSlot = ex.ghostty_wasm_alloc_opaque()
   abi.expectOk(ex.ghostty_render_state_row_cells_new(0, cellsSlot), 'row_cells_new')
 
-  const out = ex.ghostty_wasm_alloc_u8_array(16)
-  const stylePtr = ex.ghostty_wasm_alloc_u8_array(abi.STYLE_SIZE)
+  const out = ex.ghostty_wasm_alloc(16)
+  const stylePtr = ex.ghostty_wasm_alloc(abi.STYLE_SIZE)
 
   const outRows: string[] = []
   const outFg: number[][] = []

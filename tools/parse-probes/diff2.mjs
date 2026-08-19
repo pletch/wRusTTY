@@ -4,6 +4,7 @@
  * and check whether escapes damage the printable bulk path around them.
  */
 import { readFileSync } from 'fs'
+import { withAllocCompat } from './allocCompat.mjs'
 
 const WASM = process.argv[2]
 const ITERS = Number(process.argv[3] ?? 30)
@@ -44,7 +45,7 @@ const PROBES = [
 
 const mod = new WebAssembly.Module(readFileSync(WASM))
 const inst = new WebAssembly.Instance(mod, { env: { log: () => {} } })
-const ex = inst.exports
+const ex = withAllocCompat(inst.exports)
 const mem = ex.memory
 
 function newTerminal(cols, rows, scrollbackLines) {

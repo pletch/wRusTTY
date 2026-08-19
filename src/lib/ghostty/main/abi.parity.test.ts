@@ -23,7 +23,7 @@ import * as abi from './abi'
  *   GHOSTTY_MAIN_WASM=/path/to/ghostty-vt.wasm npx vitest run abi.parity
  *
  * It must be built from the pin in `docs/PORT_GHOSTTY_MAIN.md`
- * (6b22215c5d46019f94b658f7665941f951d0de1e) with Zig 0.16.0. Skipping is
+ * (d9ffbbf17c11f570897a49d4c722130e8698d93b) with Zig 0.16.0. Skipping is
  * deliberate: CI has no such binary, and a suite that silently passed without
  * one would assert nothing while looking like coverage.
  */
@@ -65,14 +65,14 @@ function boot(mod: WebAssembly.Module): Harness {
 
   const write = (s: string) => {
     const b = new TextEncoder().encode(s)
-    const p = ex.ghostty_wasm_alloc_u8_array(b.length)
+    const p = ex.ghostty_wasm_alloc(b.length)
     new Uint8Array(mem.buffer).set(b, p)
     // Returns void; failures surface via T_DATA_VT_PROCESSING_ERROR.
     ex.ghostty_terminal_vt_write(term, p, b.length)
-    ex.ghostty_wasm_free_u8_array(p, b.length)
+    ex.ghostty_wasm_free(p, b.length)
   }
 
-  const ptPtr = ex.ghostty_wasm_alloc_u8_array(abi.POINT_SIZE)
+  const ptPtr = ex.ghostty_wasm_alloc(abi.POINT_SIZE)
   const point = (tag: number, x: number, y: number) => {
     const d = dv()
     for (let i = 0; i < abi.POINT_SIZE; i += 4) d.setUint32(ptPtr + i, 0, true)
@@ -88,9 +88,9 @@ function boot(mod: WebAssembly.Module): Harness {
     term,
     write,
     point,
-    refPtr: ex.ghostty_wasm_alloc_u8_array(abi.GRID_REF_SIZE),
-    cellPtr: ex.ghostty_wasm_alloc_u8_array(abi.CELL_U64_BYTES),
-    outPtr: ex.ghostty_wasm_alloc_u8_array(16),
+    refPtr: ex.ghostty_wasm_alloc(abi.GRID_REF_SIZE),
+    cellPtr: ex.ghostty_wasm_alloc(abi.CELL_U64_BYTES),
+    outPtr: ex.ghostty_wasm_alloc(16),
   }
 }
 
@@ -187,7 +187,7 @@ run('ghostty main ABI, against a build at the pin', () => {
 
   it('needs both scrollback caps set, not just the line one', () => {
     const h = boot(moduleOnce())
-    const v = h.ex.ghostty_wasm_alloc_usize()
+    const v = h.ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
     h.dv().setUint32(v, 512 * 1024 * 1024, true)
     abi.expectOk(h.ex.ghostty_terminal_set(h.term, abi.T_OPT_SCROLLBACK_MAX_BYTES, v), 'set bytes')
     h.dv().setUint32(v, 6000, true)
@@ -215,7 +215,7 @@ run('ghostty main ABI, against a build at the pin', () => {
     /** Style of the first cell after writing `seq` then one glyph. */
     const styleAfter = (seq: string) => {
       const h = boot(moduleOnce())
-      const p = h.ex.ghostty_wasm_alloc_u8_array(abi.STYLE_SIZE)
+      const p = h.ex.ghostty_wasm_alloc(abi.STYLE_SIZE)
       h.write(`${seq}X`)
       const d = h.dv()
       for (let i = 0; i < abi.STYLE_SIZE; i += 4) d.setUint32(p + i, 0, true)

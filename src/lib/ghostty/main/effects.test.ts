@@ -41,10 +41,10 @@ run('query responses via OPT_WRITE_PTY', () => {
     const term = new DataView(ex.memory.buffer).getUint32(slot, true)
     const write = (s: string) => {
       const b = new TextEncoder().encode(s)
-      const p = ex.ghostty_wasm_alloc_u8_array(b.length)
+      const p = ex.ghostty_wasm_alloc(b.length)
       new Uint8Array(ex.memory.buffer).set(b, p)
       ex.ghostty_terminal_vt_write(term, p, b.length)
-      ex.ghostty_wasm_free_u8_array(p, b.length)
+      ex.ghostty_wasm_free(p, b.length)
     }
     return { ex, term, write }
   }

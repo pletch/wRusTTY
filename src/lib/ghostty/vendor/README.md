@@ -11,9 +11,9 @@ comparison oracle.
 ## The expected artifact
 
 ```text
-SHA-256  34bc2d5ec7bdf67d5ef2431c6852cf1680df95f3cc61c3150c0b4f133528a1e7
-Size     1,318,661 bytes
-Source   ghostty-org/ghostty @ 6b22215c5d46019f94b658f7665941f951d0de1e
+SHA-256  ca89d1c0ac4b20dcbe292135f9b2d7ee1f6516318408bb825398812a080f0011
+Size     1,029,546 bytes
+Source   ghostty-org/ghostty @ d9ffbbf17c11f570897a49d4c722130e8698d93b
          + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
@@ -51,7 +51,7 @@ unicode table generator. Build under `~`, not `/mnt/c`.
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 6b22215c5d46019f94b658f7665941f951d0de1e
+git fetch -q --depth 1 origin d9ffbbf17c11f570897a49d4c722130e8698d93b
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
@@ -135,9 +135,14 @@ instance.
 
 ## The binary is stripped of DWARF, but keeps its name section
 
-As built, the module is 5,174 kB, of which **3,855 kB (74.5%) is `.debug_*`**.
+As built, the module is 4,245 kB, of which **3,216 kB (75.7%) is `.debug_*`**.
 `tools/strip-wasm-debug.mjs` removes the DWARF sections and keeps everything
-else, taking it to **1,319 kB**. (The v1.3.1 build stripped to 742 kB; `main`'s
+else, taking it to **1,030 kB** — down 22% from the previous pin's 1,319 kB,
+which is upstream's own size work (`492c26067`'s wasm memory pool, `51a4311ef`'s
+inlining cleanup) rather than anything we changed. Note this does **not** yet use
+`-Dvt-features` (upstream `1fdbb8c91`), which compiles out unused feature areas
+and could take it materially lower again; adopting it means deciding which
+features we actually need, so it is deliberately a separate change. (The v1.3.1 build stripped to 742 kB; `main`'s
 VT library is simply larger, and that ~566 kB is the whole size cost of the
 port.)
 

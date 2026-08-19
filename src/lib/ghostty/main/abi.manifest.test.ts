@@ -47,9 +47,29 @@ interface ManifestType {
   align: number
   fields?: Record<string, ManifestField>
 }
+interface ManifestAbi {
+  target: string
+  pointer_size: number
+  usize_size: number
+  max_alignment: number
+}
 
-/** Reads the manifest out of a fresh instance. */
-function manifest(): Record<string, ManifestType> {
+/**
+ * The whole document, which gained a wrapper in the `d9ffbbf17` pin.
+ *
+ * It used to be a bare map of type name to layout. It is now
+ * `{ schema, abi, library_version, commit, dirty, types }`, so the layouts live
+ * under `types`. Both shapes are accepted: the `schema` key is the discriminator
+ * upstream added for exactly this, and checking out an older binary should not
+ * fail this suite in a way that looks like a layout change.
+ */
+interface Manifest {
+  schema?: number
+  abi?: ManifestAbi
+  types?: Record<string, ManifestType>
+}
+
+function document(): Manifest {
   const inst = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(WASM)), {
     env: { log: () => {} },
   })
@@ -64,6 +84,12 @@ function manifest(): Record<string, ManifestType> {
   let end = ptr
   while (bytes[end] !== 0) end++
   return JSON.parse(new TextDecoder().decode(bytes.subarray(ptr, end)))
+}
+
+/** The layouts, from either document shape. */
+function manifest(): Record<string, ManifestType> {
+  const doc = document()
+  return (doc.types ?? (doc as unknown as Record<string, ManifestType>)) as Record<string, ManifestType>
 }
 
 const run = existsSync(WASM) ? describe : describe.skip
@@ -94,6 +120,21 @@ run('abi.ts against ghostty_type_json', () => {
     ]) {
       expect(m[t], `manifest is missing ${t}`).toBeDefined()
     }
+  })
+
+  it('agrees with us about what a wasm32 pointer and size_t are', () => {
+    const { abi: a } = document()
+    // Older binaries carry no abi block; there is nothing to check against.
+    if (!a) return
+    expect(a.target).toBe('wasm32')
+    expect(a.pointer_size).toBe(4)
+    // The constant that replaced the retired `ghostty_wasm_alloc_usize`, which
+    // reserved exactly this much. Asserted rather than assumed because every
+    // call site that used to say `alloc_usize()` now says `alloc(USIZE_BYTES)`.
+    expect(abi.USIZE_BYTES).toBe(a.usize_size)
+    // `ghostty_wasm_alloc` promises this alignment, which is what makes it safe
+    // to hand one of its buffers to a struct-shaped out-parameter.
+    expect(a.max_alignment).toBeGreaterThanOrEqual(m.GhosttyPoint.align)
   })
 
   it('GhosttyPoint — the one probing got wrong', () => {
