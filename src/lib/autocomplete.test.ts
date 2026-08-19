@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { AutocompleteController, suggestionKeyAction, type SuggestionView } from './autocomplete'
+import {
+  AutocompleteController,
+  placeSuggestions,
+  suggestionKeyAction,
+  type SuggestionView,
+} from './autocomplete'
 import type { PromptInput, PromptInputTracker } from './promptInput'
 
 function key(k: string, mods: Partial<Record<'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey', boolean>> = {}) {
@@ -324,5 +329,64 @@ describe('AutocompleteController', () => {
     controller.refresh()
     await new Promise((r) => setTimeout(r, 0))
     expect(asked).toEqual(['git s'])
+  })
+})
+
+describe('placeSuggestions', () => {
+  // A 24-row pane with 17px cells, viewport at the very top.
+  const pane = { viewportY: 0, rows: 24, cellHeight: 17 }
+
+  it('hangs below the line when there is room under it', () => {
+    const place = placeSuggestions({ ...pane, cursorRow: 3 })
+    expect(place).toEqual({ below: true, top: 4 * 17, maxHeight: 20 * 17 })
+  })
+
+  /**
+   * The reported bug. With the prompt near the bottom, the list has to go
+   * above — and it has to go above by *its own* height, not by a count of
+   * terminal rows. A row of the list is a cell of text plus padding plus a
+   * border, so reserving `items.length` cells left it overlapping the line
+   * being typed.
+   */
+  it('sits above the line when the prompt is near the bottom', () => {
+    const place = placeSuggestions({ ...pane, cursorRow: 22 })
+    expect(place?.below).toBe(false)
+    // Anchored to the cursor's own row; CSS then shifts it up by its own
+    // height, so its bottom edge lands on the top edge of that row whatever
+    // height it turns out to have.
+    expect(place?.top).toBe(22 * 17)
+    expect(place?.maxHeight).toBe(22 * 17)
+  })
+
+  it('flips at the halfway point, taking whichever side has more room', () => {
+    expect(placeSuggestions({ ...pane, cursorRow: 11 })?.below).toBe(true)
+    expect(placeSuggestions({ ...pane, cursorRow: 12 })?.below).toBe(false)
+  })
+
+  it('handles the very first and very last row', () => {
+    // Nothing above row 0, so it can only go below...
+    expect(placeSuggestions({ ...pane, cursorRow: 0 })?.below).toBe(true)
+    // ...and nothing below the last row, so it can only go above.
+    const last = placeSuggestions({ ...pane, cursorRow: 23 })
+    expect(last?.below).toBe(false)
+    expect(last?.maxHeight).toBe(23 * 17)
+  })
+
+  it('never reports a zero height, however cramped the pane', () => {
+    const tiny = placeSuggestions({ viewportY: 0, rows: 1, cursorRow: 0, cellHeight: 17 })
+    expect(tiny?.maxHeight).toBe(17)
+  })
+
+  it('accounts for scrollback, and gives up when the line is off screen', () => {
+    // Viewport scrolled down: absolute row 105 is screen row 5.
+    expect(placeSuggestions({ viewportY: 100, rows: 24, cursorRow: 105, cellHeight: 17 })).toEqual({
+      below: true,
+      top: 6 * 17,
+      maxHeight: 18 * 17,
+    })
+    // Scrolled back through history with a list open: the line is above the
+    // viewport, so there is nothing to anchor to.
+    expect(placeSuggestions({ viewportY: 100, rows: 24, cursorRow: 40, cellHeight: 17 })).toBeNull()
+    expect(placeSuggestions({ viewportY: 100, rows: 24, cursorRow: 900, cellHeight: 17 })).toBeNull()
   })
 })

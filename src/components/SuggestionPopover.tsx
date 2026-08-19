@@ -1,4 +1,4 @@
-import type { SuggestionView } from '../lib/autocomplete'
+import { placeSuggestions, type SuggestionView } from '../lib/autocomplete'
 
 /**
  * The list of recent commands on offer, sitting under the line being typed.
@@ -29,32 +29,33 @@ export function SuggestionPopover({
   cell: { width: number; height: number }
   /** Absolute buffer row currently at the top of the viewport. */
   viewportY: number
-  /** Rows on screen, for deciding whether the list fits below the line. */
+  /** Rows on screen, for deciding which side of the line has more room. */
   rows: number
   onPick: (index: number) => void
 }) {
-  // The line the input is on, in screen rows. Scrolled out of view — the user
-  // scrolled back through history while a suggestion was open — means there is
-  // nothing to anchor to and nothing worth drawing.
-  const cursorScreenRow = view.cursorRow - viewportY
-  if (cursorScreenRow < 0 || cursorScreenRow >= rows) return null
-
-  // Below the line by default, flipped above when it would run off the bottom.
-  // Measured in rows rather than pixels so it lands on the grid either way.
-  const below = cursorScreenRow + 1 + view.items.length <= rows
-  const top = below
-    ? (cursorScreenRow + 1) * cell.height
-    : (cursorScreenRow - view.items.length) * cell.height
+  const place = placeSuggestions({
+    cursorRow: view.cursorRow,
+    viewportY,
+    rows,
+    cellHeight: cell.height,
+  })
+  // The line is not on screen — the user scrolled back through history while a
+  // suggestion was open — so there is nothing to anchor to and nothing worth
+  // drawing.
+  if (!place) return null
 
   return (
     <div
       // Not focusable and not in the tab order: focus belongs to the terminal
       // the whole time, and taking it would stop the next keystroke reaching
       // the far end. The list is driven entirely from the pane's key handler.
-      className="pointer-events-auto absolute z-20 overflow-hidden rounded-md border border-white/10 bg-[#1b1d22]/95 shadow-lg shadow-black/40 backdrop-blur-sm"
+      className="pointer-events-auto absolute z-20 overflow-y-auto overscroll-contain rounded-md border border-white/10 bg-[#1b1d22]/95 shadow-lg shadow-black/40 backdrop-blur-sm"
       style={{
         left: Math.max(0, view.origin.col * cell.width),
-        top: Math.max(0, top),
+        top: Math.max(0, place.top),
+        // See above: this is what makes the flipped case exact.
+        transform: place.below ? undefined : 'translateY(-100%)',
+        maxHeight: place.maxHeight,
         // Wide enough to read a real command, and never wider than the pane.
         maxWidth: '90%',
       }}

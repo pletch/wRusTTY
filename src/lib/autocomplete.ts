@@ -75,6 +75,61 @@ export function suggestionKeyAction(
   }
 }
 
+/** Where the suggestion list should sit, in CSS pixels within the pane. */
+export interface SuggestionPlacement {
+  /** Distance from the top of the grid to the element's top edge. */
+  top: number
+  /** True when the list hangs below the line; false when it sits above it and
+   * is shifted up by its own height. */
+  below: boolean
+  /** How tall it may grow before scrolling internally. */
+  maxHeight: number
+}
+
+/**
+ * Decide which side of the typed line the list goes on.
+ *
+ * Returns null when the line is not on screen at all — scrolled out of view
+ * while a suggestion was open, which leaves nothing to anchor to.
+ *
+ * **Nothing here multiplies by the list's own height**, and that is the whole
+ * point. An earlier version decided by asking whether `items.length` *cells*
+ * were free below the cursor, which is not the same question: a row of this
+ * list is a cell of text plus padding plus a border, comfortably half again as
+ * tall as a terminal row. With the prompt near the bottom of the pane it would
+ * answer "fits below", decline to flip, and then spill back up over the very
+ * line being typed — the case where the list matters most.
+ *
+ * So the side is chosen by which has more room, and the flipped case is
+ * anchored to the cursor's own row and shifted up by its own height in CSS
+ * (`translateY(-100%)`). Its bottom edge then lands exactly on the boundary of
+ * the typed line however tall it turns out to be, with no measuring pass.
+ */
+export function placeSuggestions(opts: {
+  /** The row the cursor is on, in absolute buffer coordinates. */
+  cursorRow: number
+  /** Absolute row currently at the top of the viewport. */
+  viewportY: number
+  /** Rows on screen. */
+  rows: number
+  /** Cell height in CSS pixels. */
+  cellHeight: number
+}): SuggestionPlacement | null {
+  const screenRow = opts.cursorRow - opts.viewportY
+  if (screenRow < 0 || screenRow >= opts.rows) return null
+
+  const spaceBelow = opts.rows - screenRow - 1
+  const spaceAbove = screenRow
+  const below = spaceBelow >= spaceAbove
+  return {
+    below,
+    top: (below ? screenRow + 1 : screenRow) * opts.cellHeight,
+    // At least one row's worth, so a list on a two-row pane is a sliver that
+    // scrolls rather than nothing at all.
+    maxHeight: Math.max(1, below ? spaceBelow : spaceAbove) * opts.cellHeight,
+  }
+}
+
 /** What the pane renders. Null when nothing should be on screen. */
 export interface SuggestionView {
   /** Best first. Never empty — no suggestions means no view at all. */

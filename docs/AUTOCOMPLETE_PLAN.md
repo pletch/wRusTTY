@@ -273,10 +273,22 @@ suggest anything that is not strictly longer than what is typed.
 
 A dropdown popover, not inline ghost text, for the first version.
 
-Anchored at `originCol * cellWidth` by `(cursorRow - viewportTop + 1) *
-cellHeight` within the pane, flipping above the cursor when it would fall off
-the bottom, rendered as DOM over the canvas the way the existing pane overlays
-are. Up to about five entries, the current one highlighted.
+Anchored at `originCol * cellWidth`, rendered as DOM over the canvas the way
+the existing pane overlays are. Up to about five entries, the current one
+highlighted.
+
+Vertically it takes whichever side of the line has more room, and **nothing in
+that decision multiplies by the list's own height** — see `placeSuggestions`.
+The first version reserved `items.length` *cells* below the cursor and flipped
+only if that did not fit, which is not the same question: a row of this list is
+a cell of text plus padding plus a border, comfortably half again as tall as a
+terminal row. With the prompt near the bottom of the pane it would answer "fits
+below", decline to flip, and spill back up over the line being typed — the case
+where the list matters most. The flipped case is now anchored to the cursor's
+own row and shifted up by its own height in CSS (`translateY(-100%)`), so its
+bottom edge lands on the boundary of the typed line whatever height it turns
+out to have, with no measuring pass. A `maxHeight` of the available space keeps
+it inside the pane in both directions; past that it scrolls.
 
 Inline grey ghost-text after the cursor is the prettier form and can come
 later. It needs either a second draw path in the WebGL renderer or an
