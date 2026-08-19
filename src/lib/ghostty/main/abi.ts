@@ -262,13 +262,58 @@ export const RS_DATA_CURSOR_VIEWPORT_WIDE_TAIL = 17
  * cursor used to need eight separate `render_state_get` calls, which showed up
  * per frame in wasm profiles; these return the whole thing at once. The same
  * commit removed the dedicated `ghostty_render_state_colors_get` in favour of
- * `RS_DATA_COLORS` below.
+ * `RS_DATA_COLORS`.
  *
- * Declared, not yet used: the shim still reads the individual keys, and moving
- * it over is a separate change with its own parity check.
+ * Both are **sized structs**: the caller writes the struct's own byte length
+ * into its first field before the call, and the callee fills what it knows and
+ * writes back how much that was. Skipping that write is the failure mode to
+ * watch for — it is a plain `0`, which no version of the struct is, so the call
+ * fails rather than silently half-filling. `STYLE_SIZE` works the same way.
  */
 export const RS_DATA_CURSOR = 18
 export const RS_DATA_COLORS = 19
+
+/**
+ * `GhosttyRenderStateCursor`, wasm32. 20 bytes.
+ *
+ * Note the holes: `viewport_x` is at +6 rather than +5, because a `uint16_t`
+ * cannot follow a `bool` unaligned, and `visual_style` is at +16 rather than
+ * +14 for the same reason at 4-byte width. Transcribed from the manifest rather
+ * than counted off the header, and asserted against it by `abi.manifest.test.ts`.
+ *
+ * **When `viewport_has_value` is false, `viewport_x`, `viewport_y` and
+ * `wide_tail` are explicitly undefined** — upstream says so in `render.h`, and
+ * reading them anyway is how a cursor scrolled out of the viewport gets drawn
+ * at (0,0).
+ */
+export const RS_CURSOR_SIZE = 20
+export const RS_CURSOR_OFF_SIZE = 0
+export const RS_CURSOR_OFF_VIEWPORT_HAS_VALUE = 4
+export const RS_CURSOR_OFF_VIEWPORT_X = 6
+export const RS_CURSOR_OFF_VIEWPORT_Y = 8
+export const RS_CURSOR_OFF_WIDE_TAIL = 10
+export const RS_CURSOR_OFF_VISIBLE = 11
+export const RS_CURSOR_OFF_BLINKING = 12
+export const RS_CURSOR_OFF_PASSWORD_INPUT = 13
+export const RS_CURSOR_OFF_VISUAL_STYLE = 16
+
+/**
+ * `GhosttyRenderStateColors`, wasm32. **784 bytes** — it carries the whole
+ * 256-entry palette inline, which is most of it.
+ *
+ * The three colours are `GhosttyColorRgb`, three *packed* bytes each, so they
+ * sit at +4, +7 and +10 with no padding between them. A reader that assumed a
+ * 4-byte stride would take the foreground's red as the background's alpha and
+ * every colour after it would be shifted by one — plausible-looking and wrong,
+ * which is the same trap `PALETTE_BYTES` documents.
+ */
+export const RS_COLORS_SIZE = 784
+export const RS_COLORS_OFF_SIZE = 0
+export const RS_COLORS_OFF_BACKGROUND = 4
+export const RS_COLORS_OFF_FOREGROUND = 7
+export const RS_COLORS_OFF_CURSOR = 10
+export const RS_COLORS_OFF_CURSOR_HAS_VALUE = 13
+export const RS_COLORS_OFF_PALETTE = 14
 
 /** `GhosttyRenderStateDirty`. */
 export const RS_DIRTY_FALSE = 0

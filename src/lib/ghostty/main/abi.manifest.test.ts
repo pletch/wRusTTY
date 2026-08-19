@@ -117,6 +117,8 @@ run('abi.ts against ghostty_type_json', () => {
       'GhosttyStyleColor',
       'GhosttyColorRgb',
       'GhosttyTerminalModeConfig',
+      'GhosttyRenderStateCursor',
+      'GhosttyRenderStateColors',
     ]) {
       expect(m[t], `manifest is missing ${t}`).toBeDefined()
     }
@@ -201,6 +203,58 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.MODE_CONFIG_SIZE).toBe(m.GhosttyTerminalModeConfig.size)
     expect(abi.MODE_CONFIG_MODE_OFFSET).toBe(field('GhosttyTerminalModeConfig', 'mode').offset)
     expect(abi.MODE_CONFIG_VALUE_OFFSET).toBe(field('GhosttyTerminalModeConfig', 'value').offset)
+  })
+
+  it('GhosttyRenderStateCursor — including the holes alignment leaves', () => {
+    expect(abi.RS_CURSOR_SIZE).toBe(m.GhosttyRenderStateCursor.size)
+    for (const [name, ours] of [
+      ['size', abi.RS_CURSOR_OFF_SIZE],
+      ['viewport_has_value', abi.RS_CURSOR_OFF_VIEWPORT_HAS_VALUE],
+      ['viewport_x', abi.RS_CURSOR_OFF_VIEWPORT_X],
+      ['viewport_y', abi.RS_CURSOR_OFF_VIEWPORT_Y],
+      ['wide_tail', abi.RS_CURSOR_OFF_WIDE_TAIL],
+      ['visible', abi.RS_CURSOR_OFF_VISIBLE],
+      ['blinking', abi.RS_CURSOR_OFF_BLINKING],
+      ['password_input', abi.RS_CURSOR_OFF_PASSWORD_INPUT],
+      ['visual_style', abi.RS_CURSOR_OFF_VISUAL_STYLE],
+    ] as const) {
+      expect(ours, name).toBe(field('GhosttyRenderStateCursor', name).offset)
+    }
+
+    // The two gaps are the whole reason this is transcribed rather than counted:
+    // a `uint16_t` cannot follow a `bool` at +5, nor a 4-byte enum at +14.
+    // Counting the fields off the header gives 5 and 14 and reads plausible.
+    expect(abi.RS_CURSOR_OFF_VIEWPORT_X).toBeGreaterThan(
+      field('GhosttyRenderStateCursor', 'viewport_has_value').offset + 1,
+    )
+    expect(abi.RS_CURSOR_OFF_VISUAL_STYLE).toBeGreaterThan(
+      field('GhosttyRenderStateCursor', 'password_input').offset + 1,
+    )
+  })
+
+  it('GhosttyRenderStateColors — three packed colours, then the palette', () => {
+    expect(abi.RS_COLORS_SIZE).toBe(m.GhosttyRenderStateColors.size)
+    for (const [name, ours] of [
+      ['size', abi.RS_COLORS_OFF_SIZE],
+      ['background', abi.RS_COLORS_OFF_BACKGROUND],
+      ['foreground', abi.RS_COLORS_OFF_FOREGROUND],
+      ['cursor', abi.RS_COLORS_OFF_CURSOR],
+      ['cursor_has_value', abi.RS_COLORS_OFF_CURSOR_HAS_VALUE],
+      ['palette', abi.RS_COLORS_OFF_PALETTE],
+    ] as const) {
+      expect(ours, name).toBe(field('GhosttyRenderStateColors', name).offset)
+    }
+
+    // Packed at a 3-byte stride, not padded to 4. At a 4-byte stride the
+    // foreground's red would be read as part of the background and every colour
+    // after it would shift — which looks like a theme bug, not a layout one.
+    const rgb = m.GhosttyColorRgb.size
+    expect(abi.RS_COLORS_OFF_FOREGROUND).toBe(abi.RS_COLORS_OFF_BACKGROUND + rgb)
+    expect(abi.RS_COLORS_OFF_CURSOR).toBe(abi.RS_COLORS_OFF_FOREGROUND + rgb)
+
+    // The palette is inline and is most of the struct, which is why this gets
+    // its own buffer in the shim rather than borrowing the 16-byte scratch.
+    expect(field('GhosttyRenderStateColors', 'palette').size).toBe(abi.PALETTE_ENTRIES * rgb)
   })
 
   it('GhosttyColorRgb is the unit PALETTE_BYTES counts in', () => {

@@ -147,6 +147,13 @@ interface TerminalState {
   pending: Uint8Array[]
   /** Lazily made: nothing in the app asks a row whether it is dirty. */
   dirtyIter: number
+  /**
+   * Whether this frame's `RS_DATA_CURSOR` / `RS_DATA_COLORS` reads have been
+   * taken yet. Cleared by `render_state_update`, which is the only thing that
+   * can change either — see `snapshotCursor`.
+   */
+  cursorRead: boolean
+  colorsRead: boolean
 }
 
 class MainShim {
@@ -155,6 +162,8 @@ class MainShim {
   private readonly scratch: number
   private readonly slot: number
   private readonly palette: number
+  private readonly cursorBuf: number
+  private readonly colorsBuf: number
   private view: DataView
 
   constructor(ex: MainExports) {
@@ -163,6 +172,11 @@ class MainShim {
     this.scratch = ex.ghostty_wasm_alloc(16)
     this.slot = ex.ghostty_wasm_alloc_opaque()
     this.palette = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
+    // Both are far larger than the 16-byte scratch — the colours struct carries
+    // the whole palette inline — so they get buffers of their own rather than
+    // growing the one every other read borrows.
+    this.cursorBuf = ex.ghostty_wasm_alloc(abi.RS_CURSOR_SIZE)
+    this.colorsBuf = ex.ghostty_wasm_alloc(abi.RS_COLORS_SIZE)
   }
 
   /** Re-made only when linear memory growth has detached the previous one. */
@@ -193,14 +207,71 @@ class MainShim {
     return this.rsGet(term, key) ? this.dv().getUint16(this.scratch, true) : 0
   }
 
-  private rsBool(term: number, key: number): boolean {
-    return this.rsGet(term, key) && this.dv().getUint8(this.scratch) !== 0
+  /**
+   * Reads `RS_DATA_CURSOR` once per frame into `cursorBuf`.
+   *
+   * Our ABI asks for the cursor a field at a time — `get_cursor_x`,
+   * `_visible`, `_blinking`, `_style` — and the renderer calls all of them
+   * every frame. Answering each with its own `render_state_get` was six
+   * boundary crossings for one struct upstream now hands over in one, which is
+   * what `16c833c5f` added it for. So the struct is read on the first ask of a
+   * frame and the rest are served from the buffer.
+   *
+   * Caching is only safe because `render_state_update` is the sole thing that
+   * moves the cursor from a reader's point of view: it is the one call that
+   * rebuilds the snapshot, and it clears these flags. `readRows` deliberately
+   * reads mid-frame *without* updating, and has to see the same cursor the
+   * cells beside it came from — which this preserves and a re-read would break.
+   */
+  private snapshotCursor(term: number): boolean {
+    const st = this.state(term)
+    if (!st) return false
+    if (!st.cursorRead) {
+      // Sized struct: the callee has to be told how much of it we know about.
+      this.dv().setUint32(this.cursorBuf + abi.RS_CURSOR_OFF_SIZE, abi.RS_CURSOR_SIZE, true)
+      if (
+        this.ex.ghostty_render_state_get(st.reader.state, abi.RS_DATA_CURSOR, this.cursorBuf) !==
+        abi.GHOSTTY_SUCCESS
+      ) {
+        return false
+      }
+      st.cursorRead = true
+    }
+    return true
   }
 
-  private rsRgb(term: number, key: number): number {
-    if (!this.rsGet(term, key)) return 0
+  /** The same, for `RS_DATA_COLORS`. */
+  private snapshotColors(term: number): boolean {
+    const st = this.state(term)
+    if (!st) return false
+    if (!st.colorsRead) {
+      this.dv().setUint32(this.colorsBuf + abi.RS_COLORS_OFF_SIZE, abi.RS_COLORS_SIZE, true)
+      if (
+        this.ex.ghostty_render_state_get(st.reader.state, abi.RS_DATA_COLORS, this.colorsBuf) !==
+        abi.GHOSTTY_SUCCESS
+      ) {
+        return false
+      }
+      st.colorsRead = true
+    }
+    return true
+  }
+
+  /**
+   * Whether the snapshot's `viewport_x`/`_y` may be read at all.
+   *
+   * Upstream documents them as undefined when this is false, so this is a
+   * precondition rather than a nicety — it is what keeps a cursor scrolled out
+   * of the viewport from being drawn at whatever the struct happens to hold.
+   */
+  private cursorHasPosition(): boolean {
+    return this.dv().getUint8(this.cursorBuf + abi.RS_CURSOR_OFF_VIEWPORT_HAS_VALUE) !== 0
+  }
+
+  /** Three packed bytes at `off` in a snapshot buffer, as 0xRRGGBB. */
+  private rgbAt(base: number, off: number): number {
     const d = this.dv()
-    return (d.getUint8(this.scratch) << 16) | (d.getUint8(this.scratch + 1) << 8) | d.getUint8(this.scratch + 2)
+    return (d.getUint8(base + off) << 16) | (d.getUint8(base + off + 1) << 8) | d.getUint8(base + off + 2)
   }
 
   /* --------------------------------------------------------------- writes */
@@ -240,6 +311,8 @@ class MainShim {
       effects: new MainEffects({ ex, term }),
       pending: [],
       dirtyIter: 0,
+      cursorRead: false,
+      colorsRead: false,
     })
     return term
   }
@@ -442,28 +515,49 @@ class MainShim {
         const st = this.state(term)
         if (!st) return 0
         st.reader.update()
+        // The frame boundary, and so the only place the cursor and colour
+        // snapshots may be invalidated. Anything that re-read them elsewhere
+        // would hand the renderer a cursor from a newer grid than its cells.
+        st.cursorRead = false
+        st.colorsRead = false
         return 0
       },
       ghostty_render_state_get_cols: (term) => this.rsU16(term, abi.RS_DATA_COLS),
       ghostty_render_state_get_rows: (term) => this.rsU16(term, abi.RS_DATA_ROWS),
-      ghostty_render_state_get_cursor_x: (term) => this.rsU16(term, abi.RS_DATA_CURSOR_VIEWPORT_X),
-      ghostty_render_state_get_cursor_y: (term) => this.rsU16(term, abi.RS_DATA_CURSOR_VIEWPORT_Y),
+      // The five cursor getters below share one `RS_DATA_CURSOR` read per frame.
+      // `viewport_x`/`_y` are undefined unless `viewport_has_value`, so they are
+      // gated on it rather than read blind.
+      ghostty_render_state_get_cursor_x: (term) =>
+        this.snapshotCursor(term) && this.cursorHasPosition()
+          ? this.dv().getUint16(this.cursorBuf + abi.RS_CURSOR_OFF_VIEWPORT_X, true)
+          : 0,
+      ghostty_render_state_get_cursor_y: (term) =>
+        this.snapshotCursor(term) && this.cursorHasPosition()
+          ? this.dv().getUint16(this.cursorBuf + abi.RS_CURSOR_OFF_VIEWPORT_Y, true)
+          : 0,
       // Two conditions on main, one on ours: a cursor scrolled out of the
       // viewport is reported as *having no position*, and its x/y are then
       // explicitly undefined. Drawing it anyway would put it at (0,0).
       ghostty_render_state_get_cursor_visible: (term) =>
-        this.rsBool(term, abi.RS_DATA_CURSOR_VISIBLE) &&
-        this.rsBool(term, abi.RS_DATA_CURSOR_VIEWPORT_HAS_VALUE)
+        this.snapshotCursor(term) &&
+        this.dv().getUint8(this.cursorBuf + abi.RS_CURSOR_OFF_VISIBLE) !== 0 &&
+        this.cursorHasPosition()
           ? 1
           : 0,
       ghostty_render_state_get_cursor_blinking: (term) =>
-        this.rsBool(term, abi.RS_DATA_CURSOR_BLINKING) ? 1 : 0,
+        this.snapshotCursor(term) && this.dv().getUint8(this.cursorBuf + abi.RS_CURSOR_OFF_BLINKING) !== 0
+          ? 1
+          : 0,
       ghostty_render_state_get_cursor_style: (term) =>
-        this.rsGet(term, abi.RS_DATA_CURSOR_VISUAL_STYLE)
-          ? cursorStyleForMain(this.dv().getUint32(this.scratch, true))
+        this.snapshotCursor(term)
+          ? cursorStyleForMain(this.dv().getUint32(this.cursorBuf + abi.RS_CURSOR_OFF_VISUAL_STYLE, true))
           : CURSOR_STYLE_BLOCK,
-      ghostty_render_state_get_fg_color: (term) => this.rsRgb(term, abi.RS_DATA_COLOR_FOREGROUND),
-      ghostty_render_state_get_bg_color: (term) => this.rsRgb(term, abi.RS_DATA_COLOR_BACKGROUND),
+      // Likewise one `RS_DATA_COLORS` read serves both, and would serve the
+      // cursor colour and the palette too if anything asked for them.
+      ghostty_render_state_get_fg_color: (term) =>
+        this.snapshotColors(term) ? this.rgbAt(this.colorsBuf, abi.RS_COLORS_OFF_FOREGROUND) : 0,
+      ghostty_render_state_get_bg_color: (term) =>
+        this.snapshotColors(term) ? this.rgbAt(this.colorsBuf, abi.RS_COLORS_OFF_BACKGROUND) : 0,
       ghostty_render_state_is_row_dirty: (term, y) => (this.rowDirty(term, y) ? 1 : 0),
       ghostty_render_state_mark_clean: (term) => {
         const st = this.state(term)
