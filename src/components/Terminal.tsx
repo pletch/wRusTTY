@@ -2159,9 +2159,21 @@ export function Terminal({
         {/* Inside the container so it is positioned against the grid itself,
             and after it so it paints over the canvas. `pointer-events-none` on
             the wrapper keeps the rest of the pane clickable — the list itself
-            re-enables them for its own rows. */}
+            re-enables them for its own rows.
+
+            `overflow-hidden` is the structural half of keeping the list inside
+            its pane. `placeSuggestions` bounds its height to the space
+            actually available, which is what stops it covering the line being
+            typed; this is what stops it painting *outside the pane
+            altogether* — over the status bar, or over a neighbouring pane in a
+            split. Without it nothing at all constrains the overlay, because
+            the grid is a few pixels shorter than the container that holds it
+            and absolutely-positioned children happily paint past both. Belt
+            and braces on purpose: a suggestion list drawn over the app's own
+            chrome looks like a rendering fault, and one bad number should not
+            be able to produce it. */}
         {suggestion && suggestionAnchor && (
-          <div className="pointer-events-none absolute inset-0">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden">
             <SuggestionPopover
               view={suggestion}
               cell={suggestionAnchor.cell}
