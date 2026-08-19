@@ -8,10 +8,14 @@ import type { SuggestionView } from '../lib/autocomplete'
  * there, but it needs either a second draw path in the WebGL renderer or an
  * absolutely-positioned span that stays pixel-aligned through font changes,
  * DPI changes and re-fits. A list is also the only form that can show more
- * than one candidate, which is what makes Up/Down worth having at all.
+ * than one candidate, which is what makes list navigation worth having.
  *
  * Anchored to the *origin* of the input rather than the cursor, so it stays
  * put as characters are typed instead of sliding right with every keystroke.
+ *
+ * It never takes the plain arrow keys — those belong to the shell's own
+ * history recall, which is the most common thing anyone does at a prompt. Tab
+ * or Right accepts, Ctrl+Up/Ctrl+Down move, Escape dismisses.
  */
 export function SuggestionPopover({
   view,

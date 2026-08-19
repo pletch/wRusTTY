@@ -31,9 +31,18 @@ export type SuggestionKeyAction = 'accept' | 'next' | 'previous' | 'dismiss' | '
  *   - **Right arrow** accepts only at the end of the line, where it would
  *     otherwise be a no-op. In the middle of a line it is a cursor move the
  *     user meant.
- *   - **Up/Down** move through the list only while it is open. The first Up on
- *     a closed list goes to the remote, so shell history recall — which is the
- *     thing people actually reach for — is untouched.
+ *   - **Up and Down are never claimed.** They always reach the remote shell,
+ *     so its own history recall never breaks. An earlier version took them
+ *     while a list was open, on the reasoning that the *first* Up on a closed
+ *     list would still reach the shell — which was wrong twice over. Recalling
+ *     a command redraws the line, which used to open a list, so the second Up
+ *     was captured by a popup the first Up had just conjured; and even without
+ *     that, a list opened by typing then swallowed the arrows of someone who
+ *     had moved on to hunting through history. Walking history is the single
+ *     most common thing done at a prompt, and a completion list has no
+ *     business interrupting it.
+ *   - **Ctrl+Up/Ctrl+Down** move through the list instead. No shell binds
+ *     them, and they are only claimed while a list is actually showing.
  *   - **Escape** dismisses and sends nothing further. It is not forwarded,
  *     because the user is dismissing this, not talking to vim.
  *
@@ -46,16 +55,19 @@ export function suggestionKeyAction(
   opts: { open: boolean; atLineEnd: boolean },
 ): SuggestionKeyAction {
   if (!opts.open) return 'ignore'
+  // Navigation is the one thing that *wants* a modifier, so it is settled
+  // before the unmodified keys below.
+  if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+    if (e.key === 'ArrowDown') return 'next'
+    if (e.key === 'ArrowUp') return 'previous'
+    return 'ignore'
+  }
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return 'ignore'
   switch (e.key) {
     case 'Tab':
       return 'accept'
     case 'ArrowRight':
       return opts.atLineEnd ? 'accept' : 'ignore'
-    case 'ArrowDown':
-      return 'next'
-    case 'ArrowUp':
-      return 'previous'
     case 'Escape':
       return 'dismiss'
     default:
@@ -116,6 +128,21 @@ export class AutocompleteController {
   /** What the last query asked about, so an unchanged line does not re-ask on
    * every parsed write. */
   private lastQueried: string | null = null
+  /**
+   * Whether the line's current contents got there by being typed.
+   *
+   * Gates *opening* a list, and it is the difference between a suggestion
+   * appearing because you are writing a command and one appearing because the
+   * far end redrew the line under you. Recalling a shell command with Up
+   * rewrites the whole line, which reads exactly like a large amount of typing
+   * from the grid's point of view — and a list that opens on it is a list
+   * nobody asked for, sitting over the history someone is in the middle of
+   * walking through.
+   *
+   * Set by a printable keystroke and cleared by anything else, so it follows
+   * intent rather than content.
+   */
+  private typedSinceRedraw = false
 
   constructor(deps: AutocompleteDeps) {
     this.deps = deps
@@ -131,6 +158,31 @@ export class AutocompleteController {
     return this.deps.tracker.read()?.atEnd ?? false
   }
 
+  /**
+   * The user pressed a key. Printable input arms the offer; anything else —
+   * an arrow, Home, `^R`, a function key — disarms it.
+   *
+   * The disarming half is what keeps a list from following someone through
+   * their shell's history: Up is not typing, so whatever the recall puts on
+   * the line is not something to complete.
+   */
+  noteInput(data: Uint8Array): void {
+    let printable = false
+    for (const byte of data) {
+      // Printable ASCII, or any byte of a multi-byte UTF-8 character. An
+      // escape sequence — every arrow, every editing key — starts with 0x1b
+      // and is therefore not typing.
+      if (byte >= 0x20 && byte !== 0x7f) printable = true
+      else return this.disarm()
+    }
+    if (printable) this.typedSinceRedraw = true
+  }
+
+  private disarm(): void {
+    this.typedSinceRedraw = false
+    this.clear()
+  }
+
   /** Re-read the line and update the offer. Cheap when nothing changed. */
   refresh(): void {
     if (!this.deps.enabled()) return this.clear()
@@ -138,6 +190,13 @@ export class AutocompleteController {
     if (!this.shouldOffer(input)) return this.clear()
     const typed = input!.text
     if (typed === this.lastQueried) return
+    // Not typing, so whatever put this on the line was the far end — a history
+    // recall, a Tab completion, a redraw. Record what the line now says so a
+    // later keystroke is compared against it, but offer nothing.
+    if (!this.typedSinceRedraw) {
+      this.lastQueried = typed
+      return this.hide()
+    }
     this.lastQueried = typed
 
     const id = ++this.queryId
@@ -252,12 +311,20 @@ export class AutocompleteController {
    * user dismisses and keeps typing. */
   clear(): void {
     this.lastQueried = null
+    this.hide()
+  }
+
+  /** Take the list off screen but remember what was last asked about — for
+   * the case where the line changed without being typed, which should not
+   * re-ask the store on every parsed write for as long as it stays that way. */
+  private hide(): void {
     if (this.view !== null) this.publish(null)
   }
 
   /** A line ended (Enter, `^C`) — nothing to complete until the next prompt. */
   reset(): void {
     this.queryId++
+    this.typedSinceRedraw = false
     this.clear()
   }
 

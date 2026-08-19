@@ -1676,6 +1676,10 @@ export function Terminal({
           autocomplete.reset()
         } else {
           promptInput.noteInput(data)
+          // Arms the offer on printable input and disarms it on anything else,
+          // so a list never opens because the far end redrew the line — see
+          // `AutocompleteController.noteInput`.
+          autocomplete.noteInput(data)
         }
       }
       // A line-edited session (telnet without remote echo) sends whole lines

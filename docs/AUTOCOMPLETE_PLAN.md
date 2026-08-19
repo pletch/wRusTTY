@@ -290,10 +290,27 @@ Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
   resolution: Tab accepts only when a suggestion is displayed and highlighted,
   and passes through untouched otherwise, so completing an unmatched prefix
   behaves exactly as it does today.
-- **Up/Down** — move through the list, but only while the list is open. The
-  first Up on a closed list goes to the remote, so shell history recall is
-  untouched.
+- **Up/Down** — never claimed. They always reach the remote shell.
+
+  This plan originally gave them to the list "only while it is open", on the
+  reasoning that the first Up on a closed list would still reach the shell.
+  That shipped and was wrong twice over. Recalling a command **redraws the
+  line**, which opened a list — so the second Up was eaten by a popup the first
+  Up had just conjured, and history recall stopped working after one press. And
+  even without that, a list opened by typing then swallowed the arrows of
+  someone who had given up typing and gone hunting through history instead.
+  Walking history is the single most common thing anyone does at a prompt.
+- **Ctrl+Up/Ctrl+Down** — move through the list. No shell binds them, and they
+  are claimed only while a list is showing.
 - **Esc** — dismiss, sending nothing.
+
+**A list only opens in response to typing.** The other half of the same fix,
+and the more important one: a printable keystroke arms the offer and anything
+else — an arrow, Home, `^R`, a function key — disarms it. Without this the list
+follows the *contents* of the line, and a line rewritten by the far end reads
+exactly like a burst of typing when it is read off the grid. Arming on intent
+rather than content is what keeps a suggestion from appearing over the history
+someone is in the middle of walking through.
 
 **Acceptance re-reads the grid first.** Recompute the current input from the
 screen, confirm the suggestion still extends it, then write only the missing

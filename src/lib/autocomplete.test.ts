@@ -19,12 +19,28 @@ describe('suggestionKeyAction', () => {
     }
   })
 
-  it('takes Tab and the arrows while one is showing', () => {
+  it('takes Tab, Right and Escape while one is showing', () => {
     expect(suggestionKeyAction(key('Tab'), open)).toBe('accept')
     expect(suggestionKeyAction(key('ArrowRight'), open)).toBe('accept')
-    expect(suggestionKeyAction(key('ArrowDown'), open)).toBe('next')
-    expect(suggestionKeyAction(key('ArrowUp'), open)).toBe('previous')
     expect(suggestionKeyAction(key('Escape'), open)).toBe('dismiss')
+  })
+
+  /**
+   * The most common thing anyone does at a shell prompt is walk their own
+   * history, and a completion list has no business interrupting it. Plain
+   * Up/Down therefore always reach the far end, list open or not.
+   */
+  it('never claims a bare Up or Down, even with a list showing', () => {
+    expect(suggestionKeyAction(key('ArrowUp'), open)).toBe('ignore')
+    expect(suggestionKeyAction(key('ArrowDown'), open)).toBe('ignore')
+  })
+
+  it('navigates the list with Ctrl+Up and Ctrl+Down instead', () => {
+    expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), open)).toBe('next')
+    expect(suggestionKeyAction(key('ArrowUp', { ctrlKey: true }), open)).toBe('previous')
+    // ...and only while a list is showing; otherwise they are the remote's.
+    const closed = { open: false, atLineEnd: true }
+    expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), closed)).toBe('ignore')
   })
 
   it('leaves Right alone when it is a real cursor move', () => {
@@ -33,11 +49,14 @@ describe('suggestionKeyAction', () => {
     expect(suggestionKeyAction(key('ArrowRight'), { open: true, atLineEnd: false })).toBe('ignore')
   })
 
-  it('ignores every modified form', () => {
+  it('ignores every modified form of the accept keys', () => {
     for (const mod of ['ctrlKey', 'altKey', 'metaKey', 'shiftKey'] as const) {
       expect(suggestionKeyAction(key('Tab', { [mod]: true }), open)).toBe('ignore')
-      expect(suggestionKeyAction(key('ArrowUp', { [mod]: true }), open)).toBe('ignore')
+      expect(suggestionKeyAction(key('ArrowRight', { [mod]: true }), open)).toBe('ignore')
     }
+    // Alt and Shift do not navigate either — only Ctrl does.
+    expect(suggestionKeyAction(key('ArrowUp', { altKey: true }), open)).toBe('ignore')
+    expect(suggestionKeyAction(key('ArrowUp', { shiftKey: true }), open)).toBe('ignore')
   })
 
   it('ignores ordinary typing', () => {
@@ -53,6 +72,11 @@ function fakeTracker(input: PromptInput | null) {
   const tracker = { read: () => state.input } as unknown as PromptInputTracker
   return { tracker, state }
 }
+
+/** Printable input, which is what arms the controller to open a list. */
+const TYPING = new TextEncoder().encode('x')
+/** An escape sequence, i.e. an arrow key — what disarms it. */
+const ARROW_UP = Uint8Array.from([0x1b, 0x5b, 0x41])
 
 function promptInput(text: string, atEnd = true): PromptInput {
   return {
@@ -80,6 +104,9 @@ function makeController(
     enabled: () => overrides.enabled ?? true,
     onChange: (view) => views.push(view),
   })
+  // A list only opens in response to typing, so every test that expects one
+  // has to have typed. See `noteInput`.
+  controller.noteInput(TYPING)
   return { controller, state, views, sent, accepted }
 }
 
@@ -175,12 +202,64 @@ describe('AutocompleteController', () => {
     await vi.waitFor(() => expect(controller.current).not.toBeNull())
 
     expect(controller.handleKey(key('a'))).toBe(false)
-    expect(controller.handleKey(key('ArrowDown'))).toBe(true)
+    // Bare Down goes to the shell; Ctrl+Down is the one this owns.
+    expect(controller.handleKey(key('ArrowDown'))).toBe(false)
+    expect(controller.handleKey(key('ArrowDown', { ctrlKey: true }))).toBe(true)
     expect(controller.handleKey(key('Escape'))).toBe(true)
     expect(controller.current).toBeNull()
     // Dismissed: Tab now belongs to the far end again.
     expect(controller.handleKey(key('Tab'))).toBe(false)
     expect(sent).toEqual([])
+  })
+
+  describe("walking the shell's own history", () => {
+    /**
+     * The reported bug, in sequence. Up recalls a command, which rewrites the
+     * whole line — indistinguishable from a burst of typing when read off the
+     * grid. That used to open a list, and the list then ate the *next* Up, so
+     * history recall stopped working after one press.
+     */
+    it('does not open a list when the far end redraws the line', async () => {
+      const { controller, state } = makeController(promptInput(''), ['git status'])
+      // Up went to the shell, and the shell put a whole command on the line.
+      controller.noteInput(ARROW_UP)
+      state.input = promptInput('git status --short')
+      controller.refresh()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(controller.current).toBeNull()
+    })
+
+    it('closes a list already showing when an arrow is pressed', async () => {
+      const { controller, state } = makeController(promptInput('git s'), ['git status'])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+
+      // The user gave up typing and reached for history instead.
+      controller.noteInput(ARROW_UP)
+      expect(controller.current).toBeNull()
+
+      // ...and the recalled line does not bring it back.
+      state.input = promptInput('git stash pop')
+      controller.refresh()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(controller.current).toBeNull()
+    })
+
+    it('offers again as soon as the user resumes typing', async () => {
+      const { controller, state } = makeController(promptInput('git s'), ['git status'])
+      controller.noteInput(ARROW_UP)
+      state.input = promptInput('git stash pop')
+      controller.refresh()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(controller.current).toBeNull()
+
+      // A printable keystroke arms it again — the point is that the offer
+      // follows intent, not the mere contents of the line.
+      controller.noteInput(TYPING)
+      state.input = promptInput('git s')
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    })
   })
 
   it('drops a reply that arrives after the line has moved on', async () => {
@@ -195,6 +274,7 @@ describe('AutocompleteController', () => {
       enabled: () => true,
       onChange: (v) => views.push(v),
     })
+    controller.noteInput(TYPING)
     controller.refresh()
     // The user kept typing while the store was being asked.
     state.input = promptInput('git stash pop')
@@ -216,6 +296,7 @@ describe('AutocompleteController', () => {
       enabled: () => true,
       onChange: () => {},
     })
+    controller.noteInput(TYPING)
     controller.refresh()
     await new Promise((r) => setTimeout(r, 0))
     expect(controller.current).toBeNull()
@@ -235,6 +316,7 @@ describe('AutocompleteController', () => {
       enabled: () => true,
       onChange: () => {},
     })
+    controller.noteInput(TYPING)
     // Called on every parsed write as well as every keystroke, so an idle
     // prompt must not turn into a stream of queries.
     controller.refresh()
