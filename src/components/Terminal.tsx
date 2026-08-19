@@ -46,6 +46,7 @@ import {
 import { PromptInputTracker } from '../lib/promptInput'
 import { AutocompleteController, type SuggestionView } from '../lib/autocomplete'
 import { SuggestionPopover } from './SuggestionPopover'
+import { InlineSuggestion } from './InlineSuggestion'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 import { parseOsc9, parseOsc777, ProgressTracker } from '../lib/appProgress'
 import { parseWindowTitle, parseCwd, parseCwdProperty, guessCwdFromTitle } from '../lib/remoteIdentity'
@@ -2084,7 +2085,7 @@ export function Terminal({
     const term = termRef.current
     const cell = term?.cellSize?.()
     if (!term || !cell || cell.width <= 0 || cell.height <= 0) return null
-    return { cell, viewportY: term.viewportY, rows: term.rows }
+    return { cell, viewportY: term.viewportY, rows: term.rows, cols: term.cols }
   })()
 
   return (
@@ -2174,19 +2175,31 @@ export function Terminal({
             be able to produce it. */}
         {suggestion && suggestionAnchor && (
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            <SuggestionPopover
-              view={suggestion}
-              cell={suggestionAnchor.cell}
-              viewportY={suggestionAnchor.viewportY}
-              rows={suggestionAnchor.rows}
-              onPick={(index) => {
-                const controller = autocompleteRef.current
-                if (!controller?.current) return
-                controller.move(index - controller.current.index)
-                controller.accept()
-                termRef.current?.focus()
-              }}
-            />
+            {suggestion.mode === 'inline' ? (
+              <InlineSuggestion
+                view={suggestion}
+                cell={suggestionAnchor.cell}
+                viewportY={suggestionAnchor.viewportY}
+                rows={suggestionAnchor.rows}
+                cols={suggestionAnchor.cols}
+                fontFamily={settings.fontFamily}
+                fontSize={settings.fontSize}
+              />
+            ) : (
+              <SuggestionPopover
+                view={suggestion}
+                cell={suggestionAnchor.cell}
+                viewportY={suggestionAnchor.viewportY}
+                rows={suggestionAnchor.rows}
+                onPick={(index) => {
+                  const controller = autocompleteRef.current
+                  if (!controller?.current) return
+                  controller.move(index - controller.current.index)
+                  controller.accept()
+                  termRef.current?.focus()
+                }}
+              />
+            )}
           </div>
         )}
       </div>

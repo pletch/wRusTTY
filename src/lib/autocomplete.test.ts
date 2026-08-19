@@ -3,6 +3,7 @@ import {
   AutocompleteController,
   placeSuggestions,
   suggestionKeyAction,
+  suggestionSuffix,
   type SuggestionView,
 } from './autocomplete'
 import type { PromptInput, PromptInputTracker } from './promptInput'
@@ -12,13 +13,16 @@ function key(k: string, mods: Partial<Record<'ctrlKey' | 'altKey' | 'metaKey' | 
 }
 
 describe('suggestionKeyAction', () => {
-  const open = { open: true, atLineEnd: true }
+  /** A suggestion showing inline, which is the default view. */
+  const open = { open: true, atLineEnd: true, mode: 'inline' } as const
+  /** The same offer, opened out into the list with Ctrl+Space. */
+  const list = { open: true, atLineEnd: true, mode: 'list' } as const
 
   it('claims nothing at all while no suggestion is showing', () => {
     // The whole safety property of taking Tab and the arrows: with nothing on
     // screen they belong entirely to the far end, so remote tab-completion and
     // shell history recall behave exactly as they always did.
-    const closed = { open: false, atLineEnd: true }
+    const closed = { open: false, atLineEnd: true, mode: 'inline' } as const
     for (const k of ['Tab', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape']) {
       expect(suggestionKeyAction(key(k), closed)).toBe('ignore')
     }
@@ -40,18 +44,26 @@ describe('suggestionKeyAction', () => {
     expect(suggestionKeyAction(key('ArrowDown'), open)).toBe('ignore')
   })
 
-  it('navigates the list with Ctrl+Up and Ctrl+Down instead', () => {
-    expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), open)).toBe('next')
-    expect(suggestionKeyAction(key('ArrowUp', { ctrlKey: true }), open)).toBe('previous')
-    // ...and only while a list is showing; otherwise they are the remote's.
-    const closed = { open: false, atLineEnd: true }
+  it('navigates the list with Ctrl+Up and Ctrl+Down once it is open', () => {
+    expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), list)).toBe('next')
+    expect(suggestionKeyAction(key('ArrowUp', { ctrlKey: true }), list)).toBe('previous')
+    // Not in the inline view, where there is nothing to move through — the
+    // keys stay the remote's until the user asks for the list.
+    expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), open)).toBe('ignore')
+    const closed = { open: false, atLineEnd: true, mode: 'list' } as const
     expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), closed)).toBe('ignore')
+  })
+
+  it('opens the list with Ctrl+Space, and only while something is showing', () => {
+    expect(suggestionKeyAction(key(' ', { ctrlKey: true }), open)).toBe('expand')
+    const closed = { open: false, atLineEnd: true, mode: 'inline' } as const
+    expect(suggestionKeyAction(key(' ', { ctrlKey: true }), closed)).toBe('ignore')
   })
 
   it('leaves Right alone when it is a real cursor move', () => {
     // Mid-line, Right means "move right". Only at the end of the line, where
     // it would otherwise do nothing, does it accept.
-    expect(suggestionKeyAction(key('ArrowRight'), { open: true, atLineEnd: false })).toBe('ignore')
+    expect(suggestionKeyAction(key('ArrowRight'), { open: true, atLineEnd: false, mode: 'inline' } as const)).toBe('ignore')
   })
 
   it('ignores every modified form of the accept keys', () => {
@@ -60,8 +72,8 @@ describe('suggestionKeyAction', () => {
       expect(suggestionKeyAction(key('ArrowRight', { [mod]: true }), open)).toBe('ignore')
     }
     // Alt and Shift do not navigate either — only Ctrl does.
-    expect(suggestionKeyAction(key('ArrowUp', { altKey: true }), open)).toBe('ignore')
-    expect(suggestionKeyAction(key('ArrowUp', { shiftKey: true }), open)).toBe('ignore')
+    expect(suggestionKeyAction(key('ArrowUp', { altKey: true }), list)).toBe('ignore')
+    expect(suggestionKeyAction(key('ArrowUp', { shiftKey: true }), list)).toBe('ignore')
   })
 
   it('ignores ordinary typing', () => {
@@ -207,8 +219,11 @@ describe('AutocompleteController', () => {
     await vi.waitFor(() => expect(controller.current).not.toBeNull())
 
     expect(controller.handleKey(key('a'))).toBe(false)
-    // Bare Down goes to the shell; Ctrl+Down is the one this owns.
+    // Bare Down goes to the shell, always.
     expect(controller.handleKey(key('ArrowDown'))).toBe(false)
+    // Ctrl+Down does nothing until the list is open...
+    expect(controller.handleKey(key('ArrowDown', { ctrlKey: true }))).toBe(false)
+    expect(controller.handleKey(key(' ', { ctrlKey: true }))).toBe(true)
     expect(controller.handleKey(key('ArrowDown', { ctrlKey: true }))).toBe(true)
     expect(controller.handleKey(key('Escape'))).toBe(true)
     expect(controller.current).toBeNull()
@@ -329,6 +344,74 @@ describe('AutocompleteController', () => {
     controller.refresh()
     await new Promise((r) => setTimeout(r, 0))
     expect(asked).toEqual(['git s'])
+  })
+})
+
+describe('the inline view and opening it out', () => {
+  it('starts inline, which is what a fresh offer always is', async () => {
+    const { controller } = makeController(promptInput('git s'), ['git status', 'git stash'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    expect(controller.current?.mode).toBe('inline')
+  })
+
+  it('opens out into the list on request, and stays there for that offer', async () => {
+    const { controller } = makeController(promptInput('git s'), ['git status', 'git stash'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    controller.expand()
+    expect(controller.current?.mode).toBe('list')
+    // Moving through it does not close it again.
+    controller.move(1)
+    expect(controller.current?.mode).toBe('list')
+    expect(controller.current?.index).toBe(1)
+  })
+
+  /**
+   * Opening the list is a decision about one ambiguous prefix, not a mode to
+   * be stuck in. The next thing typed gets the quiet view back.
+   */
+  it('returns to inline for the next offer', async () => {
+    const { controller, state } = makeController(promptInput('git s'), ['git status'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    controller.expand()
+    expect(controller.current?.mode).toBe('list')
+
+    controller.noteInput(TYPING)
+    state.input = promptInput('git st')
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current?.mode).toBe('inline'))
+  })
+
+  it('does nothing when asked to expand with nothing showing', () => {
+    const { controller } = makeController(promptInput('git s'), ['git status'])
+    controller.expand()
+    expect(controller.current).toBeNull()
+  })
+})
+
+describe('suggestionSuffix', () => {
+  function view(items: string[], typed: string, index = 0): SuggestionView {
+    return { items, index, typed, origin: { row: 0, col: 0 }, cursor: { row: 0, col: 0 }, mode: 'inline' }
+  }
+
+  it('is the part not yet typed — what inline shows and accepting sends', () => {
+    expect(suggestionSuffix(view(['git status'], 'git s'))).toBe('tatus')
+  })
+
+  it('follows the highlighted item, not always the first', () => {
+    expect(suggestionSuffix(view(['git status', 'git stash'], 'git s', 1))).toBe('tash')
+  })
+
+  /**
+   * Belt and braces against drawing something misleading. A view whose
+   * candidate no longer extends what is on the line would otherwise render
+   * ghost text that does not continue the command under it.
+   */
+  it('is empty when the candidate does not extend what was typed', () => {
+    expect(suggestionSuffix(view(['sudo reboot'], 'git s'))).toBe('')
+    expect(suggestionSuffix(view([], 'git s'))).toBe('')
   })
 })
 

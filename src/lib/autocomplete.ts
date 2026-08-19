@@ -14,7 +14,29 @@
 import type { Cell, PromptInput, PromptInputTracker } from './promptInput'
 
 /** What a key does while a suggestion is showing. */
-export type SuggestionKeyAction = 'accept' | 'next' | 'previous' | 'dismiss' | 'ignore'
+export type SuggestionKeyAction =
+  | 'accept'
+  | 'next'
+  | 'previous'
+  | 'dismiss'
+  | 'expand'
+  | 'ignore'
+
+/**
+ * How the offer is shown.
+ *
+ * `inline` is the default and is what a terminal should do by default: dim
+ * text after the cursor, occupying cells that are already empty. It cannot
+ * cover the line being typed, cannot overflow the pane, and needs no
+ * navigation keys — which is to say it structurally cannot produce any of the
+ * three faults the list produced in practice.
+ *
+ * `list` is the same offer opened out, for when a prefix really is ambiguous
+ * and the second or third candidate is the wanted one. Reached deliberately,
+ * with Ctrl+Space, the way PSReadLine's F2 switches between its inline and
+ * list views.
+ */
+export type SuggestionMode = 'inline' | 'list'
 
 /**
  * Decide what a keystroke means. `ignore` means the key belongs to the remote
@@ -43,6 +65,11 @@ export type SuggestionKeyAction = 'accept' | 'next' | 'previous' | 'dismiss' | '
  *     business interrupting it.
  *   - **Ctrl+Up/Ctrl+Down** move through the list instead. No shell binds
  *     them, and they are only claimed while a list is actually showing.
+ *   - **Ctrl+Space** opens the inline suggestion out into the list. Nothing
+ *     at a shell prompt wants it (readline's `set-mark` is Ctrl+@, which is
+ *     the same byte on some terminals — hence "only while a suggestion is
+ *     showing", which is when the user has just typed and is not marking
+ *     anything).
  *   - **Escape** dismisses and sends nothing further. It is not forwarded,
  *     because the user is dismissing this, not talking to vim.
  *
@@ -52,14 +79,17 @@ export type SuggestionKeyAction = 'accept' | 'next' | 'previous' | 'dismiss' | '
  */
 export function suggestionKeyAction(
   e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean },
-  opts: { open: boolean; atLineEnd: boolean },
+  opts: { open: boolean; atLineEnd: boolean; mode: SuggestionMode },
 ): SuggestionKeyAction {
   if (!opts.open) return 'ignore'
   // Navigation is the one thing that *wants* a modifier, so it is settled
   // before the unmodified keys below.
   if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
-    if (e.key === 'ArrowDown') return 'next'
-    if (e.key === 'ArrowUp') return 'previous'
+    if (e.key === ' ' || e.key === 'Spacebar') return 'expand'
+    // Navigation implies the list is already open; in the inline view there is
+    // nothing to move through, and the keys stay the remote's.
+    if (opts.mode === 'list' && e.key === 'ArrowDown') return 'next'
+    if (opts.mode === 'list' && e.key === 'ArrowUp') return 'previous'
     return 'ignore'
   }
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return 'ignore'
@@ -142,9 +172,18 @@ export interface SuggestionView {
    * is anchored to. Anchored to the *origin* rather than the cursor so the
    * list does not slide sideways with every character typed. */
   origin: Cell
-  /** The row the cursor is on, so the popover can sit under the line even
-   * when it has wrapped. */
-  cursorRow: number
+  /** Where the cursor is — the row so the list can sit under a wrapped line,
+   * and the column so the inline text can start exactly at it. */
+  cursor: Cell
+  /** Inline dim text, or the list opened out. */
+  mode: SuggestionMode
+}
+
+/** The part of the highlighted suggestion that is not yet typed — what inline
+ * view shows after the cursor, and what accepting sends. */
+export function suggestionSuffix(view: SuggestionView): string {
+  const command = view.items[view.index] ?? ''
+  return command.startsWith(view.typed) ? command.slice(view.typed.length) : ''
 }
 
 /** How many to offer. Five is enough to be worth looking at and few enough to
@@ -213,6 +252,13 @@ export class AutocompleteController {
     return this.deps.tracker.read()?.atEnd ?? false
   }
 
+  /** Open the inline suggestion out into the list. Does nothing when there is
+   * nothing showing, or when it is already open. */
+  expand(): void {
+    if (!this.view || this.view.mode === 'list') return
+    this.publish({ ...this.view, mode: 'list' })
+  }
+
   /**
    * The user pressed a key. Printable input arms the offer; anything else —
    * an arrow, Home, `^R`, a function key — disarms it.
@@ -269,7 +315,11 @@ export class AutocompleteController {
           index: 0,
           typed,
           origin: still!.origin,
-          cursorRow: still!.cursor.row,
+          cursor: still!.cursor,
+          // Every new offer starts inline. Opening the list is a deliberate
+          // act about one particular ambiguous prefix, not a mode to be stuck
+          // in for the rest of the session.
+          mode: 'inline',
         })
       })
       .catch(() => {
@@ -342,6 +392,7 @@ export class AutocompleteController {
     const action = suggestionKeyAction(e, {
       open: this.view !== null,
       atLineEnd: this.atLineEnd(),
+      mode: this.view?.mode ?? 'inline',
     })
     switch (action) {
       case 'accept':
@@ -352,6 +403,9 @@ export class AutocompleteController {
         return true
       case 'previous':
         this.move(-1)
+        return true
+      case 'expand':
+        this.expand()
         return true
       case 'dismiss':
         this.clear()

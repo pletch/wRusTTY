@@ -271,7 +271,28 @@ suggest anything that is not strictly longer than what is typed.
 
 ## UI
 
-A dropdown popover, not inline ghost text, for the first version.
+**Inline dim text by default, with the list one Ctrl+Space away.** The
+opposite of what this plan first chose, and the change was earned rather than
+argued: the dropdown shipped, and in use it produced three separate faults —
+it covered the line being typed, it captured the arrow keys someone was using
+to walk their shell history, and it painted out over the app's own status bar.
+Every one of those is structurally impossible inline. Dim text after the cursor
+occupies cells that are already blank (an offer is only made with the cursor at
+the end of the line), needs no navigation keys, and is one line tall.
+
+It is also *ignorable*, which matters more than it sounds. A suggestion is
+often wrong, and dim text you can type straight through costs nothing to be
+wrong — where a box appearing over your work taxes every keystroke whether or
+not it was any use. This app is aimed at people who live at a prompt and lean
+on muscle memory; that is the audience least willing to pay that tax.
+
+The list is kept for the case it is actually good at — a prefix that really is
+ambiguous, where the second or third candidate is the wanted one — and reached
+deliberately with Ctrl+Space. Much the same division PSReadLine draws with F2.
+Every new offer starts inline again: opening the list is a decision about one
+prefix, not a mode to be stuck in.
+
+The rest of this section describes the list, which is unchanged.
 
 Anchored at `originCol * cellWidth`, rendered as DOM over the canvas the way
 the existing pane overlays are. Up to about five entries, the current one
@@ -290,10 +311,15 @@ bottom edge lands on the boundary of the typed line whatever height it turns
 out to have, with no measuring pass. A `maxHeight` of the available space keeps
 it inside the pane in both directions; past that it scrolls.
 
-Inline grey ghost-text after the cursor is the prettier form and can come
-later. It needs either a second draw path in the WebGL renderer or an
-absolutely-positioned span that stays pixel-aligned through font changes, DPI
-changes and re-fits. Not worth blocking the feature on.
+The cost this plan gave for deferring inline text — "a second draw path in the
+WebGL renderer or an absolutely-positioned span that stays pixel-aligned
+through font changes, DPI changes and re-fits" — turned out to be mostly
+already paid by the time it was wanted. `cellSize`, `cursorCell`, `viewportY`
+and the anchoring arithmetic all exist because the *list* needed them, so the
+inline view is a span positioned with the same numbers and the pane's own font
+settings. The residual risk is sub-pixel drift against the engine's own glyphs
+at odd DPI, which is cosmetically tolerable for dim text in a way it would not
+be for a selection highlight.
 
 Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
 

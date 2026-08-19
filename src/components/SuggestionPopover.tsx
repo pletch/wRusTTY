@@ -34,7 +34,7 @@ export function SuggestionPopover({
   onPick: (index: number) => void
 }) {
   const place = placeSuggestions({
-    cursorRow: view.cursorRow,
+    cursorRow: view.cursor.row,
     viewportY,
     rows,
     cellHeight: cell.height,
