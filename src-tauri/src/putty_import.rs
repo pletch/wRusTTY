@@ -213,6 +213,9 @@ pub fn to_profile(session: &PuttySession, id: String) -> Option<SessionProfile> 
         wake_on_lan: None,
         // PuTTY has no equivalent setting, so an import follows the global one.
         auto_reconnect: None,
+        // An import says nothing about whether this host's shell history may be
+        // read; that is the user's call, made per host or globally.
+        import_remote_history: None,
         serial: None,
     })
 }
@@ -269,6 +272,9 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
         wake_on_lan: None,
         // PuTTY has no equivalent setting, so an import follows the global one.
         auto_reconnect: None,
+        // An import says nothing about whether this host's shell history may be
+        // read; that is the user's call, made per host or globally.
+        import_remote_history: None,
         serial: Some(crate::profiles::SerialProfile {
             identity: wr_serial::PortIdentity {
                 port_name,

@@ -37,6 +37,7 @@ const jumpProfile: SessionProfile = {
   termType: null,
   backspaceSendsCtrlH: null,
   autoReconnect: null,
+  importRemoteHistory: null,
   keepaliveSeconds: null,
   wakeOnLan: null,
   serial: null,

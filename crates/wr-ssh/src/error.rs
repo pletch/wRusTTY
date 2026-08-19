@@ -6,6 +6,12 @@ pub enum SshError {
     #[error("authentication to {host}:{port} timed out")]
     AuthTimeout { host: String, port: u16 },
 
+    /// A command run on its own `exec` channel produced nothing within its
+    /// budget. Distinct from a short read: a host that accepts the channel and
+    /// then says nothing must not be mistaken for one that answered briefly.
+    #[error("the remote command did not finish in time")]
+    ExecTimeout,
+
     #[error("failed to connect to {host}:{port}: {source}")]
     Connect {
         host: String,

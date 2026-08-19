@@ -41,6 +41,7 @@ function profile(overrides: Partial<SessionProfile> = {}): SessionProfile {
     termType: null,
     backspaceSendsCtrlH: null,
     autoReconnect: null,
+    importRemoteHistory: null,
     ...overrides,
   }
 }

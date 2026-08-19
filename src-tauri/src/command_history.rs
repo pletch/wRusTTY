@@ -4,8 +4,9 @@
 //! integration reports its own command lines verbatim through OSC 633 `E`
 //! (`HistorySource::Integration`), and one without has its prompt line read off
 //! the terminal grid when Enter is pressed (`HistorySource::Screen`). The third
-//! source, a one-off import of the remote shell's own history file, is Phase 6
-//! and not built.
+//! is a one-off import of the remote shell's own history file over an `exec`
+//! channel (`HistorySource::Harvest`), which is the only one that reads
+//! anything on the far side and is gated on its own setting because of it.
 //!
 //! **Why the ranking lives here rather than in the webview.** Suggesting runs
 //! on every keystroke, so the obvious design ships each host's entries to the
@@ -621,6 +622,320 @@ pub async fn command_history_forget_imported(
         .await
 }
 
+// ---------------------------------------------------------------------------
+// Tier 1: importing the remote shell's own history
+// ---------------------------------------------------------------------------
+
+/// Lines asked for from the remote history file. High enough to cover a real
+/// working history, low enough that the reply stays small on a slow link.
+const HARVEST_LINES: usize = 5_000;
+
+/// Hard cap on the reply, whatever the line count implies. A `HISTFILE`
+/// pointing at something enormous — or a host that answers with a stream
+/// rather than a file — must not be able to make this app read forever.
+pub const HARVEST_MAX_BYTES: usize = 1_024 * 1_024;
+
+/// How long the remote gets. Generous for `tail` on a file, short enough that
+/// a host which accepts the channel and then says nothing is given up on
+/// rather than left hanging behind a spinner nobody sees.
+pub const HARVEST_TIMEOUT_SECS: u64 = 10;
+
+/// The most an imported command may claim to have been run.
+///
+/// A history file will happily say `ls` appears 400 times, and taking that at
+/// face value would let one import outrank everything the user actually does
+/// in front of us for months. Capping keeps frequency as a *signal* without
+/// letting it become the only one.
+const MAX_IMPORTED_COUNT: u32 = 25;
+
+/// Marks the start of a real answer, so a host that ignored the command and
+/// printed its own banner can be told from one that answered.
+const HARVEST_MARKER: &str = "@@WRUSTTY-HISTORY:";
+
+/// The command sent down the `exec` channel.
+///
+/// Wrapped in `/bin/sh -c` deliberately. `exec` runs the request through the
+/// user's *login* shell, which may be fish — whose syntax is not POSIX and
+/// which would choke on the `case` below. Every shell there is can parse a
+/// simple command with one single-quoted argument, so the wrapper is what
+/// makes one script work everywhere. The script itself therefore contains no
+/// single quote of its own.
+///
+/// It asks the shell rather than guessing a path, because the file is both
+/// shell- and configuration-dependent: `HISTFILE` overrides everything, and
+/// `$SHELL` is what sshd sets from the account's entry. And it `tail`s rather
+/// than `cat`s, because the interesting end of a history file is the end.
+pub fn harvest_command() -> String {
+    format!(
+        "/bin/sh -c 'case \"${{SHELL##*/}}\" in \
+zsh) f=\"${{HISTFILE:-$HOME/.zsh_history}}\";; \
+fish) f=\"${{HISTFILE:-$HOME/.local/share/fish/fish_history}}\";; \
+*) f=\"${{HISTFILE:-$HOME/.bash_history}}\";; \
+esac; [ -r \"$f\" ] || exit 0; printf \"{marker}%s\\n\" \"$f\"; tail -n {lines} -- \"$f\"'",
+        marker = HARVEST_MARKER,
+        lines = HARVEST_LINES,
+    )
+}
+
+/// Which on-disk format a history file is in, decided by its name — which is
+/// the only evidence available, and is reliable because the name came from the
+/// same `case` that chose it by shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryFormat {
+    /// One command per line. `HISTTIMEFORMAT` adds `#<epoch>` lines between.
+    Plain,
+    /// zsh's extended format: `: <epoch>:<elapsed>;<command>`, with a trailing
+    /// backslash continuing onto the next line.
+    Zsh,
+    /// fish's YAML-ish store: `- cmd: <command>` followed by `  when: <epoch>`.
+    Fish,
+}
+
+fn format_for(path: &str) -> HistoryFormat {
+    if path.ends_with("fish_history") {
+        HistoryFormat::Fish
+    } else if path.ends_with("zsh_history") || path.ends_with("zhistory") {
+        HistoryFormat::Zsh
+    } else {
+        HistoryFormat::Plain
+    }
+}
+
+/// Turn what the remote printed into commands and how often each appeared.
+///
+/// `None` means the host did not answer the question — no marker, so what came
+/// back is a banner, a restricted shell's complaint, or an appliance's own CLI.
+/// Treating that as an empty history would be wrong in a way that matters: it
+/// would look like a successful import of nothing, and never be retried.
+///
+/// Counts rather than timestamps. Only zsh and fish record when a command ran,
+/// and bash usually does not, so there is no honest per-entry time to import —
+/// but "this appears forty times" is real information present in every format,
+/// and it is what makes an imported history rank sensibly on arrival.
+pub fn parse_remote_history(payload: &str) -> Option<Vec<(String, u32)>> {
+    // The marker is written with `printf` and normally lands at the very
+    // start, but a login banner or an rc file that prints will push it down.
+    let at = payload.find(HARVEST_MARKER)?;
+    let rest = &payload[at + HARVEST_MARKER.len()..];
+    let (path, body) = rest.split_once('\n')?;
+    let format = format_for(path.trim());
+
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for command in extract_commands(body, format) {
+        let Some(command) = redact(&command) else {
+            continue;
+        };
+        let slot = counts.entry(command.clone()).or_insert_with(|| {
+            order.push(command.clone());
+            0
+        });
+        *slot = slot.saturating_add(1).min(MAX_IMPORTED_COUNT);
+    }
+    Some(
+        order
+            .into_iter()
+            .map(|c| (counts[&c], c))
+            .map(|(n, c)| (c, n))
+            .collect(),
+    )
+}
+
+fn extract_commands(body: &str, format: HistoryFormat) -> Vec<String> {
+    let mut out = Vec::new();
+    match format {
+        HistoryFormat::Fish => {
+            for line in body.lines() {
+                if let Some(cmd) = line.strip_prefix("- cmd: ") {
+                    out.push(cmd.to_string());
+                }
+            }
+        }
+        HistoryFormat::Zsh | HistoryFormat::Plain => {
+            // A command continued onto the next line with a trailing
+            // backslash is one command, and importing its halves separately
+            // would offer back two fragments that do nothing. Joined, it then
+            // fails `redact` for containing a newline — which is also right:
+            // accepting a suggestion with a newline in it would *submit* a
+            // half-finished command line. The join is here to stop the
+            // fragments, not to preserve the whole.
+            let mut pending: Option<String> = None;
+            for line in body.lines() {
+                let line = line.strip_suffix('\r').unwrap_or(line);
+                let piece = match pending.take() {
+                    Some(started) => format!("{started}\n{line}"),
+                    None => {
+                        if format == HistoryFormat::Zsh {
+                            strip_zsh_prefix(line).to_string()
+                        } else if line.starts_with('#') {
+                            // bash writes `#<epoch>` between entries when
+                            // HISTTIMEFORMAT is set. A real command can start
+                            // with `#` only as a comment, which is not worth
+                            // suggesting either way.
+                            continue;
+                        } else {
+                            line.to_string()
+                        }
+                    }
+                };
+                if let Some(head) = piece.strip_suffix('\\') {
+                    pending = Some(head.to_string());
+                    continue;
+                }
+                out.push(piece);
+            }
+            if let Some(unfinished) = pending {
+                out.push(unfinished);
+            }
+        }
+    }
+    out
+}
+
+/// Strips zsh's `: <epoch>:<elapsed>;` metadata, leaving the command.
+/// A line without it is a plain entry, which zsh also writes when
+/// `EXTENDED_HISTORY` is off.
+fn strip_zsh_prefix(line: &str) -> &str {
+    let Some(rest) = line.strip_prefix(": ") else {
+        return line;
+    };
+    let Some((meta, command)) = rest.split_once(';') else {
+        return line;
+    };
+    // Only when the part before the `;` really is `<digits>:<digits>`.
+    // Otherwise this is an ordinary command that happens to start with a colon
+    // and a space, and eating up to its first semicolon would mangle it.
+    let looks_like_meta = meta.split_once(':').is_some_and(|(epoch, elapsed)| {
+        !epoch.is_empty()
+            && epoch.chars().all(|c| c.is_ascii_digit())
+            && elapsed.chars().all(|c| c.is_ascii_digit())
+    });
+    if looks_like_meta {
+        command
+    } else {
+        line
+    }
+}
+
+/// Fold an imported history into a host's entries.
+///
+/// Everything lands as [`HistorySource::Harvest`] so that "forget imported
+/// history" can take exactly this back out again, and an entry that already
+/// exists keeps whatever provenance it had — a command we have actually
+/// watched the user run is not turned back into an import.
+pub fn import(entries: &mut Vec<HistoryEntry>, imported: Vec<(String, u32)>, now_ms: i64) -> usize {
+    let mut added = 0;
+    for (command, count) in imported {
+        match entries.iter_mut().find(|e| e.command == command) {
+            // Already known. The import is not evidence of a *new* use, so the
+            // count rises only if the file claims more, and the timestamp is
+            // not touched at all — the file cannot say when it was last run,
+            // and overwriting a real `last_used` with "now" would make every
+            // stale command look fresh.
+            Some(existing) => existing.count = existing.count.max(count),
+            None => {
+                added += 1;
+                entries.push(HistoryEntry {
+                    command,
+                    count,
+                    accepted: 0,
+                    // The import time, not a fabricated one. Only zsh and fish
+                    // record when a command ran and bash usually does not, so
+                    // there is no honest per-entry time to use — and inventing
+                    // a spread of them would put made-up data in the ranking.
+                    last_used: now_ms,
+                    source: HistorySource::Harvest,
+                    cwd: None,
+                });
+            }
+        }
+    }
+    prune(entries, now_ms);
+    added
+}
+
+/// Import a host's own shell history, over one `exec` channel on the
+/// connection that is already up.
+///
+/// **The setting is resolved before the channel is opened, and that ordering
+/// is the point.** A harvest that runs and then discards its answer has still
+/// opened a channel, still read the file, and still appeared in whatever the
+/// host logs — so the decision has to be made before the channel exists, not
+/// after the bytes arrive. The caller has already checked that autocomplete
+/// itself is on; the harvest's own setting and the saved session's override
+/// of it are resolved below. See the Tier 1 section of
+/// docs/AUTOCOMPLETE_PLAN.md.
+///
+/// Returns how many commands were newly added — zero when the host has no
+/// readable history, when everything in it was already known, or when the
+/// answer was refused. `Err` only for a session that is not connected; a host
+/// that will not or cannot answer is an ordinary outcome, not a failure to
+/// report, and it must never be retried for the rest of the session.
+#[tauri::command]
+pub async fn command_history_harvest(
+    app: AppHandle,
+    state: tauri::State<'_, HistoryState>,
+    ssh: tauri::State<'_, crate::ssh::SshState>,
+    session_id: String,
+    host: String,
+    import_globally: bool,
+    profile_id: Option<String>,
+) -> Result<usize, String> {
+    // Resolved here rather than in the webview because the per-host half lives
+    // in `sessions.json`, and splitting one decision across two processes is
+    // how the halves come to disagree.
+    //
+    // The saved session's answer wins outright when it has one, which is
+    // *unlike* how auto-reconnect resolves its two halves (there, either
+    // saying no is no). Deliberate: auto-reconnect's global switch is the one
+    // place someone turns a behaviour off everywhere, so it has to be able to.
+    // This one is off by default, so a per-host `true` is the entire point of
+    // the override — it is how a read is allowed on your own machine without
+    // being allowed on every machine you happen to log into.
+    let profile_override = profile_id
+        .and_then(|id| crate::profiles::get_profile(&app, &id).ok())
+        .and_then(|p| p.import_remote_history);
+    if !profile_override.unwrap_or(import_globally) {
+        return Ok(0);
+    }
+
+    let session = crate::ssh::lookup(&ssh, &session_id).await?;
+    let output = {
+        let guard = session.lock().await;
+        guard
+            .ready()?
+            .exec_capture(
+                &harvest_command(),
+                HARVEST_MAX_BYTES,
+                std::time::Duration::from_secs(HARVEST_TIMEOUT_SECS),
+            )
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    // Lossy on purpose. A history file is whatever bytes the shell appended to
+    // it, and one line of Latin-1 from years ago must not cost the import
+    // every other line in the file. Anything undecodable becomes U+FFFD and is
+    // then almost certainly refused by `redact` as a control-free but
+    // nonsensical line — which is the right outcome for a line nobody can read.
+    let payload = String::from_utf8_lossy(&output);
+    let Some(imported) = parse_remote_history(&payload) else {
+        // No marker: the host ignored the command and printed something of its
+        // own — a banner, a restricted shell's complaint, an appliance's CLI.
+        // Reported as zero rather than an error, because there is nothing the
+        // user can act on and nothing has gone wrong with their session.
+        return Ok(0);
+    };
+    let now = now_ms();
+    state
+        .with_store(&app, |store| {
+            let entries = store.hosts.entry(host).or_default();
+            let added = import(entries, imported, now);
+            Ok((added, added > 0))
+        })
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,6 +1193,209 @@ mod tests {
         assert_eq!(entries[0].accepted, 0);
         assert!(entries[0].cwd.is_none());
         assert_eq!(entries[0].source, HistorySource::Screen);
+    }
+
+    // -----------------------------------------------------------------
+    // Tier 1: importing a remote history file
+    // -----------------------------------------------------------------
+
+    fn harvested(payload: &str) -> Vec<(String, u32)> {
+        parse_remote_history(payload).expect("payload should carry the marker")
+    }
+
+    /// The one-liner runs through whatever login shell the account has, and
+    /// fish is not POSIX. The `/bin/sh -c '...'` wrapper is what makes one
+    /// script work everywhere — which only holds while the script itself
+    /// contains no single quote to close the wrapper early.
+    #[test]
+    fn the_remote_command_survives_a_non_posix_login_shell() {
+        let command = harvest_command();
+        let inner = command
+            .strip_prefix("/bin/sh -c '")
+            .and_then(|rest| rest.strip_suffix('\''))
+            .expect("wrapped in a single-quoted sh -c");
+        assert!(
+            !inner.contains('\''),
+            "script must not contain a quote: {inner}"
+        );
+        assert!(inner.contains("$HOME/.bash_history"));
+        assert!(inner.contains("$HOME/.zsh_history"));
+        assert!(inner.contains("fish_history"));
+        // Bounded at the far end as well as this one.
+        assert!(inner.contains("tail -n 5000"));
+    }
+
+    #[test]
+    fn plain_bash_history_imports_a_command_per_line() {
+        let payload = "@@WRUSTTY-HISTORY:/home/tim/.bash_history\nls -la\ncd /etc\nls -la\n";
+        assert_eq!(
+            harvested(payload),
+            vec![("ls -la".to_string(), 2), ("cd /etc".to_string(), 1)],
+        );
+    }
+
+    /// With `HISTTIMEFORMAT` set, bash writes an epoch line before each entry.
+    #[test]
+    fn bash_timestamp_lines_are_not_commands() {
+        let payload = "@@WRUSTTY-HISTORY:/root/.bash_history\n#1700000000\nsystemctl status\n#1700000060\nuptime\n";
+        assert_eq!(
+            harvested(payload),
+            vec![
+                ("systemctl status".to_string(), 1),
+                ("uptime".to_string(), 1)
+            ],
+        );
+    }
+
+    #[test]
+    fn zsh_extended_metadata_is_stripped() {
+        let payload = "@@WRUSTTY-HISTORY:/home/tim/.zsh_history\n\
+: 1700000000:0;git status\n\
+: 1700000060:12;make -j8\n";
+        assert_eq!(
+            harvested(payload),
+            vec![("git status".to_string(), 1), ("make -j8".to_string(), 1)],
+        );
+    }
+
+    /// A command that genuinely begins `": "` must not have its own text eaten
+    /// up to the first semicolon.
+    #[test]
+    fn a_command_starting_with_a_colon_is_not_mistaken_for_metadata() {
+        let payload = "@@WRUSTTY-HISTORY:/home/tim/.zsh_history\n: nope;echo hi\n";
+        assert_eq!(harvested(payload), vec![(": nope;echo hi".to_string(), 1)]);
+    }
+
+    /// A continued line is joined, and the join is then refused as a whole.
+    /// That is the right answer twice over: importing the halves separately
+    /// would offer back fragments that do nothing on their own, and importing
+    /// the join would store a command containing a newline — *accepting* which
+    /// would send the newline and submit a half-finished command line. The
+    /// join exists to stop the fragments, not to preserve the whole.
+    #[test]
+    fn a_continued_line_is_neither_split_into_fragments_nor_stored_whole() {
+        let payload =
+            "@@WRUSTTY-HISTORY:/home/tim/.bash_history\nfor f in *.log; do \\\n  gzip $f\\\ndone\nls\n";
+        // Only the single-line command survives — no `for f in *.log; do`, no
+        // bare `done`, and nothing carrying a newline.
+        assert_eq!(harvested(payload), vec![("ls".to_string(), 1)]);
+    }
+
+    #[test]
+    fn fish_history_reads_the_cmd_lines_only() {
+        let payload = "@@WRUSTTY-HISTORY:/home/tim/.local/share/fish/fish_history\n\
+- cmd: nvim config.fish\n  when: 1700000000\n\
+- cmd: fisher update\n  when: 1700000060\n";
+        assert_eq!(
+            harvested(payload),
+            vec![
+                ("nvim config.fish".to_string(), 1),
+                ("fisher update".to_string(), 1),
+            ],
+        );
+    }
+
+    /// A host that ignored the command entirely — a banner, a restricted
+    /// shell, an appliance's own CLI. Distinct from an empty history, because
+    /// "imported nothing successfully" would never be retried.
+    #[test]
+    fn a_host_that_did_not_answer_is_not_an_empty_history() {
+        assert!(parse_remote_history("").is_none());
+        assert!(parse_remote_history("-rbash: tail: command not found\n").is_none());
+        assert!(parse_remote_history("Welcome to SwitchOS v4.\nswitch> ").is_none());
+        // ...whereas a readable file with nothing in it is a real answer.
+        assert_eq!(
+            parse_remote_history("@@WRUSTTY-HISTORY:/home/tim/.bash_history\n"),
+            Some(Vec::new()),
+        );
+    }
+
+    /// The marker is printed first, but a login banner or a chatty rc file
+    /// gets there before it.
+    #[test]
+    fn a_login_banner_before_the_marker_does_not_hide_it() {
+        let payload =
+            "*** AUTHORISED USE ONLY ***\n@@WRUSTTY-HISTORY:/home/tim/.bash_history\nhtop\n";
+        assert_eq!(harvested(payload), vec![("htop".to_string(), 1)]);
+    }
+
+    /// Redaction is not something the import gets to skip: a history file is
+    /// exactly where a password typed on a command line a year ago still
+    /// lives.
+    #[test]
+    fn credentials_in_the_history_file_are_refused_like_any_other_line() {
+        let payload = "@@WRUSTTY-HISTORY:/home/tim/.bash_history\n\
+mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
+        assert_eq!(harvested(payload), vec![("ls".to_string(), 1)]);
+    }
+
+    #[test]
+    fn a_wildly_repeated_command_cannot_dominate_the_ranking() {
+        let mut payload = String::from("@@WRUSTTY-HISTORY:/home/tim/.bash_history\n");
+        for _ in 0..500 {
+            payload.push_str("ls\n");
+        }
+        assert_eq!(
+            harvested(&payload),
+            vec![("ls".to_string(), MAX_IMPORTED_COUNT)]
+        );
+    }
+
+    #[test]
+    fn importing_adds_what_is_new_and_leaves_what_was_witnessed() {
+        let mut entries = vec![HistoryEntry {
+            command: "make test".to_string(),
+            count: 2,
+            accepted: 1,
+            last_used: NOW - 10 * DAY,
+            source: HistorySource::Integration,
+            cwd: Some("/src".to_string()),
+        }];
+        let added = import(
+            &mut entries,
+            vec![("make test".to_string(), 9), ("htop".to_string(), 3)],
+            NOW,
+        );
+        assert_eq!(added, 1);
+
+        let witnessed = entries.iter().find(|e| e.command == "make test").unwrap();
+        // Provenance, directory and acceptance all survive: this is a command
+        // we watched the user run, and an import must not demote it.
+        assert_eq!(witnessed.source, HistorySource::Integration);
+        assert_eq!(witnessed.cwd.as_deref(), Some("/src"));
+        assert_eq!(witnessed.accepted, 1);
+        // The count rises to what the file claims...
+        assert_eq!(witnessed.count, 9);
+        // ...but the timestamp does not, or every stale command in the file
+        // would come back looking like it was run a moment ago.
+        assert_eq!(witnessed.last_used, NOW - 10 * DAY);
+
+        let imported = entries.iter().find(|e| e.command == "htop").unwrap();
+        assert_eq!(imported.source, HistorySource::Harvest);
+        assert_eq!(imported.count, 3);
+    }
+
+    /// The other half of the harvest's separate consent: turning the setting
+    /// off has to be able to undo what it did, without touching anything the
+    /// user actually ran in front of us.
+    #[test]
+    fn forgetting_the_import_leaves_only_what_was_witnessed() {
+        let mut entries = Vec::new();
+        record(
+            &mut entries,
+            "deploy prod",
+            None,
+            HistorySource::Integration,
+            NOW,
+        );
+        import(
+            &mut entries,
+            vec![("htop".to_string(), 1), ("deploy prod".to_string(), 4)],
+            NOW,
+        );
+        entries.retain(|e| e.source != HistorySource::Harvest);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].command, "deploy prod");
     }
 
     #[test]

@@ -154,6 +154,42 @@ export function forgetCommandHistory(opts?: {
   })
 }
 
+/**
+ * Import a host's own shell history over one `exec` channel, once.
+ *
+ * SSH only — it needs a second channel on the live connection, which telnet
+ * and serial do not have.
+ *
+ * **Only call this when autocomplete itself is on.** That is the outer of the
+ * two gates and the only one this side owns; the inner one — the harvest's own
+ * setting, and the saved session's override of it — is resolved in Rust, where
+ * the profile lives, and is checked before any channel is opened. Passing
+ * `importGlobally: false` with no override therefore does nothing at all,
+ * rather than doing it and discarding the answer: a read that happens and is
+ * then thrown away has still read the file and still reached the host's logs.
+ *
+ * Resolves the number of commands newly added. Zero covers every ordinary way
+ * this comes to nothing — the setting said no, the host has no readable
+ * history, a restricted shell refused, an appliance ignored the command, or
+ * everything in the file was already known.
+ */
+export function harvestRemoteHistory(opts: {
+  sessionId: string
+  host: string
+  /** The global `autocompleteImportRemoteHistory` setting. */
+  importGlobally: boolean
+  /** The saved session this pane was opened from, when it came from one — the
+   * backend reads its own override off it. */
+  profileId?: string | null
+}): Promise<number> {
+  return invoke<number>('command_history_harvest', {
+    sessionId: opts.sessionId,
+    host: opts.host,
+    importGlobally: opts.importGlobally,
+    profileId: opts.profileId ?? null,
+  })
+}
+
 /** Drop everything a Tier 1 harvest imported, leaving what was witnessed —
  * the other half of the harvest's separate consent. */
 export function forgetImportedHistory(): Promise<void> {

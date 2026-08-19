@@ -48,6 +48,12 @@ export interface SessionProfile {
    * per-profile "always" would therefore be a promise the app cannot keep in
    * two of the three cases it appears to cover. See `reconnectPolicy`. */
   autoReconnect: boolean | null
+  /** Whether this session may have its remote shell history imported once,
+   * for autocomplete. `null` follows the global setting; `false` opts this
+   * host out whatever that setting says. Per-host because the question is
+   * about the host — importing from the homelab box and never from the
+   * customer's bastion is the normal shape of the answer. */
+  importRemoteHistory: boolean | null
   /** Serial only — null for SSH and telnet. */
   serial: SerialProfile | null
 }

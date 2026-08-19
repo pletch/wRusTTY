@@ -83,6 +83,18 @@ pub struct SessionProfile {
     /// field missing from this struct is a field dropped from `sessions.json`.
     #[serde(rename = "autoReconnect", default)]
     pub auto_reconnect: Option<bool>,
+    /// Whether this session may have its remote shell history imported once,
+    /// for autocomplete. `None` — which every profile saved before this field
+    /// existed reads as — means "follow the global setting"; `Some(false)`
+    /// opts this one host out of it whatever that setting says.
+    ///
+    /// Per-host because the question is about the *host*, not about this
+    /// machine: importing from the homelab box and never from the customer's
+    /// bastion is the normal shape of the answer. Like `auto_reconnect` this is
+    /// stored but never read here — the frontend resolves the two halves, and
+    /// what this field needs from the backend is to survive a save.
+    #[serde(rename = "importRemoteHistory", default)]
+    pub import_remote_history: Option<bool>,
     /// Serial only — `None` for SSH and telnet, which use `host`/`port`.
     ///
     /// Serial used to be ad-hoc precisely because a COM number stops being

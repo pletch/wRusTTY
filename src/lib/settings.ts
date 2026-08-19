@@ -185,6 +185,23 @@ export interface TerminalSettings {
    * is about reaching out and reading a file on a server that is often not
    * yours alone. */
   autocompleteEnabled: boolean
+  /**
+   * Once per session, read the remote host's own shell history file and import
+   * it — so autocomplete is useful on a host the first time you connect with
+   * it turned on, rather than only after you have retyped everything once.
+   *
+   * **Nested under `autocompleteEnabled`, and off by default even when that is
+   * on.** Every other part of this feature records what you type in front of
+   * us. This one reaches out and reads a file on a server, which is often not
+   * yours alone — a shared jump box, a customer's appliance, a bastion whose
+   * history file is somebody else's audit trail. Turning autocomplete on must
+   * never, by itself, cause the app to read anything on a remote machine.
+   *
+   * SSH only: it needs a second channel on the connection, which telnet and
+   * serial do not have. Overridable per saved session — see
+   * `SessionProfile.importRemoteHistory`.
+   */
+  autocompleteImportRemoteHistory: boolean
   /** Name of the active preset in lib/theme.ts. */
   themeName: string
   /** Offers to reopen whatever tabs/panes were connected when the app was
@@ -245,6 +262,7 @@ const defaults: TerminalSettings = {
   // nothing back. This is the trade to opt into, not out of.
   externalEditor: '',
   autocompleteEnabled: false,
+  autocompleteImportRemoteHistory: false,
   themeName: 'wRusTTY Dark',
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,

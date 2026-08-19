@@ -44,6 +44,10 @@ export interface ConnectDialogInitial {
   /** `false` opts this session out of auto-reconnect; null/absent follows the
    * global setting. */
   autoReconnect?: boolean | null
+  /** Whether this host's own shell history may be imported once for
+   * autocomplete: `true` always, `false` never, null/absent follows the
+   * global setting. */
+  importRemoteHistory?: boolean | null
   /** Seconds between SSH keepalives — null/absent means the 60s default. */
   keepaliveSeconds?: number | null
   /** How to wake this host before connecting — null/absent means don't. */
@@ -162,6 +166,7 @@ export function ConnectDialog({
     termCustom,
     backspace,
     autoReconnect,
+    importRemoteHistory,
     label,
     folder,
     isNewFolder,
@@ -200,6 +205,13 @@ export function ConnectDialog({
   // back regardless of what any setting says. Only the opt-out is real, so
   // only the opt-out is written down.
   const savedAutoReconnect = autoReconnect ? null : false
+  // Three-state, and all three are written down as themselves — unlike
+  // auto-reconnect above, where only the opt-out is real. The global setting
+  // here is off by default, so "always import for this host" is a genuine
+  // override and not a no-op, and "never" has to survive the global setting
+  // being turned on later.
+  const setImportRemoteHistory = (v: boolean | null) =>
+    dispatch({ type: 'fieldSet', field: 'importRemoteHistory', value: v })
   const setLabel = (v: string) => dispatch({ type: 'fieldSet', field: 'label', value: v })
   const setFolder = (v: string) => dispatch({ type: 'fieldSet', field: 'folder', value: v })
   const setJumpProfileId = (v: string) => dispatch({ type: 'fieldSet', field: 'jumpProfileId', value: v })
@@ -240,6 +252,7 @@ export function ConnectDialog({
     const paneOptions = {
       backspaceSendsCtrlH: backspace === 'ctrlh',
       autoReconnect: savedAutoReconnect,
+      importRemoteHistory,
     }
 
     if (protocol === 'ssh') {
@@ -362,6 +375,7 @@ export function ConnectDialog({
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
           autoReconnect: savedAutoReconnect,
+          importRemoteHistory,
           // Otherwise preserves a prior credential's flag across an unrelated
           // edit — there's no "forget stored credential" affordance yet, so
           // saving shouldn't silently lose track of one that already exists.
@@ -440,6 +454,7 @@ export function ConnectDialog({
           termType: termType.trim() || null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
           autoReconnect: savedAutoReconnect,
+          importRemoteHistory,
           // Telnet has no keepalive of its own.
           keepaliveSeconds: null,
           // Waking is wired into the SSH connect path only, so far.
@@ -477,6 +492,7 @@ export function ConnectDialog({
           termType: null,
           backspaceSendsCtrlH: backspace === 'ctrlh',
           autoReconnect: savedAutoReconnect,
+          importRemoteHistory,
           // No idle timeout on a wire, and nothing to wake at the end of one.
           keepaliveSeconds: null,
           wakeOnLan: null,
@@ -880,6 +896,41 @@ export function ConnectDialog({
           <p className="text-xs text-white/40">
             This session will stay down until you reconnect it by hand, whatever the global setting
             says.
+          </p>
+        )}
+
+        {/* SSH only, because importing needs a second channel on the
+            connection and neither telnet nor a serial line has one.
+
+            Three states rather than a checkbox, unlike auto-reconnect above.
+            The global setting this overrides is off by default, so both
+            directions are useful and neither is merely an opt-out: allow it
+            for the homelab box without allowing it everywhere, and forbid it
+            for a customer's bastion even if the global setting is later turned
+            on. */}
+        {protocol === 'ssh' && (
+          <label className="flex items-center gap-2 text-xs text-white/70">
+            Import this host's shell history
+            <select
+              className="rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+              value={importRemoteHistory === null ? 'global' : importRemoteHistory ? 'yes' : 'no'}
+              onChange={(e) =>
+                setImportRemoteHistory(
+                  e.target.value === 'global' ? null : e.target.value === 'yes',
+                )
+              }
+            >
+              <option value="global">Follow the global setting</option>
+              <option value="yes">Yes, once per session</option>
+              <option value="no">Never</option>
+            </select>
+          </label>
+        )}
+        {importRemoteHistory === true && (
+          <p className="text-xs text-white/40">
+            Once per connection, wRusTTY will read this host's shell history file over its own
+            channel and add what it finds to autocomplete. Nothing is written on the host and its
+            history file is not changed.
           </p>
         )}
 

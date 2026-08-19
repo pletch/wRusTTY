@@ -143,6 +143,11 @@ export interface ConnectDraft {
    * in ConnectDialog — so the checkbox reads "unless I say otherwise" rather
    * than promising something the global switch can overrule. */
   autoReconnect: boolean
+  /** Three-state, unlike `autoReconnect`: the global setting this overrides is
+   * off by default, so both directions are useful — allow it for the homelab
+   * box without allowing it everywhere, and forbid it for the customer's
+   * bastion even with it on. `null` follows the global setting. */
+  importRemoteHistory: boolean | null
   label: string
   folder: string
   isNewFolder: boolean
@@ -175,6 +180,7 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     termCustom: Boolean(initial?.termType) && !TERM_TYPES.some((t) => t.value === initial?.termType),
     backspace: initial?.backspaceSendsCtrlH ? 'ctrlh' : 'del',
     autoReconnect: initial?.autoReconnect !== false,
+    importRemoteHistory: initial?.importRemoteHistory ?? null,
     label: initial?.label ?? '',
     folder: initial?.folder ?? '',
     isNewFolder: false,

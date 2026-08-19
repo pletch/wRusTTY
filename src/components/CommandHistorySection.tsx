@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw, Server, Trash2 } from 'lucide-react'
 import {
   forgetCommandHistory,
+  forgetImportedHistory,
   listCommandHistory,
   type HistoryEntry,
   type HostHistory,
@@ -87,6 +88,30 @@ export function CommandHistorySection() {
     }
   }
 
+  /** The other half of the harvest's separate consent: what an import brought
+   * in can be taken back out again, without touching anything the user
+   * actually ran in front of us. */
+  async function forgetImported() {
+    const imported =
+      hosts?.reduce((sum, h) => sum + h.entries.filter((e) => e.source === 'harvest').length, 0) ?? 0
+    const ok = await confirm({
+      title: 'Forget everything imported from remote hosts?',
+      body:
+        `The ${imported} command${imported === 1 ? '' : 's'} that came from hosts' own shell ` +
+        `history files are deleted. Commands you have actually run while connected are kept, ` +
+        `including any that were imported first and then run — those stopped being imports the ` +
+        `moment you used them.`,
+      confirmLabel: 'Forget imports',
+    })
+    if (!ok) return
+    try {
+      await forgetImportedHistory()
+      await load()
+    } catch (err) {
+      toast.error(String(err))
+    }
+  }
+
   async function forgetEverything() {
     const total = hosts?.reduce((sum, h) => sum + h.entries.length, 0) ?? 0
     const ok = await confirm({
@@ -135,13 +160,27 @@ export function CommandHistorySection() {
       )}
 
       {hosts !== null && hosts.length > 0 && (
-        <button
-          type="button"
-          onClick={() => void forgetEverything()}
-          className="w-full rounded bg-white/[0.06] py-1.5 text-white/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
-        >
-          Forget everything
-        </button>
+        <div className="flex gap-1.5">
+          {/* Only offered when there is something imported to forget — the
+              button is meaningless otherwise, and an always-present one
+              implies the app has been importing when it may never have. */}
+          {hosts.some((h) => h.entries.some((e) => e.source === 'harvest')) && (
+            <button
+              type="button"
+              onClick={() => void forgetImported()}
+              className="flex-1 rounded bg-white/[0.06] py-1.5 text-white/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
+            >
+              Forget imported history
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void forgetEverything()}
+            className="flex-1 rounded bg-white/[0.06] py-1.5 text-white/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
+          >
+            Forget everything
+          </button>
+        </div>
       )}
 
       <div className="space-y-2">
@@ -171,8 +210,11 @@ export function CommandHistorySection() {
                   >
                     {entry.command}
                   </span>
-                  <span className="w-16 shrink-0 text-right text-white/25">
-                    {relativeDay(entry.lastUsed, now)}
+                  {/* Imported entries are marked, because "when" means
+                      something different for them: it is when the import ran,
+                      not when the command did — the file could not say. */}
+                  <span className="w-20 shrink-0 text-right text-white/25">
+                    {entry.source === 'harvest' ? 'imported' : relativeDay(entry.lastUsed, now)}
                   </span>
                   <button
                     type="button"

@@ -303,6 +303,9 @@ fn to_profile(entry: &HostEntry, id: String) -> SessionProfile {
         wake_on_lan: None,
         // No equivalent setting, so an import follows the global one.
         auto_reconnect: None,
+        // An import says nothing about whether this host's shell history may be
+        // read; that is the user's call, made per host or globally.
+        import_remote_history: None,
         serial: None,
     }
 }
@@ -701,6 +704,9 @@ mod tests {
             keepalive_seconds: None,
             wake_on_lan: None,
             auto_reconnect: None,
+            // An import says nothing about whether this host's shell history may be
+            // read; that is the user's call, made per host or globally.
+            import_remote_history: None,
             serial: None,
         }];
         let profiles = to_profiles(&parse_config("Host prod\n  ProxyJump bastion\n"), &existing);

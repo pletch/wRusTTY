@@ -636,6 +636,24 @@ export function SettingsDialog({
                         label="Suggest recent commands"
                         hint="As you type at a remote prompt, offer commands you have run on that host before. Turning this on means command lines are saved to this machine — off means none are kept, and none are suggested."
                       />
+                      {/* Indented and disabled-when-off, because it is not a
+                          second feature but a part of this one — and because
+                          it must never look like something the switch above
+                          already turned on. It is the only part of
+                          autocomplete that reads anything on a remote
+                          machine, so it is off by default even here. */}
+                      {settings.autocompleteEnabled && (
+                        <div className="ml-6 border-l border-white/10 pl-2">
+                          <Toggle
+                            checked={settings.autocompleteImportRemoteHistory}
+                            onChange={(v) =>
+                              onChange({ ...settings, autocompleteImportRemoteHistory: v })
+                            }
+                            label="Import each host's own shell history"
+                            hint="Once per SSH session, read the host's shell history file (over its own channel, on the connection already open) so suggestions work the first time you connect. Nothing is written on the host and its history file is not changed. Off by default: this is the only part of autocomplete that reads anything on a server, and a server is often not yours alone. Individual saved sessions can override this."
+                          />
+                        </div>
+                      )}
                       <CommandHistorySection />
                     </>
                   )}

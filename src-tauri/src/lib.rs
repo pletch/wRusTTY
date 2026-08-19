@@ -112,6 +112,7 @@ pub fn run() {
             command_history::command_history_list,
             command_history::command_history_forget,
             command_history::command_history_forget_imported,
+            command_history::command_history_harvest,
             putty_import::putty_sessions_available,
             putty_import::putty_import_sessions,
             ssh_config_import::ssh_config_sessions_available,

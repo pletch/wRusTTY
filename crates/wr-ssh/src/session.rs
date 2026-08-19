@@ -105,6 +105,71 @@ impl SshSession {
         Self::get_or_open(&self.sftp, self.handle.clone()).await
     }
 
+    /// Run one command on a channel of its own and collect what it prints.
+    ///
+    /// The same move as `get_or_open_transfer_sftp` below — `channel_open_session`
+    /// on the connection that is already up — but requesting `exec` instead of
+    /// a subsystem, and closing the channel when the command is done. No second
+    /// TCP connection, no second authentication, nothing in the server's auth
+    /// log: to sshd this is one more channel on an established session.
+    ///
+    /// Everything about it is bounded, because the caller is asking a machine
+    /// it does not control to print something:
+    ///
+    ///   - **`max_bytes`** caps what is collected. Past it, collection stops
+    ///     and the channel is dropped; the result is whatever arrived, which
+    ///     the caller can use or discard.
+    ///   - **`timeout`** caps the wait, for a host that accepts the channel and
+    ///     then says nothing. Hitting it is an error rather than a short read:
+    ///     a truncated answer that *looks* complete is worse than none.
+    ///   - stderr is discarded rather than merged. The callers here want the
+    ///     command's output, and a shell that prints a warning to stderr would
+    ///     otherwise have it spliced into the middle of that.
+    ///
+    /// Not every host allows this. `ForceCommand`, a restricted shell, and any
+    /// appliance whose "shell" is its own CLI will refuse the request or answer
+    /// something unusable — so callers must treat failure as ordinary.
+    pub async fn exec_capture(
+        &self,
+        command: &str,
+        max_bytes: usize,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, SshError> {
+        let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
+        tokio::time::timeout(timeout, async move {
+            let mut channel = handle.channel_open_session().await?;
+            channel.exec(true, command).await?;
+            let mut out = Vec::new();
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => {
+                        // Take only up to the cap, then stop reading. Breaking
+                        // here drops the channel, which tells the far end to
+                        // stop rather than letting it keep sending into a
+                        // buffer nobody is growing.
+                        let room = max_bytes.saturating_sub(out.len());
+                        if room == 0 {
+                            break;
+                        }
+                        out.extend_from_slice(&data[..data.len().min(room)]);
+                        if out.len() >= max_bytes {
+                            break;
+                        }
+                    }
+                    // The command finished, or the transport went away. Either
+                    // way what has arrived is all there is.
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                    // Exit status, stderr, window adjustments: nothing this
+                    // needs. stderr in particular is deliberately dropped.
+                    _ => {}
+                }
+            }
+            Ok::<_, SshError>(out)
+        })
+        .await
+        .map_err(|_| SshError::ExecTimeout)?
+    }
+
     /// The same thing again, on a channel of its own, for bulk transfers.
     ///
     /// One SFTP client serialises everything asked of it: requests queue behind

@@ -8,13 +8,12 @@ path completion, not flag descriptions. Those are separate features with
 separate storage and separate risks, and the command half is both the most
 useful and the one this codebase is already most of the way to.
 
-**Phases 1–5 are in.** The feature works end to end: it learns commands from
-both sources, reads the line being typed off the grid, offers completions in a
-list under the prompt, and sends only the missing suffix when one is taken.
-Phase 6 — importing the remote host's own shell history over an `exec` channel
-— is not built, and is the only part that reaches out to a server.
+**All six phases are in.** The feature works end to end: it learns commands
+from all three sources, reads the line being typed off the grid, offers
+completions in a list under the prompt, and sends only the missing suffix when
+one is taken.
 
-What shipped differs from this plan in four places, each noted at the phase it
+What shipped differs from this plan in six places, each noted at the phase it
 belongs to:
 
 - **Phase 2 was smaller than budgeted.** The snippets already emit OSC 633
@@ -28,6 +27,10 @@ belongs to:
 - **Phase 5's echo rule became a counting rule**, plus a store-side refusal of
   lines with no alphanumerics — which is what catches a password prompt that
   masks with `*` rather than echoing nothing.
+- **Phase 6's per-host override is resolved in Rust, not the webview**, which
+  avoided threading a boolean through seven files to reach the pane.
+- **Phase 6 imports counts rather than timestamps**, because only zsh and fish
+  record when a command ran and there is no honest per-entry time to invent.
 
 Written against the engine as it stands after the ghostty-main port,
 `readRows`/`RowText`, and the OSC 133 `CommandTracker`.
@@ -367,12 +370,27 @@ Decisions to make explicitly rather than by default:
    character with `*` satisfies it exactly, since every character *did*
    appear. So the store refuses any line containing no letter or digit, which
    is a property no real command has and every mask does.
-6. **Tier 1 harvest.** *(Not started.)* Its own setting and the per-host
-   override first, then the `exec` channel behind them, per-shell history parsing, bounds and
-   failure handling, and "forget imported history". Last, deliberately: it is
-   the largest new surface, it is the only part that touches the SSH crate,
-   the only part that reads anything on the remote host, and everything before
-   it works without it. Shipping 1–5 and stopping is a coherent product.
+6. **Tier 1 harvest.** *(Done — `exec_capture` in `crates/wr-ssh/src/session.rs`,
+   the parsing and `command_history_harvest` in `command_history.rs`.)* Its own
+   setting and the per-host override first, then the `exec` channel behind
+   them, per-shell history parsing, bounds and failure handling, and "forget
+   imported history". Last, deliberately: the largest new surface, the only
+   part that touches the SSH crate, and the only part that reads anything on
+   the remote host.
+
+   **The per-host override is resolved in Rust, not the webview.** The plan
+   assumed the pane would know it, which would have meant threading one boolean
+   from `sessions.json` through the tab reducer, the pane tree, App and Pane to
+   reach `Terminal.tsx`. The profile is already readable backend-side, so the
+   harvest command takes the global setting and a profile id and resolves both
+   halves in one place — before it opens anything.
+
+   **Counts are imported, timestamps are not.** Only zsh and fish record when a
+   command ran; bash usually does not. So an entry arrives with how often it
+   appears in the file, which is real information present in every format, and
+   with the import time rather than a fabricated last-used — and an entry that
+   already exists keeps its own timestamp, or every stale command in the file
+   would come back looking like it was run a moment ago.
 
 Phases 1–4 are the feature. 5 and 6 are how good it feels on the first day on
 a host.

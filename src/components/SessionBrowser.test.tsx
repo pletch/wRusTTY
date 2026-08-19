@@ -39,6 +39,7 @@ function profile(id: string, label: string): SessionProfile {
     termType: null,
     backspaceSendsCtrlH: null,
     autoReconnect: null,
+    importRemoteHistory: null,
     keepaliveSeconds: null,
     wakeOnLan: null,
     serial: null,

@@ -37,6 +37,7 @@ import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import {
+  harvestRemoteHistory,
   historyKeyForSource,
   recordAccepted,
   recordCommand,
@@ -1087,6 +1088,7 @@ export function Terminal({
       // redraws underneath it.
       promptInput.noteParsed()
       autocomplete.refresh()
+      harvestOnce()
     })
 
     // Shell integration. Nothing here fires unless the far end is actually
@@ -1168,6 +1170,45 @@ export function Terminal({
       },
     })
     autocompleteRef.current = autocomplete
+
+    /**
+     * Tier 1: import this host's own shell history, once.
+     *
+     * Fired on the first output rather than from the connect path — which is
+     * as close to "the first prompt" as this can get without shell
+     * integration, and shell integration is exactly what a host that needs
+     * this most does not have. Waiting also keeps it off the critical path of
+     * a connection: nothing here should make a session take longer to become
+     * usable.
+     *
+     * Once per session, whatever the outcome. A host that refuses — a
+     * restricted shell, `ForceCommand`, an appliance whose `exec` is its own
+     * CLI — must not be asked again every time output arrives, and a host that
+     * answered has nothing more to say until its history file grows.
+     */
+    let harvestAttempted = false
+    function harvestOnce() {
+      if (harvestAttempted) return
+      // SSH only: importing needs a second channel on the live connection, and
+      // neither a telnet session nor a serial line has one.
+      if (conn.transportOf(source) !== 'ssh') return
+      const id = sessionIdRef.current
+      if (!id) return
+      // The outer gate, and the only one this side owns — the harvest's own
+      // setting and the saved session's override of it are resolved backend
+      // side, before any channel is opened. See `harvestRemoteHistory`.
+      if (!settingsRef.current.autocompleteEnabled) return
+      harvestAttempted = true
+      void harvestRemoteHistory({
+        sessionId: id,
+        host: historyKeyForSource(source),
+        importGlobally: settingsRef.current.autocompleteImportRemoteHistory,
+        profileId: source.protocol === 'sshProfile' ? source.profileId : null,
+      }).catch(() => {
+        // A host that will not answer is an ordinary outcome, not something to
+        // interrupt a session over.
+      })
+    }
 
     /**
      * Tier 3 capture: remember a command on a host that never said it ran one.
