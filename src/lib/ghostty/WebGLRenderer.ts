@@ -169,16 +169,24 @@ export const BLEND_LINEAR_CORRECTED = 2
  * cols came from one width and the canvas from another, and nothing — not
  * re-fitting, not resizing the window — could reconcile them.
  */
-export function measureCell(fontFamily: string, fontSize: number): { width: number; height: number } {
+export function measureCell(
+  fonts: FontSelection,
+  fontSize: number,
+): { width: number; height: number } {
   const ctx = document.createElement('canvas').getContext('2d')!
-  // Always the regular face. The grid must not shift when a cell happens to be
-  // bold or italic, so a per-style face is measured against the body font's
-  // cell rather than its own -- which is also why an overwide face is
-  // condensed into its slot rather than given more room.
-  ctx.font = `${fontSize}px ${fontFamily}`
+  // Always the regular face, and always its ordinary weight. The grid must not
+  // shift when a cell happens to be bold or italic, so a per-style face is
+  // measured against the body font's cell rather than its own -- which is also
+  // why an overwide face is condensed into its slot rather than given more
+  // room. The weight is emitted because a Light and a Black cut of the same
+  // family do not advance identically, so the cell has to be measured at the
+  // weight the body text will actually be drawn in.
+  ctx.font = `${fonts.weight === 400 ? '' : `${fonts.weight} `}${fontSize}px ${fonts.regular}`
   return {
-    width: Math.ceil(ctx.measureText('W').width),
-    height: Math.ceil(fontSize * 1.2),
+    // Floored at one pixel: a face that has not resolved yet measures zero,
+    // and a zero-width cell is a division by zero in every grid fit downstream.
+    width: Math.max(1, Math.ceil(ctx.measureText('W').width) + fonts.letterSpacing),
+    height: Math.max(1, Math.ceil(fontSize * fonts.lineHeight)),
   }
 }
 
@@ -435,7 +443,7 @@ export class WebGLRenderer {
       preserveDrawingBuffer: true,
     })!
 
-    const { width: cellWidth, height: cellHeight } = measureCell(fonts.regular, fontSize)
+    const { width: cellWidth, height: cellHeight } = measureCell(fonts, fontSize)
     this.baseCellWidth = cellWidth
     this.baseCellHeight = cellHeight
     this.dpr = 0 // forces the first sync to compute
@@ -552,6 +560,9 @@ export class WebGLRenderer {
       this.fontSize * this.dpr,
       this.deviceCellWidth,
       this.deviceCellHeight,
+      // In device pixels, like everything else the atlas is handed: the cell
+      // it centres a glyph in is the device-pixel one.
+      Math.round(this.fonts.letterSpacing * this.dpr),
     )
 
     const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC)

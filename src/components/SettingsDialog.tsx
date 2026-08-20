@@ -18,7 +18,14 @@ import {
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings, CursorStyleSetting, FontRange } from '../lib/settings'
-import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS, FONT_SIZE_RANGE } from '../lib/settings'
+import {
+  SCROLLBACK_FOOTPRINT_TIERS_MB,
+  FONT_STACKS,
+  FONT_SIZE_RANGE,
+  FONT_WEIGHT_RANGE,
+  LINE_HEIGHT_PERCENT_RANGE,
+  LETTER_SPACING_RANGE,
+} from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
   formatCodepoint,
@@ -486,6 +493,42 @@ function FontRangeTable({
   )
 }
 
+/** A labelled slider with its value beside it — the shape the font size
+ *  control already had, now that weight and the two cell metrics want it too. */
+function SliderRow({
+  label,
+  value,
+  onChange,
+  range,
+  step = 1,
+  format,
+}: {
+  label: string
+  value: number
+  onChange: (value: number) => void
+  range: { min: number; max: number }
+  step?: number
+  format: (value: number) => string
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 text-white/85">
+      <span>{label}</span>
+      <span className="flex items-center gap-2">
+        <input
+          type="range"
+          min={range.min}
+          max={range.max}
+          step={step}
+          className="w-32 accent-sky-400"
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
+        <span className="w-10 text-right text-white/50">{format(value)}</span>
+      </span>
+    </label>
+  )
+}
+
 /**
  * What the OpenType features and the ligature toggle are doing to each other.
  *
@@ -569,7 +612,7 @@ function AdvancedFontSettings({
   return (
     <details className="rounded-md border border-white/5 bg-black/10">
       <summary className="cursor-pointer px-2 py-1.5 text-white/55 transition-colors duration-100 hover:text-white/85">
-        Styled faces, features and ranges
+        Faces, weight, spacing and ranges
       </summary>
       <div className="space-y-2.5 px-2 pt-1 pb-2.5">
         {(
@@ -590,6 +633,22 @@ function AdvancedFontSettings({
             />
           </label>
         ))}
+        <SliderRow
+          label="Weight"
+          value={settings.fontWeight}
+          onChange={(fontWeight) => onChange({ ...settings, fontWeight })}
+          range={FONT_WEIGHT_RANGE}
+          step={100}
+          format={(v) => String(v)}
+        />
+        <SliderRow
+          label="Bold weight"
+          value={settings.fontWeightBold}
+          onChange={(fontWeightBold) => onChange({ ...settings, fontWeightBold })}
+          range={FONT_WEIGHT_RANGE}
+          step={100}
+          format={(v) => String(v)}
+        />
         <label className="flex items-center justify-between gap-3 text-white/85">
           <span>OpenType features</span>
           <input
@@ -602,6 +661,21 @@ function AdvancedFontSettings({
           />
         </label>
         <LigatureConflictNote settings={settings} />
+        <SliderRow
+          label="Line height"
+          value={settings.lineHeightPercent}
+          onChange={(lineHeightPercent) => onChange({ ...settings, lineHeightPercent })}
+          range={LINE_HEIGHT_PERCENT_RANGE}
+          step={5}
+          format={(v) => `${(v / 100).toFixed(2)}×`}
+        />
+        <SliderRow
+          label="Letter spacing"
+          value={settings.letterSpacing}
+          onChange={(letterSpacing) => onChange({ ...settings, letterSpacing })}
+          range={LETTER_SPACING_RANGE}
+          format={(v) => `${v > 0 ? '+' : ''}${v}px`}
+        />
         <FontRangeTable
           ranges={settings.fontRanges}
           onChange={(fontRanges) => onChange({ ...settings, fontRanges })}
@@ -619,6 +693,15 @@ function AdvancedFontSettings({
           inclusive and in hex, to one family ahead of everything else: the private use area
           to a Nerd Font, or CJK to a font that covers it. A row that is not a complete range
           yet has no effect.
+        </p>
+        <p className="leading-relaxed text-white/30">
+          Weight is a number because that is what the axis is: 400 and 700 are what normal
+          and bold mean, and a family with six cuts has no keyword for the one you probably
+          want. A family without a face at the weight asked for gets the nearest it has.
+          Line height and letter spacing resize the cell rather than the glyph — the grid
+          has no gaps to widen — so a wider cell draws its character centred in the space,
+          and a narrower one condenses it to fit. Both change how many rows and columns a
+          pane holds, so open sessions re-fit as you drag them.
         </p>
       </div>
     </details>

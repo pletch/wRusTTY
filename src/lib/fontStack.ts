@@ -53,6 +53,16 @@ export interface FontSelection {
   /** Sorted and non-overlapping, which is what `resolveRangeOverlaps` is for;
    *  `familyForCodepoint` is a binary search and means nothing otherwise. */
   ranges: ReadonlyArray<FontRange>
+  /** CSS numeric weights for ordinary and for bold text. Emitted in the font
+   *  shorthand unless the slot already names a face of that weight. */
+  weight: number
+  boldWeight: number
+  /** Cell height as a multiple of the font size, and pixels added to the cell
+   *  width. Not face selection, but they arrive by the same route and rebuild
+   *  the same renderer, so they ride along rather than being a second argument
+   *  every caller has to thread. */
+  lineHeight: number
+  letterSpacing: number
 }
 
 /** The subset of the settings this reads. */
@@ -63,6 +73,10 @@ export interface FontSettings {
   fontFamilyBoldItalic: string
   fontFeatures: string
   fontRanges: FontRange[]
+  fontWeight: number
+  fontWeightBold: number
+  lineHeightPercent: number
+  letterSpacing: number
 }
 
 /**
@@ -172,6 +186,10 @@ export function buildFontSelection(s: FontSettings): FontSelection {
     boldItalicIsFace: boldItalicIsFace || italicIsFace,
     boldItalicNeedsWeight: !boldItalicIsFace && italicIsFace,
     ranges: s.fontRanges ?? [],
+    weight: s.fontWeight,
+    boldWeight: s.fontWeightBold,
+    lineHeight: s.lineHeightPercent / 100,
+    letterSpacing: s.letterSpacing,
   }
 }
 
@@ -321,5 +339,9 @@ export function plainSelection(family: string): FontSelection {
     boldItalicIsFace: false,
     boldItalicNeedsWeight: false,
     ranges: [],
+    weight: 400,
+    boldWeight: 700,
+    lineHeight: 1.2,
+    letterSpacing: 0,
   }
 }

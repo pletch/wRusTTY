@@ -10,6 +10,8 @@ import {
   RECONNECT_SECONDS_RANGE,
   FONT_STACKS,
   FONT_SIZE_RANGE,
+  FONT_WEIGHT_RANGE,
+  LINE_HEIGHT_PERCENT_RANGE,
   DEFAULT_FONT_SIZE,
 } from './settings'
 
@@ -288,21 +290,47 @@ describe('the reconnect bounds', () => {
   })
 })
 
-describe('the font size a stored blob can carry', () => {
-  it('is clamped to what the control offers, and to what Ctrl+= will reach', () => {
+describe('the font measurements a stored blob can carry', () => {
+  // Every one of these is a number the renderer sizes a grid or a face with:
+  // a stored zero is not an ugly pane, it is a division by a zero-width cell.
+  it('clamp a font size to what the controls offer', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 500 }))
     expect(loadSettings().fontSize).toBe(FONT_SIZE_RANGE.max)
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 0 }))
     expect(loadSettings().fontSize).toBe(FONT_SIZE_RANGE.min)
   })
 
-  // The bottom of a range is a decision; absent is not. `Number()` reads null
-  // and '' as zero, which used to make them indistinguishable.
-  it('falls back to the default rather than the bound when it is not a number', () => {
-    for (const stored of ['big', null, '']) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: stored }))
-      expect(loadSettings().fontSize).toBe(DEFAULT_FONT_SIZE)
-    }
+  it('fall back to the default when a measurement is not a number', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ fontSize: 'big', lineHeightPercent: null, letterSpacing: 'wide' }),
+    )
+    const s = loadSettings()
+    expect(s.fontSize).toBe(DEFAULT_FONT_SIZE)
+    expect(s.lineHeightPercent).toBe(120)
+    expect(s.letterSpacing).toBe(0)
+  })
+
+  it('clamp the weights to the CSS axis', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontWeight: 50, fontWeightBold: 4000 }))
+    const s = loadSettings()
+    expect(s.fontWeight).toBe(FONT_WEIGHT_RANGE.min)
+    expect(s.fontWeightBold).toBe(FONT_WEIGHT_RANGE.max)
+  })
+
+  it('default to the weights and metrics that render as the app always did', () => {
+    const s = loadSettings()
+    expect(s.fontWeight).toBe(400)
+    expect(s.fontWeightBold).toBe(700)
+    expect(s.lineHeightPercent).toBe(120)
+    expect(s.letterSpacing).toBe(0)
+  })
+
+  it('keep a line height below the font size out of the settings entirely', () => {
+    // A cell shorter than the face clips its descenders, not just the odd
+    // glyph's, so the floor is a real bound rather than a taste.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ lineHeightPercent: 40 }))
+    expect(loadSettings().lineHeightPercent).toBe(LINE_HEIGHT_PERCENT_RANGE.min)
   })
 })
 

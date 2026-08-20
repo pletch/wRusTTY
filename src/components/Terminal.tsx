@@ -580,6 +580,10 @@ export function Terminal({
     fontFamilyBoldItalic,
     fontFeatures,
     fontRanges,
+    fontWeight,
+    fontWeightBold,
+    lineHeightPercent,
+    letterSpacing,
   } = settings
   const fontSelection = useMemo(
     () =>
@@ -590,6 +594,10 @@ export function Terminal({
         fontFamilyBoldItalic,
         fontFeatures,
         fontRanges,
+        fontWeight,
+        fontWeightBold,
+        lineHeightPercent,
+        letterSpacing,
       }),
     [
       fontFamily,
@@ -598,6 +606,10 @@ export function Terminal({
       fontFamilyBoldItalic,
       fontFeatures,
       fontRanges,
+      fontWeight,
+      fontWeightBold,
+      lineHeightPercent,
+      letterSpacing,
     ],
   )
 

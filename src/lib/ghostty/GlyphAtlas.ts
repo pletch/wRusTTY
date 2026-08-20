@@ -113,6 +113,8 @@ export class GlyphAtlas {
   public readonly cellHeight: number
   private readonly fonts: FontSelection
   private readonly fontSize: number
+  /** Left offset for drawn text within its slot; see the constructor. */
+  private readonly inset: number = 0
   /** Baseline offset from the top of a cell, in the same pixels as cellHeight. */
   private baseline = 0
   private ascent = 0
@@ -125,13 +127,23 @@ export class GlyphAtlas {
     fonts: FontSelection,
     fontSize: number,
     cellWidth: number,
-    cellHeight: number
+    cellHeight: number,
+    /** How much of `cellWidth` is letter spacing rather than the face's own
+     *  advance, in the same device pixels. Passed in rather than derived from
+     *  the selection because the selection carries CSS pixels and the atlas
+     *  works entirely in device ones. */
+    letterSpacing = 0
   ) {
     this.gl = gl
     this.cellWidth = cellWidth
     this.cellHeight = cellHeight
     this.fonts = fonts
     this.fontSize = fontSize
+    // Half of it either side, so widened cells put the glyph in the middle of
+    // the space rather than against its left edge. Rounded down: an odd pixel
+    // is better spent on the right, where the next cell's own inset follows
+    // it, than on the left where it would shift the column.
+    this.inset = Math.max(0, Math.floor(letterSpacing / 2))
 
     this.canvas = document.createElement('canvas')
     this.canvas.width = this.atlasWidth
@@ -220,7 +232,13 @@ export class GlyphAtlas {
       family = this.fonts.regular
     }
 
-    return `${emitItalic ? 'italic ' : ''}${emitBold ? 'bold ' : ''}${this.fontSize}px ${family}`
+    // The weight is a number rather than the `bold` keyword, which is only
+    // 700 spelled differently — but 700 spelled the one way that cannot also
+    // say 300 or 500. Emitted only when it is not the CSS default, so an
+    // untouched configuration produces the shorthand it always produced.
+    const weight = emitBold ? this.fonts.boldWeight : this.fonts.weight
+    const emitWeight = emitBold || weight !== 400
+    return `${emitItalic ? 'italic ' : ''}${emitWeight ? `${weight} ` : ''}${this.fontSize}px ${family}`
   }
 
   getGlyph(codepoint: number, style = 0): GlyphRect {
@@ -505,19 +523,23 @@ export class GlyphAtlas {
       // sliced off, and the character loses its right-hand side for the
       // session. Scaling it to fit keeps it legible instead, which is what the
       // GLYPH_WIDE slot already does for the wide characters the core flags.
+      // The face's own advance is measured against the slot minus the space
+      // this cell had added to it; widening a cell must not make a glyph that
+      // already fitted start being stretched into the gap.
+      const drawWidth = Math.max(1, slotWidth - this.inset * 2)
       const inkWidth = this.ctx.measureText(text).width
       // A run is fitted in both directions, not just condensed. Its ink is the
       // font's own advances for `cells` characters, and the cell is a rounded
       // measurement of one — over three columns that difference accumulates
       // into a visible drift against the cells the slices are drawn into.
-      if (inkWidth > 0 && (cells > 1 ? inkWidth !== slotWidth : inkWidth > slotWidth)) {
+      if (inkWidth > 0 && (cells > 1 ? inkWidth !== drawWidth : inkWidth > drawWidth)) {
         this.ctx.save()
-        this.ctx.translate(x, y + this.baseline)
-        this.ctx.scale(slotWidth / inkWidth, 1)
+        this.ctx.translate(x + this.inset, y + this.baseline)
+        this.ctx.scale(drawWidth / inkWidth, 1)
         this.ctx.fillText(text, 0, 0)
         this.ctx.restore()
       } else {
-        this.ctx.fillText(text, x, y + this.baseline)
+        this.ctx.fillText(text, x + this.inset, y + this.baseline)
       }
     }
 

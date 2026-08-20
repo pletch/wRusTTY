@@ -65,6 +65,10 @@ function settings(over: Partial<FontSettings> = {}): FontSettings {
     fontFamilyBoldItalic: '',
     fontFeatures: '',
     fontRanges: [],
+    fontWeight: 400,
+    fontWeightBold: 700,
+    lineHeightPercent: 120,
+    letterSpacing: 0,
     ...over,
   }
 }

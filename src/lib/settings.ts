@@ -130,6 +130,38 @@ export interface TerminalSettings {
   /** Terminal font size in px. */
   fontSize: number
   /**
+   * Weight for ordinary text, and for bold, as CSS numeric weights.
+   *
+   * Numbers rather than a switch because that is what the axis actually is:
+   * plenty of monospaced families ship six or seven weights, and the one most
+   * people want for body text — Light or Medium — has no keyword. 400 and 700
+   * are what `normal` and `bold` mean, so the defaults render exactly as they
+   * did before this existed.
+   *
+   * A family with no face at the weight asked for gets the nearest one it has,
+   * or a synthesized approximation; that is the browser's rule, not ours.
+   */
+  fontWeight: number
+  fontWeightBold: number
+  /**
+   * Cell height as a percentage of the font size — 120 being the 1.2 the
+   * renderer always used.
+   *
+   * A percentage, and an integer, because it is persisted: a float round-trips
+   * through JSON with a tail of binary noise, and every value here has to
+   * survive being reloaded and compared against the one that was stored.
+   */
+  lineHeightPercent: number
+  /**
+   * Pixels added to each cell's width, on top of what the face measures.
+   *
+   * Cell width, not glyph spacing: a terminal grid has no gaps to widen, so
+   * this makes the *cells* wider and the glyph is drawn centred in the space.
+   * Negative tightens, and is honest about it — the glyph is condensed to fit
+   * rather than allowed to touch its neighbour.
+   */
+  letterSpacing: number
+  /**
    * Memory each pane may spend on scrollback, in MB — one of
    * `SCROLLBACK_FOOTPRINT_TIERS_MB`, and the pane's whole WASM footprint
    * rather than the scrollback budget alone.
@@ -419,6 +451,10 @@ const defaults: TerminalSettings = {
   clipboardWriteFromRemote: true,
   fontFamily: FONT_STACKS[0].value,
   fontSize: DEFAULT_FONT_SIZE,
+  fontWeight: 400,
+  fontWeightBold: 700,
+  lineHeightPercent: 120,
+  letterSpacing: 0,
   // 16 MB, not the smallest tier: it estimates ~10,100 rows at 80 columns,
   // which is what the previous default (10,000 rows) meant to deliver. A new
   // install should not quietly get less history than the last version aimed at.
@@ -500,12 +536,17 @@ export function scrollbackTierForRows(rows: number): number {
  * be used, rather than one silently corrected on the way through.
  */
 /**
- * The bounds the font size control offers, and the size Ctrl+0 goes back to.
+ * The bounds the font controls offer, and the size Ctrl+0 goes back to.
  *
  * Shared rather than written into the dialog, because the zoom shortcuts move
  * the same setting the slider does and the two must agree on where it stops.
  */
 export const FONT_SIZE_RANGE = { min: 8, max: 24 } as const
+export const FONT_WEIGHT_RANGE = { min: 100, max: 900 } as const
+/** 100 is a cell exactly as tall as the font size — anything less clips the
+ *  descenders of the face itself, not just of the odd glyph. */
+export const LINE_HEIGHT_PERCENT_RANGE = { min: 100, max: 200 } as const
+export const LETTER_SPACING_RANGE = { min: -2, max: 8 } as const
 
 export const RECONNECT_ATTEMPTS_RANGE = { min: 1, max: 100 } as const
 export const RECONNECT_SECONDS_RANGE = { min: 5, max: 3600 } as const
@@ -538,9 +579,26 @@ export function loadSettings(): TerminalSettings {
     if (!SCROLLBACK_FOOTPRINT_TIERS_MB.includes(merged.scrollbackBudgetMB)) {
       merged.scrollbackBudgetMB = defaults.scrollbackBudgetMB
     }
-    // The size reaches the renderer as the number it measures a cell with, so
-    // a stored zero is not an ugly pane, it is a division by a zero-width cell.
+    // Every one of these reaches the renderer as a number it will size a grid
+    // or a face with. A stored zero or a NaN would not be a bad-looking pane,
+    // it would be a division by a zero-width cell.
     merged.fontSize = clampSetting(merged.fontSize, defaults.fontSize, FONT_SIZE_RANGE)
+    merged.fontWeight = clampSetting(merged.fontWeight, defaults.fontWeight, FONT_WEIGHT_RANGE)
+    merged.fontWeightBold = clampSetting(
+      merged.fontWeightBold,
+      defaults.fontWeightBold,
+      FONT_WEIGHT_RANGE,
+    )
+    merged.lineHeightPercent = clampSetting(
+      merged.lineHeightPercent,
+      defaults.lineHeightPercent,
+      LINE_HEIGHT_PERCENT_RANGE,
+    )
+    merged.letterSpacing = clampSetting(
+      merged.letterSpacing,
+      defaults.letterSpacing,
+      LETTER_SPACING_RANGE,
+    )
     merged.reconnectMaxAttempts = clampSetting(
       merged.reconnectMaxAttempts,
       defaults.reconnectMaxAttempts,

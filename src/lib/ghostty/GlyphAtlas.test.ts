@@ -26,6 +26,23 @@ function make2dContextStub() {
     restore: vi.fn(),
     translate: vi.fn(),
     scale: vi.fn(),
+    // The path calls boxDrawing sets up around its geometry. No-ops: what
+    // these tests read is the rects, and fillRect is already bounded by the
+    // slot the caller passed in.
+    beginPath: vi.fn(),
+    closePath: vi.fn(),
+    rect: vi.fn(),
+    clip: vi.fn(),
+    moveTo: vi.fn(),
+    lineTo: vi.fn(),
+    arcTo: vi.fn(),
+    ellipse: vi.fn(),
+    stroke: vi.fn(),
+    fill: vi.fn(),
+    strokeStyle: '',
+    lineWidth: 0,
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
     measureText: vi.fn(
       (): { fontBoundingBoxAscent?: number; fontBoundingBoxDescent?: number } => ({
         fontBoundingBoxAscent: 12,
@@ -279,6 +296,102 @@ describe('atlas growth', () => {
     // to relocate a rect that has already been handed out.
     const distinct = new Set(rects.map((r) => `${r.x},${r.y}`))
     expect(distinct.size).toBe(44)
+  })
+})
+
+describe('weight', () => {
+  /** The selection with the two weights set; everything else as it was. */
+  const weighted = (weight: number, boldWeight: number) => ({
+    ...FONTS,
+    weight,
+    boldWeight,
+  })
+
+  it('emits nothing for ordinary text at the CSS default, exactly as before', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    atlas.getGlyph(65)
+    expect(ctxStub.font).toBe('14px monospace')
+  })
+
+  it('emits the number for a body weight that is not 400', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), weighted(300, 700), 14, 8, 16)
+    atlas.getGlyph(65)
+    expect(ctxStub.font).toBe('300 14px monospace')
+  })
+
+  it('emits the bold weight for bold cells, not the keyword', () => {
+    // 700 and `bold` are the same computed weight; a number is the spelling
+    // that can also say 600, which is the point of the setting.
+    const atlas = new GlyphAtlas(makeGlStub(), weighted(300, 600), 14, 8, 16)
+    atlas.getGlyph(65, GLYPH_BOLD)
+    expect(ctxStub.font).toBe('600 14px monospace')
+  })
+
+  it('keeps the slant alongside the weight', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), weighted(400, 800), 14, 8, 16)
+    atlas.getGlyph(65, GLYPH_BOLD | GLYPH_ITALIC)
+    expect(ctxStub.font).toBe('italic 800 14px monospace')
+  })
+
+  it('asks a named bold face for no weight at all, whatever the setting says', () => {
+    // The face is the weight. Emitting one as well is what gets a Black cut
+    // synthesized on top of a face that was already bold.
+    const atlas = new GlyphAtlas(
+      makeGlStub(),
+      { ...weighted(400, 900), bold: 'Iosevka Bold', boldIsFace: true },
+      14,
+      8,
+      16,
+    )
+    atlas.getGlyph(65, GLYPH_BOLD)
+    expect(ctxStub.font).toBe('14px Iosevka Bold')
+  })
+})
+
+describe('letter spacing', () => {
+  it('draws the glyph centred in the widened cell rather than against its edge', () => {
+    // Cell 12 wide, 4 of which is spacing: 2 either side of the slot the
+    // glyph was given, which is not the origin — slot 0 is the blank.
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
+    ctxStub.fillText.mockClear()
+    const rect = atlas.getGlyph(65)
+    expect(ctxStub.fillText).toHaveBeenCalledWith('A', rect.x + 2, expect.any(Number))
+  })
+
+  it('leaves the glyph at the slot edge when nothing was added', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    ctxStub.fillText.mockClear()
+    const rect = atlas.getGlyph(65)
+    expect(ctxStub.fillText).toHaveBeenCalledWith('A', rect.x, expect.any(Number))
+  })
+
+  it('measures a glyph against the face\'s share of the cell, not the added space', () => {
+    // Ink of 10 in a 12-wide cell whose spacing is 4: the face has 8 to draw
+    // in, so this overruns and is condensed to 8 — a glyph must not be
+    // stretched into the gap that widening the cell just created.
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
+    ctxStub.measureText = vi.fn(() => ({
+      width: 10,
+      fontBoundingBoxAscent: 11,
+      fontBoundingBoxDescent: 3,
+    })) as unknown as typeof ctxStub.measureText
+    ctxStub.scale.mockClear()
+    atlas.getGlyph(0x4e00)
+    expect(ctxStub.scale).toHaveBeenCalledWith(8 / 10, 1)
+  })
+
+  it('still draws the box characters across the whole cell, so they tile', () => {
+    // Geometry against the cell rect, spacing included: a border that inset
+    // itself would leave a hairline gap down every column.
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
+    ctxStub.fillRect.mockClear()
+    const rect = atlas.getGlyph(0x2500)
+    // A rule is drawn as two arms from the centre, so what matters is where
+    // the pair starts and ends rather than how wide either one is.
+    const lefts = ctxStub.fillRect.mock.calls.map((c) => c[0] as number)
+    const rights = ctxStub.fillRect.mock.calls.map((c) => (c[0] as number) + (c[2] as number))
+    expect(Math.min(...lefts)).toBe(rect.x)
+    expect(Math.max(...rights)).toBe(rect.x + 12)
   })
 })
 

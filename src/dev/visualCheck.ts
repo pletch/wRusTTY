@@ -100,6 +100,8 @@ engine.write(out)
  *   ?italic=Comic Sans MS                  a face for the italic slot; also
  *   ?bold=…  ?bolditalic=…                 the other two styled slots
  *   ?range=30-39:Comic Sans MS             pin a codepoint range, hex, repeatable
+ *   ?weight=300  ?boldweight=600           the two numeric weights
+ *   ?lineheight=150  ?spacing=2            cell height percent, and cell widening
  *
  * The pairing that says the most in one screenshot is `?font=Cascadia Code
  * &features="calt" 0`, which should leave the ligature line unligated even with
@@ -109,6 +111,11 @@ engine.write(out)
  */
 const params = new URLSearchParams(location.search)
 const wantedFont = params.get('font')
+/** A numeric knob from the URL, or the default when it is absent or nonsense. */
+const num = (name: string, fallback: number) => {
+  const n = Number(params.get(name))
+  return Number.isFinite(n) && params.has(name) ? n : fallback
+}
 const wantedFeatures = params.get('features') ?? ''
 /** A styled slot: quoted, so a family with a space in it survives the CSS. */
 const slot = (name: string | null) => (name ? JSON.stringify(name) : '')
@@ -118,7 +125,13 @@ const wantedRanges = params.getAll('range').flatMap((spec) => {
   if (!m) return []
   return [{ lo: parseInt(m[1], 16), hi: parseInt(m[2], 16), family: JSON.stringify(m[3]) }]
 })
-if (wantedFont || wantedFeatures || wantedRanges.length > 0 || params.has('italic')) {
+const metricParams = ['weight', 'boldweight', 'lineheight', 'spacing', 'italic']
+if (
+  wantedFont ||
+  wantedFeatures ||
+  wantedRanges.length > 0 ||
+  metricParams.some((p) => params.has(p))
+) {
   const family = wantedFont ? `"${wantedFont}", ui-monospace, monospace` : 'Consolas, monospace'
   engine.setFont(
     buildFontSelection({
@@ -128,6 +141,10 @@ if (wantedFont || wantedFeatures || wantedRanges.length > 0 || params.has('itali
       fontFamilyBoldItalic: slot(params.get('bolditalic')),
       fontFeatures: wantedFeatures,
       fontRanges: wantedRanges,
+      fontWeight: num('weight', 400),
+      fontWeightBold: num('boldweight', 700),
+      lineHeightPercent: num('lineheight', 120),
+      letterSpacing: num('spacing', 0),
     }),
     14,
   )

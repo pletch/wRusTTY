@@ -2001,7 +2001,7 @@ export class GhosttyEngine implements TerminalEngine {
       cellWidth = size.width
       cellHeight = size.height
     } else {
-      const size = measureCell(this.fonts.regular, this.fontSize)
+      const size = measureCell(this.fonts, this.fontSize)
       cellWidth = size.width
       cellHeight = size.height
     }
