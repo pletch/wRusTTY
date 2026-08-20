@@ -61,6 +61,14 @@ export const MAX_RUN_CELLS = 3
 const RUN_CACHE_CAP = 512
 
 /**
+ * How far the atlas may double. 4096x4096 of R8 is 16MB, and it is per pane —
+ * each pane has its own WebGL context, so the texture genuinely cannot be
+ * shared with another one. Growth is demand-driven, so this is a ceiling on
+ * the pathological case rather than a cost anything pays up front.
+ */
+const MAX_ATLAS_SIZE = 4096
+
+/**
  * The hollow rectangle an unfocused pane draws instead of a filled block. It is
  * a glyph rather than geometry for the same reason the underline is: the
  * renderer draws exactly one quad per cell, and a shape that fits inside a cell
@@ -284,6 +292,89 @@ export class GlyphAtlas {
     }
   }
 
+  /**
+   * Doubles the atlas when it runs out of rows, up to `MAX_ATLAS_SIZE` or
+   * whatever the GL implementation will give us.
+   *
+   * This exists because running out was not a degradation, it was a cliff:
+   * every glyph after the last slot drew blank, nothing ever evicted, and the
+   * pane stayed that way until its font changed. And the cliff is close. At
+   * device-pixel-ratio 2 — an ordinary laptop — a 14px cell is 16x34, which is
+   * 1920 slots, or 960 for the double-width ones CJK uses. A thousand distinct
+   * Han characters is a document, not a stress test.
+   *
+   * Growth is demand-driven, so a Latin pane never leaves 1MB. Returns false
+   * when there is nowhere left to grow, which puts the old warn-and-blank back
+   * as the terminal state rather than as the first thing that happens.
+   */
+  private grow(): boolean {
+    const gl = this.gl
+    const size = this.atlasWidth * 2
+    const limit = Math.min(MAX_ATLAS_SIZE, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number)
+    if (size > limit) return false
+
+    const oldWidth = this.atlasWidth
+    const oldHeight = this.atlasHeight
+
+    // Read the coverage out before touching anything: resizing a canvas resets
+    // it, and this is the only copy of what has been rasterized so far.
+    const rgba = this.ctx.getImageData(0, 0, oldWidth, oldHeight).data
+    const coverage = new Uint8Array(oldWidth * oldHeight)
+    for (let i = 0; i < coverage.length; i++) coverage[i] = rgba[i * 4 + 3]
+
+    // A fresh canvas rather than a resize of this one, so the old content can
+    // be blitted across in the same step. Context state does not survive
+    // either way, hence the re-establishment below.
+    const next = document.createElement('canvas')
+    next.width = size
+    next.height = size
+    const nextCtx = next.getContext('2d', { willReadFrequently: true })
+    if (!nextCtx) return false
+    nextCtx.drawImage(this.canvas, 0, 0)
+    this.canvas = next
+    this.ctx = nextCtx
+    this.ctx.fillStyle = 'white'
+    this.ctx.textBaseline = 'alphabetic'
+
+    this.atlasWidth = size
+    this.atlasHeight = size
+
+    // The same texture object, reallocated. Sampler parameters are texture
+    // state rather than level state, so they survive; the renderer re-reads
+    // `.texture` every frame anyway, but keeping the identity means nothing
+    // holding it can go stale.
+    gl.bindTexture(gl.TEXTURE_2D, this.texture)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, size, size, 0, gl.RED, gl.UNSIGNED_BYTE, null)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, oldWidth, oldHeight, gl.RED, gl.UNSIGNED_BYTE, coverage)
+
+    // The right-hand half of every already-packed row is left unused — slots
+    // are handed out strictly forward and nothing goes back to fill it. So a
+    // doubling buys roughly three times the slots rather than four, which is
+    // the price of not having to relocate anything that has already been
+    // handed out.
+    //
+    // Every cached rect's UVs are normalized against the old dimensions, so
+    // they all move. Mutated in place rather than replaced: the renderer holds
+    // rects across cells within a frame — `pendingWide`, and a run's rect
+    // across its slices — and growth can happen in the middle of one.
+    this.rescale()
+    return true
+  }
+
+  /** Re-normalizes every cached rect against the current atlas dimensions. */
+  private rescale(): void {
+    const fix = (r: GlyphRect) => {
+      r.u0 = r.x / this.atlasWidth
+      r.v0 = r.y / this.atlasHeight
+      r.u1 = (r.x + r.width) / this.atlasWidth
+      r.v1 = (r.y + r.height) / this.atlasHeight
+    }
+    for (const r of this.cache.values()) fix(r)
+    for (const r of this.clusterCache.values()) fix(r)
+    for (const r of this.runCache.values()) fix(r)
+  }
+
   private rasterize(
     text: string,
     style: number,
@@ -301,12 +392,14 @@ export class GlyphAtlas {
       this.currentY += this.cellHeight
     }
 
-    if (this.currentY + this.cellHeight > this.atlasHeight) {
+    if (this.currentY + this.cellHeight > this.atlasHeight && !this.grow()) {
       // Draws nothing rather than the wrong character, and only warns once —
       // this fires per glyph, so logging each one buries the console.
       if (!this.warnedFull) {
         this.warnedFull = true
-        console.warn('GlyphAtlas full; further glyphs will not render.')
+        console.warn(
+          `GlyphAtlas full at ${this.atlasWidth}x${this.atlasHeight}; further glyphs will not render.`,
+        )
       }
       return this.blank ?? { x: 0, y: 0, width: 0, height: 0, u0: 0, v0: 0, u1: 0, v1: 0 }
     }

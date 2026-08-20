@@ -34,11 +34,14 @@ function make2dContextStub() {
     getImageData: vi.fn((_x: number, _y: number, w: number, h: number) => ({
       data: new Uint8ClampedArray(w * h * 4).fill(255),
     })),
+    drawImage: vi.fn(),
   }
 }
 
-function makeGlStub() {
+function makeGlStub(maxTextureSize = 4096) {
   return {
+    MAX_TEXTURE_SIZE: 0x0d33,
+    getParameter: vi.fn((p: number) => (p === 0x0d33 ? maxTextureSize : 0)),
     TEXTURE_2D: 1,
     R8: 2,
     RED: 3,
@@ -198,29 +201,79 @@ describe('underline / strikethrough / cursor outline', () => {
   })
 })
 
-describe('atlas exhaustion', () => {
-  it('falls back to the blank glyph once the atlas has no room left, warning only once', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // atlasWidth/atlasHeight are fixed at 1024x1024. A 512x512 cell leaves
-    // exactly 4 slots: the constructor's own forced blank-glyph rasterization
-    // (space) consumes the first, so 3 more distinct codepoints fit before
-    // a 4th is turned away.
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 512, 512)
-    const first = atlas.getGlyph(65)
-    const second = atlas.getGlyph(66)
-    const third = atlas.getGlyph(67)
-    expect([first, second, third].every((r) => r.width === 512)).toBe(true)
+describe('atlas growth', () => {
+  /** 512x512 cells leave exactly 4 slots at 1024, so the atlas runs out after
+   *  the constructor's own blank plus three glyphs — which makes the growth
+   *  boundary reachable in a handful of calls instead of thousands. */
+  const HUGE = 512
 
-    // The blank glyph (space, rasterized once in the constructor before the
-    // atlas held anything else) is what every subsequent overflow falls
-    // back to — same rect, not a fresh zero-sized one, and only one warning
-    // no matter how many more glyphs are turned away after the first.
+  it('doubles rather than turning a glyph away', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    // Slot 0 is the constructor's blank; 65..67 fill 1024x1024 exactly.
+    for (const cp of [65, 66, 67]) expect(atlas.getGlyph(cp).width).toBe(HUGE)
+    // The fourth would have been blank before; now it gets a real slot.
+    const grown = atlas.getGlyph(68)
+    expect(grown.width).toBe(HUGE)
+    expect(grown).not.toEqual(atlas.getGlyph(32))
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('keeps a rect handed out before the growth pointing at the same pixels', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    const early = atlas.getGlyph(65)
+    const beforeX = early.x
+    const beforeU0 = early.u0
+    for (const cp of [66, 67, 68, 69]) atlas.getGlyph(cp)
+
+    // Same object — the renderer holds rects across cells within a frame, and
+    // growth can happen in the middle of one.
+    expect(atlas.getGlyph(65)).toBe(early)
+    // Same pixels, renormalized: x is untouched and u0 has halved, because the
+    // atlas it is a fraction of is twice as wide.
+    expect(early.x).toBe(beforeX)
+    expect(early.u0).toBeCloseTo(beforeU0 / 2, 10)
+    expect(early.u1 - early.u0).toBeCloseTo(HUGE / 2048, 10)
+  })
+
+  it('renormalizes cluster and run rects too, not only single codepoints', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    const cluster = atlas.getClusterGlyph('é')
+    const before = cluster.u0
+    for (const cp of [66, 67, 68, 69]) atlas.getGlyph(cp)
+    expect(cluster.u0).toBeCloseTo(before / 2, 10)
+    expect(cluster.u1).toBeCloseTo((cluster.x + cluster.width) / 2048, 10)
+  })
+
+  it('stops at the largest texture the GL implementation offers', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // A driver that will not go past the starting size: growth is refused on
+    // the first attempt and the old warn-and-blank is what is left.
+    const atlas = new GlyphAtlas(makeGlStub(1024), 'monospace', 14, HUGE, HUGE)
+    for (const cp of [65, 66, 67]) atlas.getGlyph(cp)
     const blank = atlas.getGlyph(32)
-    const overflow1 = atlas.getGlyph(68)
-    const overflow2 = atlas.getGlyph(69)
-    expect(overflow1).toEqual(blank)
-    expect(overflow2).toEqual(blank)
+    expect(atlas.getGlyph(68)).toEqual(blank)
+    expect(atlas.getGlyph(69)).toEqual(blank)
     expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('1024x1024')
+  })
+
+  it('grows repeatedly, and gives up only at the ceiling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    // 4096 is the ceiling, so 8x8 slots is everything this atlas can ever
+    // hold. Ask for more than that and the last few are turned away.
+    const rects = []
+    for (let i = 0; i < 80; i++) rects.push(atlas.getGlyph(0x4e00 + i))
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('4096x4096')
+    // 44, not the 64 a 4096x4096 atlas would hold if it were packed from
+    // scratch: 4 slots at 1024, then 8 more in the rows a 2048 atlas adds,
+    // then 32 in the rows 4096 adds. The right-hand half of every row packed
+    // before a growth is never revisited, which is the price of never having
+    // to relocate a rect that has already been handed out.
+    const distinct = new Set(rects.map((r) => `${r.x},${r.y}`))
+    expect(distinct.size).toBe(44)
   })
 })
 
