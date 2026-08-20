@@ -4,35 +4,34 @@ Open items with enough context to pick up cold. Design decisions and the
 gotchas already found live here so they don't have to be rediscovered — see
 PROJECT_PLAN.md for the phased plan this sits alongside.
 
-## Rounded tab corners
+## ~~Rounded tab corners~~ — shipped
 
-Windows 11 apps (Edge, Windows Terminal, File Explorer) round the top corners
-of tabs. wRusTTY's are square.
+Kept because the shape it landed in is not the shape either option here
+described, and the difference is the interesting part.
 
-**The modest version** — `rounded-t-lg` on the tab div in `TabBar.tsx`, plus
-one required companion change:
+Shipped in `9fb5008` and `8b32c84`: `rounded-t-lg`, matching the window's own
+radius. The companion change this predicted was needed and was not enough. The
+pane map did have to come off the edge the radius eats — it stops a radius
+short at each end and caps itself, and sits 2px down, since a line pinned to
+the lip of a rounded object looks stuck to it rather than placed on it.
 
-- The pane map is `absolute inset-x-0 top-0`, anchored to the exact edge the
-  radius eats. At an 8px radius the fill is inset ~8px per side at y=0,
-  tapering to ~2.7px by y=2, so a 2px bar would render as a stub with its
-  ends chewed off. Change it to `inset-x-2` so it sits on the straight part
-  of the top edge. Costs 16px of a 130px minimum tab, which it can spare.
-- Content padding needs nothing: `px-3` (12px) already clears an 8px radius.
-- The radius is only ever *visible* on the active tab and on hover, since
-  inactive tabs have no background at all (`bg-white/10` on active,
-  `hover:bg-white/[0.06]` otherwise). Small change, correspondingly small
-  risk.
+What this file did not anticipate: **the vertical hairline between tabs had to
+go with the corners** — a rule meeting a curve reads as a defect — and it was
+load-bearing, because both tabs either side of it were transparent. A faint
+fill on every tab plus a 2px gap replaced it, and paid twice over: a radius
+only shows against something, so the fill is also what makes the rounding
+visible at all. The tabs also drop 4px below the window's top edge, for the
+reason Chrome and Windows Terminal do it.
 
-**The full version, as a separate decision.** In Edge and Windows Terminal
-the rounding works because the active tab's fill matches the content area
-behind it and the strip's bottom border breaks underneath it, so the tab
-reads as continuous with the page below. Here the active tab is a translucent
-white overlay above an unrelated dark terminal, with an unbroken `border-b`
-on the strip — so the modest version gets the shape of the convention without
-the thing the shape is *for*. Doing it properly means the active tab's fill
-matching the terminal background and interrupting that border, which
-interacts with the vibrancy/opacity settings since the terminal background
-isn't a fixed colour.
+**The "full version" question resolved differently than posed.** It framed the
+choice as the active tab's fill matching the terminal background so the two
+read as continuous — which would have tangled with vibrancy and per-pane
+opacity, since that background is not a fixed colour. The actual fix was the
+other half of the same idea: drop the strip's **bottom hairline** outright, so
+the active fill runs into the terminal rather than being cut off from it. The
+strip's own `black/20` still separates it by tone. Erasing that line under only
+the active tab was never available — every fill in the strip is translucent, so
+overpainting tints the border rather than removing it.
 
 ## Settings not yet exposed
 
@@ -42,6 +41,30 @@ Raised while reorganising settings into a dialog.
   manual and writes to a fixed location.
 - **Custom theme colours.** Presets only, no import of an existing scheme.
 - Lower still: selection word separators, scroll sensitivity, rebindable keys.
+
+## Autocomplete: what is left is preference, not unfinished work
+
+All six phases in `docs/AUTOCOMPLETE_PLAN.md` shipped. Recorded here so the
+plan's "Open questions" section isn't mistaken for a backlog — each of these
+is a default to pick, and picking none of them leaves a working feature.
+
+- **Tab-accept on by default, or opt-in.** The most natural key and the most
+  likely to annoy someone whose muscle memory belongs to the remote shell.
+- **Asking in context rather than only in Settings.** An unobtrusive "import
+  this host's shell history?" the first time autocomplete comes up empty on a
+  host is the moment the user can actually judge the question — against being
+  one more prompt in an app that already has host-key and auth prompts.
+  Bounded by asking at most once per host and never after a decline.
+- **Skipping the harvest where Tier 2 already feeds the store.** Shell
+  integration gives us everything from the moment it is installed, so the
+  harvest only adds history from *before* that — valuable once, then never.
+- **Vault-encrypting the store.** Deliberately a plain file today, because
+  suggestions that need an unlock before they work feel broken. The command
+  surface is shaped so this is a change to one module and nothing above it.
+
+PowerShell and CMD hosts stay a non-goal: the prompt and echo model differs
+enough to be its own piece of work. Note this is *autocomplete* only — those
+hosts do get shell integration.
 
 ## ~~Flake: `port_open_reports_a_closed_port_as_closed`~~ — fixed
 

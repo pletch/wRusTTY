@@ -396,7 +396,17 @@ sending, and whether to ask before pasting.
   the shape of bug that hides itself), and `hyperlinkId` is 0 on every cell
   because main's render iterator does not carry one. `LinkController` works off
   text, so nothing reads it; a hyperlink-aware feature would need `grid_ref`.
-- **Per-row dirty is unused.** The renderer redraws the whole viewport. Main can
+- **Per-row dirty is now correct, and still uncalled** (`2e62b73`). Two things
+  were wrong under the honest implementation and only findable by measuring:
+  `mark_clean` cleared the global flag and not the per-row layer, so a viewport
+  stayed every-row-dirty forever after — invisible while nothing reads it, and
+  quietly wrong on the *second* frame for the first thing that does — and
+  `rowDirty` walked the iterator y times to reach row y instead of using
+  `next_dirty` to jump between dirty rows. Both fixed, with the two-frame test
+  that is the only kind that catches the first. Worth knowing before adopting
+  dirty-row rendering: the rows offered include the one the cursor *left*, so a
+  one-row edit reports two.
+- **The renderer still redraws the whole viewport.** Main can
   skip clean rows at 0.05x-0.14x of a full read (`iter.mjs`), which is the one
   measured *improvement* the new API offers. It was the obvious next thing to
   take; it is now deliberately **not** being taken. Same page, same probe: the

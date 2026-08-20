@@ -87,3 +87,12 @@ landed on top of it.
    machine, mains power and roughly an untouched hour.
 
 **Closed:** B1a and B2 (done, justified structurally), B1b and B3 (rejected).
+
+**Footnote on B3 (2026-08-20):** the per-row dirty machinery underneath it was
+fixed in `2e62b73` — `mark_clean` now clears the per-row layer as well as the
+global flag, and `rowDirty` jumps with `next_dirty` rather than walking. That
+does **not** reopen B3. It was done because the shim implements the query and a
+wrong answer there is the shape of bug that hides itself, not because anything
+is about to consume it; the renderer still redraws the whole viewport and the
+0.21 ms number is unchanged. The effect on B3 is only that whoever ever does
+find a bottleneck here starts from a correct query.

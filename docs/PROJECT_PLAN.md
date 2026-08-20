@@ -22,7 +22,11 @@ fallback for hosts with no SFTP subsystem.
 **(shipped)** means it is in the app today, **(partial)** names what is missing,
 and an unmarked item is not built. Re-audit rather than trusting them if much
 time has passed — the previous set had drifted far enough that several shipped
-features were still marked as ideas.
+features were still marked as ideas. **Last audited 2026-08-20, at `8b32c84`.**
+What that pass added: session import from `~/.ssh/config`, recent-command
+autocomplete, the PowerShell shell-integration snippet and self-reporting
+programs, the Campbell palette, linear-light glyph blending, and the engine now
+running ghostty `main` at a pin. Nothing that was marked shipped had regressed.
 
 ---
 
@@ -174,13 +178,73 @@ mosh, RDP) means adding a crate, not touching the UI.
   deferral below.
 
 ### Recommended additions — terminal & UX
-- **PuTTY session import** (Windows registry) — your single best adoption
-  feature **(shipped)**
+- **Session import** — PuTTY's registry sessions **(shipped)**, and
+  `~/.ssh/config` **(shipped)**, which is the same adoption feature aimed at
+  the other half of the audience: someone arriving from a terminal `ssh` habit
+  has no registry full of sessions but very often has thirty `Host` blocks.
+  `HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump` and
+  `ServerAliveInterval` come across; everything else is left behind rather than
+  half-translated. **Both live in Settings only.** The PuTTY offer used to sit
+  on the connect screen — the screen you see most — about a decision made once
+  in the app's lifetime; importing is now something you go and ask for.
 - Scrollback search, configurable scrollback limit, copy-on-select, right-click
   paste **(shipped)**
 - Shell integration (OSC 133/633): per-command status, and a notification when
   a long command finishes with the window in the background **(shipped — see
-  `docs/SHELL_INTEGRATION.md`)**
+  `docs/SHELL_INTEGRATION.md`)**. Snippets for bash, zsh, fish and
+  **PowerShell** ship, each emitting nothing where a shell is non-interactive
+  or has stdin redirected, so `scp`, `rsync`, git-over-ssh and `pwsh -c` are
+  unaffected. A program that emits the sequences **for itself** — a REPL, a
+  full-screen tool — owns the marker while it runs rather than having the
+  shell's stale one sit under it.
+- **Recent-command autocomplete (shipped — `docs/AUTOCOMPLETE_PLAN.md`, all
+  six phases).** An inline suggestion as you type at a remote prompt, with the
+  full ranked list a keystroke away. The store is per-host, frecency-ranked,
+  redacted on write and **ranked in Rust**, so the commands a user has ever run
+  never enter the webview — only the strings about to be shown. Three sources
+  feed it: the shell integration's own `E` payload, passive capture from the
+  grid (guarded so a password prompt cannot be learned), and an optional
+  one-time harvest of the host's shell history file over an `exec` channel.
+  **Off by default, and the harvest is a second opt-in nested under the first**
+  — the history file is somebody else's audit trail. Its remaining questions
+  are preferences, not gaps, and are listed in that plan.
+- **tmux control mode (`tmux -CC`)** — **not built.** In control mode tmux
+  stops drawing and speaks a line protocol instead: `%output %<pane> <bytes>`
+  for every pane, `%begin`/`%end`/`%error` around command replies, and
+  `%window-add`, `%window-close`, `%layout-change`, `%session-changed`,
+  `%exit` as the session changes shape. A terminal that speaks it maps tmux's
+  windows and panes onto its **own** tabs and panes, sends input back as
+  `send-keys`, and reports size with `refresh-client -C`. iTerm2 is the
+  reference implementation and worth reading before writing any of it.
+
+  **What it buys is the one thing auto-reconnect cannot.** Reconnect restores
+  the *transport* and the scrollback we hold; it cannot restore the shell's
+  state, because the remote processes died with the old channel. Under tmux
+  they don't, so a dropped link resumes the work rather than the connection.
+  Secondary but real: our scrollback, search, copy, font and mouse handling
+  apply per tmux pane, instead of tmux reimplementing all of it worse inside
+  one terminal grid.
+
+  **Scope the structural decision first, because it is the whole cost.** Every
+  pane in a tab is currently one `Session` in the registry, one transport, one
+  engine — `wr-core`'s `Connector`/`Session` pair assumes it. A tmux pane is a
+  child of *one* transport, so N panes have to be demultiplexed from a single
+  byte stream. The choice is whether a tmux pane becomes a `Session` behind a
+  virtual connector (the registry, coalescer credit window, logging and
+  reconnect machinery all keep working unchanged) or a new kind of pane leaf
+  (less pretending, but every one of those subsystems needs a second case).
+  The first looks right and should still be argued, not assumed.
+
+  Three things that will cost time if discovered late: **the demux belongs
+  backend-side** — `%output` payloads are octal-escaped and can be large, and
+  routing them in the webview means every pane's bytes crossing IPC through
+  one channel and being unescaped by the process that renders untrusted
+  output; **tmux owns the layout**, so either we mirror its splits and refuse
+  our own inside a tmux tab, or ours drive and push `select-layout` back — one
+  of them, decided up front, because half of each is a pane tree that
+  disagrees with the host; and **`-CC` is not the only version of itself**, so
+  it wants testing against the tmux that ships on the appliances and LTS
+  distributions this app's users actually reach, not just a current one.
 - True colour **(shipped)**, wide characters and grapheme clusters **(shipped —
   the core's, exercised by `readRows.test.ts`)**, font family and size
   **(shipped)**, cursor styles **(shipped — shape and blink, plus DECSCUSR)**.
@@ -248,9 +312,17 @@ mosh, RDP) means adding a crate, not touching the UI.
     items move between entries is harder to learn than one where they dim.
 - Session logging to file (timestamped, per-session toggle) — network/serial
   engineers rely on this constantly **(shipped)**
-- Named colour themes **(partial — five built in, and a per-pane background
+- Named colour themes **(partial — six built in, and a per-pane background
   opacity; importing iTerm/VS Code schemes and following the OS light/dark
-  setting are not built)**
+  setting are not built)**. The sixth is **Campbell**, at Microsoft's published
+  values and pinned by a test: it is the palette conhost and Windows Terminal
+  ship, so it is what makes a pane here look like the PowerShell window beside
+  it, and it is the one preset whose colours are not ours to taste-tune.
+- **Glyph blending in linear light (shipped — `textBlending`).** Three modes,
+  taking ghostty's names: `native` (mix in sRGB, what this renderer always
+  did), `linear`, and `linear-corrected`, which solves per pixel for the
+  coverage whose linear blend carries the native blend's luminance — so the
+  dark fringe on every antialiased edge goes without the text changing weight.
 - **Keyboard encoding — the engine's, not ours** (`lib/ghostty/KeyEncoder.ts`).
   Legacy xterm, xterm's `modifyOtherKeys` and the **Kitty keyboard protocol**
   all ship, because Ghostty's own key encoder is wrapped rather than
@@ -429,7 +501,8 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - Port forwarding (local/remote/dynamic) with a management panel **(shipped)**
 - Jump host chains **(shipped)**; outbound proxy support **not built**
 - Font settings, paste protection, scrollback search, session logging
-  **(shipped)**; colour-scheme import **not built**
+  **(shipped)**; colour-scheme import **not built** — six presets, no way to
+  bring in an existing scheme
 - Win11 polish: Mica and single instance **(shipped)**; jump list and portable
   mode **not built**
 - Installer (NSIS/MSI via the Tauri bundler) **(shipped)**; auto-update and code
