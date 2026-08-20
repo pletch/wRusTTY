@@ -279,6 +279,11 @@ export function TabBar({
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  // Which tab the pointer is over. `:hover` alone can't express the rule the
+  // separators need — a divider has to vanish when *either* tab it sits
+  // between is hovered, and CSS gives a tab no way to reach its own left-hand
+  // neighbour. Knowing the hovered id outright states the rule directly.
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [paneDragOver, setPaneDragOver] = useState(false)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
@@ -387,8 +392,21 @@ export function TabBar({
             : undefined
         }
       >
-        {tabs.map((tab) => {
+        {tabs.map((tab, i) => {
           const active = tab.id === activeTabId
+          // A hairline between two adjacent *quiet* tabs, and nowhere else.
+          // Both the active tab and a hovered one draw their own shape, and a
+          // line running into the side of one of those is exactly the defect
+          // the rounding was meant to avoid — so the two dividers touching
+          // such a tab are the ones that go. Drawn on the left edge, so it
+          // belongs to the boundary before this tab and the first tab has
+          // none.
+          const separator =
+            i > 0 &&
+            !active &&
+            tabs[i - 1].id !== activeTabId &&
+            hoveredId !== tab.id &&
+            hoveredId !== tabs[i - 1].id
           const leaves = allLeaves(tab.root)
           const trueRows = verticalRows(tab.root)
           const rows = Math.min(trueRows, PANE_MAP_MAX_ROWS)
@@ -410,6 +428,8 @@ export function TabBar({
               title={remoteTitle ? `${tab.title} — ${remoteTitle}` : tab.title}
               draggable
               onClick={() => onSelect(tab.id)}
+              onMouseEnter={() => setHoveredId(tab.id)}
+              onMouseLeave={() => setHoveredId((id) => (id === tab.id ? null : id))}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
@@ -460,30 +480,37 @@ export function TabBar({
                 setDropTargetId(null)
               }}
               style={{ paddingTop: `${tabContentTopPx}px` }}
-              // `mr-0.5` and the fill on *every* tab are what replaced the
-              // vertical hairline that used to separate them. A hairline
-              // meeting a curved corner reads as a defect, but simply dropping
-              // it left two adjacent inactive tabs — both previously
-              // transparent — with nothing at all between them. A faint fill
-              // plus a 2px gap separates them the way the rounding is meant to,
-              // and is what makes the corners legible in the first place: a
-              // radius only shows against something.
-              // `rounded-t-lg` is the window's own corner radius (see the
-              // root element in App.tsx), so the tabs and the frame they sit
-              // in are visibly the same shape rather than two nearly-equal
-              // roundings a few pixels apart. `mt-1` then drops them clear of
-              // the window's top edge — a tab whose corner starts in the same
-              // pixel row as the frame's has its rounding read as part of the
-              // frame; the gap is what makes it a separate object sitting in
-              // the strip, and is what Chrome and Windows Terminal both do.
-              className={`group relative mr-0.5 mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 rounded-t-lg px-3 text-xs transition-colors duration-150 ${
+              // Only one tab is a shape: the active one. It takes the
+              // window's own corner radius (`rounded-t-lg` — see the root
+              // element in App.tsx) so the tab and the frame it sits in read
+              // as the same object, and a fill light enough to lift it off the
+              // strip. The rest carry no fill at all, which leaves them the
+              // strip's own tone, and no radius — a row of identically rounded
+              // tabs spends the shape on every tab and so says nothing with
+              // it, whereas rounding exactly one is what makes that one look
+              // like the sheet in front. Chrome and Edge both settled here.
+              //
+              // Hovering an inactive tab lends it the same shape and a fill
+              // partway to the active one's, so the thing under the pointer is
+              // legible as a target without being mistaken for the selection.
+              //
+              // `mt-1` drops every tab clear of the window's top edge: a tab
+              // whose corner starts in the same pixel row as the frame's has
+              // its rounding read as part of the frame, and the gap is what
+              // makes it a separate object sitting in the strip. Kept on the
+              // square tabs too, so activating one raises a shape in place
+              // rather than also shifting the row.
+              className={`group relative mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 px-3 text-xs transition-colors duration-150 ${
                 active
-                  ? 'bg-white/10 text-white'
-                  : 'bg-white/[0.03] text-white/45 hover:bg-white/[0.08] hover:text-white/80'
+                  ? 'rounded-t-lg bg-white/10 text-white'
+                  : 'text-white/45 hover:rounded-t-lg hover:bg-white/[0.08] hover:text-white/80'
               } ${draggedId === tab.id ? 'opacity-40' : ''} ${
                 dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''
               }`}
             >
+              {separator && (
+                <span className="pointer-events-none absolute inset-y-2 left-0 w-px bg-white/10" />
+              )}
               {/* A single-pane tab only shows this bar when it's the active
                   tab — plain and full-bright, same as before. A split tab
                   always shows it (even unfocused), dimmed, purely to signal
@@ -509,7 +536,11 @@ export function TabBar({
                 // ends away over a few pixels instead of ending them. The
                 // wrapper's own small radius then caps what's left, so the bar
                 // reads as a deliberate shortened line rather than one that
-                // ran out of tab.
+                // ran out of tab. Kept at the same inset on the square tabs,
+                // which need no clearance: matching them to their own corners
+                // would grow and shrink the bar as tabs are activated or
+                // merely hovered, and the map is meant to be read across the
+                // strip, which wants every one of them the same width.
                 <span
                   className="absolute left-2 right-2 overflow-hidden rounded-sm"
                   style={{ top: `${PANE_MAP_TOP_PX}px`, height: `${paneMapExtent(rows)}px` }}
