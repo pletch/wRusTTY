@@ -53,8 +53,42 @@ out += `  https://example.com/a/rather/long/path/that/has/to/wrap/at/this/width/
 out += `\r\n  text blending — press b to cycle, 0 for the physically correct end\r\n`
 out += `  The quick brown fox jumps over the lazy dog. 0123456789 il1 O0 =>\r\n`
 out += `  ${ESC}[1mbold${RESET} ${fg(203)}red${RESET} ${fg(114)}green${RESET} ${fg(75)}blue${RESET} ${ESC}[2mdim${RESET} — mixed weights\r\n`
+// Box drawing is the other thing only a screenshot can settle. The characters
+// are drawn as geometry against the cell rather than taken from the font (see
+// boxDrawing.ts), and the whole point of doing that is seams: whether the
+// vertical rules of a border meet the row beneath, and whether a weight change
+// or an arc lands on the same axis as the straight rule above it. No per-cell
+// assertion can see any of that.
+out += `\r\n  box drawing — geometry, not glyphs. Look for seams between rows.\r\n`
+out += `  ┌─┬─┐ ┏━┳━┓ ╔═╦═╗ ╭───╮   ┌─────┐\r\n`
+out += `  ├─┼─┤ ┣━╋━┫ ╠═╬═╣ │   │   │     │\r\n`
+out += `  └─┴─┘ ┗━┻━┛ ╚═╩═╝ ╰───╯   └─────┘\r\n`
+out += `  mixed ╞═╡ ╤╥╧╨ ╪╫   dashed ┄┈╌ ┆┊╎   weights ╼╾ ╴╵╶╷\r\n`
+out += `  blocks █▇▆▅▄▃▂▁ ▉▊▋▌▍▎▏  shades ░▒▓  quads ▖▗▘▝▞▟\r\n`
+out += `  powerline \u{e0b0}\u{e0b1}\u{e0b2}\u{e0b3}\u{e0b4}\u{e0b5}\u{e0b6}\u{e0b7}   diagonals ╱╲╳\r\n`
+
+// Ligatures are off unless asked for, and need a face that has them — so this
+// line says nothing on its own. It is here to be compared against itself with
+// `l` pressed, which is the only way to see that the shaping happened.
+out += `\r\n  ligatures — press l to toggle, ?font= to pick a face that has them\r\n`
+out += `  -> => <- <= >= != == === !== <=> |> <| :: ++ // /* */ ~= |= &&\r\n`
+out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} coloured\r\n`
+
 out += `\r\n  cursor is here ->${ESC}[5 q `
 engine.write(out)
+
+// A face with ligatures in it, for the line above. Named in the URL rather
+// than hardcoded because which ones are installed varies per machine, and the
+// point of the line is to compare one face against another.
+const wantedFont = new URLSearchParams(location.search).get('font')
+if (wantedFont) engine.setFont(`"${wantedFont}", ui-monospace, monospace`, 14)
+
+// Same argument as text blending below: run shaping changes only which glyphs
+// come out of the atlas, so no per-cell assertion can see it and a screenshot
+// of one state alone says nothing. Toggling it in place is what makes the
+// difference legible.
+let ligatures = new URLSearchParams(location.search).get('ligatures') === '1'
+engine.setLigatures(ligatures)
 
 // Text blending is the reason a file like this exists: it changes only how
 // partially-covered pixels are drawn, so no per-cell assertion can see it and
@@ -84,6 +118,10 @@ applyBlend()
 window.addEventListener('keydown', (e) => {
   if (e.key >= '1' && e.key <= '6') engine.write(`${ESC}[${e.key} q`)
   if (e.key === 'h') engine.toggleHintMode()
+  if (e.key === 'l') {
+    ligatures = !ligatures
+    engine.setLigatures(ligatures)
+  }
   if (e.key === 'b') {
     blendIndex = (blendIndex + 1) % BLENDS.length
     applyBlend()
