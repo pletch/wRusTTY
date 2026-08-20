@@ -77,6 +77,16 @@ const RUN_CACHE_CAP = 512
 const MAX_ATLAS_SIZE = 4096
 
 /**
+ * What the colour companion starts at, against the coverage atlas's 1024.
+ *
+ * Small because colour glyphs are few. A pane is thousands of distinct
+ * characters and a handful of emoji, and at four bytes a texel the companion
+ * is the expensive one per slot -- so it starts at a quarter of the area and
+ * doubles from there if that is ever wrong.
+ */
+const COLOR_ATLAS_START = 512
+
+/**
  * The hollow rectangle an unfocused pane draws instead of a filled block. It is
  * a glyph rather than geometry for the same reason the underline is: the
  * renderer draws exactly one quad per cell, and a shape that fits inside a cell
@@ -104,10 +114,21 @@ export class GlyphAtlas {
   private ctx: CanvasRenderingContext2D
   private gl: WebGL2RenderingContext
   public texture: WebGLTexture
-  /** The colour companion; see the constructor. Sized to the atlas only once a
-   *  colour glyph has been seen, and 1x1 until then. */
+  /** The colour companion; see the constructor. A 1x1 placeholder until the
+   *  first colour glyph, then a space of its own -- see `COLOR_ATLAS_START`. */
   public colorTexture: WebGLTexture
-  private colorSized = false
+  private colorWidth = 0
+  private colorHeight = 0
+  private colorX = 0
+  private colorY = 0
+  /**
+   * The companion's CPU mirror, needed for the same reason the coverage atlas
+   * keeps its canvas: growing means reallocating the texture, and the old
+   * texels have to come from somewhere. A flat array rather than a second
+   * canvas, because nothing ever *draws* here -- the pixels arrive already
+   * rasterized, read back from the canvas the trial draw happened on.
+   */
+  private colorMirror: Uint8Array | null = null
   /** Keyed by `codepoint * GLYPH_STYLE_COUNT + style`. */
   private cache = new Map<number, GlyphRect>()
   /** Grapheme clusters, keyed by `style:text`. */
@@ -461,37 +482,25 @@ export class GlyphAtlas {
     // they all move. Mutated in place rather than replaced: the renderer holds
     // rects across cells within a frame — `pendingWide`, and a run's rect
     // across its slices — and growth can happen in the middle of one.
-    // The companion is reallocated from the same mirror, for the same reason
-    // the coverage texture is: its texels are addressed by UVs that are about
-    // to be renormalized against the new dimensions.
-    if (this.colorSized) {
-      gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
-      gl.texSubImage2D(
-        gl.TEXTURE_2D,
-        0,
-        0,
-        0,
-        oldWidth,
-        oldHeight,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.length),
-      )
-    }
-
+    // The companion is deliberately untouched. It has its own packing and its
+    // own dimensions, so coverage running out of rows says nothing about it --
+    // which is the whole reason it has them.
     this.rescale()
     return true
   }
 
   /** Re-normalizes every cached rect against the current atlas dimensions. */
   private rescale(): void {
+    // Against whichever atlas the rect lives in: the two are packed and grown
+    // independently now, so a colour rect and a coverage rect at the same x
+    // are not at the same u.
     const fix = (r: GlyphRect) => {
-      r.u0 = r.x / this.atlasWidth
-      r.v0 = r.y / this.atlasHeight
-      r.u1 = (r.x + r.width) / this.atlasWidth
-      r.v1 = (r.y + r.height) / this.atlasHeight
+      const w = r.color ? this.colorWidth : this.atlasWidth
+      const h = r.color ? this.colorHeight : this.atlasHeight
+      r.u0 = r.x / w
+      r.v0 = r.y / h
+      r.u1 = (r.x + r.width) / w
+      r.v1 = (r.y + r.height) / h
     }
     for (const r of this.cache.values()) fix(r)
     for (const r of this.clusterCache.values()) fix(r)
@@ -626,8 +635,11 @@ export class GlyphAtlas {
 
     const gl = this.gl
     if (colored) {
-      this.uploadColor(x, y, slotWidth, rgba)
-      const rect = this.finishSlot(x, y, slotWidth, true)
+      // The trial draw had to happen somewhere, and the coverage canvas is
+      // what the detection reads back from -- but the glyph does not live
+      // there. Hand the slot back rather than spend a coverage slot on it.
+      this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
+      const rect = this.packColor(rgba, slotWidth)
       remember(rect)
       return rect
     }
@@ -647,18 +659,14 @@ export class GlyphAtlas {
       coverage,
     )
 
-    const rect = this.finishSlot(x, y, slotWidth, false)
+    const rect = this.finishSlot(x, y, slotWidth)
     remember(rect)
     return rect
   }
 
-  /**
-   * The rect for a slot that has just been filled, and the cursor moved past
-   * it. Shared by both upload paths so a colour glyph is packed, normalized
-   * and advanced exactly as a coverage one is — the two differ in which
-   * texture holds the texels, and in nothing else.
-   */
-  private finishSlot(x: number, y: number, slotWidth: number, color: boolean): GlyphRect {
+  /** The rect for a coverage slot that has just been filled, and the cursor
+   *  moved past it. */
+  private finishSlot(x: number, y: number, slotWidth: number): GlyphRect {
     const rect: GlyphRect = {
       x, y,
       width: slotWidth,
@@ -667,55 +675,132 @@ export class GlyphAtlas {
       v0: y / this.atlasHeight,
       u1: (x + slotWidth) / this.atlasWidth,
       v1: (y + this.cellHeight) / this.atlasHeight,
-      color,
+      color: false,
     }
     this.currentX += slotWidth
     return rect
   }
 
   /**
-   * Puts a colour glyph's own texels into the companion texture, sizing it to
-   * the atlas the first time one appears.
+   * Packs a colour glyph's own texels into the companion, in the companion's
+   * own coordinate space.
    *
-   * The whole canvas goes up on that first sizing rather than just this slot:
-   * the canvas is the atlas's mirror, so one upload leaves the companion
-   * agreeing with it everywhere, and every slot already handed out stays
-   * addressable by the UVs it was given.
+   * Its own space is the point. Sharing the coverage atlas's packing would
+   * mean sharing its dimensions -- the UVs are normalized against them -- and
+   * so following it through every growth: a pane full of CJK grows coverage to
+   * 4096 and would drag a 64MB companion along to hold three emoji. Packed
+   * separately, the companion starts at 512 and grows only when colour glyphs
+   * actually fill it.
    */
-  private uploadColor(x: number, y: number, slotWidth: number, rgba: Uint8ClampedArray) {
+  private packColor(rgba: Uint8ClampedArray, slotWidth: number): GlyphRect {
     const gl = this.gl
+    if (this.colorMirror === null) this.allocateColor()
+
+    if (this.colorX + slotWidth > this.colorWidth) {
+      this.colorX = 0
+      this.colorY += this.cellHeight
+    }
+    if (this.colorY + this.cellHeight > this.colorHeight && !this.growColor()) {
+      if (!this.warnedColorFull) {
+        this.warnedColorFull = true
+        console.warn(
+          `GlyphAtlas colour companion full at ${this.colorWidth}x${this.colorHeight};` +
+            ' further colour glyphs will not render.',
+        )
+      }
+      return (
+        this.blank ?? { x: 0, y: 0, width: 0, height: 0, u0: 0, v0: 0, u1: 0, v1: 0, color: false }
+      )
+    }
+
+    const x = this.colorX
+    const y = this.colorY
+    const src = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.length)
+    this.writeMirror(src, x, y, slotWidth)
+
     gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
-    if (!this.colorSized) {
-      this.colorSized = true
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA8,
-        this.atlasWidth,
-        this.atlasHeight,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        new Uint8Array(this.ctx.getImageData(0, 0, this.atlasWidth, this.atlasHeight).data.buffer),
-      )
-      return
-    }
     gl.texSubImage2D(
-      gl.TEXTURE_2D,
-      0,
-      x,
-      y,
-      slotWidth,
-      this.cellHeight,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.length),
+      gl.TEXTURE_2D, 0, x, y, slotWidth, this.cellHeight, gl.RGBA, gl.UNSIGNED_BYTE, src,
+    )
+
+    const rect: GlyphRect = {
+      x, y,
+      width: slotWidth,
+      height: this.cellHeight,
+      u0: x / this.colorWidth,
+      v0: y / this.colorHeight,
+      u1: (x + slotWidth) / this.colorWidth,
+      v1: (y + this.cellHeight) / this.colorHeight,
+      color: true,
+    }
+    this.colorX += slotWidth
+    return rect
+  }
+
+  /** The companion, for real this time: it has been a 1x1 placeholder until
+   *  now so the sampler the shader mentions had something complete bound. */
+  private allocateColor() {
+    const gl = this.gl
+    this.colorWidth = COLOR_ATLAS_START
+    this.colorHeight = COLOR_ATLAS_START
+    this.colorMirror = new Uint8Array(this.colorWidth * this.colorHeight * 4)
+    gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.RGBA8, this.colorWidth, this.colorHeight, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE, this.colorMirror,
     )
   }
 
+  /** One glyph's rows into the mirror, which has a stride of its own. */
+  private writeMirror(src: Uint8Array, x: number, y: number, slotWidth: number) {
+    const mirror = this.colorMirror
+    if (!mirror) return
+    const rowBytes = slotWidth * 4
+    for (let row = 0; row < this.cellHeight; row++) {
+      mirror.set(
+        src.subarray(row * rowBytes, (row + 1) * rowBytes),
+        ((y + row) * this.colorWidth + x) * 4,
+      )
+    }
+  }
+
+  /** Doubles the companion, on its own schedule and against its own ceiling. */
+  private growColor(): boolean {
+    const gl = this.gl
+    const size = this.colorWidth * 2
+    const limit = Math.min(MAX_ATLAS_SIZE, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number)
+    if (size > limit) return false
+
+    const old = this.colorMirror
+    const oldWidth = this.colorWidth
+    const oldHeight = this.colorHeight
+    const next = new Uint8Array(size * size * 4)
+    if (old) {
+      for (let row = 0; row < oldHeight; row++) {
+        next.set(old.subarray(row * oldWidth * 4, (row + 1) * oldWidth * 4), row * size * 4)
+      }
+    }
+    this.colorMirror = next
+    this.colorWidth = size
+    this.colorHeight = size
+
+    gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, next)
+
+    // Same argument as the coverage atlas: every rect already handed out is
+    // normalized against the old dimensions, and the renderer holds them
+    // across cells within a frame.
+    this.rescale()
+    return true
+  }
+
+
   private warnedFull = false
   private warnedRunsFull = false
+  private warnedColorFull = false
 
   dispose() {
     this.gl.deleteTexture(this.texture)

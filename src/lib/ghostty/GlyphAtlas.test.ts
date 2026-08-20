@@ -397,6 +397,13 @@ describe('letter spacing', () => {
   })
 })
 
+/** The width of every RGBA texture allocation made on this context, in order
+ *  — which is the companion's whole size history. */
+function rgbaAllocations(gl: WebGL2RenderingContext): number[] {
+  const calls = (gl.texImage2D as unknown as { mock: { calls: unknown[][] } }).mock.calls
+  return calls.filter((c) => c[2] === 13).map((c) => c[3] as number)
+}
+
 describe('colour glyphs', () => {
   /**
    * A readback where the glyph's pixels carry the face's own colours rather
@@ -431,35 +438,71 @@ describe('colour glyphs', () => {
     const gl = makeGlStub()
     const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
     atlas.getGlyph(65)
-    // The only RGBA allocation so far is the 1x1 placeholder the sampler needs.
-    const rgbaAllocs = (gl.texImage2D as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .filter((c) => c[2] === 13)
-    expect(rgbaAllocs).toHaveLength(1)
-    expect(rgbaAllocs[0][3]).toBe(1)
+    // The only RGBA allocation is the 1x1 placeholder the sampler needs.
+    expect(rgbaAllocations(gl)).toEqual([1])
   })
 
-  it('sizes the companion to the atlas the first time one appears', () => {
+  it('gives the companion a quarter of the coverage atlas, not a copy of it', () => {
+    // Four bytes a texel against one, for a handful of glyphs against
+    // thousands: the companion is the expensive one per slot and starts small.
     const gl = makeGlStub()
     const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
     paintingInColor()
     atlas.getGlyph(0x1f600, GLYPH_WIDE)
-    const rgbaAllocs = (gl.texImage2D as unknown as { mock: { calls: unknown[][] } }).mock.calls
-      .filter((c) => c[2] === 13)
-    expect(rgbaAllocs).toHaveLength(2)
-    expect(rgbaAllocs[1][3]).toBe(1024)
+    expect(rgbaAllocations(gl)).toEqual([1, 512])
   })
 
-  it('packs a colour glyph out of the same cursor as every other one', () => {
-    // One packing, two textures: a colour glyph must not be given a slot some
-    // later coverage glyph will also be handed.
+  it('packs colour out of a cursor of its own, spending no coverage slot', () => {
+    // The trial draw happens on the coverage canvas because that is what the
+    // detection reads back, but the slot is handed back: the next ordinary
+    // glyph takes it.
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const before = atlas.getGlyph(65)
     paintingInColor()
     const emoji = atlas.getGlyph(0x1f600)
     ctxStub.getImageData = make2dContextStub().getImageData
     const after = atlas.getGlyph(66)
-    expect(emoji.x).toBe(before.x + before.width)
-    expect(after.x).toBe(emoji.x + emoji.width)
+    expect(after.x).toBe(before.x + before.width)
+    expect(after.color).toBe(false)
+    // And the emoji is at the start of its own space, not after the 'A'.
+    expect(emoji.x).toBe(0)
+    expect(emoji.color).toBe(true)
+  })
+
+  it('normalizes a colour rect against the companion, not the coverage atlas', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    paintingInColor()
+    const emoji = atlas.getGlyph(0x1f600)
+    // 8 wide in a 512 companion, not in the 1024 coverage atlas.
+    expect(emoji.u1 - emoji.u0).toBeCloseTo(8 / 512, 6)
+  })
+
+  it('leaves the companion alone when the coverage atlas grows', () => {
+    // The case the separate packing exists for: a pane full of CJK must not
+    // drag a 64MB companion along behind it to hold three emoji.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // A cell big enough that four of them fill the coverage atlas.
+    const BIG = 512
+    const gl = makeGlStub()
+    const atlas = new GlyphAtlas(gl, FONTS, 14, BIG, BIG)
+    paintingInColor()
+    const emoji = atlas.getGlyph(0x1f600)
+    ctxStub.getImageData = make2dContextStub().getImageData
+    // Fill the coverage atlas until it doubles.
+    for (const cp of [65, 66, 67, 68]) atlas.getGlyph(cp)
+    expect(rgbaAllocations(gl)).toEqual([1, 512])
+    // The colour rect's UVs are untouched by a growth that was not its own.
+    expect(emoji.u1 - emoji.u0).toBeCloseTo(BIG / 512, 6)
+    warn.mockRestore()
+  })
+
+  it('doubles the companion on its own when colour glyphs fill it', () => {
+    const gl = makeGlStub()
+    // A cell a quarter of the starting companion: four rows of one slot each.
+    const atlas = new GlyphAtlas(gl, FONTS, 14, 512, 128)
+    paintingInColor()
+    for (let i = 0; i < 5; i++) atlas.getGlyph(0x1f600 + i)
+    expect(rgbaAllocations(gl)).toEqual([1, 512, 1024])
   })
 
   it('caches it like any other glyph rather than re-reading it every frame', () => {
