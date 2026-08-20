@@ -107,6 +107,10 @@ windows = { version = "=0.62.2", features = [
   # importer in putty_import.rs. Read-only — nothing here ever writes to the
   # registry, and PuTTY's own keys are left exactly as found.
   "Win32_System_Registry",
+  # Enumerating the installed font families for the settings picker, in
+  # fonts.rs. The same system font collection the webview resolves against,
+  # asked from the process that can ask it without a permission prompt.
+  "Win32_Graphics_DirectWrite",
 ] }
 # IUserConsentVerifierInterop::RequestVerificationForWindowAsync's generic
 # return type is `T: windows_core::Interface`, which we satisfy with

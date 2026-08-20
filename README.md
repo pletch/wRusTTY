@@ -244,6 +244,26 @@ most network gear it resolves to nothing and programs degrade to *dumb*
 rather than to 256 colours. `xterm-256color` is present essentially
 everywhere, which is why it remains the default.
 
+**Emoji are monochrome.** Colour emoji render as flat silhouettes in the
+current text colour, not in their own colours. The glyph atlas stores coverage
+only — one channel, tinted per cell by the foreground — and carrying colour
+would mean a second RGBA texture at four times the memory *per pane*, for
+characters that are rare on the kind of host this client is pointed at. That
+is a deliberate trade rather than an oversight. The characters themselves are
+correct: the right emoji appears, at the right width, and copies and pastes as
+itself.
+
+**Box drawing needs no font.** The box-drawing, block-element and Powerline
+ranges are drawn as geometry against the cell rather than taken from the font,
+so borders in `htop`, `nmtui`, `dialog` and vendor menu UIs tile without the
+hairline gaps a font's own glyphs leave at fractional cell heights — and they
+work on a machine where you cannot install a font. Nothing needs configuring.
+
+**Ligatures.** Off by default; turn them on in Settings → Terminal. They need
+a font that has them (Cascadia Code does, Cascadia Mono and Consolas do not),
+and the cell under the cursor always shows the plain character rather than a
+slice of the ligature.
+
 **Serial break.** The `BRK` button in the status bar holds a break condition
 on the line, for Cisco password recovery, ROMMON entry, and bootloader
 interrupts. DTR and RTS toggles sit beside it.

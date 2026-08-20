@@ -19,6 +19,7 @@ import {
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings, CursorStyleSetting } from '../lib/settings'
 import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS } from '../lib/settings'
+import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { PRESET_THEMES } from '../lib/theme'
 import { APP_VERSION } from '../lib/version'
@@ -72,15 +73,34 @@ type SectionId = (typeof SECTIONS)[number]['id']
 const selectClass =
   'rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
-/** `FONT_STACKS` with the current setting added if it names something the list
- * does not, so a stored family is shown rather than leaving the select blank —
- * a controlled select whose value matches no option displays nothing, which
- * reads as the font setting having been lost. Anything a future edit to the
- * list drops arrives here, as does a stack carried over from a version that
- * offered a different set. */
-function fontOptions(current: string) {
-  if (FONT_STACKS.some((f) => f.value === current)) return FONT_STACKS
-  return [...FONT_STACKS, { label: familyName(current), value: current }]
+/**
+ * What the font select offers: the curated stacks, then whatever monospaced
+ * families this machine actually has, then the current setting if it is
+ * neither.
+ *
+ * That last group is what keeps the control honest. A controlled select whose
+ * value matches no option displays nothing at all, which reads as the font
+ * setting having been lost — so a stack carried over from a version that
+ * offered a different set, or one this machine cannot enumerate, is shown as
+ * its own entry rather than silently disappearing.
+ *
+ * Installed families are offered wrapped in the same symbol tier the curated
+ * stacks carry, and the ones a curated stack already names are dropped so the
+ * list does not say Consolas twice.
+ */
+function fontOptions(current: string, installed: InstalledFont[] | null) {
+  const curatedNames = new Set(FONT_STACKS.map((f) => familyName(f.value).toLowerCase()))
+  const installedStacks = (installed ?? [])
+    .filter((f) => f.monospace && !curatedNames.has(f.name.toLowerCase()))
+    .map((f) => ({ label: f.name, value: stackFor(f.name) }))
+  const known = [...FONT_STACKS, ...installedStacks]
+  return {
+    curated: FONT_STACKS,
+    installed: installedStacks,
+    extra: known.some((f) => f.value === current)
+      ? null
+      : { label: familyName(current), value: current },
+  }
 }
 
 /** The first family in a CSS list, unquoted — what to call a stack in prose. */
@@ -198,10 +218,31 @@ function Toggle({
  * part of the setting rather than left to be discovered: the stack is a list of
  * hopes, and which of them came true is the single most useful thing to know
  * when the terminal is not drawing what you picked. */
-function FontResolution({ stack }: { stack: string }) {
+function FontResolution({
+  stack,
+  installed,
+}: {
+  stack: string
+  installed: InstalledFont[] | null
+}) {
   const resolved = resolveFace(stack)
-  if (!resolved) return null
   const wanted = familyName(stack)
+  // Only ever said of a family we enumerated and were told is proportional —
+  // never inferred from a name, and never guessed when enumeration is
+  // unavailable. The engine measures one glyph and assumes the rest match, so
+  // this comes out as visibly wrong column alignment rather than as anything
+  // that looks like a font problem.
+  const proportional = installed?.some(
+    (f) => f.name.toLowerCase() === wanted.toLowerCase() && !f.monospace,
+  )
+  if (proportional) {
+    return (
+      <p className="px-0.5 leading-relaxed text-amber-300/50">
+        {wanted} is not a fixed-width font — columns will not line up.
+      </p>
+    )
+  }
+  if (!resolved) return null
   if (resolved.missing.length === 0) {
     return <p className="px-0.5 leading-relaxed text-white/30">Rendering in {resolved.using}.</p>
   }
@@ -244,6 +285,21 @@ export function SettingsDialog({
    * `sessions.json` through the same lock, and running them together would
    * only queue one behind the other while showing two spinners. */
   const [importing, setImporting] = useState<'putty' | 'sshConfig' | null>(null)
+  // null while unread. Fonts can be installed while the app is running, but
+  // not often enough to re-enumerate every time the dialog opens, so this is
+  // read once per session and kept.
+  const [installedFonts, setInstalledFonts] = useState<InstalledFont[] | null>(null)
+
+  useEffect(() => {
+    if (!open || installedFonts !== null) return
+    let cancelled = false
+    listInstalledFonts().then((fonts) => {
+      if (!cancelled) setInstalledFonts(fonts)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open, installedFonts])
 
   // Re-checked whenever the section is opened rather than once at mount:
   // PuTTY may have been installed, or `~/.ssh/config` edited, since the app
@@ -350,14 +406,35 @@ export function SettingsDialog({
                             value={settings.fontFamily}
                             onChange={(e) => onChange({ ...settings, fontFamily: e.target.value })}
                           >
-                            {fontOptions(settings.fontFamily).map((f) => (
-                              <option key={f.value} value={f.value}>
-                                {f.label}
-                              </option>
-                            ))}
+                            {(() => {
+                              const opts = fontOptions(settings.fontFamily, installedFonts)
+                              return (
+                                <>
+                                  {opts.curated.map((f) => (
+                                    <option key={f.value} value={f.value}>
+                                      {f.label}
+                                    </option>
+                                  ))}
+                                  {opts.extra && (
+                                    <option key={opts.extra.value} value={opts.extra.value}>
+                                      {opts.extra.label}
+                                    </option>
+                                  )}
+                                  {opts.installed.length > 0 && (
+                                    <optgroup label="Installed">
+                                      {opts.installed.map((f) => (
+                                        <option key={f.value} value={f.value}>
+                                          {f.label}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
+                                </>
+                              )
+                            })()}
                           </select>
                         </label>
-                        <FontResolution stack={settings.fontFamily} />
+                        <FontResolution stack={settings.fontFamily} installed={installedFonts} />
                         <label className="flex items-center justify-between gap-3 text-white/85">
                           <span>Font size</span>
                           <span className="flex items-center gap-2">

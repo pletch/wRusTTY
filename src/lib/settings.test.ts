@@ -8,6 +8,7 @@ import {
   SCROLLBACK_FOOTPRINT_TIERS_MB,
   RECONNECT_ATTEMPTS_RANGE,
   RECONNECT_SECONDS_RANGE,
+  FONT_STACKS,
 } from './settings'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
@@ -89,6 +90,44 @@ describe('loadSettings', () => {
   it('falls back to native for a blend mode the renderer has no branch for', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ textBlending: 'srgb' }))
     expect(loadSettings().textBlending).toBe('native')
+  })
+
+  /**
+   * The stacks grew a symbol tier — a list of symbol faces after the text
+   * face, which Canvas 2D falls back across per glyph. An existing install
+   * would otherwise keep its old stack forever: the value still works, so
+   * nothing looks broken, but the setting quietly stops matching any entry in
+   * the picker and the tier never arrives.
+   */
+  it('carries a stack from before the symbol tier onto its current equivalent', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ fontFamily: '"Cascadia Mono", ui-monospace, monospace' }),
+    )
+    expect(loadSettings().fontFamily).toBe(FONT_STACKS[1].value)
+    expect(loadSettings().fontFamily).toContain('Segoe UI Symbol')
+  })
+
+  it('leaves a stack it never shipped alone — that one belongs to the user', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontFamily: '"Fira Code", monospace' }))
+    expect(loadSettings().fontFamily).toBe('"Fira Code", monospace')
+  })
+
+  /**
+   * Same argument as text blending above: run shaping costs atlas slots
+   * whether or not the resolved face has the substitutions, so a blob written
+   * before the setting existed has to read as off rather than as opting in.
+   */
+  it('leaves ligatures off for a blob predating the setting', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 20 }))
+    expect(loadSettings().ligatures).toBe(false)
+  })
+
+  it('honours a stored ligature choice, and ignores a non-boolean one', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ligatures: true }))
+    expect(loadSettings().ligatures).toBe(true)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ligatures: 'yes' }))
+    expect(loadSettings().ligatures).toBe(false)
   })
 
   it('falls back to defaults on corrupted JSON rather than throwing', () => {

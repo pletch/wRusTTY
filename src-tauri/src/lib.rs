@@ -3,6 +3,7 @@ mod attention;
 mod coalesce;
 mod command_history;
 mod connection_status;
+mod fonts;
 #[cfg(target_os = "windows")]
 mod hello;
 mod logging;
@@ -72,6 +73,7 @@ pub fn run() {
             ssh::ssh_list_forwards,
             ssh::ssh_retry_forward,
             wake::wake_host,
+            fonts::list_fonts,
             sftp::sftp_list_dir,
             sftp::sftp_canonicalize,
             sftp::sftp_edit_file,
