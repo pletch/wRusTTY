@@ -16,6 +16,13 @@ export interface GlyphRect {
   v0: number
   u1: number
   v1: number
+  /**
+   * True when the face drew this glyph in its own colours — an emoji from a
+   * COLR or CBDT font — and it therefore lives in `colorTexture` rather than
+   * in the coverage atlas. The two share one packing, so the UVs above address
+   * either; this only says which sampler to read them with.
+   */
+  color: boolean
 }
 
 /**
@@ -97,6 +104,10 @@ export class GlyphAtlas {
   private ctx: CanvasRenderingContext2D
   private gl: WebGL2RenderingContext
   public texture: WebGLTexture
+  /** The colour companion; see the constructor. Sized to the atlas only once a
+   *  colour glyph has been seen, and 1x1 until then. */
+  public colorTexture: WebGLTexture
+  private colorSized = false
   /** Keyed by `codepoint * GLYPH_STYLE_COUNT + style`. */
   private cache = new Map<number, GlyphRect>()
   /** Grapheme clusters, keyed by `style:text`. */
@@ -179,10 +190,27 @@ export class GlyphAtlas {
     // Single-channel: the shader only ever reads coverage, and caching each
     // glyph in up to sixteen style combinations makes an RGBA atlas four times
     // the texture it needs to be, per pane.
+    //
+    // Which is also why colour glyphs get a *second* texture rather than this
+    // one becoming RGBA. An emoji carries its own colours and cannot be a
+    // coverage mask, but a pane that never draws one should not pay four bytes
+    // a texel for the possibility — so the companion below shares this atlas's
+    // packing and stays 1x1 until the first colour glyph actually arrives.
     this.texture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.atlasWidth, this.atlasHeight, 0, gl.RED, gl.UNSIGNED_BYTE, null)
 
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+    // Allocated at 1x1 rather than left null: a sampler the shader mentions
+    // must have a complete texture bound to it, even on the frames where no
+    // fragment takes that branch.
+    this.colorTexture = gl.createTexture()!
+    gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
@@ -433,6 +461,26 @@ export class GlyphAtlas {
     // they all move. Mutated in place rather than replaced: the renderer holds
     // rects across cells within a frame — `pendingWide`, and a run's rect
     // across its slices — and growth can happen in the middle of one.
+    // The companion is reallocated from the same mirror, for the same reason
+    // the coverage texture is: its texels are addressed by UVs that are about
+    // to be renormalized against the new dimensions.
+    if (this.colorSized) {
+      gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+      gl.texSubImage2D(
+        gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        oldWidth,
+        oldHeight,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.length),
+      )
+    }
+
     this.rescale()
     return true
   }
@@ -477,7 +525,7 @@ export class GlyphAtlas {
           `GlyphAtlas full at ${this.atlasWidth}x${this.atlasHeight}; further glyphs will not render.`,
         )
       }
-      return this.blank ?? { x: 0, y: 0, width: 0, height: 0, u0: 0, v0: 0, u1: 0, v1: 0 }
+      return this.blank ?? { x: 0, y: 0, width: 0, height: 0, u0: 0, v0: 0, u1: 0, v1: 0, color: false }
     }
 
     const x = this.currentX
@@ -557,11 +605,32 @@ export class GlyphAtlas {
 
     // Coverage lives in the alpha channel of the 2D canvas; the atlas stores
     // only that, so it is unpacked here rather than uploaded four-fold.
+    //
+    // The same pass answers whether this glyph is a colour one. Everything
+    // drawn here is drawn in white — the fill style, the rules, the box
+    // geometry — so a pixel that is *not* white can only have come from the
+    // face painting its own colours, which is what a COLR or CBDT emoji does
+    // and what makes `fillStyle` inert for it. No codepoint table, no
+    // presentation-selector rules, and no disagreement with whatever font the
+    // machine actually resolved: it is a property of the pixels that came out.
     const rgba = this.ctx.getImageData(x, y, slotWidth, this.cellHeight).data
     const coverage = new Uint8Array(slotWidth * this.cellHeight)
-    for (let i = 0; i < coverage.length; i++) coverage[i] = rgba[i * 4 + 3]
+    let colored = false
+    for (let i = 0; i < coverage.length; i++) {
+      const a = rgba[i * 4 + 3]
+      coverage[i] = a
+      if (!colored && a !== 0) {
+        colored = rgba[i * 4] !== 255 || rgba[i * 4 + 1] !== 255 || rgba[i * 4 + 2] !== 255
+      }
+    }
 
     const gl = this.gl
+    if (colored) {
+      this.uploadColor(x, y, slotWidth, rgba)
+      const rect = this.finishSlot(x, y, slotWidth, true)
+      remember(rect)
+      return rect
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
     // Rows are one byte per texel and so rarely 4-aligned, which is the
     // default and would shear every upload whose width isn't a multiple of 4.
@@ -578,6 +647,18 @@ export class GlyphAtlas {
       coverage,
     )
 
+    const rect = this.finishSlot(x, y, slotWidth, false)
+    remember(rect)
+    return rect
+  }
+
+  /**
+   * The rect for a slot that has just been filled, and the cursor moved past
+   * it. Shared by both upload paths so a colour glyph is packed, normalized
+   * and advanced exactly as a coverage one is — the two differ in which
+   * texture holds the texels, and in nothing else.
+   */
+  private finishSlot(x: number, y: number, slotWidth: number, color: boolean): GlyphRect {
     const rect: GlyphRect = {
       x, y,
       width: slotWidth,
@@ -585,14 +666,52 @@ export class GlyphAtlas {
       u0: x / this.atlasWidth,
       v0: y / this.atlasHeight,
       u1: (x + slotWidth) / this.atlasWidth,
-      v1: (y + this.cellHeight) / this.atlasHeight
+      v1: (y + this.cellHeight) / this.atlasHeight,
+      color,
     }
-
-    remember(rect)
-
     this.currentX += slotWidth
-
     return rect
+  }
+
+  /**
+   * Puts a colour glyph's own texels into the companion texture, sizing it to
+   * the atlas the first time one appears.
+   *
+   * The whole canvas goes up on that first sizing rather than just this slot:
+   * the canvas is the atlas's mirror, so one upload leaves the companion
+   * agreeing with it everywhere, and every slot already handed out stays
+   * addressable by the UVs it was given.
+   */
+  private uploadColor(x: number, y: number, slotWidth: number, rgba: Uint8ClampedArray) {
+    const gl = this.gl
+    gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+    if (!this.colorSized) {
+      this.colorSized = true
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA8,
+        this.atlasWidth,
+        this.atlasHeight,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array(this.ctx.getImageData(0, 0, this.atlasWidth, this.atlasHeight).data.buffer),
+      )
+      return
+    }
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      x,
+      y,
+      slotWidth,
+      this.cellHeight,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.length),
+    )
   }
 
   private warnedFull = false
@@ -600,5 +719,6 @@ export class GlyphAtlas {
 
   dispose() {
     this.gl.deleteTexture(this.texture)
+    this.gl.deleteTexture(this.colorTexture)
   }
 }

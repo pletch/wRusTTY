@@ -71,6 +71,8 @@ function makeGlStub(maxTextureSize = 4096) {
     TEXTURE_WRAP_T: 9,
     CLAMP_TO_EDGE: 10,
     UNPACK_ALIGNMENT: 11,
+    RGBA: 12,
+    RGBA8: 13,
     createTexture: vi.fn(() => ({}) as WebGLTexture),
     bindTexture: vi.fn(),
     texImage2D: vi.fn(),
@@ -395,12 +397,94 @@ describe('letter spacing', () => {
   })
 })
 
+describe('colour glyphs', () => {
+  /**
+   * A readback where the glyph's pixels carry the face's own colours rather
+   * than the white everything here is drawn in — which is what a COLR or CBDT
+   * emoji produces, and the only signal the atlas uses to tell one apart.
+   */
+  function paintingInColor() {
+    ctxStub.getImageData = vi.fn((_x: number, _y: number, w: number, h: number) => {
+      const data = new Uint8ClampedArray(w * h * 4)
+      for (let i = 0; i < w * h; i++) {
+        data[i * 4] = 240
+        data[i * 4 + 1] = 128
+        data[i * 4 + 2] = 40
+        data[i * 4 + 3] = 255
+      }
+      return { data }
+    }) as unknown as typeof ctxStub.getImageData
+  }
+
+  it('leaves an ordinary glyph on the coverage atlas', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    expect(atlas.getGlyph(65).color).toBe(false)
+  })
+
+  it('marks a glyph the face painted in its own colours', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    paintingInColor()
+    expect(atlas.getGlyph(0x1f600, GLYPH_WIDE).color).toBe(true)
+  })
+
+  it('costs nothing until one appears — the companion stays 1x1', () => {
+    const gl = makeGlStub()
+    const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
+    atlas.getGlyph(65)
+    // The only RGBA allocation so far is the 1x1 placeholder the sampler needs.
+    const rgbaAllocs = (gl.texImage2D as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .filter((c) => c[2] === 13)
+    expect(rgbaAllocs).toHaveLength(1)
+    expect(rgbaAllocs[0][3]).toBe(1)
+  })
+
+  it('sizes the companion to the atlas the first time one appears', () => {
+    const gl = makeGlStub()
+    const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
+    paintingInColor()
+    atlas.getGlyph(0x1f600, GLYPH_WIDE)
+    const rgbaAllocs = (gl.texImage2D as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .filter((c) => c[2] === 13)
+    expect(rgbaAllocs).toHaveLength(2)
+    expect(rgbaAllocs[1][3]).toBe(1024)
+  })
+
+  it('packs a colour glyph out of the same cursor as every other one', () => {
+    // One packing, two textures: a colour glyph must not be given a slot some
+    // later coverage glyph will also be handed.
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    const before = atlas.getGlyph(65)
+    paintingInColor()
+    const emoji = atlas.getGlyph(0x1f600)
+    ctxStub.getImageData = make2dContextStub().getImageData
+    const after = atlas.getGlyph(66)
+    expect(emoji.x).toBe(before.x + before.width)
+    expect(after.x).toBe(emoji.x + emoji.width)
+  })
+
+  it('caches it like any other glyph rather than re-reading it every frame', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    paintingInColor()
+    const a = atlas.getGlyph(0x1f600)
+    const b = atlas.getGlyph(0x1f600)
+    expect(a).toBe(b)
+    expect(a.color).toBe(true)
+  })
+})
+
 describe('dispose', () => {
   it('deletes the underlying GL texture', () => {
     const gl = makeGlStub()
     const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
     atlas.dispose()
     expect(gl.deleteTexture).toHaveBeenCalledWith(atlas.texture)
+  })
+
+  it('deletes the colour companion too, which is a second allocation', () => {
+    const gl = makeGlStub()
+    const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
+    atlas.dispose()
+    expect(gl.deleteTexture).toHaveBeenCalledWith(atlas.colorTexture)
   })
 })
 

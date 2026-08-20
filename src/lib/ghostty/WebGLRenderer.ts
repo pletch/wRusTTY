@@ -42,16 +42,21 @@ layout(location = 1) in vec2 a_cellPos;  // (col, row)
 layout(location = 2) in vec4 a_fgColor;  // (r,g,b,a)
 layout(location = 3) in vec4 a_bgColor;  // (r,g,b,a)
 layout(location = 4) in vec4 a_uv;       // (u0,v0, u1,v1)
+layout(location = 5) in float a_color;   // 0 for coverage; else how much colour the glyph keeps
 
 uniform vec2 u_resolution; // (cols, rows)
 
 out vec4 v_fgColor;
 out vec4 v_bgColor;
 out vec2 v_uv;
+// Flat because it is a per-instance flag, not a quantity: interpolating it
+// would put fragments in the middle of a quad at values that mean neither.
+flat out float v_color;
 
 void main() {
     v_fgColor = a_fgColor / 255.0;
     v_bgColor = a_bgColor / 255.0;
+    v_color = a_color;
 
     v_uv = mix(a_uv.xy, a_uv.zw, a_position);
 
@@ -78,8 +83,12 @@ precision highp float;
 in vec4 v_fgColor;
 in vec4 v_bgColor;
 in vec2 v_uv;
+flat in float v_color;
 
 uniform sampler2D u_atlas;
+// The colour companion, sampled only by the branch below. It shares the
+// coverage atlas's packing, so v_uv addresses it unchanged.
+uniform sampler2D u_colorAtlas;
 // One of the BLEND_* constants below. A uniform branch, so every fragment in
 // a frame takes the same path and the GPU never diverges within a warp.
 uniform int u_blendMode;
@@ -122,6 +131,22 @@ float luminance(vec3 c) {
 }
 
 void main() {
+    if (v_color > 0.0) {
+        // An emoji is not a mask, so none of the coverage machinery below
+        // applies to it: there is no single foreground to weight against, and
+        // the blend modes exist to make *text* the weight the face intended.
+        // Straight source-over onto the cell's background is the whole job.
+        //
+        // v_color is a scale rather than a flag, because faint is the one
+        // attribute that acts on a colour glyph as well: it darkens the
+        // foreground towards black, and the equivalent here is to darken the
+        // face's own colours by the same factor. Anything above zero means
+        // colour; how far above says how much of it is kept.
+        vec4 src = texture(u_colorAtlas, v_uv);
+        outColor = vec4(mix(v_bgColor.rgb, src.rgb * v_color, src.a), mix(v_bgColor.a, 1.0, src.a));
+        return;
+    }
+
     // Single-channel atlas: coverage is in red, and .a would read as 1.0.
     float a = texture(u_atlas, v_uv).r;
 
@@ -161,6 +186,15 @@ void main() {
 export const BLEND_NATIVE = 0
 export const BLEND_LINEAR = 1
 export const BLEND_LINEAR_CORRECTED = 2
+
+/** Floats per instance: cell position, foreground, background, UVs, and the
+ *  scale saying which atlas those UVs address and how strongly to draw it. */
+const INSTANCE_FLOATS = 15
+
+/** How far faint text is darkened towards black. One constant, because the
+ *  coverage path applies it to the foreground and the colour path applies it
+ *  to the glyph's own colours, and the two have to fade alike. */
+const FAINT_SCALE = 0.55
 
 /**
  * The one place cell metrics are derived. Both the renderer (which sizes the
@@ -261,6 +295,7 @@ export class WebGLRenderer {
   private vao!: WebGLVertexArrayObject
   private uResolution: WebGLUniformLocation | null = null
   private uAtlas: WebGLUniformLocation | null = null
+  private uColorAtlas: WebGLUniformLocation | null = null
   private uBlendMode: WebGLUniformLocation | null = null
 
   private cols: number
@@ -585,9 +620,11 @@ export class WebGLRenderer {
     gl.useProgram(this.program)
     this.uResolution = gl.getUniformLocation(this.program, 'u_resolution')
     this.uAtlas = gl.getUniformLocation(this.program, 'u_atlas')
+    this.uColorAtlas = gl.getUniformLocation(this.program, 'u_colorAtlas')
     this.uBlendMode = gl.getUniformLocation(this.program, 'u_blendMode')
     gl.uniform2f(this.uResolution, this.cols, this.rows)
     gl.uniform1i(this.uAtlas, 0)
+    gl.uniform1i(this.uColorAtlas, 1)
     gl.uniform1i(this.uBlendMode, this.blendMode)
 
     this.vao = gl.createVertexArray()!
@@ -612,10 +649,10 @@ export class WebGLRenderer {
     this.instanceBuffer = gl.createBuffer()!
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
 
-    this.instanceData = new Float32Array(this.cols * this.rows * 14)
+    this.instanceData = new Float32Array(this.cols * this.rows * INSTANCE_FLOATS)
     gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW)
 
-    const stride = 14 * 4
+    const stride = INSTANCE_FLOATS * 4
 
     // a_cellPos
     gl.enableVertexAttribArray(1)
@@ -636,6 +673,11 @@ export class WebGLRenderer {
     gl.enableVertexAttribArray(4)
     gl.vertexAttribPointer(4, 4, gl.FLOAT, false, stride, 10 * 4)
     gl.vertexAttribDivisor(4, 1)
+
+    // a_color
+    gl.enableVertexAttribArray(5)
+    gl.vertexAttribPointer(5, 1, gl.FLOAT, false, stride, 14 * 4)
+    gl.vertexAttribDivisor(5, 1)
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height)
     this.ready = true
@@ -715,7 +757,7 @@ export class WebGLRenderer {
     gl.useProgram(this.program)
     gl.uniform2f(this.uResolution, cols, rows)
 
-    this.instanceData = new Float32Array(cols * rows * 14)
+    this.instanceData = new Float32Array(cols * rows * INSTANCE_FLOATS)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW)
   }
@@ -1014,12 +1056,16 @@ export class WebGLRenderer {
         // atlas key — otherwise every dimmed character would cost a second
         // raster identical to the one already cached.
         if ((flags & CELL_FAINT) !== 0) {
-          finalFgR = (finalFgR * 0.55) | 0
-          finalFgG = (finalFgG * 0.55) | 0
-          finalFgB = (finalFgB * 0.55) | 0
+          finalFgR = (finalFgR * FAINT_SCALE) | 0
+          finalFgG = (finalFgG * FAINT_SCALE) | 0
+          finalFgB = (finalFgB * FAINT_SCALE) | 0
         }
 
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
+        // Which atlas those UVs address. Set wherever they are, and from the
+        // same rect, so a colour glyph cannot end up sampled as coverage --
+        // which would draw it as a solid block of the foreground colour.
+        let isColor = 0
         if (cellWidth === 0 && pendingWide) {
           // The spacer draws the right half of the glyph the previous column
           // started, so the character spans both cells at its true width.
@@ -1027,6 +1073,7 @@ export class WebGLRenderer {
           v0 = pendingWide.v0
           u1 = pendingWide.u1
           v1 = pendingWide.v1
+          isColor = pendingWide.color ? 1 : 0
           pendingWide = null
         } else if (codepoint > 0 && (flags & CELL_INVISIBLE) === 0) {
           // Invisible keeps the cell's colours — it hides the character, it
@@ -1084,6 +1131,7 @@ export class WebGLRenderer {
             u1 = u0 + slice
             v0 = runRect.v0
             v1 = runRect.v1
+            isColor = runRect.color ? 1 : 0
             if (++runIndex >= runCells) runRect = null
             pendingWide = null
           } else if (graphemeLen > 0 && graphemeView) {
@@ -1103,6 +1151,7 @@ export class WebGLRenderer {
             v0 = rect.v0; v1 = rect.v1
             u0 = rect.u0
             u1 = wide ? (rect.u0 + rect.u1) / 2 : rect.u1
+            isColor = rect.color ? 1 : 0
             pendingWide = wide ? rect : null
           }
         } else {
@@ -1195,6 +1244,7 @@ export class WebGLRenderer {
               const rect = this.atlas.getGlyph(shaped, spansTwo ? GLYPH_WIDE : 0)
               const mid = (rect.u0 + rect.u1) / 2
               v0 = rect.v0; v1 = rect.v1
+              isColor = 0
               u0 = spansTwo && cellWidth === 0 ? mid : rect.u0
               u1 = spansTwo && cellWidth === 2 ? mid : rect.u1
               finalFgR = this.cursorR; finalFgG = this.cursorG; finalFgB = this.cursorB
@@ -1215,6 +1265,7 @@ export class WebGLRenderer {
             const rect = this.atlas.getGlyph(GLYPH_CURSOR_OUTLINE, spansTwo ? GLYPH_WIDE : 0)
             const mid = (rect.u0 + rect.u1) / 2
             v0 = rect.v0; v1 = rect.v1
+            isColor = 0
             u0 = cellWidth === 0 ? mid : rect.u0
             u1 = cellWidth === 2 ? mid : rect.u1
             finalFgR = this.cursorR; finalFgG = this.cursorG; finalFgB = this.cursorB
@@ -1231,6 +1282,14 @@ export class WebGLRenderer {
           this.sawBlinkingCell = true
           if (!this.blinkOn) {
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
+            // A colour glyph does not read the foreground, so matching it to
+            // the background hides everything except an emoji -- which would
+            // then be the one character on the row refusing to blink. Sending
+            // the cell down the coverage path is what hides it: the sample
+            // there is a slot no coverage was ever written to, and whatever it
+            // returns is mixed between a foreground and a background that are
+            // by now the same colour.
+            isColor = 0
           }
         }
 
@@ -1251,6 +1310,11 @@ export class WebGLRenderer {
         this.instanceData[outIdx++] = v0
         this.instanceData[outIdx++] = u1
         this.instanceData[outIdx++] = v1
+        // Faint reaches a colour glyph here rather than through the
+        // foreground, which it does not read: same factor, applied to the
+        // face's own colours instead.
+        this.instanceData[outIdx++] =
+          isColor === 0 ? 0 : (flags & CELL_FAINT) !== 0 ? FAINT_SCALE : 1
       }
     }
 
@@ -1265,6 +1329,8 @@ export class WebGLRenderer {
 
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, this.atlas.texture)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, this.atlas.colorTexture)
 
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cols * rows)
   }

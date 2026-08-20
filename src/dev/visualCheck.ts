@@ -80,9 +80,19 @@ out += `  sextants \u{1fb00}\u{1fb01}\u{1fb02}\u{1fb03}\u{1fb04}\u{1fb05}\u{1fb0
 // unbroken bars at three heights, which is the tiling claim made visible.
 out += `           \u{1fb02}\u{1fb02}\u{1fb02}\u{1fb02} \u{1fb0b}\u{1fb0b}\u{1fb0b}\u{1fb0b} \u{1fb2d}\u{1fb2d}\u{1fb2d}\u{1fb2d}  corners \u{1fb7c}\u{1fb7d}\u{1fb7e}\u{1fb7f}\r\n`
 
+// Colour glyphs, which are the one thing in this file that is not a coverage
+// mask at all. The second copy is drawn with a red foreground on purpose: an
+// emoji that comes out red is one being sampled as coverage and tinted, which
+// is exactly what the colour atlas exists to stop.
+out += `\r\n  colour — an emoji font paints its own colours, so neither copy should be tinted\r\n`
+out += `  \u{1f600} \u{1f389} \u{1f680} \u{1f41b} \u{1f4e6} \u{1f525}   ${fg(203)}\u{1f600} \u{1f389} \u{1f680} \u{1f41b} \u{1f4e6} \u{1f525}${RESET} on red\r\n`
+
 // Ligatures are off unless asked for, and need a face that has them — so this
 // line says nothing on its own. It is here to be compared against itself with
 // `l` pressed, which is the only way to see that the shaping happened.
+out += `  ${ESC}[2mfaint \u{1f600} \u{1f525} and text${RESET}   — the emoji fades with it, not past it\r\n`
+out += `  ${ESC}[5mblink \u{1f600} \u{1f525} and text${RESET}   — the emoji must blink with the text, not through it\r\n`
+
 out += `\r\n  ligatures — press l to toggle, ?font= to pick a face that has them\r\n`
 out += `  -> => <- <= >= != == === !== <=> |> <| :: ++ // /* */ ~= |= &&\r\n`
 out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} coloured\r\n`
