@@ -107,6 +107,7 @@ engine.write(out)
  *
  *   ?font=Cascadia Code                    the body face
  *   ?features="calt" 0                     OpenType tags, as font-feature-settings
+ *   ?variations="wdth" 75                  variable axes, as font-variation-settings
  *   ?italic=Comic Sans MS                  a face for the italic slot; also
  *   ?bold=…  ?bolditalic=…                 the other two styled slots
  *   ?range=30-39:Comic Sans MS             pin a codepoint range, hex, repeatable
@@ -127,6 +128,7 @@ const num = (name: string, fallback: number) => {
   return Number.isFinite(n) && params.has(name) ? n : fallback
 }
 const wantedFeatures = params.get('features') ?? ''
+const wantedAxes = params.get('variations') ?? ''
 /** A styled slot: quoted, so a family with a space in it survives the CSS. */
 const slot = (name: string | null) => (name ? JSON.stringify(name) : '')
 /** `lo-hi:Family`, hex and inclusive — the settings dialog's rows, in a URL. */
@@ -139,6 +141,7 @@ const metricParams = ['weight', 'boldweight', 'lineheight', 'spacing', 'italic']
 if (
   wantedFont ||
   wantedFeatures ||
+  wantedAxes ||
   wantedRanges.length > 0 ||
   metricParams.some((p) => params.has(p))
 ) {
@@ -150,6 +153,7 @@ if (
       fontFamilyItalic: slot(params.get('italic')),
       fontFamilyBoldItalic: slot(params.get('bolditalic')),
       fontFeatures: wantedFeatures,
+      fontVariations: wantedAxes,
       fontRanges: wantedRanges,
       fontWeight: num('weight', 400),
       fontWeightBold: num('boldweight', 700),

@@ -64,6 +64,7 @@ function settings(over: Partial<FontSettings> = {}): FontSettings {
     fontFamilyItalic: '',
     fontFamilyBoldItalic: '',
     fontFeatures: '',
+    fontVariations: '',
     fontRanges: [],
     fontWeight: 400,
     fontWeightBold: 700,
@@ -327,6 +328,58 @@ describe('resolveRangeOverlaps', () => {
     expect(familyForCodepoint(kept, 0x250)).toBe('Outer')
     expect(familyForCodepoint(kept, 0x955)).toBe('Later')
     expect(familyForCodepoint(kept, 0x930)).toBeNull()
+  })
+})
+
+describe('variable axes', () => {
+  it('declares the face with the axes as a descriptor', () => {
+    const sel = buildFontSelection(
+      settings({ fontFamily: 'Bahnschrift', fontVariations: '"wdth" 75' }),
+    )
+    expect(declared).toHaveLength(1)
+    expect(declared[0].descriptors.variationSettings).toBe('"wdth" 75')
+    expect(sel.regular).toBe(`"${declared[0].family}", Bahnschrift`)
+  })
+
+  it('wraps a family for axes alone, with no features asked for', () => {
+    buildFontSelection(settings({ fontFamily: 'Segoe UI Variable', fontVariations: '"opsz" 8' }))
+    expect(declared).toHaveLength(1)
+    expect(declared[0].descriptors.featureSettings).toBeUndefined()
+  })
+
+  it('sets only the descriptors asked for, so absent is absent', () => {
+    buildFontSelection(settings({ fontFamily: 'Iosevka Term', fontFeatures: '"ss08" 1' }))
+    expect(declared[0].descriptors.featureSettings).toBe('"ss08" 1')
+    expect(declared[0].descriptors.variationSettings).toBeUndefined()
+  })
+
+  it('carries both when both are asked for', () => {
+    buildFontSelection(
+      settings({
+        fontFamily: 'Recursive Code',
+        fontFeatures: '"ss02" 1',
+        fontVariations: '"MONO" 1, "CASL" 0.5',
+      }),
+    )
+    expect(declared[0].descriptors.featureSettings).toBe('"ss02" 1')
+    expect(declared[0].descriptors.variationSettings).toBe('"MONO" 1, "CASL" 0.5')
+  })
+
+  it('keys the generated face on the axes as well, not just the family', () => {
+    // Otherwise the second width would be handed the first one's face.
+    const narrow = buildFontSelection(
+      settings({ fontFamily: 'Commit Mono', fontVariations: '"wdth" 75' }),
+    )
+    const wide = buildFontSelection(
+      settings({ fontFamily: 'Commit Mono', fontVariations: '"wdth" 125' }),
+    )
+    expect(declared).toHaveLength(2)
+    expect(narrow.regular).not.toBe(wide.regular)
+  })
+
+  it('leaves an untouched configuration declaring nothing at all', () => {
+    buildFontSelection(settings())
+    expect(declared).toEqual([])
   })
 })
 

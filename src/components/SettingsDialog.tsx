@@ -661,6 +661,17 @@ function AdvancedFontSettings({
           />
         </label>
         <LigatureConflictNote settings={settings} />
+        <label className="flex items-center justify-between gap-3 text-white/85">
+          <span>Variable axes</span>
+          <input
+            type="text"
+            spellCheck={false}
+            placeholder={'"wdth" 85, "slnt" -10'}
+            className={`${selectClass} w-52 font-mono`}
+            value={settings.fontVariations}
+            onChange={(e) => onChange({ ...settings, fontVariations: e.target.value })}
+          />
+        </label>
         <SliderRow
           label="Line height"
           value={settings.lineHeightPercent}
@@ -689,7 +700,9 @@ function AdvancedFontSettings({
           one. Features are passed through as{' '}
           <code className="text-white/50">font-feature-settings</code>, so a font's stylistic
           sets and its slashed zero are reachable by tag — they reach italic text only when
-          an italic face is named above. A range pins every codepoint between its two ends,
+          an italic face is named above. Variable axes go the same way, so a face's width,
+          slant or optical size is reachable by tag too; weight has a control of its own
+          because the cell is measured at it, and where the two disagree the axis wins. A range pins every codepoint between its two ends,
           inclusive and in hex, to one family ahead of everything else: the private use area
           to a Nerd Font, or CJK to a font that covers it. A row that is not a complete range
           yet has no effect.

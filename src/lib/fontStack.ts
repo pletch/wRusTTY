@@ -12,6 +12,11 @@ import type { FontRange } from './settings'
  * Declare a face with the features baked in, hand the atlas its generated
  * name, and the features come through `fillText`.
  *
+ * `font-variation-settings` is a descriptor by the same rule, so the width,
+ * slant and optical-size axes of a variable font arrive the same way. Weight
+ * is an axis too, and has its own setting only because the terminal has to
+ * know it: the cell is measured at the weight the body text is drawn in.
+ *
  * That was measured rather than assumed, and so were its two edges:
  *
  * - **Bold survives the wrapper.** A face declared `font-weight: 1 1000` and
@@ -72,6 +77,7 @@ export interface FontSettings {
   fontFamilyItalic: string
   fontFamilyBoldItalic: string
   fontFeatures: string
+  fontVariations: string
   fontRanges: FontRange[]
   fontWeight: number
   fontWeightBold: number
@@ -90,25 +96,32 @@ const registered = new Map<string, string>()
 let counter = 0
 
 /**
- * Declares `family` again under a generated name, with `features` applied.
+ * Declares `family` again under a generated name, with `features` and `axes`
+ * applied.
  *
  * `font-weight: 1 1000` is what keeps real bold reachable through the wrapper.
  * `font-style: normal` is deliberate and load-bearing: it says this face is
  * upright, so the caller must ask for upright and pick an italic *face* when
- * it wants slant, rather than asking this one to lean.
+ * it wants slant, rather than asking this one to lean. A variable font with a
+ * `slnt` axis is the exception that proves it: leaning it through the axis is
+ * setting a descriptor, not asking a face to synthesize anything.
  */
-function faceWithFeatures(family: string, features: string): string {
-  const key = `${family}\u0000${features}`
+function faceWithDescriptors(family: string, features: string, axes: string): string {
+  const key = `${family}\u0000${features}\u0000${axes}`
   const existing = registered.get(key)
   if (existing) return existing
 
   const name = `wrustty-feat-${counter++}`
   try {
-    const face = new FontFace(name, `local(${JSON.stringify(family)})`, {
-      weight: '1 1000',
-      style: 'normal',
-      featureSettings: features,
-    })
+    // Only the descriptors that were asked for: an empty string is not the
+    // same as absent to every implementation, and there is no reason to find
+    // out which ones disagree.
+    const descriptors: FontFaceDescriptors = { weight: '1 1000', style: 'normal' }
+    if (features) descriptors.featureSettings = features
+    // Not in the DOM typings yet, though it has been a descriptor since CSS
+    // Fonts 4 and the browsers this runs on take it.
+    if (axes) (descriptors as { variationSettings?: string }).variationSettings = axes
+    const face = new FontFace(name, `local(${JSON.stringify(family)})`, descriptors)
     // Added before it resolves: `load()` is a promise, the atlas rasterizes
     // synchronously, and a face that is still loading falls back for a frame
     // rather than failing. The engine redraws on the next write anyway.
@@ -150,18 +163,19 @@ function headFamily(stack: string): string {
  * face answers to. With the original stack still in the list that costs the
  * features and nothing else, instead of dropping to the webview default.
  */
-function slot(stack: string, features: string): string {
-  if (!features.trim()) return stack
+function slot(stack: string, features: string, axes: string): string {
+  if (!features.trim() && !axes.trim()) return stack
   const head = headFamily(stack)
   if (!head) return stack
-  const generated = faceWithFeatures(head, features)
+  const generated = faceWithDescriptors(head, features, axes)
   if (generated === head) return stack
   return `"${generated}", ${stack}`
 }
 
 export function buildFontSelection(s: FontSettings): FontSelection {
   const features = s.fontFeatures ?? ''
-  const base = slot(s.fontFamily, features)
+  const axes = s.fontVariations ?? ''
+  const base = slot(s.fontFamily, features, axes)
 
   const boldIsFace = s.fontFamilyBold.trim() !== ''
   const italicIsFace = s.fontFamilyItalic.trim() !== ''
@@ -169,14 +183,14 @@ export function buildFontSelection(s: FontSettings): FontSelection {
 
   return {
     regular: base,
-    bold: boldIsFace ? slot(s.fontFamilyBold, features) : base,
+    bold: boldIsFace ? slot(s.fontFamilyBold, features, axes) : base,
     // The unwrapped stack when the slot is unset — see the note at the top of
     // this file. Features are given up rather than italic.
-    italic: italicIsFace ? slot(s.fontFamilyItalic, features) : s.fontFamily,
+    italic: italicIsFace ? slot(s.fontFamilyItalic, features, axes) : s.fontFamily,
     boldItalic: boldItalicIsFace
-      ? slot(s.fontFamilyBoldItalic, features)
+      ? slot(s.fontFamilyBoldItalic, features, axes)
       : italicIsFace
-        ? slot(s.fontFamilyItalic, features)
+        ? slot(s.fontFamilyItalic, features, axes)
         : s.fontFamily,
     boldIsFace,
     italicIsFace,

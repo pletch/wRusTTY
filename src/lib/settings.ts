@@ -325,6 +325,21 @@ export interface TerminalSettings {
    */
   fontFeatures: string
   /**
+   * Variable font axes, as a CSS `font-variation-settings` value — `"wdth"
+   * 85, "slnt" -10` and the like.
+   *
+   * The weight setting is one axis of this already, named separately because
+   * it is the one every font has and the one the terminal itself has to know
+   * about: the cell is measured at it. The rest — width, slant, optical size,
+   * and whatever else a face chooses to expose — have no such special status
+   * and are passed through as typed.
+   *
+   * Where the two overlap, this wins: `font-variation-settings` is the
+   * low-level control and CSS says so, which is worth knowing if the weight
+   * slider stops doing anything.
+   */
+  fontVariations: string
+  /**
    * Codepoint ranges pinned to a particular family, which is what controlled
    * fallback actually looks like: *this* face for the private-use area, *that*
    * one for CJK, the body font for everything else. Consulted before the body
@@ -478,6 +493,7 @@ const defaults: TerminalSettings = {
   fontFamilyItalic: '',
   fontFamilyBoldItalic: '',
   fontFeatures: '',
+  fontVariations: '',
   fontRanges: [],
 }
 
@@ -621,7 +637,13 @@ export function loadSettings(): TerminalSettings {
     // These reach the DOM as a CSS family list and a font-feature-settings
     // value, so a non-string here would be interpolated as "[object Object]"
     // and quietly resolve to the fallback face.
-    for (const key of ['fontFamilyBold', 'fontFamilyItalic', 'fontFamilyBoldItalic', 'fontFeatures'] as const) {
+    for (const key of [
+      'fontFamilyBold',
+      'fontFamilyItalic',
+      'fontFamilyBoldItalic',
+      'fontFeatures',
+      'fontVariations',
+    ] as const) {
       if (typeof merged[key] !== 'string') merged[key] = defaults[key]
     }
     merged.fontRanges = sanitizeRanges(merged.fontRanges)
