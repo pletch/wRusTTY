@@ -21,6 +21,10 @@ function make2dContextStub() {
     fillRect: vi.fn(),
     clearRect: vi.fn(),
     fillText: vi.fn(),
+    save: vi.fn(),
+    restore: vi.fn(),
+    translate: vi.fn(),
+    scale: vi.fn(),
     measureText: vi.fn(
       (): { fontBoundingBoxAscent?: number; fontBoundingBoxDescent?: number } => ({
         fontBoundingBoxAscent: 12,
@@ -226,5 +230,47 @@ describe('dispose', () => {
     const atlas = new GlyphAtlas(gl, 'monospace', 14, 8, 16)
     atlas.dispose()
     expect(gl.deleteTexture).toHaveBeenCalledWith(atlas.texture)
+  })
+})
+
+describe('glyphs wider than their slot', () => {
+  /** The stub's default `measureText` reports no `width` at all, which is what
+   *  keeps every other test on the plain `fillText` path. This one reports a
+   *  real one, plus the metrics the constructor reads. */
+  function measuringAt(width: number) {
+    return vi.fn(() => ({ width, fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4 }))
+  }
+
+  it('condenses horizontally when the face draws past the cell it was measured for', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    ctxStub.measureText = measuringAt(20)
+    ctxStub.fillText.mockClear()
+    atlas.getGlyph(0x4e00) // a CJK ideograph reaching the single-cell path
+
+    // Drawn at the origin the transform establishes, not at the slot's own
+    // coordinates — that is what distinguishes the condensed path.
+    expect(ctxStub.fillText).toHaveBeenCalledWith(expect.any(String), 0, 0)
+    expect(ctxStub.scale).toHaveBeenCalledWith(8 / 20, 1)
+    expect(ctxStub.save).toHaveBeenCalled()
+    expect(ctxStub.restore).toHaveBeenCalled()
+  })
+
+  it('scales against the two-cell slot for a wide glyph, not the single cell', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    ctxStub.measureText = measuringAt(20)
+    atlas.getGlyph(0x4e00, GLYPH_WIDE)
+    expect(ctxStub.scale).toHaveBeenCalledWith(16 / 20, 1)
+  })
+
+  it('leaves a glyph that fits on the untransformed path', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    ctxStub.measureText = measuringAt(7)
+    ctxStub.fillText.mockClear()
+    ctxStub.scale.mockClear()
+    atlas.getGlyph(65)
+    expect(ctxStub.scale).not.toHaveBeenCalled()
+    expect(ctxStub.fillText).toHaveBeenCalledTimes(1)
+    // The slot's own x: the constructor already took slot 0 for the blank.
+    expect(ctxStub.fillText.mock.calls[0][1]).toBe(8)
   })
 })

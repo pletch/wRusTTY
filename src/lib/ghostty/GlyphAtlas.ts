@@ -4,6 +4,7 @@ import {
   UNDERLINE_DOTTED,
   UNDERLINE_DASHED,
 } from './wasmBindings'
+import { isBoxGlyph, drawBoxGlyph } from './boxDrawing'
 
 export interface GlyphRect {
   x: number
@@ -160,6 +161,11 @@ export class GlyphAtlas {
   }
 
   getGlyph(codepoint: number, style = 0): GlyphRect {
+    // Weight and slant are properties of a face, and these glyphs have no
+    // face — the heavy box-drawing characters are their own codepoints. Left
+    // in the key they would buy a second, identical raster of every border a
+    // bold prompt happens to draw.
+    if (isBoxGlyph(codepoint)) style &= ~(GLYPH_BOLD | GLYPH_ITALIC)
     const key = codepoint * GLYPH_STYLE_COUNT + style
     const hit = this.cache.get(key)
     if (hit) return hit
@@ -263,7 +269,14 @@ export class GlyphAtlas {
     this.ctx.font = this.fontFor(style)
     this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
 
-    if (text === CURSOR_BAR_TEXT) {
+    // Box drawing, block elements and Powerline separators are geometry
+    // against the cell rather than characters from a face; see boxDrawing.ts
+    // for why. Tried before the cursor shapes only because it is the same
+    // kind of substitution and reads better grouped with them.
+    const single = text.length <= 2 ? text.codePointAt(0) : undefined
+    if (single !== undefined && isBoxGlyph(single)) {
+      drawBoxGlyph(this.ctx, single, x, y, slotWidth, this.cellHeight, this.lineThickness)
+    } else if (text === CURSOR_BAR_TEXT) {
       // A bar sits at the leading edge of the cell and is deliberately thicker
       // than a rule: at one pixel it disappears against text on a HiDPI pane.
       this.ctx.fillRect(x, y, Math.max(1, Math.round(this.lineThickness * 2)), this.cellHeight)
@@ -280,7 +293,25 @@ export class GlyphAtlas {
       this.ctx.fillRect(x, y, t, this.cellHeight)
       this.ctx.fillRect(x + slotWidth - t, y, t, this.cellHeight)
     } else {
-      this.ctx.fillText(text, x, y + this.baseline)
+      // Condensed to the slot when the face draws wider than the cell it was
+      // measured for. `measureCell` sizes a cell from one glyph of the first
+      // family that resolves, so anything reached by per-glyph fallback — a
+      // proportional face, a symbol font, a wide character that arrived
+      // without GLYPH_WIDE — can overrun. The readback below is bounded to the
+      // slot, so an overrun never reaches another glyph's texels; it is simply
+      // sliced off, and the character loses its right-hand side for the
+      // session. Scaling it to fit keeps it legible instead, which is what the
+      // GLYPH_WIDE slot already does for the wide characters the core flags.
+      const inkWidth = this.ctx.measureText(text).width
+      if (inkWidth > slotWidth) {
+        this.ctx.save()
+        this.ctx.translate(x, y + this.baseline)
+        this.ctx.scale(slotWidth / inkWidth, 1)
+        this.ctx.fillText(text, 0, 0)
+        this.ctx.restore()
+      } else {
+        this.ctx.fillText(text, x, y + this.baseline)
+      }
     }
 
     if (style & GLYPH_UNDERLINE) {
