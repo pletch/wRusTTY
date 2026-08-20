@@ -1083,7 +1083,16 @@ function App() {
         ),
       }}
     >
-      <div className="flex h-10 shrink-0 items-stretch border-b border-white/10 bg-black/20">
+      {/* No bottom hairline: the tabs above it have rounded tops now, and a
+       * line running under the active one cut it off from the terminal it
+       * belongs to — the opposite of what the shape is for. Erasing the line
+       * only under that tab isn't available to us (every fill here is
+       * translucent, so overpainting a translucent border tints it rather than
+       * removing it, and segmenting the line leaves 2px breaks at the gaps
+       * between tabs). Dropping it outright is the better answer anyway: the
+       * strip's own black/20 already separates it from the terminal by tone,
+       * and now the active tab's fill runs straight down into it. */}
+      <div className="flex h-10 shrink-0 items-stretch bg-black/20">
         <TabBar
           tabs={tabs}
           activeTabId={activeTabId}

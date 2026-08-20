@@ -78,6 +78,15 @@ const PANE_MAP_SEGMENT_PX = 2
  * created. */
 const PANE_MAP_MAX_ROWS = 4
 
+/** Gap between the top of the tab and the pane map, in px. The map used to
+ * sit flush against the edge, which on a square corner was simply where the
+ * tab began — but a rounded tab reads as an object with a lip, and a line
+ * pinned to the very edge of one looks stuck to it rather than placed on it.
+ * Small on purpose: two pixels is enough for the tab's own fill to show above
+ * the bar and give it a top edge to sit against, without it starting to look
+ * like a detached rule floating in the tab. */
+const PANE_MAP_TOP_PX = 2
+
 /** Shaved off the clearance the tab's contents keep below the pane map.
  * Centring them strictly under the map is safe but sits them low — the space
  * beneath reads as bigger than the gap above, because the map is a thin line
@@ -317,7 +326,10 @@ export function TabBar({
     tabs.reduce((most, t) => Math.max(most, verticalRows(t.root)), 1),
     PANE_MAP_MAX_ROWS,
   )
-  const tabContentTopPx = Math.max(0, paneMapExtent(stripRows) - PANE_MAP_CONTENT_LIFT_PX)
+  const tabContentTopPx = Math.max(
+    0,
+    PANE_MAP_TOP_PX + paneMapExtent(stripRows) - PANE_MAP_CONTENT_LIFT_PX,
+  )
 
   return (
     <div
@@ -448,10 +460,26 @@ export function TabBar({
                 setDropTargetId(null)
               }}
               style={{ paddingTop: `${tabContentTopPx}px` }}
-              className={`group relative flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 border-r border-white/5 px-3 text-xs transition-colors duration-150 ${
+              // `mr-0.5` and the fill on *every* tab are what replaced the
+              // vertical hairline that used to separate them. A hairline
+              // meeting a curved corner reads as a defect, but simply dropping
+              // it left two adjacent inactive tabs — both previously
+              // transparent — with nothing at all between them. A faint fill
+              // plus a 2px gap separates them the way the rounding is meant to,
+              // and is what makes the corners legible in the first place: a
+              // radius only shows against something.
+              // `rounded-t-lg` is the window's own corner radius (see the
+              // root element in App.tsx), so the tabs and the frame they sit
+              // in are visibly the same shape rather than two nearly-equal
+              // roundings a few pixels apart. `mt-1` then drops them clear of
+              // the window's top edge — a tab whose corner starts in the same
+              // pixel row as the frame's has its rounding read as part of the
+              // frame; the gap is what makes it a separate object sitting in
+              // the strip, and is what Chrome and Windows Terminal both do.
+              className={`group relative mr-0.5 mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 rounded-t-lg px-3 text-xs transition-colors duration-150 ${
                 active
                   ? 'bg-white/10 text-white'
-                  : 'text-white/45 hover:bg-white/[0.06] hover:text-white/80'
+                  : 'bg-white/[0.03] text-white/45 hover:bg-white/[0.08] hover:text-white/80'
               } ${draggedId === tab.id ? 'opacity-40' : ''} ${
                 dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''
               }`}
@@ -473,9 +501,18 @@ export function TabBar({
                   height gave a nested stack two 0.5px lines, i.e. nothing
                   visible at all. */}
               {(active || leaves.length > 1 || running || attention) && (
+                // Held clear of the tab's rounded top corners rather than
+                // clipped by them. `left/right-2` is the corner radius
+                // exactly, which is where the curve meets the top edge — run
+                // full width and the curve would slice this 2px bar
+                // diagonally right where the radius is widest, tapering its
+                // ends away over a few pixels instead of ending them. The
+                // wrapper's own small radius then caps what's left, so the bar
+                // reads as a deliberate shortened line rather than one that
+                // ran out of tab.
                 <span
-                  className="absolute inset-x-0 top-0"
-                  style={{ height: `${paneMapExtent(rows)}px` }}
+                  className="absolute left-2 right-2 overflow-hidden rounded-sm"
+                  style={{ top: `${PANE_MAP_TOP_PX}px`, height: `${paneMapExtent(rows)}px` }}
                 >
                   <PaneIndicator
                     node={tab.root}
@@ -487,7 +524,7 @@ export function TabBar({
                 </span>
               )}
               {dropTargetId === tab.id && draggedId !== tab.id && (
-                <span className="absolute inset-y-0 left-0 w-0.5 bg-sky-400" />
+                <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-sky-400" />
               )}
               {/* No spinner here any more: the running marker on the pane map
                   above says the same thing and says *where*, so a second
