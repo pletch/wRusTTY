@@ -35,7 +35,7 @@ import * as vault from './lib/vault'
 import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/connection'
-import { loadSettings, saveSettings } from './lib/settings'
+import { loadSettings, saveSettings, DEFAULT_FONT_SIZE, FONT_SIZE_RANGE } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
 import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
@@ -978,11 +978,29 @@ function App() {
     setModal({ kind: 'palette' })
   }
 
+  /**
+   * A step up or down the font size, or back to the default.
+   *
+   * Through the same setting the slider writes, so zooming is not a second,
+   * temporary size that a visit to Settings would silently undo — and so it
+   * persists, which is what anyone who has just made the text bigger expects
+   * of the next window they open.
+   */
+  function zoomFont(step: number | 'reset') {
+    const current = terminalSettings.fontSize
+    const next =
+      step === 'reset'
+        ? DEFAULT_FONT_SIZE
+        : Math.min(FONT_SIZE_RANGE.max, Math.max(FONT_SIZE_RANGE.min, current + step))
+    if (next === current) return
+    updateSettings({ ...terminalSettings, fontSize: next })
+  }
+
   // Keydown handlers close over state that changes every render; rather than
   // re-subscribing the listener on every change, keep a ref to the latest
   // callbacks and mount the listener once.
-  const shortcutsRef = useRef({ newTab, closeTab, stepTab, openPalette, activeTabId })
-  shortcutsRef.current = { newTab, closeTab, stepTab, openPalette, activeTabId }
+  const shortcutsRef = useRef({ newTab, closeTab, stepTab, openPalette, zoomFont, activeTabId })
+  shortcutsRef.current = { newTab, closeTab, stepTab, openPalette, zoomFont, activeTabId }
 
   useEffect(() => {
     // Capture phase so these fire before the engine's own keydown handler can
@@ -991,6 +1009,30 @@ function App() {
     function onKeyDown(e: KeyboardEvent) {
       if (!e.ctrlKey) return
       const s = shortcutsRef.current
+
+      // Font zoom, on the bindings every terminal and browser already shares.
+      // Plain Ctrl combos, unlike the tab shortcuts above, because these are
+      // the ones people arrive with -- and because the keys involved are ones
+      // a shell has no use for. Ctrl+- in particular is not readline's undo;
+      // that is Ctrl+_, which is Ctrl+*Shift*+- and deliberately left alone.
+      //
+      // preventDefault is what keeps them off the far end: the engine's input
+      // handler skips any event that has already been consumed.
+      if (!e.altKey && (e.key === '+' || e.key === '=')) {
+        e.preventDefault()
+        s.zoomFont(1)
+        return
+      }
+      if (!e.altKey && !e.shiftKey && e.key === '-') {
+        e.preventDefault()
+        s.zoomFont(-1)
+        return
+      }
+      if (!e.altKey && !e.shiftKey && e.key === '0') {
+        e.preventDefault()
+        s.zoomFont('reset')
+        return
+      }
 
       if (e.key === 'Tab') {
         e.preventDefault()

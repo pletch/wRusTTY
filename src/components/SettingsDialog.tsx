@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings, CursorStyleSetting, FontRange } from '../lib/settings'
-import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS } from '../lib/settings'
+import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS, FONT_SIZE_RANGE } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
   formatCodepoint,
@@ -771,8 +771,8 @@ export function SettingsDialog({
                           <span className="flex items-center gap-2">
                             <input
                               type="range"
-                              min={8}
-                              max={24}
+                              min={FONT_SIZE_RANGE.min}
+                              max={FONT_SIZE_RANGE.max}
                               step={1}
                               className="w-40 accent-sky-400"
                               value={settings.fontSize}

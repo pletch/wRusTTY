@@ -1,6 +1,9 @@
 import type { VibrancyMode } from './windowEffects'
 import { resolveRangeOverlaps } from './fontStack'
 
+/** What Ctrl+0 restores, and what a settings blob without a size gets. */
+export const DEFAULT_FONT_SIZE = 14
+
 export type CursorStyleSetting = 'block' | 'bar' | 'underline'
 
 /** Colour space the renderer mixes glyph coverage in — see `textBlending`.
@@ -415,7 +418,7 @@ const defaults: TerminalSettings = {
   remoteNotifications: true,
   clipboardWriteFromRemote: true,
   fontFamily: FONT_STACKS[0].value,
-  fontSize: 14,
+  fontSize: DEFAULT_FONT_SIZE,
   // 16 MB, not the smallest tier: it estimates ~10,100 rows at 80 columns,
   // which is what the previous default (10,000 rows) meant to deliver. A new
   // install should not quietly get less history than the last version aimed at.
@@ -496,13 +499,25 @@ export function scrollbackTierForRows(rows: number): number {
  * exist so the Settings dialog offers and stores the number that will actually
  * be used, rather than one silently corrected on the way through.
  */
+/**
+ * The bounds the font size control offers, and the size Ctrl+0 goes back to.
+ *
+ * Shared rather than written into the dialog, because the zoom shortcuts move
+ * the same setting the slider does and the two must agree on where it stops.
+ */
+export const FONT_SIZE_RANGE = { min: 8, max: 24 } as const
+
 export const RECONNECT_ATTEMPTS_RANGE = { min: 1, max: 100 } as const
 export const RECONNECT_SECONDS_RANGE = { min: 5, max: 3600 } as const
 
 function clampSetting(value: unknown, fallback: number, range: { min: number; max: number }) {
-  const n = Math.round(Number(value))
-  if (!Number.isFinite(n)) return fallback
-  return Math.min(Math.max(n, range.min), range.max)
+  // Numbers only, rather than whatever `Number()` can be talked into. It reads
+  // null, '' and [] as zero, so a blob carrying any of them used to come back
+  // clamped to the bottom of the range -- and the bottom of a range is a
+  // decision, where absent means no decision was made. That distinction is the
+  // whole reason there is a fallback argument.
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(Math.max(Math.round(value), range.min), range.max)
 }
 
 export function loadSettings(): TerminalSettings {
@@ -523,6 +538,9 @@ export function loadSettings(): TerminalSettings {
     if (!SCROLLBACK_FOOTPRINT_TIERS_MB.includes(merged.scrollbackBudgetMB)) {
       merged.scrollbackBudgetMB = defaults.scrollbackBudgetMB
     }
+    // The size reaches the renderer as the number it measures a cell with, so
+    // a stored zero is not an ugly pane, it is a division by a zero-width cell.
+    merged.fontSize = clampSetting(merged.fontSize, defaults.fontSize, FONT_SIZE_RANGE)
     merged.reconnectMaxAttempts = clampSetting(
       merged.reconnectMaxAttempts,
       defaults.reconnectMaxAttempts,

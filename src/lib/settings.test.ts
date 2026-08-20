@@ -9,6 +9,8 @@ import {
   RECONNECT_ATTEMPTS_RANGE,
   RECONNECT_SECONDS_RANGE,
   FONT_STACKS,
+  FONT_SIZE_RANGE,
+  DEFAULT_FONT_SIZE,
 } from './settings'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
@@ -39,14 +41,14 @@ describe('loadSettings', () => {
   })
 
   it('falls back to the pre-rebrand wr-shell storage key when the current key is empty', () => {
-    localStorage.setItem(PREVIOUS_STORAGE_KEY, JSON.stringify({ fontSize: 99 }))
-    expect(loadSettings().fontSize).toBe(99)
+    localStorage.setItem(PREVIOUS_STORAGE_KEY, JSON.stringify({ fontSize: 22 }))
+    expect(loadSettings().fontSize).toBe(22)
   })
 
   it('prefers the current-key value over the legacy key when both are present', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 1 }))
-    localStorage.setItem(PREVIOUS_STORAGE_KEY, JSON.stringify({ fontSize: 99 }))
-    expect(loadSettings().fontSize).toBe(1)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 9 }))
+    localStorage.setItem(PREVIOUS_STORAGE_KEY, JSON.stringify({ fontSize: 22 }))
+    expect(loadSettings().fontSize).toBe(9)
   })
 
   /**
@@ -138,9 +140,9 @@ describe('loadSettings', () => {
 
 describe('saveSettings', () => {
   it('round-trips a full settings object through localStorage', () => {
-    const settings = { ...loadSettings(), fontSize: 42 }
+    const settings = { ...loadSettings(), fontSize: 21 }
     saveSettings(settings)
-    expect(loadSettings().fontSize).toBe(42)
+    expect(loadSettings().fontSize).toBe(21)
   })
 })
 
@@ -283,6 +285,24 @@ describe('the reconnect bounds', () => {
     const settings = loadSettings()
     expect(settings.autoReconnect).toBe(false)
     expect(settings.reconnectMaxAttempts).toBe(RECONNECT_ATTEMPTS_RANGE.min)
+  })
+})
+
+describe('the font size a stored blob can carry', () => {
+  it('is clamped to what the control offers, and to what Ctrl+= will reach', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 500 }))
+    expect(loadSettings().fontSize).toBe(FONT_SIZE_RANGE.max)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 0 }))
+    expect(loadSettings().fontSize).toBe(FONT_SIZE_RANGE.min)
+  })
+
+  // The bottom of a range is a decision; absent is not. `Number()` reads null
+  // and '' as zero, which used to make them indistinguishable.
+  it('falls back to the default rather than the bound when it is not a number', () => {
+    for (const stored of ['big', null, '']) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: stored }))
+      expect(loadSettings().fontSize).toBe(DEFAULT_FONT_SIZE)
+    }
   })
 })
 
