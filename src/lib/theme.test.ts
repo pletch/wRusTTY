@@ -9,6 +9,33 @@ describe('findTheme', () => {
   it('falls back to the first preset for an unknown name', () => {
     expect(findTheme('not-a-real-theme')).toBe(PRESET_THEMES[0])
   })
+
+  // Campbell is the Windows console default (conhost and Windows Terminal's
+  // stock profile), so it is the one preset whose values are not ours to
+  // taste-tune: it exists so a pane can match what the same command looks
+  // like in native PowerShell. Pinned against the published Microsoft
+  // values rather than eyeballed, since drift here silently defeats the
+  // only reason the theme is in the list.
+  it('matches the Windows console Campbell palette exactly', () => {
+    const campbell = findTheme('Campbell')
+    expect(campbell.name).toBe('Campbell')
+    expect(campbell.background).toBe('#0c0c0c')
+    expect(campbell.foreground).toBe('#cccccc')
+    expect([
+      campbell.black, campbell.red, campbell.green, campbell.yellow,
+      campbell.blue, campbell.magenta, campbell.cyan, campbell.white,
+    ]).toEqual([
+      '#0c0c0c', '#c50f1f', '#13a10e', '#c19c00',
+      '#0037da', '#881798', '#3a96dd', '#cccccc',
+    ])
+    expect([
+      campbell.brightBlack, campbell.brightRed, campbell.brightGreen, campbell.brightYellow,
+      campbell.brightBlue, campbell.brightMagenta, campbell.brightCyan, campbell.brightWhite,
+    ]).toEqual([
+      '#767676', '#e74856', '#16c60c', '#f9f1a5',
+      '#3b78ff', '#b4009e', '#61d6d6', '#f2f2f2',
+    ])
+  })
 })
 
 describe('hexToRgb', () => {
