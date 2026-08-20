@@ -97,9 +97,43 @@ const ARCS: Record<number, readonly [boolean, boolean]> = {
   0x2570: [false, true], // up and right
 }
 
-export function isBoxGlyph(cp: number): boolean {
-  return (cp >= 0x2500 && cp <= 0x259f) || (cp >= 0xe0b0 && cp <= 0xe0b7)
+/**
+ * The sextants, U+1FB00-U+1FB3B: a 2x3 mosaic, one codepoint per non-trivial
+ * combination of the six subcells.
+ *
+ * Derived rather than transcribed. The block enumerates masks in binary order
+ * with position 1 as the low bit, skipping the four combinations Unicode
+ * already had characters for — empty (space), full (U+2588), the left column
+ * (U+258C) and the right column (U+2590) — which is exactly 60 codepoints, and
+ * lands the last one on U+1FB3B. A hand-written table of sixty entries would
+ * be sixty chances to transpose a bit.
+ */
+const SEXTANTS = new Map<number, number>()
+{
+  const LEFT_COLUMN = 0b010101
+  const RIGHT_COLUMN = 0b101010
+  let cp = 0x1fb00
+  for (let mask = 1; mask < 0b111111; mask++) {
+    if (mask === LEFT_COLUMN || mask === RIGHT_COLUMN) continue
+    SEXTANTS.set(cp++, mask)
+  }
 }
+
+export function isBoxGlyph(cp: number): boolean {
+  return (
+    (cp >= 0x2500 && cp <= 0x259f) ||
+    (cp >= 0xe0b0 && cp <= 0xe0bf) ||
+    (cp >= 0x1fb00 && cp <= 0x1fb3b) ||
+    (cp >= 0x1fb70 && cp <= 0x1fb8b)
+  )
+}
+
+// Deliberately *not* claimed from the Legacy Computing block: the smooth
+// mosaics (U+1FB3C-U+1FB6F), the shades and checkerboards (U+1FB8C-U+1FB9F),
+// the diagonals (U+1FBA0-U+1FBAF) and the segmented digits (U+1FBF0+). Some
+// are not geometry at all, and the rest would be transcribed from memory
+// rather than derived — a wrong shape drawn confidently is worse than falling
+// through to whatever the font has.
 
 interface Rect {
   x: number
@@ -137,6 +171,8 @@ export function drawBoxGlyph(
 
   let handled = true
   if (cp >= 0x2580 && cp <= 0x259f) drawBlock(ctx, cp, x, y, w, h)
+  else if (cp >= 0x1fb70) drawEighths(ctx, cp, x, y, w, h)
+  else if (cp >= 0x1fb00) drawSextant(ctx, cp, x, y, w, h)
   else if (cp >= 0xe0b0) drawPowerline(ctx, cp, x, y, w, h, light)
   else if (DASHED[cp]) drawDashed(ctx, DASHED[cp], x, y, w, h, light)
   else if (ARCS[cp]) drawArc(ctx, ARCS[cp], x, y, w, h, light)
@@ -458,7 +494,87 @@ const QUADRANTS: Record<number, number> = {
 }
 
 /**
- * U+E0B0-U+E0B7, the Powerline separators. Private-use, so no font is obliged
+ * One sextant. The subcell boundaries are rounded against the cell rect rather
+ * than accumulated, so two sextants side by side or stacked meet exactly —
+ * which is the entire reason these get drawn rather than fetched, since a
+ * mosaic with seams in it is not a mosaic.
+ */
+function drawSextant(
+  ctx: CanvasRenderingContext2D,
+  cp: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  const mask = SEXTANTS.get(cp)
+  if (mask === undefined) return
+  const xs = [x, Math.round(x + w / 2), x + w]
+  const ys = [y, Math.round(y + h / 3), Math.round(y + (h * 2) / 3), y + h]
+  for (let i = 0; i < 6; i++) {
+    if ((mask >> i & 1) === 0) continue
+    const col = i % 2
+    const row = (i / 2) | 0
+    ctx.fillRect(xs[col], ys[row], xs[col + 1] - xs[col], ys[row + 1] - ys[row])
+  }
+}
+
+/**
+ * U+1FB70-U+1FB8B: the eighth-block family that fills the gaps either side of
+ * the ones U+2580-U+259F already had — a single interior eighth column or row,
+ * the four corner Ls, and the upper/right fractions that the lower/left
+ * versions in the older block have no counterpart for.
+ */
+function drawEighths(
+  ctx: CanvasRenderingContext2D,
+  cp: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  /** The nth eighth column, 1-indexed from the left. */
+  const col = (n: number) => {
+    const a = Math.round(x + (w * (n - 1)) / 8)
+    ctx.fillRect(a, y, Math.round(x + (w * n) / 8) - a, h)
+  }
+  /** The nth eighth row, 1-indexed from the top. */
+  const row = (n: number) => {
+    const a = Math.round(y + (h * (n - 1)) / 8)
+    ctx.fillRect(x, a, w, Math.round(y + (h * n) / 8) - a)
+  }
+  /** The top `n` eighths. */
+  const upper = (n: number) => ctx.fillRect(x, y, w, Math.round(y + (h * n) / 8) - y)
+  /** The rightmost `n` eighths. */
+  const right = (n: number) => {
+    const a = Math.round(x + (w * (8 - n)) / 8)
+    ctx.fillRect(a, y, x + w - a, h)
+  }
+
+  if (cp <= 0x1fb75) return col(cp - 0x1fb70 + 2)
+  if (cp <= 0x1fb7b) return row(cp - 0x1fb76 + 2)
+  switch (cp) {
+    case 0x1fb7c: col(1); row(8); return // left and lower
+    case 0x1fb7d: col(1); row(1); return // left and upper
+    case 0x1fb7e: col(8); row(1); return // right and upper
+    case 0x1fb7f: col(8); row(8); return // right and lower
+    case 0x1fb80: row(1); row(8); return // upper and lower
+    case 0x1fb81: row(1); row(3); row(5); row(8); return
+    case 0x1fb82: return upper(2)
+    case 0x1fb83: return upper(3)
+    case 0x1fb84: return upper(5)
+    case 0x1fb85: return upper(6)
+    case 0x1fb86: return upper(7)
+    case 0x1fb87: return right(2)
+    case 0x1fb88: return right(3)
+    case 0x1fb89: return right(5)
+    case 0x1fb8a: return right(6)
+    case 0x1fb8b: return right(7)
+  }
+}
+
+/**
+ * U+E0B0-U+E0BF, the Powerline separators. Private-use, so no font is obliged
  * to carry them and the ones that do are the Nerd Font patches — which is
  * exactly what is missing on a machine where fonts cannot be installed.
  * Drawn to the cell rect they also meet the cell beside them exactly, which
@@ -473,6 +589,43 @@ function drawPowerline(
   h: number,
   light: number,
 ): void {
+  // U+E0B8-U+E0BF are the angled pair: a triangle filling one corner half of
+  // the cell, and its "soft" partner, which is that triangle's hypotenuse on
+  // its own. Encoded as the corner the right angle sits in, so each filled
+  // shape and its diagonal are described once.
+  if (cp >= 0xe0b8) {
+    const i = cp - 0xe0b8
+    // Even members are the filled triangle, odd ones the bare diagonal.
+    const soft = (i & 1) === 1
+    // The right-angle corner walks lower-left, lower-right, upper-left,
+    // upper-right, which is the order the block is laid out in.
+    const atBottom = i < 4
+    const atLeft = (i & 2) === 0
+    const cornerX = atLeft ? x : x + w
+    const cornerY = atBottom ? y + h : y
+    // The hypotenuse always runs between the two corners adjacent to it.
+    const ax = atLeft ? x : x + w
+    const ay = atBottom ? y : y + h
+    const bx = atLeft ? x + w : x
+    const by = atBottom ? y + h : y
+
+    ctx.beginPath()
+    ctx.moveTo(ax, ay)
+    ctx.lineTo(bx, by)
+    if (soft) {
+      ctx.save()
+      ctx.strokeStyle = ctx.fillStyle as string
+      ctx.lineWidth = light
+      ctx.stroke()
+      ctx.restore()
+    } else {
+      ctx.lineTo(cornerX, cornerY)
+      ctx.closePath()
+      ctx.fill()
+    }
+    return
+  }
+
   const pointsRight = cp === 0xe0b0 || cp === 0xe0b1 || cp === 0xe0b4 || cp === 0xe0b5
   const outline = cp === 0xe0b1 || cp === 0xe0b3 || cp === 0xe0b5 || cp === 0xe0b7
   const rounded = cp >= 0xe0b4

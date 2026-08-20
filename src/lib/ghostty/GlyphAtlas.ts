@@ -234,7 +234,19 @@ export class GlyphAtlas {
     const key = `${style}:${cells}:${text}`
     const hit = this.runCache.get(key)
     if (hit) return hit
-    if (this.runCache.size >= RUN_CACHE_CAP) return null
+    if (this.runCache.size >= RUN_CACHE_CAP) {
+      // Said once, for the same reason the full-atlas warning is: this is
+      // reached per run per frame. Worth saying at all because the symptom of
+      // silently declining is "ligatures stopped working partway down the
+      // screen", which looks like a renderer fault rather than a bound.
+      if (!this.warnedRunsFull) {
+        this.warnedRunsFull = true
+        console.warn(
+          `GlyphAtlas run cache full at ${RUN_CACHE_CAP} runs; further runs draw cell by cell.`,
+        )
+      }
+      return null
+    }
     return this.rasterize(text, style, (r) => this.runCache.set(key, r), cells)
   }
 
@@ -512,6 +524,7 @@ export class GlyphAtlas {
   }
 
   private warnedFull = false
+  private warnedRunsFull = false
 
   dispose() {
     this.gl.deleteTexture(this.texture)

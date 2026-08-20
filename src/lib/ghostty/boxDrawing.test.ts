@@ -70,21 +70,25 @@ function draw(cp: number, w = W, h = H, light = LIGHT) {
 }
 
 describe('isBoxGlyph', () => {
-  it('claims the box-drawing, block-element and Powerline ranges and nothing else', () => {
-    expect(isBoxGlyph(0x2500)).toBe(true)
-    expect(isBoxGlyph(0x259f)).toBe(true)
-    expect(isBoxGlyph(0xe0b0)).toBe(true)
-    expect(isBoxGlyph(0xe0b7)).toBe(true)
-    expect(isBoxGlyph(0x24ff)).toBe(false)
-    expect(isBoxGlyph(0x25a0)).toBe(false)
-    expect(isBoxGlyph(0xe0b8)).toBe(false)
-    expect(isBoxGlyph(0x41)).toBe(false)
+  it('claims exactly the ranges it draws', () => {
+    for (const cp of [0x2500, 0x259f, 0xe0b0, 0xe0bf, 0x1fb00, 0x1fb3b, 0x1fb70, 0x1fb8b]) {
+      expect(isBoxGlyph(cp)).toBe(true)
+    }
+    // The neighbours either side of every range, plus the parts of Legacy
+    // Computing deliberately left to the font: smooth mosaics, shades,
+    // diagonals and the segmented digits.
+    for (const cp of [
+      0x24ff, 0x25a0, 0xe0af, 0xe0c0, 0x1faff, 0x1fb3c, 0x1fb6f, 0x1fb8c, 0x1fba0, 0x1fbf0, 0x41,
+    ]) {
+      expect(isBoxGlyph(cp)).toBe(false)
+    }
   })
 
   it('every codepoint it claims is one drawBoxGlyph actually draws', () => {
     const claimed: number[] = []
     for (let cp = 0x24f0; cp <= 0x25b0; cp++) if (isBoxGlyph(cp)) claimed.push(cp)
-    for (let cp = 0xe0a0; cp <= 0xe0c0; cp++) if (isBoxGlyph(cp)) claimed.push(cp)
+    for (let cp = 0xe0a0; cp <= 0xe0c8; cp++) if (isBoxGlyph(cp)) claimed.push(cp)
+    for (let cp = 0x1faf8; cp <= 0x1fb95; cp++) if (isBoxGlyph(cp)) claimed.push(cp)
     const unhandled = claimed.filter((cp) => !draw(cp).handled)
     expect(unhandled).toEqual([])
   })
@@ -269,5 +273,117 @@ describe('tiling across cells', () => {
     const centre = Math.round(W / 2 - 0.5)
     expect(light.colFilled(centre)).toBe(true)
     expect(heavy.colFilled(centre)).toBe(true)
+  })
+})
+
+describe('sextants', () => {
+  /** The 2x3 subcell a bit stands for, 1-indexed as Unicode names them. */
+  function subcellsOf(cp: number, w = 8, h = 18) {
+    const g = draw(cp, w, h)
+    const xs = [0, Math.round(w / 2)]
+    const ys = [0, Math.round(h / 3), Math.round((h * 2) / 3)]
+    const on: number[] = []
+    for (let i = 0; i < 6; i++) {
+      const px = xs[i % 2] + 1
+      const py = ys[(i / 2) | 0] + 1
+      if (g.at(px, py)) on.push(i + 1)
+    }
+    return on
+  }
+
+  it('numbers its subcells the way the character names do', () => {
+    expect(subcellsOf(0x1fb00)).toEqual([1])
+    expect(subcellsOf(0x1fb01)).toEqual([2])
+    expect(subcellsOf(0x1fb02)).toEqual([1, 2])
+    expect(subcellsOf(0x1fb03)).toEqual([3])
+    expect(subcellsOf(0x1fb14)).toEqual([2, 3, 5])
+  })
+
+  it('skips the four combinations Unicode already had characters for', () => {
+    // The left and right columns are U+258C and U+2590, so no sextant is
+    // either of them — if one were, the block would not end on U+1FB3B.
+    const all = []
+    for (let cp = 0x1fb00; cp <= 0x1fb3b; cp++) all.push(subcellsOf(cp).join(''))
+    expect(all).toHaveLength(60)
+    expect(all).not.toContain('135')
+    expect(all).not.toContain('246')
+    expect(all).not.toContain('')
+    expect(all).not.toContain('123456')
+    expect(new Set(all).size).toBe(60)
+  })
+
+  /** The codepoint for a subcell mask. Derived the same way the module does,
+   *  which is fine for the geometry tests below — the encoding itself is
+   *  pinned independently by the character-name test above. */
+  function sextantCp(mask: number) {
+    let cp = 0x1fb00
+    for (let m = 1; m < 0b111111; m++) {
+      if (m === 0b010101 || m === 0b101010) continue
+      if (m === mask) return cp
+      cp++
+    }
+    throw new Error(`no sextant for mask ${mask}`)
+  }
+
+  function coverage(cps: number[], w: number, h: number) {
+    const cover = new Uint8Array(w * h)
+    for (const cp of cps) {
+      const g = draw(cp, w, h)
+      for (let yy = 0; yy < h; yy++) {
+        for (let xx = 0; xx < w; xx++) if (g.at(xx, yy)) cover[yy * w + xx]++
+      }
+    }
+    return cover
+  }
+
+  it('the six subcells together cover the cell exactly once', () => {
+    const singles = [1, 2, 4, 8, 16, 32].map(sextantCp)
+    expect([...coverage(singles, 8, 18)].every((v) => v === 1)).toBe(true)
+  })
+
+  it('the three rows tile with no seam and no overlap', () => {
+    const rows = [0b000011, 0b001100, 0b110000].map(sextantCp)
+    expect([...coverage(rows, 8, 18)].every((v) => v === 1)).toBe(true)
+  })
+
+  it('the two columns tile, even though neither is a sextant itself', () => {
+    // The left and right columns are U+258C and U+2590 — the two combinations
+    // the block skips — so this crosses the older block and the new one.
+    expect([...coverage([0x258c, 0x2590], 8, 18)].every((v) => v === 1)).toBe(true)
+  })
+})
+
+describe('the extra eighth blocks', () => {
+  it('an interior column sits where its index says', () => {
+    // U+1FB70 is vertical one eighth block-2, i.e. the second eighth across.
+    const g = draw(0x1fb70, 16, 8)
+    expect(g.at(2, 4)).not.toBe(0)
+    expect(g.at(0, 4)).toBe(0)
+    expect(g.at(8, 4)).toBe(0)
+  })
+
+  it('the interior columns and the two edge ones tile the cell', () => {
+    const cover = new Uint8Array(16 * 8)
+    const add = (cp: number) => {
+      const g = draw(cp, 16, 8)
+      for (let yy = 0; yy < 8; yy++) for (let xx = 0; xx < 16; xx++) if (g.at(xx, yy)) cover[yy * 16 + xx]++
+    }
+    add(0x258f) // leftmost eighth, from the older block
+    for (let cp = 0x1fb70; cp <= 0x1fb75; cp++) add(cp) // columns 2..7
+    add(0x2595) // rightmost eighth
+    expect([...cover].every((v) => v === 1)).toBe(true)
+  })
+
+  it('the upper fractions grow monotonically', () => {
+    const sizes = [0x1fb82, 0x1fb83, 0x1fb84, 0x1fb85, 0x1fb86].map((cp) => draw(cp, 16, 16).count())
+    for (let i = 1; i < sizes.length; i++) expect(sizes[i]).toBeGreaterThan(sizes[i - 1])
+  })
+
+  it('a corner L is one column plus one row', () => {
+    const g = draw(0x1fb7c, 16, 16) // left and lower
+    expect(g.at(0, 0)).not.toBe(0)
+    expect(g.at(0, 15)).not.toBe(0)
+    expect(g.at(15, 15)).not.toBe(0)
+    expect(g.at(15, 0)).toBe(0)
   })
 })

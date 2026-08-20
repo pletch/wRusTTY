@@ -66,6 +66,13 @@ out += `  └─┴─┘ ┗━┻━┛ ╚═╩═╝ ╰───╯   └�
 out += `  mixed ╞═╡ ╤╥╧╨ ╪╫   dashed ┄┈╌ ┆┊╎   weights ╼╾ ╴╵╶╷\r\n`
 out += `  blocks █▇▆▅▄▃▂▁ ▉▊▋▌▍▎▏  shades ░▒▓  quads ▖▗▘▝▞▟\r\n`
 out += `  powerline \u{e0b0}\u{e0b1}\u{e0b2}\u{e0b3}\u{e0b4}\u{e0b5}\u{e0b6}\u{e0b7}   diagonals ╱╲╳\r\n`
+out += `  angled \u{e0b8}\u{e0b9}\u{e0ba}\u{e0bb}\u{e0bc}\u{e0bd}\u{e0be}\u{e0bf}   eighths \u{1fb70}\u{1fb71}\u{1fb72}\u{1fb73}\u{1fb74}\u{1fb75} \u{1fb76}\u{1fb77}\u{1fb78}\u{1fb79}\u{1fb7a}\u{1fb7b}\r\n`
+// A 2x3 mosaic, so a row of them reads as one picture rather than as a row of
+// characters — which is the only way to see whether the subcells tile.
+out += `  sextants \u{1fb00}\u{1fb01}\u{1fb02}\u{1fb03}\u{1fb04}\u{1fb05}\u{1fb06}\u{1fb07}\u{1fb08}\u{1fb09}\u{1fb0a}\u{1fb0b}\u{1fb0c}\u{1fb0d}\u{1fb0e}\u{1fb0f}\r\n`
+// The three rows of the mosaic, four cells of each: they should read as three
+// unbroken bars at three heights, which is the tiling claim made visible.
+out += `           \u{1fb02}\u{1fb02}\u{1fb02}\u{1fb02} \u{1fb0b}\u{1fb0b}\u{1fb0b}\u{1fb0b} \u{1fb2d}\u{1fb2d}\u{1fb2d}\u{1fb2d}  corners \u{1fb7c}\u{1fb7d}\u{1fb7e}\u{1fb7f}\r\n`
 
 // Ligatures are off unless asked for, and need a face that has them — so this
 // line says nothing on its own. It is here to be compared against itself with
