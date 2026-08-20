@@ -128,6 +128,59 @@ describe('CommandTracker', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ interactive: true }))
   })
 
+  it('hands the indicator to a program that reports its own progress, for the rest of the run', () => {
+    // The inline case: Claude Code on a host where it never switches screen
+    // buffers, so the alternate-screen suppression above never fires and the
+    // shell's run would otherwise sweep for the whole session.
+    tracker.handleOsc('C')
+    vi.advanceTimersByTime(400)
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'running' }))
+    tracker.noteProgress()
+    expect(onChange).toHaveBeenLastCalledWith(IDLE)
+    // Between turns the program clears its progress and the pane goes quiet.
+    // The run is still open, and must not reclaim the indicator — that is the
+    // "it never stops" this exists to fix.
+    vi.advanceTimersByTime(10_000)
+    expect(onChange).toHaveBeenLastCalledWith(IDLE)
+  })
+
+  it('still completes a run the program took over, with its exit code and duration', () => {
+    tracker.handleOsc('C')
+    tracker.noteProgress()
+    vi.setSystemTime(5000)
+    tracker.handleOsc('D;3')
+    expect(onComplete).toHaveBeenCalledWith({
+      command: null,
+      exitCode: 3,
+      durationMs: 5000,
+      interactive: false,
+    })
+  })
+
+  it('gives the indicator back to the shell on the next run', () => {
+    tracker.handleOsc('C')
+    tracker.noteProgress()
+    tracker.handleOsc('D;0')
+    // A different command, which reports nothing of its own.
+    tracker.handleOsc('C')
+    vi.advanceTimersByTime(400)
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'running' }))
+  })
+
+  it('changes nothing when the program reporting progress is on the alternate screen', () => {
+    // The Linux case: the buffer switch has already stood the indicator down,
+    // and progress arriving from inside the full-screen program leaves it
+    // down — the same before and after the takeover exists.
+    tracker.handleOsc('C')
+    tracker.setAltScreen(true)
+    tracker.noteProgress()
+    vi.advanceTimersByTime(10_000)
+    expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'running' }))
+    tracker.setAltScreen(false)
+    tracker.handleOsc('D;0')
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ interactive: true }))
+  })
+
   it('reset drops an in-flight run without completing it, and emits idle if it was showing', () => {
     tracker.handleOsc('C')
     vi.advanceTimersByTime(400) // now showing as running

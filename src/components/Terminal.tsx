@@ -1279,8 +1279,18 @@ export function Terminal({
     oscListeners.push(
       term.registerOscHandler(9, (data) => {
         const result = parseOsc9(data)
-        if (result.kind === 'progress') progressTracker.set(result.progress)
-        else if (result.kind === 'notify') onRemoteNotifyRef.current?.(result.notification)
+        if (result.kind === 'progress') {
+          progressTracker.set(result.progress)
+          // A program reporting for itself supersedes the shell's account of
+          // the same run — see CommandTracker.noteProgress. Told on the report
+          // rather than from `progressTracker.onChange`, because a repeat of a
+          // state already showing is dropped there as a no-op, and because a
+          // clear counts: `9;4;0` is a program saying it is not working, which
+          // is exactly as much of an answer as `9;4;3`. Claude Code opens with
+          // one, and taking it means its pane is quiet from launch instead of
+          // sweeping until the first turn.
+          tracker.noteProgress()
+        } else if (result.kind === 'notify') onRemoteNotifyRef.current?.(result.notification)
         // Claimed either way, including the ignored forms: nothing else here
         // handles OSC 9, and letting an unrecognised subcommand fall through
         // gains nothing.

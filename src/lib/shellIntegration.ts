@@ -101,6 +101,10 @@ export class CommandTracker {
   /** Whether the alternate screen is up right now (as opposed to `sawAltScreen`,
    * which records that the run in flight touched it at some point). */
   private onAltScreen = false
+  /** A program in the run currently in flight reported progress of its own
+   * (OSC 9;4) — see noteProgress. Sticky for the rest of the run, unlike
+   * `onAltScreen`. */
+  private sawProgress = false
   /** Whether a `running` activity is currently showing, so idle is only sent to
    * undo one that was actually sent. */
   private reportedRunning = false
@@ -123,7 +127,7 @@ export class CommandTracker {
     this.clearShowTimer()
     this.showTimer = setTimeout(() => {
       this.showTimer = null
-      if (this.running && !this.onAltScreen) this.emitRunning()
+      if (this.running && !this.onAltScreen && !this.sawProgress) this.emitRunning()
     }, RUNNING_VISIBLE_AFTER_MS)
   }
 
@@ -214,6 +218,35 @@ export class CommandTracker {
     return true
   }
 
+  /**
+   * A program in this pane reported progress of its own (OSC 9;4), which from
+   * here on owns the pane's indicator for the rest of the run.
+   *
+   * The run is still tracked — its duration, exit code and completion notice
+   * are unaffected — but it stops driving the display, exactly as the
+   * alternate screen does. The reason is the same one: a program that says
+   * "I am working" and "I have stopped" knows something the shell does not,
+   * which is that one `claude` or one `cargo watch` is many pieces of work
+   * rather than one. The shell can only say a command is running, and says it
+   * for the whole session.
+   *
+   * Sticky for the run, not a mirror of whether progress is up right now. If
+   * it went back to following the run each time progress cleared, a pane would
+   * fall back to the running marker between turns — which is precisely the
+   * "it never stops" this exists to fix, and would also mask the attention
+   * marker that a cleared progress is supposed to leave behind.
+   *
+   * A program that reports progress from *inside* the alternate screen (the
+   * common case: Claude Code under a shell that switches buffers) changes
+   * nothing here — the indicator was already suppressed, and stays so.
+   */
+  noteProgress() {
+    if (this.sawProgress) return
+    this.sawProgress = true
+    this.clearShowTimer()
+    this.emitIdle()
+  }
+
   /** Called whenever the terminal switches screen buffers. Entering the
    * alternate buffer is how a full-screen program announces itself: mid-run it
    * marks the run interactive (an interactive program started from the prompt is
@@ -247,6 +280,8 @@ export class CommandTracker {
     // would otherwise leave the gate in handleOsc stuck on, silently ignoring
     // every marker for the rest of the pane's life.
     this.onAltScreen = false
+    // Sticky for a run, so it has to go with the run.
+    this.sawProgress = false
     this.clearShowTimer()
     if (!this.running) return
     this.running = false
@@ -262,6 +297,7 @@ export class CommandTracker {
     this.command = this.pendingCommand
     this.pendingCommand = null
     this.sawAltScreen = false
+    this.sawProgress = false
     this.armShowTimer()
   }
 
@@ -275,6 +311,7 @@ export class CommandTracker {
     this.running = false
     this.command = null
     this.sawAltScreen = false
+    this.sawProgress = false
     this.clearShowTimer()
     this.emitIdle()
     this.handlers.onComplete(result)

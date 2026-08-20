@@ -492,6 +492,17 @@ there and hasn't finished", so both keep the marker up. An app that dies
 without clearing its progress doesn't strand the marker: the next OSC 133
 prompt or command exit clears it, as does a disconnect.
 
+Once a program has reported progress, it owns the pane's marker for the rest
+of the command — the shell's run is still tracked, and still notifies on
+completion, but it stops driving the display. Without that, a program that
+reports per-turn state *and* stays on the primary screen would be covered by
+the shell's "a command is running" for its whole session, which is true and
+useless: one `claude` is one command to the shell and many pieces of work to
+you. The alternate screen already does this job for a full-screen program;
+this is the same rule for one that renders inline. Whether a given program
+takes the alternate screen is not something you can assume — Claude Code does
+on Linux and does not on Windows, in the same version.
+
 When progress that had been up for at least five seconds clears, the pane
 keeps the amber attention marker until you focus it, and the taskbar button
 flashes if the window isn't in front — the same treatment a bell gets. That
