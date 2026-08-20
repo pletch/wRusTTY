@@ -53,20 +53,36 @@ export const GLYPH_UL_MASK = 0x07 << GLYPH_UL_SHIFT
 export const GLYPH_STYLE_COUNT = 1 << 9
 
 /**
- * Longest run `getRunGlyph` will shape, in cells. Three covers what the
- * ligature-forming fonts actually substitute — `===`, `!==`, `<=>`, `...` —
- * and every cell of it is atlas the single-codepoint cache is not getting.
+ * Longest run `getRunGlyph` will shape, in cells.
+ *
+ * Five, because the arrows are what stop at three: `<==>`, `<-->` and `!===`
+ * are four, `<--->`, `=====` and `<===>` are five, and a font carrying them
+ * could not previously be asked to draw one — the cells were never handed to
+ * `fillText` together. Past five the faces mostly stop enumerating and start
+ * repeating, which is not something a fixed cap can follow anyway.
+ *
+ * The extra length costs nothing on its own: what the run cache may hold is
+ * bounded in cells below, so a longer maximum buys longer ligatures out of
+ * the same atlas rather than more atlas.
  */
-export const MAX_RUN_CELLS = 3
+export const MAX_RUN_CELLS = 5
 
 /**
- * How many distinct runs may hold slots before the atlas stops taking new
- * ones. Unlike a codepoint, a run's key is arbitrary text, so this is the one
- * cache here whose key space isn't bounded by the character repertoire; past
- * the cap `getRunGlyph` declines and the caller falls back to drawing the
- * cells one at a time, which is what it did before runs existed.
+ * How much atlas the run cache may hold, in cells.
+ *
+ * In cells rather than runs, which is what it used to be, because runs are
+ * not all one size and the thing being protected is the atlas: at 512 runs of
+ * up to three, the old cap already reserved 1536 cells of a 1024x1024 atlas
+ * that holds 1920 of them at an ordinary 16x34 device cell. Counting runs
+ * meant the reservation moved every time the maximum length did — raising it
+ * to five would have let this cache alone overflow the atlas.
+ *
+ * The number is the old worst case exactly, so nothing about the footprint
+ * changes; only the way it is spent. Past it `getRunGlyph` declines and the
+ * caller falls back to drawing the cells one at a time, which is what it did
+ * before runs existed.
  */
-const RUN_CACHE_CAP = 512
+const RUN_CACHE_CELL_BUDGET = 1536
 
 /**
  * How far the atlas may double. 4096x4096 of R8 is 16MB, and it is per pane —
@@ -153,6 +169,8 @@ export class GlyphAtlas {
   private clusterCache = new Map<string, GlyphRect>()
   /** Shaped runs, keyed by `style:cells:text`. See `getRunGlyph`. */
   private runCache = new Map<string, GlyphRect>()
+  /** Cells of atlas those runs occupy between them; see the budget above. */
+  private runCellsHeld = 0
 
   private atlasWidth = 1024
   private atlasHeight = 1024
@@ -361,7 +379,7 @@ export class GlyphAtlas {
     const key = `${style}:${cells}:${text}`
     const hit = this.runCache.get(key)
     if (hit) return hit
-    if (this.runCache.size >= RUN_CACHE_CAP) {
+    if (this.runCellsHeld + cells > RUN_CACHE_CELL_BUDGET) {
       // Said once, for the same reason the full-atlas warning is: this is
       // reached per run per frame. Worth saying at all because the symptom of
       // silently declining is "ligatures stopped working partway down the
@@ -369,7 +387,8 @@ export class GlyphAtlas {
       if (!this.warnedRunsFull) {
         this.warnedRunsFull = true
         console.warn(
-          `GlyphAtlas run cache full at ${RUN_CACHE_CAP} runs; further runs draw cell by cell.`,
+          `GlyphAtlas run cache full at ${RUN_CACHE_CELL_BUDGET} cells;` +
+            ' further runs draw cell by cell.',
         )
       }
       return null
@@ -377,7 +396,18 @@ export class GlyphAtlas {
     // A run is ASCII operators by construction, so it can never straddle a
     // pinned range; the first codepoint settles it the same way a cluster's
     // base character does.
-    return this.rasterize(text, style, (r) => this.runCache.set(key, r), cells, text.codePointAt(0))
+    return this.rasterize(
+      text,
+      style,
+      (r) => {
+        this.runCache.set(key, r)
+        // Counted where the slot is actually handed out, so a run turned away
+        // by a full atlas is not also charged against this budget.
+        this.runCellsHeld += cells
+      },
+      cells,
+      text.codePointAt(0),
+    )
   }
 
   /**

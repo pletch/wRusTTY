@@ -96,6 +96,7 @@ out += `  ${ESC}[5mblink \u{1f600} \u{1f525} and text${RESET}   — the emoji mu
 out += `\r\n  ligatures — press l to toggle, ?font= to pick a face that has them\r\n`
 out += `  -> => <- <= >= != == === !== <=> |> <| :: ++ // /* */ ~= |= &&\r\n`
 out += `  ... .. ?. ?? ?: ;; %% ^= $> \\\\ #? __ www   — the ones a wider alphabet reaches\r\n`
+out += `  <==> <--> !=== ====  <---> ===== <===>   — the ones longer than three cells\r\n`
 out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} coloured\r\n`
 
 out += `\r\n  cursor is here ->${ESC}[5 q `

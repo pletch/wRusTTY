@@ -102,14 +102,19 @@ describe('finding runs', () => {
     expect(runsOf(chars('a = b'))).toEqual([])
   })
 
-  it('caps a run at three cells, and the fourth is a lone operator again', () => {
-    expect(runsOf(chars('===='))).toEqual([[0, '===']])
+  it('takes the four- and five-cell arrows whole, which is what the cap is for', () => {
+    expect(runsOf(chars('<==>'))).toEqual([[0, '<==>']])
+    expect(runsOf(chars('<--->'))).toEqual([[0, '<--->']])
+  })
+
+  it('caps a run at five cells, and the sixth is a lone operator again', () => {
+    expect(runsOf(chars('======'))).toEqual([[0, '=====']])
   })
 
   it('picks the next run up where the cap left off', () => {
-    expect(runsOf(chars('====='))).toEqual([
-      [0, '==='],
-      [3, '=='],
+    expect(runsOf(chars('========'))).toEqual([
+      [0, '====='],
+      [5, '==='],
     ])
   })
 

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { plainSelection } from '../fontStack'
 import {
   GlyphAtlas,
+  MAX_RUN_CELLS,
   GLYPH_BOLD,
   GLYPH_ITALIC,
   GLYPH_UNDERLINE,
@@ -530,8 +531,8 @@ describe('the scratch surface', () => {
     spy.mockRestore()
     expect(atlas.texture).toBeTruthy()
     expect(created).toHaveLength(1)
-    // Three cells wide, for the longest run anything asks to be shaped.
-    expect(created[0].width).toBe(24)
+    // As wide as the longest run anything asks to be shaped.
+    expect(created[0].width).toBe(MAX_RUN_CELLS * 8)
     expect(created[0].height).toBe(16)
   })
 
@@ -644,12 +645,33 @@ describe('shaped runs', () => {
 
   it('declines once the run cache is full rather than crowding out the atlas', () => {
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 1, 1)
-    // Distinct two-cell runs, more than the cap allows.
+    // Distinct two-cell runs, more than the budget allows.
     let refused = 0
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 1200; i++) {
       const text = String.fromCharCode(0x21 + (i % 90), 0x21 + ((i / 90) | 0))
       if (atlas.getRunGlyph(text, 0, 2) === null) refused++
     }
     expect(refused).toBeGreaterThan(0)
+  })
+
+  it('spends that budget in cells, so longer runs mean fewer of them', () => {
+    // The bound is the atlas the cache occupies, not how many entries it has:
+    // 1536 cells is 768 of the two-cell runs and 307 of the five-cell ones.
+    const twos = new GlyphAtlas(makeGlStub(), FONTS, 14, 1, 1)
+    let accepted2 = 0
+    for (let i = 0; i < 1200; i++) {
+      const text = String.fromCharCode(0x21 + (i % 90), 0x21 + ((i / 90) | 0))
+      if (twos.getRunGlyph(text, 0, 2) !== null) accepted2++
+    }
+
+    const fives = new GlyphAtlas(makeGlStub(), FONTS, 14, 1, 1)
+    let accepted5 = 0
+    for (let i = 0; i < 1200; i++) {
+      const text = String.fromCharCode(0x21 + (i % 90), 0x21 + ((i / 90) | 0)) + '==='
+      if (fives.getRunGlyph(text, 0, 5) !== null) accepted5++
+    }
+
+    expect(accepted2).toBe(768)
+    expect(accepted5).toBe(307)
   })
 })
