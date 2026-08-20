@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { plainSelection } from '../lib/fontStack'
 import { XtermEngine } from './xtermEngine'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import { probeGpu, gpuVerdict, type GpuInfo } from './gpuProbe'
@@ -137,7 +138,7 @@ export function BenchmarkHarness() {
 
     for (const e of [xterm, ghostty]) {
       e.setTheme('', 1)
-      e.setFont('Consolas, monospace', 14)
+      e.setFont(plainSelection('Consolas, monospace'), 14)
       e.setScrollbackBudget(16)
     }
 

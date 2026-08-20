@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SCROLLBAR_GUTTER_PX, type TerminalEngine } from '../lib/terminalEngine'
+import { buildFontSelection } from '../lib/fontStack'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import {
   Search,
@@ -565,18 +566,52 @@ export function Terminal({
   // with it. Changing the font changes the cell size and so the row/column
   // count, so this has to re-fit and tell the remote PTY the new size —
   // otherwise the shell keeps line-wrapping to the old width.
+  /**
+   * The faces to rasterize with, rebuilt only when a font setting moves.
+   * Memoized because it is an effect dependency and because building it
+   * registers `@font-face`s for the OpenType features -- a fresh object every
+   * render would re-run the font effect, and the font effect rebuilds the
+   * renderer and re-fits the grid.
+   */
+  const {
+    fontFamily,
+    fontFamilyBold,
+    fontFamilyItalic,
+    fontFamilyBoldItalic,
+    fontFeatures,
+    fontRanges,
+  } = settings
+  const fontSelection = useMemo(
+    () =>
+      buildFontSelection({
+        fontFamily,
+        fontFamilyBold,
+        fontFamilyItalic,
+        fontFamilyBoldItalic,
+        fontFeatures,
+        fontRanges,
+      }),
+    [
+      fontFamily,
+      fontFamilyBold,
+      fontFamilyItalic,
+      fontFamilyBoldItalic,
+      fontFeatures,
+      fontRanges,
+    ],
+  )
+
   useEffect(() => {
     const term = termRef.current
     if (!term) return
-    term.setFont(settings.fontFamily, settings.fontSize)
-    // term.options.fontFamily = settings.fontFamily
-        term.setScrollbackBudget(settings.scrollbackBudgetMB)
+    term.setFont(fontSelection, settings.fontSize)
+    term.setScrollbackBudget(settings.scrollbackBudgetMB)
     term.setCursorStyle(settings.cursorStyle, settings.cursorBlink)
     term.setTextBlending?.(settings.textBlending)
     term.setLigatures?.(settings.ligatures)
     refitRef.current?.()
   }, [
-    settings.fontFamily,
+    fontSelection,
     settings.fontSize,
     settings.scrollbackBudgetMB,
     settings.cursorStyle,
@@ -829,7 +864,7 @@ export function Terminal({
     // wrong — new panes came up as the engine's own default block instead of
     // the configured shape.
     term.setTheme(settingsRef.current.themeName, settingsRef.current.backgroundOpacity)
-    term.setFont(settingsRef.current.fontFamily, settingsRef.current.fontSize)
+    term.setFont(buildFontSelection(settingsRef.current), settingsRef.current.fontSize)
     term.setScrollbackBudget(settingsRef.current.scrollbackBudgetMB)
     term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
     term.setTextBlending?.(settingsRef.current.textBlending)

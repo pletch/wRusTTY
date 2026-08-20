@@ -13,6 +13,7 @@ import {
   type GlyphRect,
 } from './GlyphAtlas'
 import { computeRuns, type RunScratch } from './ligatureRuns'
+import type { FontSelection } from '../fontStack'
 import {
   parseCellInto,
   emptyCell,
@@ -170,6 +171,10 @@ export const BLEND_LINEAR_CORRECTED = 2
  */
 export function measureCell(fontFamily: string, fontSize: number): { width: number; height: number } {
   const ctx = document.createElement('canvas').getContext('2d')!
+  // Always the regular face. The grid must not shift when a cell happens to be
+  // bold or italic, so a per-style face is measured against the body font's
+  // cell rather than its own -- which is also why an overwide face is
+  // condensed into its slot rather than given more room.
   ctx.font = `${fontSize}px ${fontFamily}`
   return {
     width: Math.ceil(ctx.measureText('W').width),
@@ -252,7 +257,7 @@ export class WebGLRenderer {
 
   private cols: number
   private rows: number
-  private fontFamily: string
+  private fonts: FontSelection
   private fontSize: number
 
   private defaultFgR = 200
@@ -402,13 +407,13 @@ export class WebGLRenderer {
     canvas: HTMLCanvasElement,
     cols: number,
     rows: number,
-    fontFamily: string,
+    fonts: FontSelection,
     fontSize: number
   ) {
     this.canvas = canvas
     this.cols = cols
     this.rows = rows
-    this.fontFamily = fontFamily
+    this.fonts = fonts
     this.fontSize = fontSize
 
     // This renderer only repaints on damage, so an idle pane goes many frames
@@ -430,7 +435,7 @@ export class WebGLRenderer {
       preserveDrawingBuffer: true,
     })!
 
-    const { width: cellWidth, height: cellHeight } = measureCell(fontFamily, fontSize)
+    const { width: cellWidth, height: cellHeight } = measureCell(fonts.regular, fontSize)
     this.baseCellWidth = cellWidth
     this.baseCellHeight = cellHeight
     this.dpr = 0 // forces the first sync to compute
@@ -543,7 +548,7 @@ export class WebGLRenderer {
     // size by a NEAREST sampler.
     this.atlas = new GlyphAtlas(
       gl,
-      this.fontFamily,
+      this.fonts,
       this.fontSize * this.dpr,
       this.deviceCellWidth,
       this.deviceCellHeight,

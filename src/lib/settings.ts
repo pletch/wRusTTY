@@ -268,6 +268,40 @@ export interface TerminalSettings {
    * without a face that ligates changes nothing you can see.
    */
   ligatures: boolean
+  /**
+   * Faces for the styled variants. Empty means "the body font, with CSS asked
+   * for the weight or slant" — which is what every install had before these
+   * existed, so an untouched configuration renders identically.
+   *
+   * Naming a separate italic face is the one most people care about: running
+   * a true cursive italic against an upright body face is the most-noticed
+   * typographic choice in a terminal after the body font itself. It is also
+   * what lets `fontFeatures` reach italic text at all — see `fontStack.ts`.
+   */
+  fontFamilyBold: string
+  fontFamilyItalic: string
+  fontFamilyBoldItalic: string
+  /**
+   * OpenType features, as a CSS `font-feature-settings` value — `"ss01" 1,
+   * "zero" 1` and the like. Canvas 2D has no API for feature tags, so these
+   * are applied by declaring the face with the features baked in and handing
+   * the atlas the generated family name; see `fontStack.ts`.
+   */
+  fontFeatures: string
+  /**
+   * Codepoint ranges pinned to a particular family, which is what controlled
+   * fallback actually looks like: *this* face for the private-use area, *that*
+   * one for CJK, the body font for everything else. Consulted before the body
+   * font, so it wins outright rather than depending on what the browser picks.
+   */
+  fontRanges: FontRange[]
+}
+
+/** One entry of `fontRanges`; `lo` and `hi` are inclusive codepoints. */
+export interface FontRange {
+  lo: number
+  hi: number
+  family: string
 }
 
 /**
@@ -331,6 +365,27 @@ const FONT_STACK_MIGRATIONS: Record<string, string> = {
   '"Lucida Console", ui-monospace, monospace': FONT_STACKS[5].value,
 }
 
+/**
+ * Keeps only the entries that describe a real, non-empty range. A malformed
+ * one is dropped rather than repaired: the atlas binary-searches these, so an
+ * inverted or non-numeric range would not be a bad glyph, it would be a
+ * lookup that silently never matches.
+ */
+function sanitizeRanges(value: unknown): FontRange[] {
+  if (!Array.isArray(value)) return []
+  const out: FontRange[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const { lo, hi, family } = entry as Partial<FontRange>
+    if (typeof lo !== 'number' || typeof hi !== 'number' || typeof family !== 'string') continue
+    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < 0 || hi < lo || hi > 0x10ffff) continue
+    if (family.trim() === '') continue
+    out.push({ lo, hi, family })
+  }
+  // Sorted here rather than at every lookup, so the atlas can binary-search.
+  return out.sort((a, b) => a.lo - b.lo)
+}
+
 const STORAGE_KEY = 'wrustty.terminal-settings'
 // Pre-rebrand key (was wr-shell) — read as a fallback so existing settings
 // aren't silently dropped by the rename; loadSettings never writes back to
@@ -376,6 +431,11 @@ const defaults: TerminalSettings = {
   vibrancyMode: 'off',
   textBlending: 'native',
   ligatures: false,
+  fontFamilyBold: '',
+  fontFamilyItalic: '',
+  fontFamilyBoldItalic: '',
+  fontFeatures: '',
+  fontRanges: [],
 }
 
 /**
@@ -478,6 +538,13 @@ export function loadSettings(): TerminalSettings {
     const migrated = FONT_STACK_MIGRATIONS[merged.fontFamily]
     if (migrated !== undefined) merged.fontFamily = migrated
     if (typeof merged.ligatures !== 'boolean') merged.ligatures = defaults.ligatures
+    // These reach the DOM as a CSS family list and a font-feature-settings
+    // value, so a non-string here would be interpolated as "[object Object]"
+    // and quietly resolve to the fallback face.
+    for (const key of ['fontFamilyBold', 'fontFamilyItalic', 'fontFamilyBoldItalic', 'fontFeatures'] as const) {
+      if (typeof merged[key] !== 'string') merged[key] = defaults[key]
+    }
+    merged.fontRanges = sanitizeRanges(merged.fontRanges)
     delete merged.scrollback
     return merged
   } catch {

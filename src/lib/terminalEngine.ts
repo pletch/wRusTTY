@@ -1,4 +1,5 @@
 import type { CursorStyleSetting, TextBlending } from './settings'
+import type { FontSelection } from './fontStack'
 import type { RowText } from './ghostty/rowText'
 
 /**
@@ -105,7 +106,7 @@ export interface TerminalEngine {
   scrollToLine(line: number): void
 
   setTheme(themeName: string, opacity: number): void
-  setFont(fontFamily: string, fontSize: number): void
+  setFont(fonts: FontSelection, fontSize: number): void
   /** Per-pane scrollback memory tier in MB (8/16/32/64), as chosen in
    *  Settings. Depth in rows falls out of this and the pane's width rather than
    *  being set directly — see `scrollbackBudgetBytesFor`. */

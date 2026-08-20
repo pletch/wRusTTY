@@ -17,9 +17,10 @@ import {
   X,
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
-import type { TerminalSettings, CursorStyleSetting } from '../lib/settings'
+import type { TerminalSettings, CursorStyleSetting, FontRange } from '../lib/settings'
 import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
+import { formatCodepoint, parseCodepoint, sameRanges } from '../lib/fontStack'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { PRESET_THEMES } from '../lib/theme'
 import { APP_VERSION } from '../lib/version'
@@ -254,6 +255,246 @@ function FontResolution({
   )
 }
 
+/** Every family this machine has, deduplicated and sorted — including the
+ *  proportional ones, because a symbol font pinned to the private use area is
+ *  the main thing ranges are for and those rarely report as monospaced. */
+function familyChoices(installed: InstalledFont[] | null): string[] {
+  return [...new Set((installed ?? []).map((f) => f.name))].sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * A select over installed families, where empty means "not set".
+ *
+ * The value stored is the family name quoted, so it can be dropped into a CSS
+ * font shorthand as-is — an unquoted name with a comma or a leading digit in
+ * it would otherwise end the family list early or fail to parse.
+ */
+function FamilySelect({
+  value,
+  onPick,
+  families,
+  emptyLabel,
+  className,
+}: {
+  value: string
+  onPick: (value: string) => void
+  families: string[]
+  emptyLabel: string
+  className?: string
+}) {
+  // A stored value naming a family this machine cannot enumerate still has to
+  // show, for the same reason the body font select keeps its own odd one out:
+  // a controlled select with no matching option renders blank, which reads as
+  // the setting having been lost.
+  const known = families.some((f) => JSON.stringify(f) === value)
+  return (
+    <select
+      className={`${selectClass} ${className ?? ''}`}
+      value={value}
+      onChange={(e) => onPick(e.target.value)}
+    >
+      <option value="">{emptyLabel}</option>
+      {!known && value !== '' && <option value={value}>{familyName(value)}</option>}
+      {families.map((f) => (
+        <option key={f} value={JSON.stringify(f)}>
+          {f}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/**
+ * The range table, edited as text and committed as numbers.
+ *
+ * The drafts are strings rather than the parsed settings themselves because a
+ * range is typed one character at a time: `U+E0` is not a range anyone meant,
+ * and a control that dropped the row the moment it stopped parsing would take
+ * the cursor with it. So a row exists here as soon as it is added, and reaches
+ * the settings only once it is a range — which is also why a half-typed row
+ * simply has no effect rather than an alarming one.
+ *
+ * Seeded from the settings once. Nothing else writes ranges while this dialog
+ * is open, and re-seeding from a prop this component is itself the source of
+ * would fight the person typing.
+ */
+function FontRangeTable({
+  ranges,
+  onChange,
+  families,
+}: {
+  ranges: FontRange[]
+  onChange: (ranges: FontRange[]) => void
+  families: string[]
+}) {
+  const [rows, setRows] = useState(() =>
+    ranges.map((r) => ({
+      lo: formatCodepoint(r.lo),
+      hi: formatCodepoint(r.hi),
+      family: r.family,
+    })),
+  )
+
+  function commit(next: typeof rows) {
+    setRows(next)
+    const valid: FontRange[] = []
+    for (const row of next) {
+      const lo = parseCodepoint(row.lo)
+      const hi = parseCodepoint(row.hi)
+      if (lo === null || hi === null || hi < lo || row.family === '') continue
+      valid.push({ lo, hi, family: row.family })
+    }
+    // Only when the applied table actually differs. Every keystroke lands
+    // here, and handing back an equal-but-new array would still count as a
+    // font change downstream -- which throws away the atlas and re-fits the
+    // grid of every open pane, once per character typed.
+    if (!sameRanges(valid, ranges)) onChange(valid)
+  }
+
+  function edit(index: number, patch: Partial<(typeof rows)[number]>) {
+    commit(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
+  }
+
+  const fieldClass = `${selectClass} w-20 text-center font-mono`
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-3 text-white/85">
+        <span>Ranges</span>
+        <button
+          className="rounded border border-white/10 px-1.5 py-1 text-white/70 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+          onClick={() => commit([...rows, { lo: '', hi: '', family: '' }])}
+        >
+          Add range
+        </button>
+      </div>
+      {rows.map((row, i) => {
+        const lo = parseCodepoint(row.lo)
+        const hi = parseCodepoint(row.hi)
+        // Amber rather than red, and only once something is typed: an empty
+        // row is a row you just added, not a mistake you made.
+        const bad = (text: string, cp: number | null) => text.trim() !== '' && cp === null
+        const inverted = lo !== null && hi !== null && hi < lo
+        return (
+          <div key={i} className="flex items-center gap-1.5">
+            <input
+              type="text"
+              spellCheck={false}
+              placeholder="U+E000"
+              aria-label="First codepoint"
+              className={`${fieldClass} ${bad(row.lo, lo) ? 'border-amber-300/50' : ''}`}
+              value={row.lo}
+              onChange={(e) => edit(i, { lo: e.target.value })}
+            />
+            <span className="text-white/30">–</span>
+            <input
+              type="text"
+              spellCheck={false}
+              placeholder="U+F8FF"
+              aria-label="Last codepoint"
+              className={`${fieldClass} ${
+                bad(row.hi, hi) || inverted ? 'border-amber-300/50' : ''
+              }`}
+              value={row.hi}
+              onChange={(e) => edit(i, { hi: e.target.value })}
+            />
+            <FamilySelect
+              value={row.family}
+              onPick={(family) => edit(i, { family })}
+              families={families}
+              emptyLabel="Pick a font"
+              className="min-w-0 flex-1"
+            />
+            <button
+              aria-label="Remove range"
+              title="Remove range"
+              className="rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+              onClick={() => commit(rows.filter((_, j) => j !== i))}
+            >
+              <X size={12} strokeWidth={2} />
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * The font settings behind a disclosure: a face per style, OpenType features,
+ * and families pinned to codepoint ranges.
+ *
+ * Folded away rather than listed with the rest, because the Terminal section
+ * is where people come for font size and cursor shape. These only start to
+ * matter once you have a font you care about, and two of them are typed rather
+ * than picked.
+ */
+function AdvancedFontSettings({
+  settings,
+  onChange,
+  installed,
+}: {
+  settings: TerminalSettings
+  onChange: (settings: TerminalSettings) => void
+  installed: InstalledFont[] | null
+}) {
+  const families = familyChoices(installed)
+  return (
+    <details className="rounded-md border border-white/5 bg-black/10">
+      <summary className="cursor-pointer px-2 py-1.5 text-white/55 transition-colors duration-100 hover:text-white/85">
+        Styled faces, features and ranges
+      </summary>
+      <div className="space-y-2.5 px-2 pt-1 pb-2.5">
+        {(
+          [
+            ['Bold', 'fontFamilyBold'],
+            ['Italic', 'fontFamilyItalic'],
+            ['Bold italic', 'fontFamilyBoldItalic'],
+          ] as const
+        ).map(([label, key]) => (
+          <label key={key} className="flex items-center justify-between gap-3 text-white/85">
+            <span>{label}</span>
+            <FamilySelect
+              value={settings[key]}
+              onPick={(value) => onChange({ ...settings, [key]: value })}
+              families={families}
+              emptyLabel="Body font"
+              className="min-w-0 max-w-52"
+            />
+          </label>
+        ))}
+        <label className="flex items-center justify-between gap-3 text-white/85">
+          <span>OpenType features</span>
+          <input
+            type="text"
+            spellCheck={false}
+            placeholder={'"ss01" 1, "zero" 1'}
+            className={`${selectClass} w-52 font-mono`}
+            value={settings.fontFeatures}
+            onChange={(e) => onChange({ ...settings, fontFeatures: e.target.value })}
+          />
+        </label>
+        <FontRangeTable
+          ranges={settings.fontRanges}
+          onChange={(fontRanges) => onChange({ ...settings, fontRanges })}
+          families={families}
+        />
+        <p className="leading-relaxed text-white/30">
+          Leaving a style on the body font asks that font for the weight or slant, which is
+          what it has always done. Naming a face instead is worth it for italic in
+          particular, where a real cursive face is a different thing from a slanted upright
+          one. Features are passed through as{' '}
+          <code className="text-white/50">font-feature-settings</code>, so a font's stylistic
+          sets and its slashed zero are reachable by tag — they reach italic text only when
+          an italic face is named above. A range pins every codepoint between its two ends,
+          inclusive and in hex, to one family ahead of everything else: the private use area
+          to a Nerd Font, or CJK to a font that covers it. A row that is not a complete range
+          yet has no effect.
+        </p>
+      </div>
+    </details>
+  )
+}
+
 /** Global preferences, one category at a time.
  *
  * A dialog rather than the dropdown this used to be: at a dozen-plus
@@ -435,6 +676,11 @@ export function SettingsDialog({
                           </select>
                         </label>
                         <FontResolution stack={settings.fontFamily} installed={installedFonts} />
+                        <AdvancedFontSettings
+                          settings={settings}
+                          onChange={onChange}
+                          installed={installedFonts}
+                        />
                         <label className="flex items-center justify-between gap-3 text-white/85">
                           <span>Font size</span>
                           <span className="flex items-center gap-2">

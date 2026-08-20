@@ -18,6 +18,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 
+import type { FontSelection } from '../lib/fontStack'
 import type { TerminalEngine, SearchOptions, SearchResult } from '../lib/terminalEngine'
 import { findTheme, backgroundWithOpacity } from '../lib/theme'
 
@@ -197,8 +198,15 @@ export class XtermEngine implements TerminalEngine {
     this.term.options.theme = themeWithOpacity(themeName, opacity)
   }
 
-  setFont(fontFamily: string, fontSize: number) {
-    this.term.options.fontFamily = fontFamily
+  /**
+   * Takes the same selection the Ghostty engine does, and uses the regular
+   * face out of it. xterm.js has one family option and does its own shaping,
+   * so the per-style faces, the OpenType features and the codepoint ranges
+   * have nowhere to go here -- which is fine, since this engine exists to be
+   * compared against rather than configured.
+   */
+  setFont(fonts: FontSelection, fontSize: number) {
+    this.term.options.fontFamily = fonts.regular
     this.term.options.fontSize = fontSize
   }
 

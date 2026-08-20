@@ -5,6 +5,7 @@ import {
   UNDERLINE_DASHED,
 } from './wasmBindings'
 import { isBoxGlyph, drawBoxGlyph } from './boxDrawing'
+import { familyForCodepoint, type FontSelection } from '../fontStack'
 
 export interface GlyphRect {
   x: number
@@ -110,7 +111,7 @@ export class GlyphAtlas {
 
   public readonly cellWidth: number
   public readonly cellHeight: number
-  private readonly fontFamily: string
+  private readonly fonts: FontSelection
   private readonly fontSize: number
   /** Baseline offset from the top of a cell, in the same pixels as cellHeight. */
   private baseline = 0
@@ -121,7 +122,7 @@ export class GlyphAtlas {
 
   constructor(
     gl: WebGL2RenderingContext,
-    fontFamily: string,
+    fonts: FontSelection,
     fontSize: number,
     cellWidth: number,
     cellHeight: number
@@ -129,7 +130,7 @@ export class GlyphAtlas {
     this.gl = gl
     this.cellWidth = cellWidth
     this.cellHeight = cellHeight
-    this.fontFamily = fontFamily
+    this.fonts = fonts
     this.fontSize = fontSize
 
     this.canvas = document.createElement('canvas')
@@ -180,10 +181,46 @@ export class GlyphAtlas {
     this.blank = this.getGlyph(32, 0)
   }
 
-  private fontFor(style: number): string {
-    const italic = style & GLYPH_ITALIC ? 'italic ' : ''
-    const bold = style & GLYPH_BOLD ? 'bold ' : ''
-    return `${italic}${bold}${this.fontSize}px ${this.fontFamily}`
+  /**
+   * The CSS font shorthand for one style, and optionally for one pinned
+   * family.
+   *
+   * The weight and slant keywords are emitted only when the family being used
+   * does *not* already name a face of that style. Asking a face that is
+   * already italic for italic gets a double slant on a good day and an upright
+   * on a bad one, which is the trap the `*IsFace` flags exist to avoid.
+   *
+   * A range override keeps the keywords, because a family pinned to a
+   * codepoint range is one family rather than a set of per-style slots.
+   */
+  private fontFor(style: number, override?: string | null): string {
+    const wantBold = (style & GLYPH_BOLD) !== 0
+    const wantItalic = (style & GLYPH_ITALIC) !== 0
+    let family: string
+    let emitBold = wantBold
+    let emitItalic = wantItalic
+
+    if (override) {
+      family = override
+    } else if (wantBold && wantItalic) {
+      family = this.fonts.boldItalic
+      if (this.fonts.boldItalicIsFace) {
+        emitItalic = false
+        // Only the dedicated bold-italic slot supplies the weight as well; a
+        // fall-through to the italic face still needs CSS to embolden it.
+        emitBold = this.fonts.boldItalicNeedsWeight
+      }
+    } else if (wantItalic) {
+      family = this.fonts.italic
+      if (this.fonts.italicIsFace) emitItalic = false
+    } else if (wantBold) {
+      family = this.fonts.bold
+      if (this.fonts.boldIsFace) emitBold = false
+    } else {
+      family = this.fonts.regular
+    }
+
+    return `${emitItalic ? 'italic ' : ''}${emitBold ? 'bold ' : ''}${this.fontSize}px ${family}`
   }
 
   getGlyph(codepoint: number, style = 0): GlyphRect {
@@ -195,7 +232,10 @@ export class GlyphAtlas {
     const key = codepoint * GLYPH_STYLE_COUNT + style
     const hit = this.cache.get(key)
     if (hit) return hit
-    return this.rasterize(String.fromCodePoint(codepoint), style, (r) => this.cache.set(key, r))
+    // A pinned range is a pure function of the codepoint, so it needs no place
+    // in the key — the key already distinguishes every codepoint that could
+    // resolve differently. Changing the table rebuilds the atlas outright.
+    return this.rasterize(String.fromCodePoint(codepoint), style, (r) => this.cache.set(key, r), 1, codepoint)
   }
 
   /**
@@ -211,7 +251,9 @@ export class GlyphAtlas {
     const key = `${style}:${text}`
     const hit = this.clusterCache.get(key)
     if (hit) return hit
-    return this.rasterize(text, style, (r) => this.clusterCache.set(key, r))
+    // The base character picks the face for the whole cluster. Its combining
+    // marks have to be drawn by whatever draws it, or they land on nothing.
+    return this.rasterize(text, style, (r) => this.clusterCache.set(key, r), 1, text.codePointAt(0))
   }
 
   /**
@@ -247,7 +289,10 @@ export class GlyphAtlas {
       }
       return null
     }
-    return this.rasterize(text, style, (r) => this.runCache.set(key, r), cells)
+    // A run is ASCII operators by construction, so it can never straddle a
+    // pinned range; the first codepoint settles it the same way a cluster's
+    // base character does.
+    return this.rasterize(text, style, (r) => this.runCache.set(key, r), cells, text.codePointAt(0))
   }
 
   /**
@@ -392,6 +437,7 @@ export class GlyphAtlas {
     style: number,
     remember: (r: GlyphRect) => void,
     cells = 1,
+    codepoint?: number,
   ): GlyphRect {
 
     // A wide glyph is rasterized across a two-cell slot and later drawn as two
@@ -419,7 +465,11 @@ export class GlyphAtlas {
     const x = this.currentX
     const y = this.currentY
 
-    this.ctx.font = this.fontFor(style)
+    const pinned =
+      codepoint === undefined || this.fonts.ranges.length === 0
+        ? null
+        : familyForCodepoint(this.fonts.ranges, codepoint)
+    this.ctx.font = this.fontFor(style, pinned)
     this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
 
     // Box drawing, block elements and Powerline separators are geometry

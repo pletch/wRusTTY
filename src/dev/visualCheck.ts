@@ -12,6 +12,7 @@
  */
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import type { TextBlending } from '../lib/settings'
+import { buildFontSelection } from '../lib/fontStack'
 
 const ESC = '\x1b'
 const RESET = `${ESC}[0m`
@@ -88,7 +89,24 @@ engine.write(out)
 // than hardcoded because which ones are installed varies per machine, and the
 // point of the line is to compare one face against another.
 const wantedFont = new URLSearchParams(location.search).get('font')
-if (wantedFont) engine.setFont(`"${wantedFont}", ui-monospace, monospace`, 14)
+// ?features= rides along with it, so the OpenType descriptor path can be
+// looked at too -- try `?font=Cascadia Code&features="calt" 0`, which should
+// render the ligature line unligated even with ligatures switched on.
+const wantedFeatures = new URLSearchParams(location.search).get('features') ?? ''
+if (wantedFont || wantedFeatures) {
+  const family = wantedFont ? `"${wantedFont}", ui-monospace, monospace` : 'Consolas, monospace'
+  engine.setFont(
+    buildFontSelection({
+      fontFamily: family,
+      fontFamilyBold: '',
+      fontFamilyItalic: '',
+      fontFamilyBoldItalic: '',
+      fontFeatures: wantedFeatures,
+      fontRanges: [],
+    }),
+    14,
+  )
+}
 
 // Same argument as text blending below: run shaping changes only which glyphs
 // come out of the atlas, so no per-cell assertion can see it and a screenshot

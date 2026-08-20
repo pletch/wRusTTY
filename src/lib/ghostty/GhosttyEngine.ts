@@ -28,6 +28,7 @@ import { scanOsc } from './oscScanner'
 import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
 import { cursorStyleSequence, type CursorStyleSetting, type TextBlending } from '../settings'
+import { plainSelection, type FontSelection } from '../fontStack'
 import {
   compileGhosttyWasm,
   instantiateGhosttyModule,
@@ -232,7 +233,7 @@ export class GhosttyEngine implements TerminalEngine {
   private termPtr: number = 0
   private renderer: WebGLRenderer | null = null
   
-  private fontFamily = 'Consolas, monospace'
+  private fonts: FontSelection = plainSelection('Consolas, monospace')
   private fontSize = 14
   
   /**
@@ -666,7 +667,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.canvas,
       this._cols,
       this._rows,
-      this.fontFamily,
+      this.fonts,
       this.fontSize
     )
     this.renderer.onRestore = this.onRendererRestored
@@ -702,7 +703,7 @@ export class GhosttyEngine implements TerminalEngine {
         // (and rasterized its atlas) against whatever face was resolved when
         // it was built. If that was the fallback, those metrics are simply
         // wrong now, so rebuild against the real one.
-        if (!this.disposed) this.setFont(this.fontFamily, this.fontSize)
+        if (!this.disposed) this.setFont(this.fonts, this.fontSize)
       })
       .catch(() => {})
 
@@ -2000,7 +2001,7 @@ export class GhosttyEngine implements TerminalEngine {
       cellWidth = size.width
       cellHeight = size.height
     } else {
-      const size = measureCell(this.fontFamily, this.fontSize)
+      const size = measureCell(this.fonts.regular, this.fontSize)
       cellWidth = size.width
       cellHeight = size.height
     }
@@ -2154,12 +2155,21 @@ export class GhosttyEngine implements TerminalEngine {
     this.needsRedraw = true
   }
 
-  setFont(fontFamily: string, fontSize: number): void {
-    this.fontFamily = fontFamily
+  /**
+   * The faces and the size to rasterize with.
+   *
+   * Every font-shaped setting arrives through here -- the per-style faces, the
+   * OpenType features, the codepoint ranges -- and every one of them rebuilds
+   * the renderer, which is what makes the atlas's three caches safe to leave
+   * alone. A glyph cached under the old configuration cannot outlive it,
+   * because the atlas holding it does not.
+   */
+  setFont(fonts: FontSelection, fontSize: number): void {
+    this.fonts = fonts
     this.fontSize = fontSize
     if (this.renderer && this.canvas) {
       this.renderer.dispose()
-      this.renderer = new WebGLRenderer(this.canvas, this._cols, this._rows, fontFamily, fontSize)
+      this.renderer = new WebGLRenderer(this.canvas, this._cols, this._rows, fonts, fontSize)
       this.renderer.onRestore = this.onRendererRestored
       // A fresh renderer starts on its own grey-on-black defaults, and those
       // are what every cell *without* an explicit SGR color renders as. Losing

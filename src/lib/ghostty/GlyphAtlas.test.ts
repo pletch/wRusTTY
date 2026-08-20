@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { plainSelection } from '../fontStack'
 import {
   GlyphAtlas,
   GLYPH_BOLD,
@@ -63,6 +64,10 @@ function makeGlStub(maxTextureSize = 4096) {
   } as unknown as WebGL2RenderingContext
 }
 
+/** One family for every style and no pinned ranges — the shape the atlas had
+ *  before per-style faces existed, which is what these tests are about. */
+const FONTS = plainSelection('monospace')
+
 let ctxStub: ReturnType<typeof make2dContextStub>
 
 beforeEach(() => {
@@ -77,7 +82,7 @@ afterEach(() => {
 
 describe('cache keys', () => {
   it('a repeated getGlyph call for the same codepoint+style is a cache hit', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillText.mockClear()
     const a = atlas.getGlyph(65) // 'A'
     const b = atlas.getGlyph(65)
@@ -86,7 +91,7 @@ describe('cache keys', () => {
   })
 
   it('the same codepoint under a different style rasterizes separately', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const plain = atlas.getGlyph(65, 0)
     const bold = atlas.getGlyph(65, GLYPH_BOLD)
     expect(plain).not.toBe(bold)
@@ -94,7 +99,7 @@ describe('cache keys', () => {
   })
 
   it('bold and italic are independent style bits, not aliases of each other', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const bold = atlas.getGlyph(65, GLYPH_BOLD)
     const italic = atlas.getGlyph(65, GLYPH_ITALIC)
     const boldItalic = atlas.getGlyph(65, GLYPH_BOLD | GLYPH_ITALIC)
@@ -103,7 +108,7 @@ describe('cache keys', () => {
   })
 
   it('a grapheme cluster is cached separately from a single-codepoint glyph, keyed by its own text', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const single = atlas.getGlyph('A'.codePointAt(0)!)
     const cluster = atlas.getClusterGlyph('A')
     // Same visible text, but different cache maps — not required to collide,
@@ -115,7 +120,7 @@ describe('cache keys', () => {
   })
 
   it('different cluster strings under the same style get distinct slots', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const a = atlas.getClusterGlyph('é') // e + combining acute
     const b = atlas.getClusterGlyph('è') // e + combining grave
     expect(a).not.toBe(b)
@@ -125,21 +130,21 @@ describe('cache keys', () => {
 
 describe('cell metrics for wide/CJK cells', () => {
   it('a normal glyph occupies exactly one cell width', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const rect = atlas.getGlyph(65)
     expect(rect.width).toBe(8)
     expect(rect.height).toBe(16)
   })
 
   it('a GLYPH_WIDE glyph (CJK / emoji) occupies a two-cell-wide slot', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const rect = atlas.getGlyph(0x4e2d /* 中 */, GLYPH_WIDE)
     expect(rect.width).toBe(16)
     expect(rect.height).toBe(16)
   })
 
   it('UV coordinates are normalized against the atlas dimensions', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const rect = atlas.getGlyph(65)
     expect(rect.u1 - rect.u0).toBeCloseTo(rect.width / 1024, 5)
     expect(rect.v1 - rect.v0).toBeCloseTo(rect.height / 1024, 5)
@@ -147,7 +152,7 @@ describe('cell metrics for wide/CJK cells', () => {
 
   it('positions the baseline using measured font metrics, not a hardcoded offset', () => {
     ctxStub.measureText = vi.fn(() => ({ fontBoundingBoxAscent: 20, fontBoundingBoxDescent: 10 }))
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 40)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 40)
     ctxStub.fillText.mockClear()
     atlas.getGlyph(65)
     // baseline = clamp(0, cellHeight, round((cellHeight - (ascent+descent))/2 + ascent))
@@ -158,7 +163,7 @@ describe('cell metrics for wide/CJK cells', () => {
 
   it('falls back to a fraction of font size when fontBoundingBox metrics are unavailable', () => {
     ctxStub.measureText = vi.fn(() => ({}))
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 20, 8, 40)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 20, 8, 40)
     ctxStub.fillText.mockClear()
     atlas.getGlyph(65)
     // ascent = 20*0.8=16, descent = 20*0.2=4 -> baseline = round((40-20)/2+16) = round(10+16) = 26
@@ -169,28 +174,28 @@ describe('cell metrics for wide/CJK cells', () => {
 
 describe('underline / strikethrough / cursor outline', () => {
   it('draws an extra rect for GLYPH_UNDERLINE beyond the glyph itself', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillRect.mockClear()
     atlas.getGlyph(65, GLYPH_UNDERLINE)
     expect(ctxStub.fillRect).toHaveBeenCalledTimes(1)
   })
 
   it('draws an extra rect for GLYPH_STRIKETHROUGH beyond the glyph itself', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillRect.mockClear()
     atlas.getGlyph(65, GLYPH_STRIKETHROUGH)
     expect(ctxStub.fillRect).toHaveBeenCalledTimes(1)
   })
 
   it('draws neither extra rect for a plain glyph', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillRect.mockClear()
     atlas.getGlyph(65)
     expect(ctxStub.fillRect).not.toHaveBeenCalled()
   })
 
   it('draws the cursor outline as four edge rects and never calls fillText for it', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillRect.mockClear()
     ctxStub.fillText.mockClear()
     // GLYPH_CURSOR_OUTLINE isn't exported; re-derive its codepoint the same
@@ -209,7 +214,7 @@ describe('atlas growth', () => {
 
   it('doubles rather than turning a glyph away', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, HUGE, HUGE)
     // Slot 0 is the constructor's blank; 65..67 fill 1024x1024 exactly.
     for (const cp of [65, 66, 67]) expect(atlas.getGlyph(cp).width).toBe(HUGE)
     // The fourth would have been blank before; now it gets a real slot.
@@ -220,7 +225,7 @@ describe('atlas growth', () => {
   })
 
   it('keeps a rect handed out before the growth pointing at the same pixels', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, HUGE, HUGE)
     const early = atlas.getGlyph(65)
     const beforeX = early.x
     const beforeU0 = early.u0
@@ -237,7 +242,7 @@ describe('atlas growth', () => {
   })
 
   it('renormalizes cluster and run rects too, not only single codepoints', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, HUGE, HUGE)
     const cluster = atlas.getClusterGlyph('é')
     const before = cluster.u0
     for (const cp of [66, 67, 68, 69]) atlas.getGlyph(cp)
@@ -249,7 +254,7 @@ describe('atlas growth', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     // A driver that will not go past the starting size: growth is refused on
     // the first attempt and the old warn-and-blank is what is left.
-    const atlas = new GlyphAtlas(makeGlStub(1024), 'monospace', 14, HUGE, HUGE)
+    const atlas = new GlyphAtlas(makeGlStub(1024), FONTS, 14, HUGE, HUGE)
     for (const cp of [65, 66, 67]) atlas.getGlyph(cp)
     const blank = atlas.getGlyph(32)
     expect(atlas.getGlyph(68)).toEqual(blank)
@@ -260,7 +265,7 @@ describe('atlas growth', () => {
 
   it('grows repeatedly, and gives up only at the ceiling', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, HUGE, HUGE)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, HUGE, HUGE)
     // 4096 is the ceiling, so 8x8 slots is everything this atlas can ever
     // hold. Ask for more than that and the last few are turned away.
     const rects = []
@@ -280,7 +285,7 @@ describe('atlas growth', () => {
 describe('dispose', () => {
   it('deletes the underlying GL texture', () => {
     const gl = makeGlStub()
-    const atlas = new GlyphAtlas(gl, 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
     atlas.dispose()
     expect(gl.deleteTexture).toHaveBeenCalledWith(atlas.texture)
   })
@@ -295,7 +300,7 @@ describe('glyphs wider than their slot', () => {
   }
 
   it('condenses horizontally when the face draws past the cell it was measured for', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.measureText = measuringAt(20)
     ctxStub.fillText.mockClear()
     atlas.getGlyph(0x4e00) // a CJK ideograph reaching the single-cell path
@@ -309,14 +314,14 @@ describe('glyphs wider than their slot', () => {
   })
 
   it('scales against the two-cell slot for a wide glyph, not the single cell', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.measureText = measuringAt(20)
     atlas.getGlyph(0x4e00, GLYPH_WIDE)
     expect(ctxStub.scale).toHaveBeenCalledWith(16 / 20, 1)
   })
 
   it('leaves a glyph that fits on the untransformed path', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.measureText = measuringAt(7)
     ctxStub.fillText.mockClear()
     ctxStub.scale.mockClear()
@@ -334,13 +339,13 @@ describe('shaped runs', () => {
   }
 
   it('takes a slot as many cells wide as the run', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     const rect = atlas.getRunGlyph('===', 0, 3)!
     expect(rect.width).toBe(24)
   })
 
   it('is a cache hit on the same run, and a miss on a different style', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillText.mockClear()
     const a = atlas.getRunGlyph('=>', 0, 2)
     const b = atlas.getRunGlyph('=>', 0, 2)
@@ -353,14 +358,14 @@ describe('shaped runs', () => {
     // A monospace advance rounds to the cell independently per column, so over
     // three columns the font's own ink can come up short of the slot as easily
     // as over it; either way the slices have to land on the cells.
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.measureText = measuringAt(20)
     atlas.getRunGlyph('===', 0, 3)
     expect(ctxStub.scale).toHaveBeenCalledWith(24 / 20, 1)
   })
 
   it('declines once the run cache is full rather than crowding out the atlas', () => {
-    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 1, 1)
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 1, 1)
     // Distinct two-cell runs, more than the cap allows.
     let refused = 0
     for (let i = 0; i < 600; i++) {

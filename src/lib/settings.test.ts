@@ -285,3 +285,76 @@ describe('the reconnect bounds', () => {
     expect(settings.reconnectMaxAttempts).toBe(RECONNECT_ATTEMPTS_RANGE.min)
   })
 })
+
+describe('the font settings a stored blob can carry', () => {
+  it('default to empty, so an install that never touched them renders as before', () => {
+    const settings = loadSettings()
+    expect(settings.fontFamilyBold).toBe('')
+    expect(settings.fontFamilyItalic).toBe('')
+    expect(settings.fontFamilyBoldItalic).toBe('')
+    expect(settings.fontFeatures).toBe('')
+    expect(settings.fontRanges).toEqual([])
+  })
+
+  // These reach the DOM as a CSS family list and a font-feature-settings
+  // value, where a non-string would interpolate as "[object Object]" and
+  // quietly resolve to the fallback face.
+  it('fall back to the default when a stored face name is not a string', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ fontFamilyItalic: { name: 'Iosevka' }, fontFeatures: 3 }),
+    )
+    const settings = loadSettings()
+    expect(settings.fontFamilyItalic).toBe('')
+    expect(settings.fontFeatures).toBe('')
+  })
+
+  it('keep a well-formed range table', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ fontRanges: [{ lo: 0xe000, hi: 0xf8ff, family: 'Symbols Nerd Font' }] }),
+    )
+    expect(loadSettings().fontRanges).toEqual([
+      { lo: 0xe000, hi: 0xf8ff, family: 'Symbols Nerd Font' },
+    ])
+  })
+
+  it('sort the table, because the atlas binary-searches it', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        fontRanges: [
+          { lo: 0x4e00, hi: 0x9fff, family: 'Sarasa Mono' },
+          { lo: 0x2500, hi: 0x257f, family: 'Nerd Font' },
+        ],
+      }),
+    )
+    expect(loadSettings().fontRanges.map((r) => r.lo)).toEqual([0x2500, 0x4e00])
+  })
+
+  // Dropped rather than repaired: a lookup that silently never matches is
+  // harder to see than an entry that plainly went missing.
+  it('drop entries that are inverted, out of range, unnamed or the wrong type', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        fontRanges: [
+          { lo: 0x100, hi: 0x50, family: 'Backwards' },
+          { lo: -1, hi: 0x50, family: 'Negative' },
+          { lo: 0x10, hi: 0x110000, family: 'Past the last plane' },
+          { lo: 0.5, hi: 20.5, family: 'Fractional' },
+          { lo: 0x20, hi: 0x30, family: '   ' },
+          { lo: '0x20', hi: 0x30, family: 'Stringly typed' },
+          null,
+          { lo: 0x20, hi: 0x30, family: 'Fine' },
+        ],
+      }),
+    )
+    expect(loadSettings().fontRanges).toEqual([{ lo: 0x20, hi: 0x30, family: 'Fine' }])
+  })
+
+  it('drop a table that is not an array at all', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontRanges: { lo: 1, hi: 2 } }))
+    expect(loadSettings().fontRanges).toEqual([])
+  })
+})
