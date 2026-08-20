@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
-import { NamedFaceReport } from './SettingsDialog'
+import userEvent from '@testing-library/user-event'
+import { FamilySelect, NamedFaceReport } from './SettingsDialog'
 import { loadSettings, type TerminalSettings } from '../lib/settings'
 
 /**
@@ -38,6 +39,65 @@ beforeEach(() => {
   stubFontCheck(['Consolas', 'Cascadia Code'])
 })
 afterEach(cleanup)
+
+describe('FamilySelect without enumeration', () => {
+  // list_fonts answers through DirectWrite and returns an empty list off
+  // Windows. A select over nothing cannot express a family at all, so the
+  // control has to become one that can -- storing exactly what the select
+  // would have stored.
+  const noop = () => {}
+
+  it('offers a select when there are families to choose from', () => {
+    const { container } = render(
+      <FamilySelect value="" onPick={noop} families={['Consolas']} emptyLabel="Body font" />,
+    )
+    expect(container.querySelector('select')).toBeTruthy()
+    expect(container.querySelector('input')).toBeNull()
+  })
+
+  it('falls back to a field when nothing could be enumerated', () => {
+    const { container } = render(
+      <FamilySelect value="" onPick={noop} families={[]} emptyLabel="Body font" />,
+    )
+    expect(container.querySelector('input')).toBeTruthy()
+    expect(container.querySelector('select')).toBeNull()
+  })
+
+  it('shows a stored family unquoted, the way it is written', () => {
+    render(
+      <FamilySelect
+        value={'"Iosevka Italic"'}
+        onPick={noop}
+        families={[]}
+        emptyLabel="Body font"
+      />,
+    )
+    expect(screen.getByLabelText('Body font').getAttribute('value')).toBe('Iosevka Italic')
+  })
+
+  it('stores a typed name quoted, exactly as the select would have', async () => {
+    const picked: string[] = []
+    render(
+      <FamilySelect value="" onPick={(v) => picked.push(v)} families={[]} emptyLabel="Body font" />,
+    )
+    await userEvent.type(screen.getByLabelText('Body font'), 'A')
+    expect(picked).toEqual(['"A"'])
+  })
+
+  it('stores nothing at all for a field cleared back to whitespace', async () => {
+    const picked: string[] = []
+    render(
+      <FamilySelect
+        value={'"X"'}
+        onPick={(v) => picked.push(v)}
+        families={[]}
+        emptyLabel="Body font"
+      />,
+    )
+    await userEvent.clear(screen.getByLabelText('Body font'))
+    expect(picked).toEqual([''])
+  })
+})
 
 describe('NamedFaceReport', () => {
   it('says nothing when no styled face or range family is named', () => {

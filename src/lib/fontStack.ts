@@ -236,6 +236,47 @@ export function resolveRangeOverlaps(ranges: ReadonlyArray<FontRange>): {
   return { kept, ignored }
 }
 
+/**
+ * Whether the feature string and the ligature toggle are asking for opposite
+ * things, and which way round.
+ *
+ * They can, because they work at different levels and neither can see the
+ * other. The toggle decides whether a run of operators is handed to `fillText`
+ * in one call — shaping cannot happen at all unless it is. The feature string
+ * reaches the face itself, and turning `calt` off there stops the substitution
+ * even when the run does arrive whole. So:
+ *
+ * - `features-win`: the toggle is on and a feature switches the substitution
+ *   off. Ligatures do not appear, and the toggle looks broken.
+ * - `toggle-wins`: a feature asks for ligatures while the toggle is off. The
+ *   run is never assembled, so the feature has nothing to act on.
+ *
+ * Neither is a bug — each is the lower level doing what it was told — but
+ * either one looks like one, which is why the settings dialog says so.
+ */
+export type LigatureConflict = 'features-win' | 'toggle-wins' | null
+
+/** The tags a face forms operator ligatures through. `liga` and `clig` are
+ *  the standard ones, `calt` is what the programming faces actually use, and
+ *  `dlig` is where a few of them put the more opinionated shapes. */
+const LIGATURE_TAGS = ['calt', 'liga', 'clig', 'dlig']
+
+export function ligatureConflict(features: string, ligatures: boolean): LigatureConflict {
+  let switchedOff = false
+  let switchedOn = false
+  for (const tag of LIGATURE_TAGS) {
+    // `"calt" 0`, `"calt" off`, and the bare `"calt"` which means on.
+    const m = features.match(new RegExp(`["']${tag}["']\\s*(\\d+|on|off)?`, 'i'))
+    if (!m) continue
+    const value = (m[1] ?? '1').toLowerCase()
+    if (value === '0' || value === 'off') switchedOff = true
+    else switchedOn = true
+  }
+  if (ligatures && switchedOff) return 'features-win'
+  if (!ligatures && switchedOn) return 'toggle-wins'
+  return null
+}
+
 /** A codepoint written the way the Unicode charts write it, which is how
  *  anyone looking a range up will have seen it. */
 export function formatCodepoint(cp: number): string {

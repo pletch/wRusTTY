@@ -4,6 +4,7 @@ import {
   buildFontSelection,
   familyForCodepoint,
   formatCodepoint,
+  ligatureConflict,
   parseCodepoint,
   plainSelection,
   resolveRangeOverlaps,
@@ -322,6 +323,39 @@ describe('resolveRangeOverlaps', () => {
     expect(familyForCodepoint(kept, 0x250)).toBe('Outer')
     expect(familyForCodepoint(kept, 0x955)).toBe('Later')
     expect(familyForCodepoint(kept, 0x930)).toBeNull()
+  })
+})
+
+describe('ligatureConflict', () => {
+  it('is silent when nothing is said about ligature tags', () => {
+    expect(ligatureConflict('', true)).toBeNull()
+    expect(ligatureConflict('"ss01" 1, "zero" 1', true)).toBeNull()
+    expect(ligatureConflict('"ss01" 1', false)).toBeNull()
+  })
+
+  it('reports the feature winning when a tag switches them off under a live toggle', () => {
+    expect(ligatureConflict('"calt" 0', true)).toBe('features-win')
+    expect(ligatureConflict('"liga" off', true)).toBe('features-win')
+    expect(ligatureConflict("'clig' 0", true)).toBe('features-win')
+    expect(ligatureConflict('"ss01" 1, "dlig" 0', true)).toBe('features-win')
+  })
+
+  it('reports the toggle winning when a tag asks for what the toggle never assembles', () => {
+    // The run is never handed to fillText in one call, so the face has
+    // nothing to substitute in however the tag is set.
+    expect(ligatureConflict('"calt" 1', false)).toBe('toggle-wins')
+    expect(ligatureConflict('"liga" on', false)).toBe('toggle-wins')
+    // A bare tag means on.
+    expect(ligatureConflict('"calt"', false)).toBe('toggle-wins')
+  })
+
+  it('says nothing when the two agree', () => {
+    expect(ligatureConflict('"calt" 1', true)).toBeNull()
+    expect(ligatureConflict('"calt" 0', false)).toBeNull()
+  })
+
+  it('is not fooled by a tag that merely contains one of the names', () => {
+    expect(ligatureConflict('"ligatures-ish" 0', true)).toBeNull()
   })
 })
 

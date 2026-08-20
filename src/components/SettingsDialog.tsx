@@ -22,6 +22,7 @@ import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS, FONT_SIZE_RANGE } from '../
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
   formatCodepoint,
+  ligatureConflict,
   parseCodepoint,
   resolveRangeOverlaps,
   sameRanges,
@@ -278,13 +279,20 @@ function familyChoices(installed: InstalledFont[] | null): string[] {
 }
 
 /**
- * A select over installed families, where empty means "not set".
+ * A picker for one installed family, where empty means "not set".
  *
  * The value stored is the family name quoted, so it can be dropped into a CSS
  * font shorthand as-is — an unquoted name with a comma or a leading digit in
  * it would otherwise end the family list early or fail to parse.
+ *
+ * It becomes a text field when nothing could be enumerated, which is the
+ * whole story off Windows: `list_fonts` answers natively through DirectWrite
+ * and returns an empty list everywhere else. A select over an empty list is
+ * not a degraded picker, it is a control that cannot express anything — so
+ * where there is nothing to offer, the name gets typed instead. The setting,
+ * what it stores, and everything downstream of it are identical either way.
  */
-function FamilySelect({
+export function FamilySelect({
   value,
   onPick,
   families,
@@ -302,6 +310,22 @@ function FamilySelect({
   // a controlled select with no matching option renders blank, which reads as
   // the setting having been lost.
   const known = families.some((f) => JSON.stringify(f) === value)
+  if (families.length === 0) {
+    return (
+      <input
+        type="text"
+        spellCheck={false}
+        aria-label={emptyLabel}
+        placeholder={emptyLabel}
+        className={`${selectClass} ${className ?? ''}`}
+        // Quoted on the way in and unquoted on the way out, so what is stored
+        // is what the select would have stored: this is a different way to say
+        // the same thing, not a different setting.
+        value={value === '' ? '' : familyName(value)}
+        onChange={(e) => onPick(e.target.value.trim() === '' ? '' : JSON.stringify(e.target.value))}
+      />
+    )
+  }
   return (
     <select
       className={`${selectClass} ${className ?? ''}`}
@@ -463,6 +487,26 @@ function FontRangeTable({
 }
 
 /**
+ * What the OpenType features and the ligature toggle are doing to each other.
+ *
+ * Neither is wrong when they disagree — each is a different level of the same
+ * pipeline doing as it was told — but the visible result is that one of the
+ * two controls appears to do nothing, and there is no way to tell from either
+ * one alone which one that is.
+ */
+function LigatureConflictNote({ settings }: { settings: TerminalSettings }) {
+  const conflict = ligatureConflict(settings.fontFeatures, settings.ligatures)
+  if (!conflict) return null
+  return (
+    <p className="px-0.5 leading-relaxed text-amber-300/50">
+      {conflict === 'features-win'
+        ? 'A feature above switches ligatures off in the face itself, so they will not appear even with the Ligatures setting on.'
+        : 'A feature above asks for ligatures, but the Ligatures setting is off — operators are drawn one cell at a time, so the face never gets a run to substitute in.'}
+    </p>
+  )
+}
+
+/**
  * The faces named above that this machine does not have.
  *
  * The same argument as `FontResolution`, carried to the slots that name one
@@ -557,6 +601,7 @@ function AdvancedFontSettings({
             onChange={(e) => onChange({ ...settings, fontFeatures: e.target.value })}
           />
         </label>
+        <LigatureConflictNote settings={settings} />
         <FontRangeTable
           ranges={settings.fontRanges}
           onChange={(fontRanges) => onChange({ ...settings, fontRanges })}
