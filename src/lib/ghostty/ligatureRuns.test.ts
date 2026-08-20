@@ -67,9 +67,22 @@ function chars(text: string): CellSpec[] {
 }
 
 describe('the run alphabet', () => {
-  it('covers the operators ligature fonts substitute on, and nothing else', () => {
-    for (const ch of '=<>-!&|:+*/~') expect(LIGATURE_CHARS[ch.charCodeAt(0)]).toBe(1)
-    for (const ch of 'aZ0 ._#@$%^(){}[]"\'`,;?\\') expect(LIGATURE_CHARS[ch.charCodeAt(0)]).toBe(0)
+  it('covers the operators and punctuation ligature fonts substitute on', () => {
+    for (const ch of '=<>-!&|:+*/~.?#$%^;_@') expect(LIGATURE_CHARS[ch.charCodeAt(0)]).toBe(1)
+    expect(LIGATURE_CHARS['\\'.charCodeAt(0)]).toBe(1)
+  })
+
+  it('takes w, and no other letter, because www is the one word ligature', () => {
+    expect(LIGATURE_CHARS['w'.charCodeAt(0)]).toBe(1)
+    for (const ch of 'abcdefghijklmnopqrstuvxyzABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+      expect(LIGATURE_CHARS[ch.charCodeAt(0)]).toBe(0)
+    }
+  })
+
+  it('leaves out the brackets, the quotes, the digits and the space', () => {
+    // Brackets would cost a slot for every `))` and `}}` in a file, which is
+    // the most common adjacency in code and the least rewarding.
+    for (const ch of '0 (){}[]"\'`,') expect(LIGATURE_CHARS[ch.charCodeAt(0)]).toBe(0)
   })
 })
 

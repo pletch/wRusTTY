@@ -17,16 +17,34 @@ import { MAX_RUN_CELLS } from './GlyphAtlas'
  */
 
 /**
- * The characters a run may be built from: the ASCII operators every
- * ligature-carrying programming font forms its substitutions out of.
+ * The characters a run may be built from: what the ligature-carrying
+ * programming fonts actually form their substitutions out of.
  *
- * Keeping the set small is what bounds the run cache. A run's key is its own
- * text, so unlike a codepoint it has no ceiling from the character repertoire;
- * restricting the alphabet is what keeps a path, a word or a column of prose
- * from ever costing a run slot.
+ * The alphabet is what bounds the run cache, and is the only thing that does.
+ * A run's key is its own text, so unlike a codepoint it has no ceiling from
+ * the character repertoire — but a run is at most `MAX_RUN_CELLS` long and
+ * built only from these, so the whole key space is that many characters
+ * choose three. Prose and paths cost nothing because their letters are not in
+ * here at all.
+ *
+ * Two deliberate inclusions past the operators:
+ *
+ * - The punctuation the substitution tables actually reach — `...`, `?.`,
+ *   `??`, `;;`, `%%`, `^=`, `$>`, `\\`, `#?`, `__`. Leaving these out was why
+ *   a font's dot and question-mark ligatures never fired.
+ * - `w`, and only `w`, for `www`. It is the one alphabetic ligature the
+ *   programming faces carry, and it is safe precisely because no common word
+ *   doubles a w: a lone letter never forms a run, so prose still costs
+ *   nothing. The pairs it does make against punctuation — `w.` in `row.map` —
+ *   shape to the same glyphs they would have drawn separately, so they cost a
+ *   slot and never a wrong pixel.
+ *
+ * The brackets are deliberately still out. They would buy `[|`, `|]`, `{|`
+ * and `#(`, and cost a run slot for every `))`, `}}` and `){` in a file —
+ * which is the most common adjacency in code and the least rewarding.
  */
 export const LIGATURE_CHARS = new Uint8Array(128)
-for (const ch of '=<>-!&|:+*/~') LIGATURE_CHARS[ch.charCodeAt(0)] = 1
+for (const ch of '=<>-!&|:+*/~.?#$%^;\\_@w') LIGATURE_CHARS[ch.charCodeAt(0)] = 1
 
 /** Scratch rows, one set per renderer, sized with the grid. */
 export interface RunScratch {
