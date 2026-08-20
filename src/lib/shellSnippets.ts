@@ -20,7 +20,7 @@
  */
 
 export interface ShellSnippet {
-  id: 'bash' | 'zsh' | 'fish'
+  id: 'bash' | 'zsh' | 'fish' | 'powershell'
   label: string
   /** Where it goes on the remote host, shown in the copied-confirmation. */
   rcFile: string
@@ -212,8 +212,107 @@ if not functions -q __update_cwd_osc
     __osc7_report
 end`
 
+// PowerShell 7 only, and PowerShell is the one shell here that needs no
+// hand-rolled percent-encoder: [uri]::EscapeDataString walks UTF-8 bytes, so
+// the accented-path failure the POSIX snippets guard against with LC_ALL=C
+// cannot happen. It is also the only one with a real pre-exec point built in
+// — PSConsoleHostReadLine returns exactly when Enter is pressed on a line you
+// typed — so there is no DEBUG-trap bookkeeping and no arming flag.
+const POWERSHELL = `${PREAMBLE}
+# Emits nothing when stdin is redirected, which is how the profile is loaded
+# for \`ssh host pwsh -c ...\` and for anything piping into pwsh — do not
+# remove the test below, or those streams get escape sequences injected.
+if (-not [Console]::IsInputRedirected -and -not $Global:__osc133_installed) {
+  $Global:__osc133_installed = $true
+  $Global:__osc133_running = $false
+  # PowerShell 7: the escape is spelled \`e, but a literal ESC in a variable
+  # keeps every sequence below readable as ESC ] ... BEL.
+  $Global:__osc133_esc = [char]27
+  $Global:__osc133_bel = [char]7
+
+  # Resolved once: it cannot change for the life of the shell.
+  $Global:__osc7_host = [System.Net.Dns]::GetHostName()
+
+  # OSC 7: the working directory, as a percent-encoded file:// URL.
+  function Global:__osc7_report {
+    # ProviderPath, not Path: inside a PSDrive the latter reads as \`Foo:\\bar\`,
+    # which is not a path any other machine can use. A non-filesystem provider
+    # (Env:, HKLM:) has no path at all, so it reports nothing rather than
+    # something that looks like one.
+    if ($PWD.Provider.Name -ne 'FileSystem') { return }
+    $path = $PWD.ProviderPath.Replace('\\', '/')
+    # The URL grammar's separator, not part of the path: \`/C:/Users/you\`.
+    if (-not $path.StartsWith('/')) { $path = '/' + $path }
+    # Per segment, so the separators survive as separators. EscapeDataString
+    # encodes UTF-8 bytes, which is what the URL grammar wants.
+    $encoded = ($path -split '/' | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/'
+    [Console]::Write("$__osc133_esc]7;file://$__osc7_host$encoded$__osc133_bel")
+  }
+
+  # Escape the command text so a \`;\` in it can't read as a field separator.
+  function Global:__osc133_escape([string] $text) {
+    $bs = [string][char]92
+    $text.Replace($bs, $bs + $bs).Replace(';', $bs + 'x3b')
+  }
+
+  # The host calls this to read one line, and it returns exactly when you
+  # press Enter on a line you typed — the pre-exec point bash has to
+  # reconstruct from a DEBUG trap. Wrapped rather than replaced, so PSReadLine
+  # keeps doing its job; skipped entirely if the host has no such function,
+  # since defining one that calls nothing would break input outright.
+  if ($function:PSConsoleHostReadLine) {
+    $Global:__osc133_readline = $function:PSConsoleHostReadLine
+    function Global:PSConsoleHostReadLine {
+      $line = $Global:__osc133_readline.Invoke()
+      # An empty line — Enter on an empty prompt, or Ctrl+C — ran no command,
+      # and reporting one would pin the terminal at "a command is running".
+      if ($line) {
+        # What $LASTEXITCODE held before this command ran, so the prompt can
+        # tell a code this command set from one left over from an earlier one.
+        $Global:__osc133_lastexit = $global:LASTEXITCODE
+        [Console]::Write("$__osc133_esc]633;E;$(__osc133_escape $line)$__osc133_bel")
+        [Console]::Write("$__osc133_esc]133;C$__osc133_bel")
+        $Global:__osc133_running = $true
+      }
+      $line
+    }
+  }
+
+  $Global:__osc133_prompt = $function:prompt
+  function Global:prompt {
+    # First statement in the function: $? reflects the statement before it,
+    # so anything at all here — a comparison, an assignment — overwrites the
+    # answer this is trying to read.
+    $ok = $?
+    if ($Global:__osc133_running) {
+      # $? decides *whether* it failed; $LASTEXITCODE says by how much, and
+      # only native commands set it. It is not cleared by a cmdlet, so a
+      # failing cmdlet after a failing \`git\` would otherwise be reported with
+      # git's code — hence the comparison against the value from before this
+      # command ran. A native command that fails twice with the same code is
+      # the case that leaves behind: the second is reported as a plain 1.
+      $code = if ($ok) { 0 }
+        elseif ($LASTEXITCODE -and $LASTEXITCODE -ne $Global:__osc133_lastexit) { $LASTEXITCODE }
+        else { 1 }
+      [Console]::Write("$__osc133_esc]133;D;$code$__osc133_bel")
+      $Global:__osc133_running = $false
+    }
+    __osc7_report
+    [Console]::Write("$__osc133_esc]133;A$__osc133_bel")
+    & $Global:__osc133_prompt
+  }
+
+  # Progress reporting (OSC 9;4) is emitted by programs, not by the shell, and
+  # they look for this variable to decide the terminal supports it. wRusTTY
+  # sends it as an SSH environment request, which a default sshd discards.
+  $env:ConEmuANSI = 'ON'
+}`
+
 export const SHELL_SNIPPETS: ShellSnippet[] = [
   { id: 'bash', label: 'bash', rcFile: '~/.bashrc', script: BASH },
   { id: 'zsh', label: 'zsh', rcFile: '~/.zshrc', script: ZSH },
   { id: 'fish', label: 'fish', rcFile: '~/.config/fish/config.fish', script: FISH },
+  // Labelled by its command like the others, which also keeps the fourth
+  // button the same width as the rest of the row.
+  { id: 'powershell', label: 'pwsh', rcFile: '$PROFILE', script: POWERSHELL },
 ]

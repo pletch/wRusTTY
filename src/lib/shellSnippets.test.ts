@@ -41,14 +41,48 @@ describe('shell snippets', () => {
     expect(script).toContain(']7;file://')
   })
 
-  it.each(SHELL_SNIPPETS.filter((s) => s.id !== 'fish'))(
+  it.each(SHELL_SNIPPETS.filter((s) => s.id !== 'fish' && s.id !== 'powershell'))(
     '$id percent-encodes the path over bytes, not characters',
     ({ script }) => {
       // Without this the encoder emits one escape per *character* in a UTF-8
       // locale, so `é` goes out as %E9 rather than %C3%A9 and the far side
       // decodes a different path. It is a one-line omission with a failure
       // mode nobody notices until a path has an accent in it.
+      //
+      // fish and PowerShell are excluded because neither hand-rolls the
+      // encoder: `string escape --style=url` and [uri]::EscapeDataString both
+      // already work in bytes.
       expect(script).toContain('LC_ALL=C')
     },
   )
+
+  const powershell = SHELL_SNIPPETS.find((s) => s.id === 'powershell')!
+
+  it('PowerShell reads $? before anything can overwrite it', () => {
+    // $? reflects the statement immediately before it, so the capture has to
+    // be the first statement in the function — a check inserted above it, or
+    // even a comparison, silently makes every command look successful.
+    const body = powershell.script.split('function Global:prompt {\n')[1]
+    expect(body, 'no prompt function in the PowerShell snippet').toBeDefined()
+    const first = body
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith('#'))
+    expect(first).toBe('$ok = $?')
+  })
+
+  it('PowerShell reports a native exit code only when the command set it', () => {
+    // $LASTEXITCODE survives a cmdlet untouched, so without the comparison
+    // against the value from before the command ran, a failing cmdlet after a
+    // failing `git` is reported with git's exit code.
+    expect(powershell.script).toContain('$Global:__osc133_lastexit = $global:LASTEXITCODE')
+    expect(powershell.script).toContain('$LASTEXITCODE -ne $Global:__osc133_lastexit')
+  })
+
+  it('PowerShell keeps its guard against a non-interactive profile load', () => {
+    // `ssh host pwsh -c ...` loads the profile, exactly as bash sources
+    // .bashrc for a command run over ssh — anything written to stdout there
+    // lands in that command's output.
+    expect(powershell.script).toContain('[Console]::IsInputRedirected')
+  })
 })

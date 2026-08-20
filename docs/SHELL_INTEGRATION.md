@@ -296,6 +296,139 @@ if not functions -q __update_cwd_osc
 end
 ```
 
+## PowerShell
+
+Written for and tested on PowerShell 7 (`pwsh`); Windows PowerShell 5.1 is
+not covered. Add to the file `$PROFILE` names — by default
+`~\Documents\PowerShell\Microsoft.PowerShell_profile.ps1` — and put it **last**,
+after anything that sets a prompt. It wraps whatever `prompt` exists when it
+loads; starship and oh-my-posh *replace* `prompt`, so one loaded afterwards
+takes the reporting with it. Same ordering trap as bash's `PROMPT_COMMAND`,
+for the same reason.
+
+PowerShell needs neither of the two awkward parts of the POSIX snippets.
+`PSConsoleHostReadLine` is called by the host to read one line and returns
+exactly when you press Enter on a line you typed, which is the pre-exec point
+bash reconstructs from a DEBUG trap with an arming flag — so it is wrapped
+rather than emulated. And `[uri]::EscapeDataString` percent-encodes UTF-8
+bytes, so there is no hand-rolled encoder and no `LC_ALL=C` to get wrong.
+
+It also sets `ConEmuANSI`, which the POSIX snippets leave to a separate line
+(see "Telling programs the terminal supports it" below) — on Windows the shell
+profile is the only place it can go, since there is no `~/.bashrc` to append
+to and sshd discards the variable wRusTTY sends.
+
+```powershell
+# Shell integration: OSC 133 semantic-prompt sequences, which tell the
+# terminal when a command starts, when it ends, and with what exit status,
+# plus OSC 7, which tells it what directory you are in.
+# Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
+# silently discarded by terminals that don't implement them.
+# Emits nothing when stdin is redirected, which is how the profile is loaded
+# for `ssh host pwsh -c ...` and for anything piping into pwsh — do not
+# remove the test below, or those streams get escape sequences injected.
+if (-not [Console]::IsInputRedirected -and -not $Global:__osc133_installed) {
+  $Global:__osc133_installed = $true
+  $Global:__osc133_running = $false
+  # PowerShell 7: the escape is spelled `e, but a literal ESC in a variable
+  # keeps every sequence below readable as ESC ] ... BEL.
+  $Global:__osc133_esc = [char]27
+  $Global:__osc133_bel = [char]7
+
+  # Resolved once: it cannot change for the life of the shell.
+  $Global:__osc7_host = [System.Net.Dns]::GetHostName()
+
+  # OSC 7: the working directory, as a percent-encoded file:// URL.
+  function Global:__osc7_report {
+    # ProviderPath, not Path: inside a PSDrive the latter reads as `Foo:\bar`,
+    # which is not a path any other machine can use. A non-filesystem provider
+    # (Env:, HKLM:) has no path at all, so it reports nothing rather than
+    # something that looks like one.
+    if ($PWD.Provider.Name -ne 'FileSystem') { return }
+    $path = $PWD.ProviderPath.Replace('\', '/')
+    # The URL grammar's separator, not part of the path: `/C:/Users/you`.
+    if (-not $path.StartsWith('/')) { $path = '/' + $path }
+    # Per segment, so the separators survive as separators. EscapeDataString
+    # encodes UTF-8 bytes, which is what the URL grammar wants.
+    $encoded = ($path -split '/' | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/'
+    [Console]::Write("$__osc133_esc]7;file://$__osc7_host$encoded$__osc133_bel")
+  }
+
+  # Escape the command text so a `;` in it can't read as a field separator.
+  function Global:__osc133_escape([string] $text) {
+    $bs = [string][char]92
+    $text.Replace($bs, $bs + $bs).Replace(';', $bs + 'x3b')
+  }
+
+  # The host calls this to read one line, and it returns exactly when you
+  # press Enter on a line you typed — the pre-exec point bash has to
+  # reconstruct from a DEBUG trap. Wrapped rather than replaced, so PSReadLine
+  # keeps doing its job; skipped entirely if the host has no such function,
+  # since defining one that calls nothing would break input outright.
+  if ($function:PSConsoleHostReadLine) {
+    $Global:__osc133_readline = $function:PSConsoleHostReadLine
+    function Global:PSConsoleHostReadLine {
+      $line = $Global:__osc133_readline.Invoke()
+      # An empty line — Enter on an empty prompt, or Ctrl+C — ran no command,
+      # and reporting one would pin the terminal at "a command is running".
+      if ($line) {
+        # What $LASTEXITCODE held before this command ran, so the prompt can
+        # tell a code this command set from one left over from an earlier one.
+        $Global:__osc133_lastexit = $global:LASTEXITCODE
+        [Console]::Write("$__osc133_esc]633;E;$(__osc133_escape $line)$__osc133_bel")
+        [Console]::Write("$__osc133_esc]133;C$__osc133_bel")
+        $Global:__osc133_running = $true
+      }
+      $line
+    }
+  }
+
+  $Global:__osc133_prompt = $function:prompt
+  function Global:prompt {
+    # First statement in the function: $? reflects the statement before it,
+    # so anything at all here — a comparison, an assignment — overwrites the
+    # answer this is trying to read.
+    $ok = $?
+    if ($Global:__osc133_running) {
+      # $? decides *whether* it failed; $LASTEXITCODE says by how much, and
+      # only native commands set it. It is not cleared by a cmdlet, so a
+      # failing cmdlet after a failing `git` would otherwise be reported with
+      # git's code — hence the comparison against the value from before this
+      # command ran. A native command that fails twice with the same code is
+      # the case that leaves behind: the second is reported as a plain 1.
+      $code = if ($ok) { 0 }
+        elseif ($LASTEXITCODE -and $LASTEXITCODE -ne $Global:__osc133_lastexit) { $LASTEXITCODE }
+        else { 1 }
+      [Console]::Write("$__osc133_esc]133;D;$code$__osc133_bel")
+      $Global:__osc133_running = $false
+    }
+    __osc7_report
+    [Console]::Write("$__osc133_esc]133;A$__osc133_bel")
+    & $Global:__osc133_prompt
+  }
+
+  # Progress reporting (OSC 9;4) is emitted by programs, not by the shell, and
+  # they look for this variable to decide the terminal supports it. wRusTTY
+  # sends it as an SSH environment request, which a default sshd discards.
+  $env:ConEmuANSI = 'ON'
+}
+```
+
+Two PowerShell-specific things worth knowing if you rework this.
+
+`$?` must be read by the *first* statement in `prompt` — any statement at all,
+including a comparison, overwrites it — and it is the only reliable answer to
+"did that fail", because a cmdlet failure never touches `$LASTEXITCODE`.
+`$LASTEXITCODE` is consulted only for the number, and only when it differs
+from the value recorded before the command ran; without that check, a failing
+cmdlet after a failing `git` gets reported with git's exit code. What the check
+can't catch is the same native command failing twice with the same code — the
+second is reported as a plain `1`, which loses the number but not the failure.
+
+The interactive guard is `[Console]::IsInputRedirected` rather than bash's
+`$-` test, and it matters for the same reason: `ssh host pwsh -c ...` loads the
+profile too, and anything it writes to stdout lands in that command's output.
+
 ## Checking it works
 
 You don't need any of the above to test the wRusTTY side. Paste this into
@@ -303,6 +436,12 @@ any connected pane — it fakes a 15-second command by hand:
 
 ```sh
 printf '\e]133;C\a'; sleep 15; printf '\e]133;D;0\a'
+```
+
+On a Windows host, where there is no `printf`:
+
+```powershell
+"`e]133;C`a"; Start-Sleep 15; "`e]133;D;0`a"
 ```
 
 A red marker should sweep back and forth along this pane's segment of the tab
@@ -380,6 +519,9 @@ matters, set it in the shell's rc instead:
 ```sh
 echo 'export ConEmuANSI=ON' >> ~/.bashrc     # or ~/.zshrc
 ```
+
+The PowerShell snippet above sets it already, so a Windows host needs nothing
+extra — there is no rc file to append this line to separately.
 
 Claude Code is the concrete case. It emits `9;4;3` while it works and `9;4;0`
 when it stops — but only when it sees `ConEmuANSI`/`ConEmuPID`/`ConEmuTask`,
