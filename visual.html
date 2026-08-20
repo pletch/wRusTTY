@@ -7,7 +7,9 @@
       body { background: #0b0c10; color: #cfd3dc; font: 13px ui-sans-serif, system-ui; margin: 16px; }
       h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
       p { margin: 0 0 12px; opacity: 0.6; }
-      #pane { width: 900px; height: 420px; }
+      /* Tall enough for the whole script to sit on screen at once. Anything
+         that scrolls off is anything nobody looks at, which defeats the page. */
+      #pane { width: 900px; height: 700px; }
       #err { color: #fca5a5; white-space: pre-wrap; }
     </style>
   </head>

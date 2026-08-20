@@ -28,6 +28,11 @@ const rows: [string, string][] = [
   ['overline + curly', `${ESC}[53;4:3m`],
   ['curly, coloured', `${ESC}[4:3m${fg(203)}`],
   ['bold + double under', `${ESC}[1;4:2m`],
+  // Italic is here for the styled-face slots: with ?italic= pointing at a
+  // family of its own, these two rows are the only place you can see whether
+  // the atlas picked that face rather than slanting the body one.
+  ['italic', `${ESC}[3m`],
+  ['bold italic', `${ESC}[1;3m`],
   ['plain, for reference', ''],
 ]
 
@@ -85,24 +90,44 @@ out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} col
 out += `\r\n  cursor is here ->${ESC}[5 q `
 engine.write(out)
 
-// A face with ligatures in it, for the line above. Named in the URL rather
-// than hardcoded because which ones are installed varies per machine, and the
-// point of the line is to compare one face against another.
-const wantedFont = new URLSearchParams(location.search).get('font')
-// ?features= rides along with it, so the OpenType descriptor path can be
-// looked at too -- try `?font=Cascadia Code&features="calt" 0`, which should
-// render the ligature line unligated even with ligatures switched on.
-const wantedFeatures = new URLSearchParams(location.search).get('features') ?? ''
-if (wantedFont || wantedFeatures) {
+/**
+ * The font settings, from the URL — every one of them, because which families
+ * are installed varies per machine and all any of these lines can do is let one
+ * face be compared against another.
+ *
+ *   ?font=Cascadia Code                    the body face
+ *   ?features="calt" 0                     OpenType tags, as font-feature-settings
+ *   ?italic=Comic Sans MS                  a face for the italic slot; also
+ *   ?bold=…  ?bolditalic=…                 the other two styled slots
+ *   ?range=30-39:Comic Sans MS             pin a codepoint range, hex, repeatable
+ *
+ * The pairing that says the most in one screenshot is `?font=Cascadia Code
+ * &features="calt" 0`, which should leave the ligature line unligated even with
+ * ligatures switched on; and `?italic=` against something obviously not the
+ * body face, which is the only way to see that the italic rows came from a
+ * face rather than from a slant applied to the upright one.
+ */
+const params = new URLSearchParams(location.search)
+const wantedFont = params.get('font')
+const wantedFeatures = params.get('features') ?? ''
+/** A styled slot: quoted, so a family with a space in it survives the CSS. */
+const slot = (name: string | null) => (name ? JSON.stringify(name) : '')
+/** `lo-hi:Family`, hex and inclusive — the settings dialog's rows, in a URL. */
+const wantedRanges = params.getAll('range').flatMap((spec) => {
+  const m = spec.match(/^([0-9a-f]+)-([0-9a-f]+):(.+)$/i)
+  if (!m) return []
+  return [{ lo: parseInt(m[1], 16), hi: parseInt(m[2], 16), family: JSON.stringify(m[3]) }]
+})
+if (wantedFont || wantedFeatures || wantedRanges.length > 0 || params.has('italic')) {
   const family = wantedFont ? `"${wantedFont}", ui-monospace, monospace` : 'Consolas, monospace'
   engine.setFont(
     buildFontSelection({
       fontFamily: family,
-      fontFamilyBold: '',
-      fontFamilyItalic: '',
-      fontFamilyBoldItalic: '',
+      fontFamilyBold: slot(params.get('bold')),
+      fontFamilyItalic: slot(params.get('italic')),
+      fontFamilyBoldItalic: slot(params.get('bolditalic')),
       fontFeatures: wantedFeatures,
-      fontRanges: [],
+      fontRanges: wantedRanges,
     }),
     14,
   )

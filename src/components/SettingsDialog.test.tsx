@@ -1,0 +1,106 @@
+// @vitest-environment jsdom
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/react'
+import { NamedFaceReport } from './SettingsDialog'
+import { loadSettings, type TerminalSettings } from '../lib/settings'
+
+/**
+ * The one part of the font settings nobody can reach by hand.
+ *
+ * The face and range pickers only offer families this machine has, so a name
+ * that resolves to nothing arrives from a settings file written on another
+ * machine — which means the warning about it can never be seen while working
+ * on it, and would rot silently. Hence a test rather than a screenshot.
+ */
+
+/** Stands in for the CSS Font Loading API, which jsdom does not implement.
+ *  `installed` is what this machine is pretending to have. */
+function stubFontCheck(installed: string[] | null) {
+  Object.defineProperty(document, 'fonts', {
+    configurable: true,
+    value:
+      installed === null
+        ? {}
+        : {
+            check: (font: string) => {
+              const m = font.match(/"([^"]+)"/)
+              return m ? installed.includes(m[1]) : false
+            },
+          },
+  })
+}
+
+function settings(over: Partial<TerminalSettings> = {}): TerminalSettings {
+  return { ...loadSettings(), ...over }
+}
+
+beforeEach(() => {
+  stubFontCheck(['Consolas', 'Cascadia Code'])
+})
+afterEach(cleanup)
+
+describe('NamedFaceReport', () => {
+  it('says nothing when no styled face or range family is named', () => {
+    const { container } = render(<NamedFaceReport settings={settings()} />)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('says nothing when every named family is installed', () => {
+    const { container } = render(
+      <NamedFaceReport
+        settings={settings({
+          fontFamilyItalic: '"Cascadia Code"',
+          fontRanges: [{ lo: 0x30, hi: 0x39, family: '"Consolas"' }],
+        })}
+      />,
+    )
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('names a styled face this machine does not have', () => {
+    render(<NamedFaceReport settings={settings({ fontFamilyItalic: '"Iosevka Italic"' })} />)
+    expect(screen.getByText(/Iosevka Italic is not installed/)).toBeTruthy()
+  })
+
+  it('is explicit that the fallback is not the body font', () => {
+    // The whole reason this warning exists: these slots name a single family
+    // with no stack behind them, so a name nothing answers to leaves the
+    // rasterizer on its own default rather than on the font you chose.
+    render(<NamedFaceReport settings={settings({ fontFamilyBold: '"Berkeley Mono"' })} />)
+    expect(screen.getByText(/rather than to your body font/)).toBeTruthy()
+  })
+
+  it('names a missing range family too, since that is where one arrives from', () => {
+    render(
+      <NamedFaceReport
+        settings={settings({
+          fontRanges: [{ lo: 0xe000, hi: 0xf8ff, family: '"Symbols Nerd Font"' }],
+        })}
+      />,
+    )
+    expect(screen.getByText(/Symbols Nerd Font is not installed/)).toBeTruthy()
+  })
+
+  it('lists several missing families once each, and reads as a plural', () => {
+    render(
+      <NamedFaceReport
+        settings={settings({
+          fontFamilyItalic: '"Iosevka Italic"',
+          fontFamilyBoldItalic: '"Iosevka Italic"',
+          fontRanges: [{ lo: 0xe000, hi: 0xf8ff, family: '"Maple Mono"' }],
+        })}
+      />,
+    )
+    expect(screen.getByText(/Iosevka Italic, Maple Mono are not installed/)).toBeTruthy()
+  })
+
+  // A guess dressed up as a report is worse than silence: the API being absent
+  // is not the same answer as the font being absent.
+  it('says nothing at all when the webview cannot answer', () => {
+    stubFontCheck(null)
+    const { container } = render(
+      <NamedFaceReport settings={settings({ fontFamilyItalic: '"Iosevka Italic"' })} />,
+    )
+    expect(container.innerHTML).toBe('')
+  })
+})

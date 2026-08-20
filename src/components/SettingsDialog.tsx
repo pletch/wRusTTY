@@ -384,7 +384,15 @@ function FontRangeTable({
     commit(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
 
-  const fieldClass = `${selectClass} w-20 text-center font-mono`
+  // One border-colour utility, never two. Tailwind settles a conflict by where
+  // the rules land in the stylesheet, not by the order the classes appear in
+  // the attribute, so appending an amber border to a list already carrying the
+  // white one is a coin toss — and it lands on white, which is how this shipped
+  // marking nothing at all.
+  const fieldBase =
+    'w-20 rounded border bg-black/20 px-1.5 py-1 text-center font-mono text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  const fieldClass = (flagged: boolean) =>
+    `${fieldBase} ${flagged ? 'border-amber-300/50' : 'border-white/10'}`
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-3 text-white/85">
@@ -404,7 +412,6 @@ function FontRangeTable({
         const bad = (text: string, cp: number | null) => text.trim() !== '' && cp === null
         const inverted = lo !== null && hi !== null && hi < lo
         const ignored = overlapping.has(i)
-        const flagged = ignored ? 'border-amber-300/50' : ''
         return (
           <div key={i} className="flex items-center gap-1.5">
             <input
@@ -412,7 +419,7 @@ function FontRangeTable({
               spellCheck={false}
               placeholder="U+E000"
               aria-label="First codepoint"
-              className={`${fieldClass} ${bad(row.lo, lo) ? 'border-amber-300/50' : flagged}`}
+              className={fieldClass(bad(row.lo, lo) || ignored)}
               value={row.lo}
               onChange={(e) => edit(i, { lo: e.target.value })}
             />
@@ -422,9 +429,7 @@ function FontRangeTable({
               spellCheck={false}
               placeholder="U+F8FF"
               aria-label="Last codepoint"
-              className={`${fieldClass} ${
-                bad(row.hi, hi) || inverted ? 'border-amber-300/50' : flagged
-              }`}
+              className={fieldClass(bad(row.hi, hi) || inverted || ignored)}
               value={row.hi}
               onChange={(e) => edit(i, { hi: e.target.value })}
             />
@@ -472,7 +477,7 @@ function FontRangeTable({
  * offers installed families, so a missing one arrives from a settings file
  * written on another machine — exactly the case nobody would think to check.
  */
-function NamedFaceReport({
+export function NamedFaceReport({
   settings,
 }: {
   settings: TerminalSettings
