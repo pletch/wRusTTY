@@ -573,6 +573,7 @@ export function Terminal({
         term.setScrollbackBudget(settings.scrollbackBudgetMB)
     term.setCursorStyle(settings.cursorStyle, settings.cursorBlink)
     term.setTextBlending?.(settings.textBlending)
+    term.setLigatures?.(settings.ligatures)
     refitRef.current?.()
   }, [
     settings.fontFamily,
@@ -581,6 +582,7 @@ export function Terminal({
     settings.cursorStyle,
     settings.cursorBlink,
     settings.textBlending,
+    settings.ligatures,
   ])
 
   // Its own effect because it is a per-session setting rather than one of the
@@ -831,6 +833,7 @@ export function Terminal({
     term.setScrollbackBudget(settingsRef.current.scrollbackBudgetMB)
     term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
     term.setTextBlending?.(settingsRef.current.textBlending)
+    term.setLigatures?.(settingsRef.current.ligatures)
     // Not part of `settings` — it is per-session, not global — but it obeys
     // the same rule as everything above: repeated here so a new pane gets it,
     // because the effect that tracks it only fires on changes.

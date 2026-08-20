@@ -257,6 +257,78 @@ export interface TerminalSettings {
    * finding its terminal restyled by an update.
    */
   textBlending: TextBlending
+  /**
+   * Whether to shape runs of ASCII operators as one string, which is what
+   * lets a font's ligatures fire — `=>` drawn in one call can substitute,
+   * two separate calls have nothing to substitute on.
+   *
+   * Off by default, and deliberately not tied to the font: it costs atlas
+   * slots whether or not the resolved face has the substitutions, and the
+   * platform default (`ui-monospace`, Consolas) has none. Turning it on
+   * without a face that ligates changes nothing you can see.
+   */
+  ligatures: boolean
+}
+
+/**
+ * The font stacks Settings offers, and what `fontFamily` is validated
+ * against. Data about a setting rather than about the dialog, so it lives
+ * here with the setting it describes and with the migration below.
+ *
+ * Every entry is a CSS family list, and the tail of each one is a *symbol
+ * tier*: Canvas 2D falls back per glyph across the list for free, so naming
+ * the symbol faces after the text face converts "no fallback control" into "a
+ * fallback order you specify". It matters less than it used to — box drawing,
+ * block elements and the Powerline separators are drawn as geometry now (see
+ * boxDrawing.ts) and need no font at all — but devicons, arrows and the rest
+ * of the miscellaneous-symbol ranges still come from whatever resolves.
+ *
+ * Cascadia Code is offered alongside Cascadia Mono again: the two differ only
+ * in ligatures, which the renderer can now form, so choosing it is once more
+ * a choice that does something. It needs `ligatures` on to show them.
+ */
+export const FONT_STACKS: ReadonlyArray<{ label: string; value: string }> = [
+  {
+    label: 'System default',
+    value: 'ui-monospace, Consolas, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+  {
+    label: 'Cascadia Mono',
+    value: '"Cascadia Mono", ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+  {
+    label: 'Cascadia Code',
+    value: '"Cascadia Code", ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+  {
+    label: 'Consolas',
+    value: 'Consolas, ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+  {
+    label: 'Courier New',
+    value: '"Courier New", "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+  {
+    label: 'Lucida Console',
+    value: '"Lucida Console", ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+]
+
+/**
+ * Stacks shipped before the symbol tier existed, mapped onto their current
+ * equivalents. Without this an existing install keeps its old stack forever —
+ * the value still works, so nothing is broken, but the setting silently stops
+ * matching any entry in the picker and the tier never arrives. Only exact
+ * former defaults are rewritten; anything else is the user's own and is left
+ * as it is.
+ */
+const FONT_STACK_MIGRATIONS: Record<string, string> = {
+  'ui-monospace, Consolas, monospace': FONT_STACKS[0].value,
+  '"Cascadia Mono", ui-monospace, monospace': FONT_STACKS[1].value,
+  '"Cascadia Code", ui-monospace, monospace': FONT_STACKS[2].value,
+  'Consolas, ui-monospace, monospace': FONT_STACKS[3].value,
+  '"Courier New", monospace': FONT_STACKS[4].value,
+  '"Lucida Console", ui-monospace, monospace': FONT_STACKS[5].value,
 }
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
@@ -283,7 +355,7 @@ const defaults: TerminalSettings = {
   bellSound: false,
   remoteNotifications: true,
   clipboardWriteFromRemote: true,
-  fontFamily: 'ui-monospace, Consolas, monospace',
+  fontFamily: FONT_STACKS[0].value,
   fontSize: 14,
   // 16 MB, not the smallest tier: it estimates ~10,100 rows at 80 columns,
   // which is what the previous default (10,000 rows) meant to deliver. A new
@@ -303,6 +375,7 @@ const defaults: TerminalSettings = {
   backgroundOpacity: 1,
   vibrancyMode: 'off',
   textBlending: 'native',
+  ligatures: false,
 }
 
 /**
@@ -402,6 +475,9 @@ export function loadSettings(): TerminalSettings {
     if (!TEXT_BLENDINGS.includes(merged.textBlending)) {
       merged.textBlending = defaults.textBlending
     }
+    const migrated = FONT_STACK_MIGRATIONS[merged.fontFamily]
+    if (migrated !== undefined) merged.fontFamily = migrated
+    if (typeof merged.ligatures !== 'boolean') merged.ligatures = defaults.ligatures
     delete merged.scrollback
     return merged
   } catch {

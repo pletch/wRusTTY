@@ -274,3 +274,46 @@ describe('glyphs wider than their slot', () => {
     expect(ctxStub.fillText.mock.calls[0][1]).toBe(8)
   })
 })
+
+describe('shaped runs', () => {
+  function measuringAt(width: number) {
+    return vi.fn(() => ({ width, fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4 }))
+  }
+
+  it('takes a slot as many cells wide as the run', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    const rect = atlas.getRunGlyph('===', 0, 3)!
+    expect(rect.width).toBe(24)
+  })
+
+  it('is a cache hit on the same run, and a miss on a different style', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    ctxStub.fillText.mockClear()
+    const a = atlas.getRunGlyph('=>', 0, 2)
+    const b = atlas.getRunGlyph('=>', 0, 2)
+    expect(a).toBe(b)
+    expect(ctxStub.fillText).toHaveBeenCalledTimes(1)
+    expect(atlas.getRunGlyph('=>', GLYPH_BOLD, 2)).not.toBe(a)
+  })
+
+  it('fits the run to its slot in both directions, not only when it overruns', () => {
+    // A monospace advance rounds to the cell independently per column, so over
+    // three columns the font's own ink can come up short of the slot as easily
+    // as over it; either way the slices have to land on the cells.
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 8, 16)
+    ctxStub.measureText = measuringAt(20)
+    atlas.getRunGlyph('===', 0, 3)
+    expect(ctxStub.scale).toHaveBeenCalledWith(24 / 20, 1)
+  })
+
+  it('declines once the run cache is full rather than crowding out the atlas', () => {
+    const atlas = new GlyphAtlas(makeGlStub(), 'monospace', 14, 1, 1)
+    // Distinct two-cell runs, more than the cap allows.
+    let refused = 0
+    for (let i = 0; i < 600; i++) {
+      const text = String.fromCharCode(0x21 + (i % 90), 0x21 + ((i / 90) | 0))
+      if (atlas.getRunGlyph(text, 0, 2) === null) refused++
+    }
+    expect(refused).toBeGreaterThan(0)
+  })
+})

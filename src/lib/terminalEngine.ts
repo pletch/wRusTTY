@@ -122,6 +122,12 @@ export interface TerminalEngine {
    * renderer and has no equivalent knob to hand it to.
    */
   setTextBlending?(mode: TextBlending): void
+  /**
+   * Whether operator runs are shaped together so ligatures can form. Optional
+   * for the same reason as the blend mode above: it names a step in *this*
+   * renderer's glyph path, and the xterm engine has its own.
+   */
+  setLigatures?(on: boolean): void
   
   rebuildWebglRenderer(): void
 

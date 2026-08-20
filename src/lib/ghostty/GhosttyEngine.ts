@@ -303,6 +303,7 @@ export class GhosttyEngine implements TerminalEngine {
   // thrown away and rebuilt on a font change, and a fresh one starts on the
   // native path — the same hazard the theme has.
   private _textBlending: TextBlending = 'native'
+  private _ligatures = false
   private _themeName: string | null = null
   private _opacity = 1
   private _viewportOffset = 0
@@ -2135,6 +2136,22 @@ export class GhosttyEngine implements TerminalEngine {
 
   private applyTextBlendingToRenderer(): void {
     this.renderer?.setTextBlending(BLEND_MODES[this._textBlending])
+    // Carried alongside it because both are renderer state that a rebuild
+    // resets, and both are pushed from the same three places.
+    this.renderer?.setLigatures(this._ligatures)
+  }
+
+  /**
+   * Whether to shape runs of operators together. Like the blend mode, this is
+   * a property of how cells are drawn rather than of what the core resolved,
+   * so it applies to everything on screen at once with no half-updated state
+   * — the atlas slots already taken stay valid either way, since a run slot is
+   * only ever reached through a run.
+   */
+  setLigatures(on: boolean): void {
+    this._ligatures = on
+    this.renderer?.setLigatures(on)
+    this.needsRedraw = true
   }
 
   setFont(fontFamily: string, fontSize: number): void {

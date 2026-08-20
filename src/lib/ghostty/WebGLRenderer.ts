@@ -12,6 +12,7 @@ import {
   GLYPH_UL_SHIFT,
   type GlyphRect,
 } from './GlyphAtlas'
+import { computeRuns, type RunScratch } from './ligatureRuns'
 import {
   parseCellInto,
   emptyCell,
@@ -268,6 +269,15 @@ export class WebGLRenderer {
   // every font change — and both start on the shader's own defaults. Same
   // reason the engine re-applies the theme in those paths.
   private blendMode = BLEND_NATIVE
+  /**
+   * Whether to shape runs of operators as one string, which is what makes a
+   * ligature-carrying face actually ligate. Off by default: it costs atlas
+   * slots and only pays for itself on a font that has the substitutions, so
+   * it is the user's call rather than something a default install absorbs.
+   */
+  private ligatures = false
+  /** Per-row run bookkeeping, allocated with the grid. See `computeRuns`. */
+  private runs: RunScratch | null = null
 
   // As measured, before display-scale quantisation. Kept so a scale change
   // re-quantises from the measurement rather than from an already-rounded value.
@@ -647,6 +657,15 @@ export class WebGLRenderer {
     this.gl.uniform1i(this.uBlendMode, mode)
   }
 
+  /**
+   * Turns run shaping on or off. Nothing is cached across the change beyond
+   * the atlas slots already taken, which stay valid — a run slot is only ever
+   * reached through a run, so switching off simply stops asking for them.
+   */
+  setLigatures(on: boolean) {
+    this.ligatures = on
+  }
+
   setCursorColor(r: number, g: number, b: number) {
     this.cursorR = r
     this.cursorG = g
@@ -808,6 +827,21 @@ export class WebGLRenderer {
     const cursor = this.cursor && viewportOffset === 0 ? this.cursor : null
     this.sawBlinkingCell = false
 
+    // Grown with the grid rather than with the pane's lifetime: `cols` only
+    // moves on a resize, and every one of these is overwritten per row before
+    // it is read.
+    if (this.ligatures && (this.runs === null || this.runs.head.length < cols)) {
+      this.runs = {
+        head: new Int32Array(cols),
+        span: new Int32Array(cols),
+        cp: new Int32Array(cols),
+        brk: new Uint8Array(cols),
+        linkState: new Uint8Array(cols),
+        cell: emptyCell(),
+      }
+    }
+    const runs = this.runs
+
     let outIdx = 0
 
     for (let r = 0; r < rows; r++) {
@@ -840,6 +874,50 @@ export class WebGLRenderer {
       const rowLink = this.linkHighlight?.find((s) => s.row === absRow) ?? null
       const rowLinks = this.linkRanges?.filter((s) => s.row === absRow) ?? null
       const rowHints = this.hintLabels?.filter((h) => h.row === absRow) ?? null
+
+      // Ligature runs for this row. The two scratch rows are filled first
+      // because `computeRuns` reads them: `rowBreak` for the cells whose
+      // contents get replaced outright, `rowLinkState` for the underline this
+      // loop adds from outside the cell's own flags.
+      let runsThisRow = false
+      if (this.ligatures && rowValid && runs !== null) {
+        runs.brk.fill(0, 0, cols)
+        runs.linkState.fill(0, 0, cols)
+        if (cursor !== null && cursor.row === r && cursor.col < cols) {
+          // The cursor's own cell leaves the run, so what sits under a block
+          // cursor is the character you typed rather than a slice of the
+          // ligature it formed. It is what other terminals do, and it reuses
+          // the run breaking already needed for everything else.
+          runs.brk[cursor.col] = 1
+        }
+        if (rowHints !== null) {
+          for (const hint of rowHints) {
+            for (let i = 0; i < hint.text.length; i++) {
+              const at = hint.col + i
+              if (at >= 0 && at < cols) runs.brk[at] = 1
+            }
+          }
+        }
+        if (rowLinks !== null) {
+          for (const s of rowLinks) {
+            for (let i = Math.max(0, s.from); i <= Math.min(cols - 1, s.to); i++) {
+              runs.linkState[i] = 2
+            }
+          }
+        }
+        if (rowLink !== null) {
+          for (let i = Math.max(0, rowLink.from); i <= Math.min(cols - 1, rowLink.to); i++) {
+            runs.linkState[i] = 1
+          }
+        }
+        const base = isScrollback ? 0 : activeRow * wasmCols * CELL_BYTES
+        computeRuns(isScrollback ? lineView! : viewportView, base, wasmCols, cols, runs)
+        runsThisRow = true
+      }
+      /** The run in progress, and how far through its cells this row is. */
+      let runRect: GlyphRect | null = null
+      let runCells = 0
+      let runIndex = 0
 
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
@@ -957,11 +1035,42 @@ export class WebGLRenderer {
           if (attrs2 & CELL2_OVERLINE) style |= GLYPH_OVERLINE
           if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
 
+          // The head of a ligature run shapes the whole run into one slot; the
+          // cells after it draw their own slice of what came back. Asked for
+          // here rather than in the row pre-pass because `style` is settled by
+          // the lines above, and the run is keyed on it.
+          if (runsThisRow && runs !== null && runs.head[c] === c) {
+            const cells = runs.span[c]
+            let text = ''
+            for (let i = 0; i < cells; i++) text += String.fromCharCode(runs.cp[c + i])
+            const shaped = this.atlas.getRunGlyph(text, style, cells)
+            // Null once the run cache is full: the cells then take the
+            // ordinary per-codepoint path below, which is what they did before
+            // runs existed.
+            if (shaped !== null) {
+              runRect = shaped
+              runCells = cells
+              runIndex = 0
+            }
+          }
+
           // A cell whose character carries combining marks or emoji joiners has
           // to be rasterized from the whole cluster; the cell's own codepoint is
           // only the first of them.
+          const inRun = runRect !== null
           let rect
-          if (graphemeLen > 0 && graphemeView) {
+          if (inRun && runRect !== null) {
+            // One quad per column still, sampling its own slice of the run's
+            // raster — the same split the wide-character path makes at the
+            // midpoint, generalized from two cells to N.
+            const slice = (runRect.u1 - runRect.u0) / runCells
+            u0 = runRect.u0 + slice * runIndex
+            u1 = u0 + slice
+            v0 = runRect.v0
+            v1 = runRect.v1
+            if (++runIndex >= runCells) runRect = null
+            pendingWide = null
+          } else if (graphemeLen > 0 && graphemeView) {
             const n = isScrollback
               ? wasm.exports.ghostty_terminal_get_scrollback_grapheme(termPtr, absRow, c, graphemePtr, GRAPHEME_CAP)
               : wasm.exports.ghostty_render_state_get_grapheme(termPtr, activeRow, c, graphemePtr, GRAPHEME_CAP)
@@ -973,11 +1082,13 @@ export class WebGLRenderer {
               rect = this.atlas.getClusterGlyph(text, style)
             }
           }
-          if (!rect) rect = this.atlas.getGlyph(codepoint, style)
-          v0 = rect.v0; v1 = rect.v1
-          u0 = rect.u0
-          u1 = wide ? (rect.u0 + rect.u1) / 2 : rect.u1
-          pendingWide = wide ? rect : null
+          if (!inRun) {
+            if (!rect) rect = this.atlas.getGlyph(codepoint, style)
+            v0 = rect.v0; v1 = rect.v1
+            u0 = rect.u0
+            u1 = wide ? (rect.u0 + rect.u1) / 2 : rect.u1
+            pendingWide = wide ? rect : null
+          }
         } else {
           pendingWide = null
         }

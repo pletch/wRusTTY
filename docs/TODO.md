@@ -42,6 +42,47 @@ Raised while reorganising settings into a dialog.
 - **Custom theme colours.** Presets only, no import of an existing scheme.
 - Lower still: selection word separators, scroll sensitivity, rebindable keys.
 
+## Ligatures: shipped, off by default
+
+Recorded because the shape of the solution is not obvious from the code, and
+because the reason it is *off* is a judgement rather than an omission.
+
+The atlas used to rasterize **one cell at a time** — a codepoint keyed by
+`codepoint * GLYPH_STYLE_COUNT + style`, or a grapheme cluster keyed by
+`style:text`. Both reached the same `fillText`, and Canvas2D applies `calt`
+only within a single call, so `=` and `>` went to two different calls and the
+substitution had no input to fire on. Nothing was disabling ligatures; they had
+no opportunity to happen.
+
+`GlyphAtlas.getRunGlyph` now rasterizes a run of N same-styled cells as one
+string into an N-cell slot, and the renderer **slices that raster at cell
+boundaries** so each cell samples its own sub-rect. The slicing is the part
+worth writing down: it is what keeps the one-quad-per-cell invariant that the
+baked underline, the unfocused cursor outline and the DECSCUSR shapes all rest
+on. Drawing the run as one wide quad instead is the obvious shortcut and
+reopens three shipped decisions.
+
+**Where the cost actually landed.** Not in the shaping — Canvas2D does that.
+Two places instead:
+
+- The atlas key stops being a codepoint and becomes run text, so the cache
+  needs a bound it never needed. `RUN_CACHE_CAP` is that bound, and the
+  alphabet in `ligatureRuns.ts` is what keeps a path or a word from ever
+  reaching it. Past the cap `getRunGlyph` declines and the cells fall back to
+  drawing one at a time.
+- Every partial-cell case has to break the run. `computeRuns` breaks on the
+  cursor's own cell (which is what other terminals do), on hint labels, on link
+  state, and on any change of flags, second attribute byte or resolved colour.
+  Selection and search highlighting deliberately do *not* break: those only
+  tint a background, and each column carries its own in the instance data.
+
+**Off by default**, and not tied to the font. It costs atlas slots whether or
+not the resolved face has the substitutions, and the platform default
+(`ui-monospace`, Consolas) has none — so a default install would pay for
+nothing. `Cascadia Code` is offered in the picker again now that choosing it
+does something; it and Cascadia Mono differ only in ligatures, which is why
+offering both used to be a choice that did nothing.
+
 ## Autocomplete: what is left is preference, not unfinished work
 
 All six phases in `docs/AUTOCOMPLETE_PLAN.md` shipped. Recorded here so the

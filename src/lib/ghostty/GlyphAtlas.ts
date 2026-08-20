@@ -45,6 +45,22 @@ export const GLYPH_UL_MASK = 0x07 << GLYPH_UL_SHIFT
 export const GLYPH_STYLE_COUNT = 1 << 9
 
 /**
+ * Longest run `getRunGlyph` will shape, in cells. Three covers what the
+ * ligature-forming fonts actually substitute — `===`, `!==`, `<=>`, `...` —
+ * and every cell of it is atlas the single-codepoint cache is not getting.
+ */
+export const MAX_RUN_CELLS = 3
+
+/**
+ * How many distinct runs may hold slots before the atlas stops taking new
+ * ones. Unlike a codepoint, a run's key is arbitrary text, so this is the one
+ * cache here whose key space isn't bounded by the character repertoire; past
+ * the cap `getRunGlyph` declines and the caller falls back to drawing the
+ * cells one at a time, which is what it did before runs existed.
+ */
+const RUN_CACHE_CAP = 512
+
+/**
  * The hollow rectangle an unfocused pane draws instead of a filled block. It is
  * a glyph rather than geometry for the same reason the underline is: the
  * renderer draws exactly one quad per cell, and a shape that fits inside a cell
@@ -76,6 +92,8 @@ export class GlyphAtlas {
   private cache = new Map<number, GlyphRect>()
   /** Grapheme clusters, keyed by `style:text`. */
   private clusterCache = new Map<string, GlyphRect>()
+  /** Shaped runs, keyed by `style:cells:text`. See `getRunGlyph`. */
+  private runCache = new Map<string, GlyphRect>()
 
   private atlasWidth = 1024
   private atlasHeight = 1024
@@ -189,6 +207,30 @@ export class GlyphAtlas {
   }
 
   /**
+   * A run of `cells` same-styled columns, rasterized as one string into a slot
+   * that wide — which is what makes ligatures happen. Canvas 2D `fillText`
+   * runs the browser's full shaping stack, so `calt` fires as soon as the
+   * substitution has both of its inputs in the same call; drawing one cell at
+   * a time is the only reason it never did.
+   *
+   * The renderer slices the returned rect at cell boundaries and emits one
+   * quad per column, exactly as the two-cell wide path already does. Handing
+   * back a single quad spanning the run would be less code and would reopen
+   * every decision that rests on one-quad-per-cell: the baked underline, the
+   * unfocused cursor outline, the DECSCUSR shapes.
+   *
+   * Returns null once `RUN_CACHE_CAP` distinct runs are held, so the caller
+   * can fall back rather than fill the atlas with them.
+   */
+  getRunGlyph(text: string, style: number, cells: number): GlyphRect | null {
+    const key = `${style}:${cells}:${text}`
+    const hit = this.runCache.get(key)
+    if (hit) return hit
+    if (this.runCache.size >= RUN_CACHE_CAP) return null
+    return this.rasterize(text, style, (r) => this.runCache.set(key, r), cells)
+  }
+
+  /**
    * One underline in the style SGR asked for. Everything is drawn as filled
    * rects on whole pixels rather than stroked paths, for the same reason the
    * cursor outline is: a stroke straddles its path and comes out half-covered
@@ -242,11 +284,17 @@ export class GlyphAtlas {
     }
   }
 
-  private rasterize(text: string, style: number, remember: (r: GlyphRect) => void): GlyphRect {
+  private rasterize(
+    text: string,
+    style: number,
+    remember: (r: GlyphRect) => void,
+    cells = 1,
+  ): GlyphRect {
 
     // A wide glyph is rasterized across a two-cell slot and later drawn as two
     // half-UV quads, so the whole character exists in the atlas exactly once.
-    const slotWidth = style & GLYPH_WIDE ? this.cellWidth * 2 : this.cellWidth
+    // A shaped run is the same idea at `cells` wide.
+    const slotWidth = (style & GLYPH_WIDE ? 2 : cells) * this.cellWidth
 
     if (this.currentX + slotWidth > this.atlasWidth) {
       this.currentX = 0
@@ -303,7 +351,11 @@ export class GlyphAtlas {
       // session. Scaling it to fit keeps it legible instead, which is what the
       // GLYPH_WIDE slot already does for the wide characters the core flags.
       const inkWidth = this.ctx.measureText(text).width
-      if (inkWidth > slotWidth) {
+      // A run is fitted in both directions, not just condensed. Its ink is the
+      // font's own advances for `cells` characters, and the cell is a rounded
+      // measurement of one — over three columns that difference accumulates
+      // into a visible drift against the cells the slices are drawn into.
+      if (inkWidth > 0 && (cells > 1 ? inkWidth !== slotWidth : inkWidth > slotWidth)) {
         this.ctx.save()
         this.ctx.translate(x, y + this.baseline)
         this.ctx.scale(slotWidth / inkWidth, 1)

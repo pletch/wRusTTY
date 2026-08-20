@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings, CursorStyleSetting } from '../lib/settings'
-import { SCROLLBACK_FOOTPRINT_TIERS_MB } from '../lib/settings'
+import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS } from '../lib/settings'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { PRESET_THEMES } from '../lib/theme'
 import { APP_VERSION } from '../lib/version'
@@ -72,20 +72,64 @@ type SectionId = (typeof SECTIONS)[number]['id']
 const selectClass =
   'rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
-/** Offered as a list rather than a free-text box. The engine measures one
- * glyph and assumes the rest match, so a proportional font renders with visibly
- * wrong column alignment — and a typo'd family name silently falls through
- * to whatever the fallback is, which looks like the setting doing nothing.
- * Each entry ends in a generic fallback so a machine missing the named font
- * still lands on something monospaced. */
-const FONT_STACKS = [
-  { label: 'System default', value: 'ui-monospace, Consolas, monospace' },
-  { label: 'Cascadia Mono', value: '"Cascadia Mono", ui-monospace, monospace' },
-  { label: 'Cascadia Code', value: '"Cascadia Code", ui-monospace, monospace' },
-  { label: 'Consolas', value: 'Consolas, ui-monospace, monospace' },
-  { label: 'Courier New', value: '"Courier New", monospace' },
-  { label: 'Lucida Console', value: '"Lucida Console", ui-monospace, monospace' },
-]
+/** `FONT_STACKS` with the current setting added if it names something the list
+ * does not, so a stored family is shown rather than leaving the select blank —
+ * a controlled select whose value matches no option displays nothing, which
+ * reads as the font setting having been lost. Anything a future edit to the
+ * list drops arrives here, as does a stack carried over from a version that
+ * offered a different set. */
+function fontOptions(current: string) {
+  if (FONT_STACKS.some((f) => f.value === current)) return FONT_STACKS
+  return [...FONT_STACKS, { label: familyName(current), value: current }]
+}
+
+/** The first family in a CSS list, unquoted — what to call a stack in prose. */
+function familyName(stack: string): string {
+  const named = stack.match(/"([^"]+)"|^([^,]+)/)
+  return (named?.[1] ?? named?.[2] ?? stack).trim()
+}
+
+/** Families the browser always answers yes for, because it resolves them
+ *  itself rather than looking for an installed face by that name. Asking
+ *  about one tells you nothing, so the report below stops before it. */
+const GENERIC_FAMILIES = new Set([
+  'monospace', 'serif', 'sans-serif', 'cursive', 'fantasy', 'system-ui',
+  'ui-monospace', 'ui-serif', 'ui-sans-serif', 'ui-rounded', 'math', 'emoji', 'fangsong',
+])
+
+/**
+ * Which face in a stack the browser will actually use, and which named ones
+ * ahead of it are not installed.
+ *
+ * The stack is the only control over fallback this renderer has — Canvas 2D
+ * picks per glyph and never says what it picked — so without this a machine
+ * missing the named font renders in something else forever with no indication,
+ * which reads as the setting doing nothing. `document.fonts.check` answers for
+ * the whole webview and is available in WebView2.
+ *
+ * Returns null if nothing can be determined, which is the honest answer when
+ * the API is missing rather than a guess dressed up as a report.
+ */
+function resolveFace(stack: string): { using: string; missing: string[] } | null {
+  if (typeof document === 'undefined' || !document.fonts?.check) return null
+  const families = stack.split(',').map((f) => f.trim()).filter(Boolean)
+  const missing: string[] = []
+  for (const family of families) {
+    const bare = family.replace(/^["']|["']$/g, '')
+    if (GENERIC_FAMILIES.has(bare.toLowerCase())) return { using: bare, missing }
+    let present = false
+    try {
+      // Quoted so a family with spaces parses as one name rather than as an
+      // invalid shorthand, which `check` reports by throwing.
+      present = document.fonts.check(`16px "${bare.replace(/"/g, '')}"`)
+    } catch {
+      return null
+    }
+    if (present) return { using: bare, missing }
+    missing.push(bare)
+  }
+  return null
+}
 
 /** Width the scrollback estimates are quoted against when no pane has fitted
  *  yet — Settings can be opened before any connection exists. */
@@ -147,6 +191,25 @@ function Toggle({
         <span className="mt-0.5 block leading-relaxed text-white/40">{hint}</span>
       </span>
     </label>
+  )
+}
+
+/** What the font stack above actually resolved to on this machine. Rendered as
+ * part of the setting rather than left to be discovered: the stack is a list of
+ * hopes, and which of them came true is the single most useful thing to know
+ * when the terminal is not drawing what you picked. */
+function FontResolution({ stack }: { stack: string }) {
+  const resolved = resolveFace(stack)
+  if (!resolved) return null
+  const wanted = familyName(stack)
+  if (resolved.missing.length === 0) {
+    return <p className="px-0.5 leading-relaxed text-white/30">Rendering in {resolved.using}.</p>
+  }
+  return (
+    <p className="px-0.5 leading-relaxed text-amber-300/50">
+      {resolved.missing.length === 1 ? `${wanted} is` : `${resolved.missing.join(', ')} are`} not
+      installed — falling back to {resolved.using}.
+    </p>
   )
 }
 
@@ -287,13 +350,14 @@ export function SettingsDialog({
                             value={settings.fontFamily}
                             onChange={(e) => onChange({ ...settings, fontFamily: e.target.value })}
                           >
-                            {FONT_STACKS.map((f) => (
+                            {fontOptions(settings.fontFamily).map((f) => (
                               <option key={f.value} value={f.value}>
                                 {f.label}
                               </option>
                             ))}
                           </select>
                         </label>
+                        <FontResolution stack={settings.fontFamily} />
                         <label className="flex items-center justify-between gap-3 text-white/85">
                           <span>Font size</span>
                           <span className="flex items-center gap-2">
@@ -365,6 +429,17 @@ export function SettingsDialog({
                             }
                           />
                         </label>
+                        <label className="flex items-center justify-between gap-3 text-white/85">
+                          <span>Ligatures</span>
+                          <input
+                            type="checkbox"
+                            className="accent-sky-400"
+                            checked={settings.ligatures}
+                            onChange={(e) =>
+                              onChange({ ...settings, ligatures: e.target.checked })
+                            }
+                          />
+                        </label>
                         <p className="leading-relaxed text-white/30">
                           Font changes apply to open sessions immediately. Scrollback is set
                           as memory per pane because memory is what's actually reserved; the
@@ -372,7 +447,11 @@ export function SettingsDialog({
                           rows, so a wider pane or long lines reach the same limit sooner. It
                           applies to panes opened afterwards. The cursor setting is a starting
                           point — a program that picks its own cursor, as vim and many TUIs
-                          do, overrides it.
+                          do, overrides it. Ligatures join runs of operators like{' '}
+                          <code className="text-white/50">=&gt;</code> into one glyph, and need
+                          a font that has them — Cascadia Code above does, Cascadia Mono and
+                          Consolas do not. The cursor's own cell always shows the plain
+                          character.
                         </p>
                       </div>
                       <Toggle
