@@ -6,6 +6,7 @@ import {
   formatCodepoint,
   parseCodepoint,
   plainSelection,
+  resolveRangeOverlaps,
   sameRanges,
 } from './fontStack'
 import type { FontSettings } from './fontStack'
@@ -241,6 +242,86 @@ describe('familyForCodepoint', () => {
 
   it('returns null for an empty table', () => {
     expect(familyForCodepoint([], 0x4e2d)).toBeNull()
+  })
+})
+
+describe('resolveRangeOverlaps', () => {
+  it('sorts a table that does not overlap and ignores nothing', () => {
+    const { kept, ignored } = resolveRangeOverlaps([
+      { lo: 0x4e00, hi: 0x9fff, family: 'Sarasa' },
+      { lo: 0x2500, hi: 0x257f, family: 'Nerd' },
+    ])
+    expect(kept.map((r) => r.lo)).toEqual([0x2500, 0x4e00])
+    expect(ignored).toEqual([])
+  })
+
+  it('treats ranges that merely touch as separate, since the ends are inclusive', () => {
+    const { kept, ignored } = resolveRangeOverlaps([
+      { lo: 0x10, hi: 0x1f, family: 'A' },
+      { lo: 0x20, hi: 0x2f, family: 'B' },
+    ])
+    expect(kept).toHaveLength(2)
+    expect(ignored).toEqual([])
+  })
+
+  it('ignores the later range whole rather than clipping it', () => {
+    const { kept, ignored } = resolveRangeOverlaps([
+      { lo: 0x100, hi: 0x200, family: 'First' },
+      { lo: 0x200, hi: 0x300, family: 'Overlapping by one' },
+    ])
+    // Clipping would leave a range covering less than it says, which is the
+    // harder thing to notice.
+    expect(kept).toEqual([{ lo: 0x100, hi: 0x200, family: 'First' }])
+    expect(ignored).toEqual([1])
+  })
+
+  it('keeps the wider of two ranges that start together, whichever was typed first', () => {
+    const narrowFirst = resolveRangeOverlaps([
+      { lo: 0x100, hi: 0x150, family: 'Narrow' },
+      { lo: 0x100, hi: 0x300, family: 'Wide' },
+    ])
+    expect(narrowFirst.kept.map((r) => r.family)).toEqual(['Wide'])
+    expect(narrowFirst.ignored).toEqual([0])
+
+    const wideFirst = resolveRangeOverlaps([
+      { lo: 0x100, hi: 0x300, family: 'Wide' },
+      { lo: 0x100, hi: 0x150, family: 'Narrow' },
+    ])
+    expect(wideFirst.kept.map((r) => r.family)).toEqual(['Wide'])
+    expect(wideFirst.ignored).toEqual([1])
+  })
+
+  it('ignores a range nested wholly inside an earlier one', () => {
+    const { kept, ignored } = resolveRangeOverlaps([
+      { lo: 0x100, hi: 0x900, family: 'Outer' },
+      { lo: 0x200, hi: 0x300, family: 'Inner' },
+    ])
+    expect(kept.map((r) => r.family)).toEqual(['Outer'])
+    expect(ignored).toEqual([1])
+  })
+
+  it('reports every ignored entry by its position in the table it was given', () => {
+    const { kept, ignored } = resolveRangeOverlaps([
+      { lo: 0x300, hi: 0x400, family: 'C' },
+      { lo: 0x100, hi: 0x500, family: 'A' },
+      { lo: 0x600, hi: 0x700, family: 'D' },
+      { lo: 0x450, hi: 0x460, family: 'B' },
+    ])
+    expect(kept.map((r) => r.family)).toEqual(['A', 'D'])
+    expect([...ignored].sort()).toEqual([0, 3])
+  })
+
+  it('leaves a table the atlas can binary-search, which is the whole point', () => {
+    const { kept } = resolveRangeOverlaps([
+      { lo: 0x100, hi: 0x900, family: 'Outer' },
+      { lo: 0x200, hi: 0x300, family: 'Inner' },
+      { lo: 0x950, hi: 0x960, family: 'Later' },
+    ])
+    // Every codepoint resolves to exactly one family, and to the same one
+    // whatever else is in the table.
+    expect(familyForCodepoint(kept, 0x250)).toBe('Outer')
+    expect(familyForCodepoint(kept, 0x955)).toBe('Later')
+    expect(familyForCodepoint(kept, 0x930)).toBeNull()
   })
 })
 

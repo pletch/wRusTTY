@@ -20,7 +20,12 @@ import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import type { TerminalSettings, CursorStyleSetting, FontRange } from '../lib/settings'
 import { SCROLLBACK_FOOTPRINT_TIERS_MB, FONT_STACKS } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
-import { formatCodepoint, parseCodepoint, sameRanges } from '../lib/fontStack'
+import {
+  formatCodepoint,
+  parseCodepoint,
+  resolveRangeOverlaps,
+  sameRanges,
+} from '../lib/fontStack'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
 import { PRESET_THEMES } from '../lib/theme'
 import { APP_VERSION } from '../lib/version'
@@ -132,24 +137,34 @@ const GENERIC_FAMILIES = new Set([
  * the API is missing rather than a guess dressed up as a report.
  */
 function resolveFace(stack: string): { using: string; missing: string[] } | null {
-  if (typeof document === 'undefined' || !document.fonts?.check) return null
   const families = stack.split(',').map((f) => f.trim()).filter(Boolean)
   const missing: string[] = []
   for (const family of families) {
     const bare = family.replace(/^["']|["']$/g, '')
     if (GENERIC_FAMILIES.has(bare.toLowerCase())) return { using: bare, missing }
-    let present = false
-    try {
-      // Quoted so a family with spaces parses as one name rather than as an
-      // invalid shorthand, which `check` reports by throwing.
-      present = document.fonts.check(`16px "${bare.replace(/"/g, '')}"`)
-    } catch {
-      return null
-    }
+    const present = hasFamily(bare)
+    // Nothing can be determined, so nothing is claimed — see below.
+    if (present === null) return null
     if (present) return { using: bare, missing }
     missing.push(bare)
   }
   return null
+}
+
+/**
+ * Whether this machine has a face by this name, or null when the webview
+ * cannot say — the API being missing is not the same answer as the font being
+ * missing, and only one of the two is worth telling someone about.
+ */
+function hasFamily(bare: string): boolean | null {
+  if (typeof document === 'undefined' || !document.fonts?.check) return null
+  try {
+    // Quoted so a family with spaces parses as one name rather than as an
+    // invalid shorthand, which `check` reports by throwing.
+    return document.fonts.check(`16px "${bare.replace(/"/g, '')}"`)
+  } catch {
+    return null
+  }
 }
 
 /** Width the scrollback estimates are quoted against when no pane has fitted
@@ -334,21 +349,35 @@ function FontRangeTable({
       family: r.family,
     })),
   )
+  /** Rows that parse but are not applied, because an earlier range already
+   *  claims part of what they cover. Empty to start with: what seeds the table
+   *  came through the same rule on the way out of storage. */
+  const [overlapping, setOverlapping] = useState<ReadonlySet<number>>(() => new Set())
 
   function commit(next: typeof rows) {
     setRows(next)
     const valid: FontRange[] = []
-    for (const row of next) {
+    // Which row each valid entry came from, so an ignored one can be pointed
+    // at in the table rather than only counted.
+    const sourceRow: number[] = []
+    for (let i = 0; i < next.length; i++) {
+      const row = next[i]
       const lo = parseCodepoint(row.lo)
       const hi = parseCodepoint(row.hi)
       if (lo === null || hi === null || hi < lo || row.family === '') continue
       valid.push({ lo, hi, family: row.family })
+      sourceRow.push(i)
     }
+    // The same rule the loader applies, so what this table says is applied is
+    // what is applied — a dialog that showed a range the atlas would never
+    // consult would be worse than one that showed nothing.
+    const { kept, ignored } = resolveRangeOverlaps(valid)
+    setOverlapping(new Set(ignored.map((i) => sourceRow[i])))
     // Only when the applied table actually differs. Every keystroke lands
     // here, and handing back an equal-but-new array would still count as a
     // font change downstream -- which throws away the atlas and re-fits the
     // grid of every open pane, once per character typed.
-    if (!sameRanges(valid, ranges)) onChange(valid)
+    if (!sameRanges(kept, ranges)) onChange(kept)
   }
 
   function edit(index: number, patch: Partial<(typeof rows)[number]>) {
@@ -374,6 +403,8 @@ function FontRangeTable({
         // row is a row you just added, not a mistake you made.
         const bad = (text: string, cp: number | null) => text.trim() !== '' && cp === null
         const inverted = lo !== null && hi !== null && hi < lo
+        const ignored = overlapping.has(i)
+        const flagged = ignored ? 'border-amber-300/50' : ''
         return (
           <div key={i} className="flex items-center gap-1.5">
             <input
@@ -381,7 +412,7 @@ function FontRangeTable({
               spellCheck={false}
               placeholder="U+E000"
               aria-label="First codepoint"
-              className={`${fieldClass} ${bad(row.lo, lo) ? 'border-amber-300/50' : ''}`}
+              className={`${fieldClass} ${bad(row.lo, lo) ? 'border-amber-300/50' : flagged}`}
               value={row.lo}
               onChange={(e) => edit(i, { lo: e.target.value })}
             />
@@ -392,7 +423,7 @@ function FontRangeTable({
               placeholder="U+F8FF"
               aria-label="Last codepoint"
               className={`${fieldClass} ${
-                bad(row.hi, hi) || inverted ? 'border-amber-300/50' : ''
+                bad(row.hi, hi) || inverted ? 'border-amber-300/50' : flagged
               }`}
               value={row.hi}
               onChange={(e) => edit(i, { hi: e.target.value })}
@@ -415,7 +446,55 @@ function FontRangeTable({
           </div>
         )
       })}
+      {overlapping.size > 0 && (
+        <p className="px-0.5 leading-relaxed text-amber-300/50">
+          {overlapping.size === 1 ? 'A range overlaps' : 'Some ranges overlap'} another and{' '}
+          {overlapping.size === 1 ? 'is' : 'are'} ignored — where two ranges claim the same
+          character, only the one starting earlier applies.
+        </p>
+      )}
     </div>
+  )
+}
+
+/**
+ * The faces named above that this machine does not have.
+ *
+ * The same argument as `FontResolution`, carried to the slots that name one
+ * family rather than a stack: a missing face is not an error anywhere, it is
+ * text quietly rendering in something else. It is worse here, though. The body
+ * stack has fallbacks written into it and can say which one it landed on;
+ * these are a single family, so a name nothing answers to leaves the rasterizer
+ * on whatever it defaults to — not the body font, which is what anyone would
+ * assume happened.
+ *
+ * Ranges are checked alongside the styled slots because the range picker only
+ * offers installed families, so a missing one arrives from a settings file
+ * written on another machine — exactly the case nobody would think to check.
+ */
+function NamedFaceReport({
+  settings,
+}: {
+  settings: TerminalSettings
+}) {
+  const named = [
+    settings.fontFamilyBold,
+    settings.fontFamilyItalic,
+    settings.fontFamilyBoldItalic,
+    ...settings.fontRanges.map((r) => r.family),
+  ]
+    .filter((f) => f !== '')
+    .map(familyName)
+  // `false` only: null is the webview declining to answer, and a warning built
+  // on that would be a guess dressed up as a report.
+  const missing = [...new Set(named)].filter((f) => hasFamily(f) === false)
+  if (missing.length === 0) return null
+  return (
+    <p className="px-0.5 leading-relaxed text-amber-300/50">
+      {missing.join(', ')} {missing.length === 1 ? 'is' : 'are'} not installed — the text
+      pinned to {missing.length === 1 ? 'it' : 'them'} falls back to the webview's default
+      face rather than to your body font.
+    </p>
   )
 }
 
@@ -478,6 +557,7 @@ function AdvancedFontSettings({
           onChange={(fontRanges) => onChange({ ...settings, fontRanges })}
           families={families}
         />
+        <NamedFaceReport settings={settings} />
         <p className="leading-relaxed text-white/30">
           Leaving a style on the body font asks that font for the weight or slant, which is
           what it has always done. Naming a face instead is worth it for italic in

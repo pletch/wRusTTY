@@ -1,4 +1,5 @@
 import type { VibrancyMode } from './windowEffects'
+import { resolveRangeOverlaps } from './fontStack'
 
 export type CursorStyleSetting = 'block' | 'bar' | 'underline'
 
@@ -366,10 +367,12 @@ const FONT_STACK_MIGRATIONS: Record<string, string> = {
 }
 
 /**
- * Keeps only the entries that describe a real, non-empty range. A malformed
- * one is dropped rather than repaired: the atlas binary-searches these, so an
- * inverted or non-numeric range would not be a bad glyph, it would be a
- * lookup that silently never matches.
+ * Keeps only the entries that describe a real, non-empty range *and* can be
+ * looked up. A malformed one is dropped rather than repaired: the atlas
+ * binary-searches these, so an inverted or non-numeric range would not be a
+ * bad glyph, it would be a lookup that silently never matches. An entry
+ * overlapping one already kept is dropped for the same reason — see
+ * `resolveRangeOverlaps`.
  */
 function sanitizeRanges(value: unknown): FontRange[] {
   if (!Array.isArray(value)) return []
@@ -382,8 +385,9 @@ function sanitizeRanges(value: unknown): FontRange[] {
     if (family.trim() === '') continue
     out.push({ lo, hi, family })
   }
-  // Sorted here rather than at every lookup, so the atlas can binary-search.
-  return out.sort((a, b) => a.lo - b.lo)
+  // Sorted and disentangled here rather than at every lookup, so the atlas
+  // can binary-search.
+  return resolveRangeOverlaps(out).kept
 }
 
 const STORAGE_KEY = 'wrustty.terminal-settings'

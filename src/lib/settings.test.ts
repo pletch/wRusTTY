@@ -353,6 +353,39 @@ describe('the font settings a stored blob can carry', () => {
     expect(loadSettings().fontRanges).toEqual([{ lo: 0x20, hi: 0x30, family: 'Fine' }])
   })
 
+  // A stored table can overlap however it likes — it may have been written by
+  // hand, or by a version that did not check. What comes out has to be
+  // something the atlas can binary-search.
+  it('drop a range that overlaps one starting earlier', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        fontRanges: [
+          { lo: 0x2000, hi: 0x3000, family: 'Overlapping' },
+          { lo: 0x1000, hi: 0x2500, family: 'First' },
+          { lo: 0x4000, hi: 0x5000, family: 'Clear of both' },
+        ],
+      }),
+    )
+    expect(loadSettings().fontRanges).toEqual([
+      { lo: 0x1000, hi: 0x2500, family: 'First' },
+      { lo: 0x4000, hi: 0x5000, family: 'Clear of both' },
+    ])
+  })
+
+  it('keep ranges that only touch, since both ends are inclusive', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        fontRanges: [
+          { lo: 0x1000, hi: 0x1fff, family: 'A' },
+          { lo: 0x2000, hi: 0x2fff, family: 'B' },
+        ],
+      }),
+    )
+    expect(loadSettings().fontRanges).toHaveLength(2)
+  })
+
   it('drop a table that is not an array at all', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontRanges: { lo: 1, hi: 2 } }))
     expect(loadSettings().fontRanges).toEqual([])
