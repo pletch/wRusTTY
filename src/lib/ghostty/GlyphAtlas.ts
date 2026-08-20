@@ -110,8 +110,26 @@ const CURSOR_BAR_TEXT = String.fromCodePoint(GLYPH_CURSOR_BAR)
 const CURSOR_UNDERLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_UNDERLINE)
 
 export class GlyphAtlas {
+  /**
+   * One slot's worth of drawing surface, not a canvas the size of the atlas.
+   *
+   * Every glyph is rasterized at the origin here and read straight back out,
+   * so the only thing this has to be big enough for is the widest single slot
+   * -- a three-cell run. What the atlas *holds* lives in `mirror` below, one
+   * byte a texel instead of a canvas's four.
+   */
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
+  /**
+   * The coverage the texture holds, kept CPU-side because growing means
+   * reallocating the texture and the old texels have to come from somewhere.
+   *
+   * This used to be the canvas itself, which made it RGBA: four bytes a texel
+   * to mirror a single-channel texture, and 64MB of it once a pane of CJK had
+   * grown the atlas to 4096. Coverage is all that is ever read back out of it,
+   * so coverage is all it stores.
+   */
+  private mirror: Uint8Array
   private gl: WebGL2RenderingContext
   public texture: WebGLTexture
   /** The colour companion; see the constructor. A 1x1 placeholder until the
@@ -177,13 +195,13 @@ export class GlyphAtlas {
     // it, than on the left where it would shift the column.
     this.inset = Math.max(0, Math.floor(letterSpacing / 2))
 
+    // Wide enough for the widest slot anything asks for -- a shaped run, which
+    // is longer than the two cells a wide glyph takes -- and one cell tall.
     this.canvas = document.createElement('canvas')
-    this.canvas.width = this.atlasWidth
-    this.canvas.height = this.atlasHeight
+    this.canvas.width = Math.max(2, MAX_RUN_CELLS) * cellWidth
+    this.canvas.height = cellHeight
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true })!
-
-    this.ctx.fillStyle = 'rgba(0,0,0,0)'
-    this.ctx.fillRect(0, 0, this.atlasWidth, this.atlasHeight)
+    this.mirror = new Uint8Array(this.atlasWidth * this.atlasHeight)
 
     this.ctx.font = this.fontFor(0)
     this.ctx.fillStyle = 'white'
@@ -440,25 +458,15 @@ export class GlyphAtlas {
     const oldWidth = this.atlasWidth
     const oldHeight = this.atlasHeight
 
-    // Read the coverage out before touching anything: resizing a canvas resets
-    // it, and this is the only copy of what has been rasterized so far.
-    const rgba = this.ctx.getImageData(0, 0, oldWidth, oldHeight).data
-    const coverage = new Uint8Array(oldWidth * oldHeight)
-    for (let i = 0; i < coverage.length; i++) coverage[i] = rgba[i * 4 + 3]
-
-    // A fresh canvas rather than a resize of this one, so the old content can
-    // be blitted across in the same step. Context state does not survive
-    // either way, hence the re-establishment below.
-    const next = document.createElement('canvas')
-    next.width = size
-    next.height = size
-    const nextCtx = next.getContext('2d', { willReadFrequently: true })
-    if (!nextCtx) return false
-    nextCtx.drawImage(this.canvas, 0, 0)
-    this.canvas = next
-    this.ctx = nextCtx
-    this.ctx.fillStyle = 'white'
-    this.ctx.textBaseline = 'alphabetic'
+    // A wider mirror with the old rows copied into it. The stride changes, so
+    // this is a row-by-row copy rather than one -- and the scratch surface is
+    // not involved at all, which is what makes the whole thing this short:
+    // there is no canvas to recreate and no context state to re-establish.
+    const next = new Uint8Array(size * size)
+    for (let row = 0; row < oldHeight; row++) {
+      next.set(this.mirror.subarray(row * oldWidth, (row + 1) * oldWidth), row * size)
+    }
+    this.mirror = next
 
     this.atlasWidth = size
     this.atlasHeight = size
@@ -468,9 +476,8 @@ export class GlyphAtlas {
     // `.texture` every frame anyway, but keeping the identity means nothing
     // holding it can go stale.
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, size, size, 0, gl.RED, gl.UNSIGNED_BYTE, null)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, oldWidth, oldHeight, gl.RED, gl.UNSIGNED_BYTE, coverage)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, size, size, 0, gl.RED, gl.UNSIGNED_BYTE, next)
 
     // The right-hand half of every already-packed row is left unused — slots
     // are handed out strictly forward and nothing goes back to fill it. So a
@@ -545,7 +552,9 @@ export class GlyphAtlas {
         ? null
         : familyForCodepoint(this.fonts.ranges, codepoint)
     this.ctx.font = this.fontFor(style, pinned)
-    this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
+    // At the origin of the scratch surface. Where it *lands* is (x, y), which
+    // the upload and the mirror write below take care of.
+    this.ctx.clearRect(0, 0, slotWidth, this.cellHeight)
 
     // Box drawing, block elements and Powerline separators are geometry
     // against the cell rather than characters from a face; see boxDrawing.ts
@@ -553,23 +562,23 @@ export class GlyphAtlas {
     // kind of substitution and reads better grouped with them.
     const single = text.length <= 2 ? text.codePointAt(0) : undefined
     if (single !== undefined && isBoxGlyph(single)) {
-      drawBoxGlyph(this.ctx, single, x, y, slotWidth, this.cellHeight, this.lineThickness)
+      drawBoxGlyph(this.ctx, single, 0, 0, slotWidth, this.cellHeight, this.lineThickness)
     } else if (text === CURSOR_BAR_TEXT) {
       // A bar sits at the leading edge of the cell and is deliberately thicker
       // than a rule: at one pixel it disappears against text on a HiDPI pane.
-      this.ctx.fillRect(x, y, Math.max(1, Math.round(this.lineThickness * 2)), this.cellHeight)
+      this.ctx.fillRect(0, 0, Math.max(1, Math.round(this.lineThickness * 2)), this.cellHeight)
     } else if (text === CURSOR_UNDERLINE_TEXT) {
       const t = Math.max(1, Math.round(this.lineThickness * 2))
-      this.ctx.fillRect(x, y + this.cellHeight - t, slotWidth, t)
+      this.ctx.fillRect(0, this.cellHeight - t, slotWidth, t)
     } else if (text === CURSOR_OUTLINE_TEXT) {
       // Drawn as four edges rather than a stroked rect so the line lands on
       // whole pixels; a stroke straddles its path and comes out half-covered on
       // both sides of it.
       const t = this.lineThickness
-      this.ctx.fillRect(x, y, slotWidth, t)
-      this.ctx.fillRect(x, y + this.cellHeight - t, slotWidth, t)
-      this.ctx.fillRect(x, y, t, this.cellHeight)
-      this.ctx.fillRect(x + slotWidth - t, y, t, this.cellHeight)
+      this.ctx.fillRect(0, 0, slotWidth, t)
+      this.ctx.fillRect(0, this.cellHeight - t, slotWidth, t)
+      this.ctx.fillRect(0, 0, t, this.cellHeight)
+      this.ctx.fillRect(slotWidth - t, 0, t, this.cellHeight)
     } else {
       // Condensed to the slot when the face draws wider than the cell it was
       // measured for. `measureCell` sizes a cell from one glyph of the first
@@ -591,25 +600,25 @@ export class GlyphAtlas {
       // into a visible drift against the cells the slices are drawn into.
       if (inkWidth > 0 && (cells > 1 ? inkWidth !== drawWidth : inkWidth > drawWidth)) {
         this.ctx.save()
-        this.ctx.translate(x + this.inset, y + this.baseline)
+        this.ctx.translate(this.inset, this.baseline)
         this.ctx.scale(drawWidth / inkWidth, 1)
         this.ctx.fillText(text, 0, 0)
         this.ctx.restore()
       } else {
-        this.ctx.fillText(text, x + this.inset, y + this.baseline)
+        this.ctx.fillText(text, this.inset, this.baseline)
       }
     }
 
     if (style & GLYPH_UNDERLINE) {
       const uy = Math.min(this.cellHeight - this.lineThickness, this.baseline + this.lineThickness)
-      this.drawUnderline(x, y + uy, slotWidth, (style & GLYPH_UL_MASK) >> GLYPH_UL_SHIFT)
+      this.drawUnderline(0, uy, slotWidth, (style & GLYPH_UL_MASK) >> GLYPH_UL_SHIFT)
     }
     if (style & GLYPH_OVERLINE) {
-      this.ctx.fillRect(x, y, slotWidth, this.lineThickness)
+      this.ctx.fillRect(0, 0, slotWidth, this.lineThickness)
     }
     if (style & GLYPH_STRIKETHROUGH) {
       const sy = Math.max(0, Math.round(this.baseline - this.ascent * 0.3))
-      this.ctx.fillRect(x, y + sy, slotWidth, this.lineThickness)
+      this.ctx.fillRect(0, sy, slotWidth, this.lineThickness)
     }
 
     // Coverage lives in the alpha channel of the 2D canvas; the atlas stores
@@ -622,7 +631,7 @@ export class GlyphAtlas {
     // and what makes `fillStyle` inert for it. No codepoint table, no
     // presentation-selector rules, and no disagreement with whatever font the
     // machine actually resolved: it is a property of the pixels that came out.
-    const rgba = this.ctx.getImageData(x, y, slotWidth, this.cellHeight).data
+    const rgba = this.ctx.getImageData(0, 0, slotWidth, this.cellHeight).data
     const coverage = new Uint8Array(slotWidth * this.cellHeight)
     let colored = false
     for (let i = 0; i < coverage.length; i++) {
@@ -635,14 +644,22 @@ export class GlyphAtlas {
 
     const gl = this.gl
     if (colored) {
-      // The trial draw had to happen somewhere, and the coverage canvas is
-      // what the detection reads back from -- but the glyph does not live
-      // there. Hand the slot back rather than spend a coverage slot on it.
-      this.ctx.clearRect(x, y, slotWidth, this.cellHeight)
+      // Nothing of it has touched the coverage atlas: the draw happened on the
+      // scratch surface and the slot was never advanced past, so the next
+      // ordinary glyph simply takes it.
       const rect = this.packColor(rgba, slotWidth)
       remember(rect)
       return rect
     }
+    // Into the mirror at the slot it is going to, which has the atlas's stride
+    // rather than this glyph's.
+    for (let row = 0; row < this.cellHeight; row++) {
+      this.mirror.set(
+        coverage.subarray(row * slotWidth, (row + 1) * slotWidth),
+        (y + row) * this.atlasWidth + x,
+      )
+    }
+
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
     // Rows are one byte per texel and so rarely 4-aligned, which is the
     // default and would shear every upload whose width isn't a multiple of 4.

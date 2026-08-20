@@ -352,19 +352,19 @@ describe('weight', () => {
 
 describe('letter spacing', () => {
   it('draws the glyph centred in the widened cell rather than against its edge', () => {
-    // Cell 12 wide, 4 of which is spacing: 2 either side of the slot the
-    // glyph was given, which is not the origin — slot 0 is the blank.
+    // Cell 12 wide, 4 of which is spacing: 2 either side, measured from the
+    // origin of the one-slot scratch surface everything is drawn on.
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
     ctxStub.fillText.mockClear()
-    const rect = atlas.getGlyph(65)
-    expect(ctxStub.fillText).toHaveBeenCalledWith('A', rect.x + 2, expect.any(Number))
+    atlas.getGlyph(65)
+    expect(ctxStub.fillText).toHaveBeenCalledWith('A', 2, expect.any(Number))
   })
 
-  it('leaves the glyph at the slot edge when nothing was added', () => {
+  it('leaves the glyph at the edge when nothing was added', () => {
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     ctxStub.fillText.mockClear()
-    const rect = atlas.getGlyph(65)
-    expect(ctxStub.fillText).toHaveBeenCalledWith('A', rect.x, expect.any(Number))
+    atlas.getGlyph(65)
+    expect(ctxStub.fillText).toHaveBeenCalledWith('A', 0, expect.any(Number))
   })
 
   it('measures a glyph against the face\'s share of the cell, not the added space', () => {
@@ -387,13 +387,13 @@ describe('letter spacing', () => {
     // itself would leave a hairline gap down every column.
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
     ctxStub.fillRect.mockClear()
-    const rect = atlas.getGlyph(0x2500)
+    atlas.getGlyph(0x2500)
     // A rule is drawn as two arms from the centre, so what matters is where
     // the pair starts and ends rather than how wide either one is.
     const lefts = ctxStub.fillRect.mock.calls.map((c) => c[0] as number)
     const rights = ctxStub.fillRect.mock.calls.map((c) => (c[0] as number) + (c[2] as number))
-    expect(Math.min(...lefts)).toBe(rect.x)
-    expect(Math.max(...rights)).toBe(rect.x + 12)
+    expect(Math.min(...lefts)).toBe(0)
+    expect(Math.max(...rights)).toBe(12)
   })
 })
 
@@ -515,6 +515,44 @@ describe('colour glyphs', () => {
   })
 })
 
+describe('the scratch surface', () => {
+  it('is one slot big, not the size of the atlas', () => {
+    // What the atlas holds lives in a coverage mirror at a byte a texel; this
+    // is only somewhere to draw one glyph and read it straight back.
+    const created: HTMLCanvasElement[] = []
+    const realCreate = document.createElement.bind(document)
+    const spy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = realCreate(tag) as HTMLCanvasElement
+      if (tag === 'canvas') created.push(el)
+      return el
+    })
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
+    spy.mockRestore()
+    expect(atlas.texture).toBeTruthy()
+    expect(created).toHaveLength(1)
+    // Three cells wide, for the longest run anything asks to be shaped.
+    expect(created[0].width).toBe(24)
+    expect(created[0].height).toBe(16)
+  })
+
+  it('makes no second canvas when the atlas grows', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const realCreate = document.createElement.bind(document)
+    let canvases = 0
+    const spy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      if (tag === 'canvas') canvases++
+      return realCreate(tag)
+    })
+    const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 512, 512)
+    for (const cp of [65, 66, 67, 68]) atlas.getGlyph(cp)
+    spy.mockRestore()
+    warn.mockRestore()
+    // Growth is a mirror reallocation now: no canvas to recreate, and so no
+    // context state to re-establish afterwards.
+    expect(canvases).toBe(1)
+  })
+})
+
 describe('dispose', () => {
   it('deletes the underlying GL texture', () => {
     const gl = makeGlStub()
@@ -568,8 +606,8 @@ describe('glyphs wider than their slot', () => {
     atlas.getGlyph(65)
     expect(ctxStub.scale).not.toHaveBeenCalled()
     expect(ctxStub.fillText).toHaveBeenCalledTimes(1)
-    // The slot's own x: the constructor already took slot 0 for the blank.
-    expect(ctxStub.fillText.mock.calls[0][1]).toBe(8)
+    // At the origin of the scratch surface, whichever slot it is bound for.
+    expect(ctxStub.fillText.mock.calls[0][1]).toBe(0)
   })
 })
 
