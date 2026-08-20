@@ -28,6 +28,7 @@ import {
 } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
+  descriptorIsValid,
   formatCodepoint,
   ligatureConflict,
   parseCodepoint,
@@ -530,6 +531,28 @@ function SliderRow({
 }
 
 /**
+ * Says when a descriptor string does not parse, because nothing else will.
+ *
+ * There is no error to surface here and no exception to catch: the browser
+ * takes a descriptor it cannot read, discards it, and reports `normal`. The
+ * font then renders as though the setting were empty, which from the outside
+ * is indistinguishable from the font not having the feature — so the natural
+ * conclusion is that the face lacks it, and the typo goes unfound.
+ *
+ * Worth saying loudly because the discard is all or nothing: one bad tag in a
+ * list takes the working ones with it.
+ */
+export function DescriptorNote({ property, value }: { property: string; value: string }) {
+  if (descriptorIsValid(property, value) !== false) return null
+  return (
+    <p className="px-0.5 leading-relaxed text-amber-300/50">
+      Not a valid <code className="text-amber-300/70">{property}</code> value, so all of it is
+      being ignored — one mistyped tag discards the working ones alongside it.
+    </p>
+  )
+}
+
+/**
  * What the OpenType features and the ligature toggle are doing to each other.
  *
  * Neither is wrong when they disagree — each is a different level of the same
@@ -660,6 +683,7 @@ function AdvancedFontSettings({
             onChange={(e) => onChange({ ...settings, fontFeatures: e.target.value })}
           />
         </label>
+        <DescriptorNote property="font-feature-settings" value={settings.fontFeatures} />
         <LigatureConflictNote settings={settings} />
         <label className="flex items-center justify-between gap-3 text-white/85">
           <span>Variable axes</span>
@@ -672,6 +696,7 @@ function AdvancedFontSettings({
             onChange={(e) => onChange({ ...settings, fontVariations: e.target.value })}
           />
         </label>
+        <DescriptorNote property="font-variation-settings" value={settings.fontVariations} />
         <SliderRow
           label="Line height"
           value={settings.lineHeightPercent}

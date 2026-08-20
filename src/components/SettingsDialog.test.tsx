@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { FamilySelect, NamedFaceReport } from './SettingsDialog'
+import { DescriptorNote, FamilySelect, NamedFaceReport } from './SettingsDialog'
 import { loadSettings, type TerminalSettings } from '../lib/settings'
 
 /**
@@ -39,6 +39,52 @@ beforeEach(() => {
   stubFontCheck(['Consolas', 'Cascadia Code'])
 })
 afterEach(cleanup)
+
+describe('DescriptorNote', () => {
+  // The fallback for a string the parser rejects is to drop it whole, which is
+  // what CSS does with any declaration it cannot read. The font still renders;
+  // it just renders as though the setting were not there. From the outside
+  // that is indistinguishable from the font not having the feature, which is
+  // the reason to say something.
+  function stubSupports(ok: boolean) {
+    vi.stubGlobal('CSS', { supports: () => ok })
+  }
+
+  it('says nothing about a value the parser accepts', () => {
+    stubSupports(true)
+    const { container } = render(
+      <DescriptorNote property="font-feature-settings" value={'"ss01" 1'} />,
+    )
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('says nothing about an empty field, which is unset rather than wrong', () => {
+    stubSupports(false)
+    const { container } = render(<DescriptorNote property="font-feature-settings" value="" />)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('names the property and says the value is being ignored', () => {
+    stubSupports(false)
+    render(<DescriptorNote property="font-feature-settings" value="ss01 = on" />)
+    expect(screen.getByText(/font-feature-settings/)).toBeTruthy()
+    expect(screen.getByText(/all of it is/)).toBeTruthy()
+  })
+
+  it('speaks for the variation axes under their own name', () => {
+    stubSupports(false)
+    render(<DescriptorNote property="font-variation-settings" value="wdth 75" />)
+    expect(screen.getByText(/font-variation-settings/)).toBeTruthy()
+  })
+
+  it('says nothing when there is no parser to ask', () => {
+    vi.stubGlobal('CSS', undefined)
+    const { container } = render(
+      <DescriptorNote property="font-feature-settings" value="ss01 = on" />,
+    )
+    expect(container.innerHTML).toBe('')
+  })
+})
 
 describe('FamilySelect without enumeration', () => {
   // list_fonts answers through DirectWrite and returns an empty list off

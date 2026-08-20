@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   buildFontSelection,
+  descriptorIsValid,
   familyForCodepoint,
   formatCodepoint,
   ligatureConflict,
@@ -203,7 +204,10 @@ describe('OpenType features', () => {
     expect(sel.italic).toBe(`"${declared[1].family}", Maple Mono Italic`)
   })
 
-  it('names the family directly when the feature string is malformed', () => {
+  // Not what a malformed string does -- that is taken and dropped without a
+  // word, which is what `descriptorIsValid` exists to catch. This is the
+  // guard for the constructor being unavailable.
+  it('names the family directly when constructing the face throws at all', () => {
     vi.stubGlobal('FontFace', function Throwing() {
       throw new SyntaxError('bad feature string')
     })
@@ -380,6 +384,50 @@ describe('variable axes', () => {
   it('leaves an untouched configuration declaring nothing at all', () => {
     buildFontSelection(settings())
     expect(declared).toEqual([])
+  })
+})
+
+describe('descriptorIsValid', () => {
+  /** Stands in for the CSS parser, which jsdom does not have. */
+  function stubSupports(impl: ((p: string, v: string) => boolean) | null) {
+    if (impl === null) {
+      vi.stubGlobal('CSS', undefined)
+      return
+    }
+    vi.stubGlobal('CSS', { supports: impl })
+  }
+
+  it('asks the CSS parser rather than a pattern of its own', () => {
+    const asked: string[][] = []
+    stubSupports((p, v) => {
+      asked.push([p, v])
+      return true
+    })
+    expect(descriptorIsValid('font-feature-settings', '"ss01" 1')).toBe(true)
+    expect(asked).toEqual([['font-feature-settings', '"ss01" 1']])
+  })
+
+  it('reports a value the parser rejects', () => {
+    stubSupports(() => false)
+    expect(descriptorIsValid('font-feature-settings', 'ss01 = on')).toBe(false)
+  })
+
+  it('treats empty as valid, because unset is not failed', () => {
+    stubSupports(() => false)
+    expect(descriptorIsValid('font-feature-settings', '')).toBe(true)
+    expect(descriptorIsValid('font-variation-settings', '   ')).toBe(true)
+  })
+
+  it('says it cannot tell rather than guessing, when there is no parser to ask', () => {
+    stubSupports(null)
+    expect(descriptorIsValid('font-feature-settings', 'anything')).toBeNull()
+  })
+
+  it('says it cannot tell when the parser itself throws', () => {
+    stubSupports(() => {
+      throw new Error('no')
+    })
+    expect(descriptorIsValid('font-variation-settings', '"wdth" 75')).toBeNull()
   })
 })
 

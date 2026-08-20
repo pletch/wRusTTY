@@ -136,8 +136,12 @@ function faceWithDescriptors(family: string, features: string, axes: string): st
     )
     document.fonts.add(face)
   } catch {
-    // FontFace rejects a malformed feature string by throwing. The setting is
-    // free text, so this is a typo rather than an exceptional condition.
+    // Not the malformed-descriptor path, which was the assumption here until
+    // it was measured: the constructor takes a descriptor it cannot parse
+    // without complaint and quietly reads back as `normal`. Nothing throws.
+    // This is the guard for the constructor being unavailable or objecting to
+    // something else entirely, and naming the family directly is the right
+    // answer to that -- features lost, glyphs correct.
     registered.set(key, family)
     return family
   }
@@ -307,6 +311,39 @@ export function ligatureConflict(features: string, ligatures: boolean): Ligature
   if (ligatures && switchedOff) return 'features-win'
   if (!ligatures && switchedOn) return 'toggle-wins'
   return null
+}
+
+/**
+ * Whether the browser will accept this as a value for `property`, or null
+ * when it cannot be asked.
+ *
+ * Asked of the CSS parser rather than checked against a pattern of our own,
+ * because the question is precisely what *this* browser accepts: the tag
+ * syntax has grown over time, and a value this one takes is a value the
+ * generated face will take.
+ *
+ * That correspondence was measured, and it is exact. `FontFace` does not
+ * reject a descriptor it cannot parse -- it takes it, drops it, and reads
+ * back as `normal`, which is why the failure was invisible from in here.
+ * Every value `CSS.supports` refuses is a value the descriptor discards, and
+ * every value it accepts survives. Including, in both directions, the case
+ * that makes this worth reporting at all: one bad tag in a list discards the
+ * whole list, so `"ss01" 1, nonsense` loses the working `ss01` too.
+ *
+ * Empty is valid: it means the setting is unset, not that it failed.
+ *
+ * Null rather than false when `CSS.supports` is missing, for the reason
+ * `hasFamily` answers null — not being able to check is not the same answer
+ * as a failed check, and only one of them is worth telling someone about.
+ */
+export function descriptorIsValid(property: string, value: string): boolean | null {
+  if (value.trim() === '') return true
+  if (typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return null
+  try {
+    return CSS.supports(property, value)
+  } catch {
+    return null
+  }
 }
 
 /** A codepoint written the way the Unicode charts write it, which is how
