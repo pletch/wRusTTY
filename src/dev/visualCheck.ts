@@ -11,6 +11,7 @@
  * URL.
  */
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
+import type { TextBlending } from '../lib/settings'
 
 const ESC = '\x1b'
 const RESET = `${ESC}[0m`
@@ -49,8 +50,33 @@ out += `  1 blink block  2 steady block  3 blink under  4 steady under  5 blink 
 out += `\r\n  links — hold Ctrl and hover, or press h for hint labels\r\n`
 out += `  see https://example.com/a for details, or (https://example.org/b).\r\n`
 out += `  https://example.com/a/rather/long/path/that/has/to/wrap/at/this/width/to/be/interesting\r\n`
+out += `\r\n  text blending — press b to cycle, 0 for the physically correct end\r\n`
+out += `  The quick brown fox jumps over the lazy dog. 0123456789 il1 O0 =>\r\n`
+out += `  ${ESC}[1mbold${RESET} ${fg(203)}red${RESET} ${fg(114)}green${RESET} ${fg(75)}blue${RESET} ${ESC}[2mdim${RESET} — mixed weights\r\n`
 out += `\r\n  cursor is here ->${ESC}[5 q `
 engine.write(out)
+
+// Text blending is the reason a file like this exists: it changes only how
+// partially-covered pixels are drawn, so no per-cell assertion can see it and
+// a screenshot of one mode alone says nothing. Cycling it in place is what
+// makes the difference legible — same glyphs, same atlas, one uniform apart.
+const BLENDS: [label: string, mode: TextBlending][] = [
+  ['native — sRGB, the default', 'native'],
+  ['linear — physically correct, changes weight', 'linear'],
+  ['linear-corrected — linear at native weight', 'linear-corrected'],
+]
+// Also selectable as ?blend=N, so a screenshot of a given mode can be taken
+// without a keystroke — which is the only way to capture one from a headless
+// browser, and the only way two modes can be diffed as images.
+const requested = Number(new URLSearchParams(location.search).get('blend'))
+let blendIndex = Number.isInteger(requested) && BLENDS[requested] ? requested : 0
+const blendLabel = document.getElementById('blend')
+function applyBlend() {
+  const [label, mode] = BLENDS[blendIndex]
+  engine.setTextBlending(mode)
+  if (blendLabel) blendLabel.textContent = label
+}
+applyBlend()
 
 // Typing a digit re-issues the matching DECSCUSR so every shape can be seen
 // without editing this file. `h` stands in for the app's Ctrl+Shift+U, which
@@ -58,4 +84,12 @@ engine.write(out)
 window.addEventListener('keydown', (e) => {
   if (e.key >= '1' && e.key <= '6') engine.write(`${ESC}[${e.key} q`)
   if (e.key === 'h') engine.toggleHintMode()
+  if (e.key === 'b') {
+    blendIndex = (blendIndex + 1) % BLENDS.length
+    applyBlend()
+  }
+  if (e.key === '0') {
+    blendIndex = 0
+    applyBlend()
+  }
 })

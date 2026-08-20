@@ -66,22 +66,99 @@ void main() {
 // translucent default background — that is what lets the pane's opacity reach
 // the clear colour without also fading the text.
 const FRAGMENT_SHADER_SRC = `#version 300 es
-precision mediump float;
+// highp rather than the mediump this shader used to declare: the corrected
+// mode divides by the fg/bg luminance difference, and a mediump quotient of
+// two nearby values is exactly where that goes visibly wrong. Every target
+// this app runs on (WebView2 on desktop GPUs) treats the two identically
+// anyway, so the precision is free here in a way it would not be on mobile.
+precision highp float;
 
 in vec4 v_fgColor;
 in vec4 v_bgColor;
 in vec2 v_uv;
 
 uniform sampler2D u_atlas;
+// One of the BLEND_* constants below. A uniform branch, so every fragment in
+// a frame takes the same path and the GPU never diverges within a warp.
+uniform int u_blendMode;
 
 out vec4 outColor;
 
+// Mix in the framebuffer's own space. Cheap, and what this renderer always
+// did — but sRGB values are not proportional to light, so the result is not
+// a blend of anything physical, and two cells whose colours differ in hue
+// darken where their glyph edges meet.
+const int BLEND_NATIVE = 0;
+// Mix in linear light. Correct, and visibly so on contrasting hues — but it
+// renders dark-on-light text thinner and light-on-dark thicker than the face
+// was drawn to look, because rasterizers have long assumed the sRGB blend's
+// accidental weight is there.
+const int BLEND_LINEAR = 1;
+// Linear, with ghostty's weight correction: solve for the coverage that
+// reproduces the *native* blend's luminance, then blend linearly with it.
+// Weight therefore matches BLEND_NATIVE while the darkening artifact stays
+// gone. See the comment on the solve itself.
+const int BLEND_LINEAR_CORRECTED = 2;
+
+// The exact piecewise sRGB transfer function rather than a 2.2 power law.
+// The two diverge near black, which for glyph coverage is precisely the
+// range the correction below is solving in.
+float linearize(float v) {
+    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+}
+vec3 linearize(vec3 c) {
+    return vec3(linearize(c.r), linearize(c.g), linearize(c.b));
+}
+float unlinearize(float v) {
+    return v <= 0.0031308 ? v * 12.92 : pow(v, 1.0 / 2.4) * 1.055 - 0.055;
+}
+vec3 unlinearize(vec3 c) {
+    return vec3(unlinearize(c.r), unlinearize(c.g), unlinearize(c.b));
+}
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
 void main() {
     // Single-channel atlas: coverage is in red, and .a would read as 1.0.
-    float alpha = texture(u_atlas, v_uv).r;
-    outColor = mix(v_bgColor, v_fgColor, alpha);
+    float a = texture(u_atlas, v_uv).r;
+
+    if (u_blendMode == BLEND_NATIVE) {
+        outColor = mix(v_bgColor, v_fgColor, a);
+        return;
+    }
+
+    vec3 fgLin = linearize(v_fgColor.rgb);
+    vec3 bgLin = linearize(v_bgColor.rgb);
+
+    if (u_blendMode == BLEND_LINEAR_CORRECTED) {
+        // Take the luminance of each end, blend *those* the gamma-incorrect
+        // way to get the luminance the native path would have produced, then
+        // map it back onto [bg_l, fg_l] to recover the coverage that reaches
+        // the same luminance through a linear blend. The whole point is that
+        // this has no tunable constant in it: the target is not a taste, it
+        // is what the other mode already renders.
+        float fgL = luminance(fgLin);
+        float bgL = luminance(bgLin);
+        // Guard the division: as the two luminances converge the quotient
+        // stops being meaningful, and there is nothing to correct anyway.
+        if (abs(fgL - bgL) > 0.001) {
+            float blendL = linearize(unlinearize(fgL) * a + unlinearize(bgL) * (1.0 - a));
+            a = clamp((blendL - bgL) / (fgL - bgL), 0.0, 1.0);
+        }
+    }
+
+    // Alpha stays in coverage units: it is this pane's opacity, not light,
+    // and it is what keeps a glyph opaque over a translucent background.
+    outColor = vec4(unlinearize(mix(bgLin, fgLin, a)), mix(v_bgColor.a, v_fgColor.a, a));
 }
 `
+
+/** Values `setTextBlending` takes; they are the shader's BLEND_* constants,
+ *  and the engine maps the user-facing setting onto them. */
+export const BLEND_NATIVE = 0
+export const BLEND_LINEAR = 1
+export const BLEND_LINEAR_CORRECTED = 2
 
 /**
  * The one place cell metrics are derived. Both the renderer (which sizes the
@@ -170,6 +247,7 @@ export class WebGLRenderer {
   private vao!: WebGLVertexArrayObject
   private uResolution: WebGLUniformLocation | null = null
   private uAtlas: WebGLUniformLocation | null = null
+  private uBlendMode: WebGLUniformLocation | null = null
 
   private cols: number
   private rows: number
@@ -184,6 +262,12 @@ export class WebGLRenderer {
   private defaultBgB = 0
   /** 0..1. Reaches the clear colour and default-background cells only. */
   private defaultBgA = 1
+
+  // Held on the instance rather than only pushed to the uniform, because the
+  // program is rebuilt on a context loss and the renderer itself is rebuilt on
+  // every font change — and both start on the shader's own defaults. Same
+  // reason the engine re-applies the theme in those paths.
+  private blendMode = BLEND_NATIVE
 
   // As measured, before display-scale quantisation. Kept so a scale change
   // re-quantises from the measurement rather than from an already-rounded value.
@@ -475,8 +559,10 @@ export class WebGLRenderer {
     gl.useProgram(this.program)
     this.uResolution = gl.getUniformLocation(this.program, 'u_resolution')
     this.uAtlas = gl.getUniformLocation(this.program, 'u_atlas')
+    this.uBlendMode = gl.getUniformLocation(this.program, 'u_blendMode')
     gl.uniform2f(this.uResolution, this.cols, this.rows)
     gl.uniform1i(this.uAtlas, 0)
+    gl.uniform1i(this.uBlendMode, this.blendMode)
 
     this.vao = gl.createVertexArray()!
     gl.bindVertexArray(this.vao)
@@ -546,6 +632,19 @@ export class WebGLRenderer {
     this.defaultBgG = bg
     this.defaultBgB = bb
     this.defaultBgA = opacity
+  }
+
+  /**
+   * Colour space to blend glyph coverage in, as one of the BLEND_* values.
+   *
+   * Safe to call before the program links — the value is held and pushed at
+   * link time, which is the path a new pane actually takes.
+   */
+  setTextBlending(mode: number) {
+    this.blendMode = mode
+    if (!this.ready) return
+    this.gl.useProgram(this.program)
+    this.gl.uniform1i(this.uBlendMode, mode)
   }
 
   setCursorColor(r: number, g: number, b: number) {

@@ -1,4 +1,4 @@
-import type { CursorStyleSetting } from './settings'
+import type { CursorStyleSetting, TextBlending } from './settings'
 import type { RowText } from './ghostty/rowText'
 
 /**
@@ -116,6 +116,12 @@ export interface TerminalEngine {
   /** Default cursor shape and blink, until the remote application overrides it
    *  with its own DECSCUSR. */
   setCursorStyle(style: CursorStyleSetting, blink: boolean): void
+  /**
+   * Colour space glyph coverage is blended in. Optional because it describes
+   * *this* renderer's blend step: the xterm engine draws through its own
+   * renderer and has no equivalent knob to hand it to.
+   */
+  setTextBlending?(mode: TextBlending): void
   
   rebuildWebglRenderer(): void
 

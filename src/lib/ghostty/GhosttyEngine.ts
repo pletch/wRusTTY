@@ -17,11 +17,17 @@ import { HintModeController } from './HintModeController'
 import { isOpenableUrl } from '../urlDetect'
 import { ContextManager } from './ContextManager'
 import type { RowText } from './rowText'
-import { WebGLRenderer, measureCell } from './WebGLRenderer'
+import {
+  WebGLRenderer,
+  measureCell,
+  BLEND_NATIVE,
+  BLEND_LINEAR,
+  BLEND_LINEAR_CORRECTED,
+} from './WebGLRenderer'
 import { scanOsc } from './oscScanner'
 import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
-import { cursorStyleSequence, type CursorStyleSetting } from '../settings'
+import { cursorStyleSequence, type CursorStyleSetting, type TextBlending } from '../settings'
 import {
   compileGhosttyWasm,
   instantiateGhosttyModule,
@@ -209,6 +215,15 @@ export function fitGrid(
   }
 }
 
+/** The setting's vocabulary, mapped onto the renderer's uniform values.
+ *  Exhaustive by type, so a new mode cannot be added to the setting without
+ *  being given a blend here. */
+const BLEND_MODES: Record<TextBlending, number> = {
+  native: BLEND_NATIVE,
+  linear: BLEND_LINEAR,
+  'linear-corrected': BLEND_LINEAR_CORRECTED,
+}
+
 export class GhosttyEngine implements TerminalEngine {
   private container: HTMLElement | null = null
   private canvas: HTMLCanvasElement | null = null
@@ -284,6 +299,10 @@ export class GhosttyEngine implements TerminalEngine {
   /** The configured default cursor, resent to the core whenever one is built. */
   private _cursorStyle: CursorStyleSetting = 'block'
   private _cursorBlink = true
+  // Mirrors the setting of the same name. Held here because the renderer is
+  // thrown away and rebuilt on a font change, and a fresh one starts on the
+  // native path — the same hazard the theme has.
+  private _textBlending: TextBlending = 'native'
   private _themeName: string | null = null
   private _opacity = 1
   private _viewportOffset = 0
@@ -654,6 +673,7 @@ export class GhosttyEngine implements TerminalEngine {
     if (this._themeName) {
       this.applyThemeToRenderer(this._themeName)
     }
+    this.applyTextBlendingToRenderer()
 
     // Force a fit now that the renderer is available!
     // This fixes the issue where the terminal doesn't fill the screen on first load
@@ -2101,6 +2121,22 @@ export class GhosttyEngine implements TerminalEngine {
     if (this.termPtr) this.write(cursorStyleSequence(style, blink))
   }
 
+  /**
+   * Colour space to blend glyph coverage in. Unlike the palette, this
+   * applies fully and immediately to everything already on screen: it is a
+   * property of how cells are *drawn*, not of what colour the core resolved
+   * them to, so there is no half-updated state to reason about.
+   */
+  setTextBlending(mode: TextBlending): void {
+    this._textBlending = mode
+    this.applyTextBlendingToRenderer()
+    this.needsRedraw = true
+  }
+
+  private applyTextBlendingToRenderer(): void {
+    this.renderer?.setTextBlending(BLEND_MODES[this._textBlending])
+  }
+
   setFont(fontFamily: string, fontSize: number): void {
     this.fontFamily = fontFamily
     this.fontSize = fontSize
@@ -2114,6 +2150,9 @@ export class GhosttyEngine implements TerminalEngine {
       // while explicitly-colored text keeps its palette — which reads as the
       // terminal's colors shifting on their own.
       if (this._themeName) this.applyThemeToRenderer(this._themeName)
+      // Same argument, for the same reason — a rebuilt renderer is back on
+      // the shader's defaults until something says otherwise.
+      this.applyTextBlendingToRenderer()
       // The replacement renderer starts with an empty instance buffer, so an
       // idle pane would sit blank until its next write without this.
       this.needsRedraw = true

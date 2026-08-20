@@ -2,6 +2,14 @@ import type { VibrancyMode } from './windowEffects'
 
 export type CursorStyleSetting = 'block' | 'bar' | 'underline'
 
+/** Colour space the renderer mixes glyph coverage in — see `textBlending`.
+ *  The three values, and their names, are ghostty's: this is its
+ *  `alpha-blending` option, and matching the vocabulary is worth more than
+ *  inventing our own for the same three behaviours. */
+export type TextBlending = 'native' | 'linear' | 'linear-corrected'
+
+const TEXT_BLENDINGS: readonly TextBlending[] = ['native', 'linear', 'linear-corrected']
+
 /**
  * DECSCUSR values, which pair each shape with whether it blinks — there is no
  * way to set one without the other, which is why the two settings resolve to a
@@ -222,6 +230,33 @@ export interface TerminalSettings {
    * wallpaper-color tint; 'tabbed' is the same tint tuned for windows with
    * a tab strip (this one's), giving it a subtly different tone. */
   vibrancyMode: VibrancyMode
+  /**
+   * Colour space glyph coverage is blended against the cell background in.
+   *
+   * 'native' is what this renderer has always done: mix in sRGB, the space
+   * the canvas is already in. Cheap, and wrong — sRGB values are not
+   * proportional to light, so a half-covered edge pixel emits about a fifth
+   * of the light it is asking for. On its own that reads as slightly thin
+   * text; where it actually shows is a glyph whose foreground and
+   * background differ in hue, which picks up a dark fringe at every edge.
+   *
+   * 'linear' fixes the fringe by blending in linear light, and is the
+   * physically correct answer — but it renders dark-on-light text thinner
+   * and light-on-dark thicker than the face was drawn to look, because
+   * rasterizers have long assumed the sRGB blend's accidental weight.
+   *
+   * 'linear-corrected' is linear plus ghostty's weight correction: it
+   * solves per pixel for the coverage whose *linear* blend has the same
+   * luminance the native blend would have produced. Weight therefore
+   * matches 'native' while the fringe stays gone, and — the reason it is
+   * worth preferring over a tuned stem-darkening constant — there is
+   * nothing in it to tune.
+   *
+   * Default 'native' deliberately: the other two change how every glyph in
+   * every theme is drawn, so an existing install opts in rather than
+   * finding its terminal restyled by an update.
+   */
+  textBlending: TextBlending
 }
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
@@ -267,6 +302,7 @@ const defaults: TerminalSettings = {
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,
   vibrancyMode: 'off',
+  textBlending: 'native',
 }
 
 /**
@@ -360,6 +396,12 @@ export function loadSettings(): TerminalSettings {
       defaults.reconnectMaxSeconds,
       RECONNECT_SECONDS_RANGE,
     )
+    // Same argument as the scrollback tier above: an unrecognised value here
+    // reaches the shader as a blend mode it has no branch for, which draws
+    // nothing at all rather than falling back to something sane.
+    if (!TEXT_BLENDINGS.includes(merged.textBlending)) {
+      merged.textBlending = defaults.textBlending
+    }
     delete merged.scrollback
     return merged
   } catch {

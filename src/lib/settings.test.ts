@@ -64,6 +64,33 @@ describe('loadSettings', () => {
     expect(loadSettings().clipboardWriteFromRemote).toBe(false)
   })
 
+  /**
+   * Same hazard as the clipboard gate above, and a louder one: text blending
+   * changes how every glyph in every pane is drawn. An existing install has
+   * to come back on the renderer it already had, so the absent key must read
+   * as 'native' rather than as "adopt the new mode".
+   */
+  it('leaves text blending on native for a blob predating the setting', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 20, themeName: 'Nord' }))
+    expect(loadSettings().textBlending).toBe('native')
+  })
+
+  it('honours a stored blending choice', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ textBlending: 'linear-corrected' }))
+    expect(loadSettings().textBlending).toBe('linear-corrected')
+  })
+
+  /**
+   * The shader switches on this value and has no branch for anything else —
+   * an unrecognised mode would draw nothing rather than degrade. Hand-edited
+   * storage and a mode retired by a later version both land here, as does
+   * 'srgb', the name this setting used before it took ghostty's vocabulary.
+   */
+  it('falls back to native for a blend mode the renderer has no branch for', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ textBlending: 'srgb' }))
+    expect(loadSettings().textBlending).toBe('native')
+  })
+
   it('falls back to defaults on corrupted JSON rather than throwing', () => {
     localStorage.setItem(STORAGE_KEY, '{not valid json')
     expect(loadSettings()).toEqual(loadSettingsDefaultsSnapshot())

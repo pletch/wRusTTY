@@ -469,6 +469,42 @@ export function SettingsDialog({
                                 : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
                         </p>
                       </div>
+                      {/* Three modes rather than a switch and a slider: the
+                          correction has no constant in it, so there is
+                          nothing left to tune once it is on. Names and
+                          behaviour are ghostty's alpha-blending option. */}
+                      <div>
+                        <span className="text-white/85">Text blending</span>
+                        <div className="mt-1.5 flex gap-1 rounded-md bg-black/20 p-1">
+                          {(
+                            [
+                              ['native', 'Native'],
+                              ['linear', 'Linear'],
+                              ['linear-corrected', 'Corrected'],
+                            ] as const
+                          ).map(([mode, mLabel]) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => onChange({ ...settings, textBlending: mode })}
+                              className={`flex-1 rounded py-1 transition-colors duration-150 ${
+                                settings.textBlending === mode
+                                  ? 'bg-white/15 text-white'
+                                  : 'text-white/40 hover:text-white/70'
+                              }`}
+                            >
+                              {mLabel}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="mt-1.5 leading-relaxed text-white/40">
+                          {settings.textBlending === 'linear'
+                            ? 'Blends antialiased edges in linear light. Physically correct, and removes the dark fringe — but draws light-on-dark text heavier and dark-on-light thinner than the font intends.'
+                            : settings.textBlending === 'linear-corrected'
+                              ? 'Linear blending, corrected so text keeps the weight it has under Native. Removes the dark fringe where a glyph and its background differ in hue, and changes nothing else.'
+                              : 'Blends in sRGB, the space the canvas is already in. What this terminal has always done — cheapest, but colored text picks up a dark fringe at the edges.'}
+                        </p>
+                      </div>
                     </div>
                   )}
 
