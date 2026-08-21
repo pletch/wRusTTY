@@ -42,6 +42,13 @@ interface Props {
    * rename what you are looking at — or reflow the strip, since tab width is
    * content-driven. See lib/remoteIdentity.ts. */
   titleByPane: Record<string, string>
+  /** The colour the terminal beneath is painted, ready to use as a CSS
+   * background. The active tab takes it exactly, so the tab and the pane it
+   * opens onto are one surface and the strip is the only thing separating
+   * them — which is the whole point of a tab. Passed in rather than resolved
+   * here because it follows the chosen theme and the window's background
+   * opacity, neither of which the strip otherwise knows about. */
+  paneBackground: string
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
@@ -191,11 +198,13 @@ function PaneIndicator({
     // strip's scrollWidth enough, after a second nested split, to trip the
     // overflow-fade check below even with nothing actually clipped.
     <span
-      // The strip's own background behind the gap, so the space between two
-      // segments is a positive dark line rather than "whatever happens to be
-      // behind the tab" — which on an active tab is a lightened fill that
-      // left segments reading as one continuous bar.
-      className={`flex h-full w-full overflow-hidden bg-[#1a1b22] ${
+      // No fill: the gaps show the tab's own background, which is dark on
+      // every tab now — the strip's tone on a quiet one, the terminal's on
+      // the active one — so the space between two segments reads as a line
+      // either way. This carried a hardcoded dark fill back when the active
+      // tab was a lightened tint and the gaps would otherwise have vanished
+      // into it, leaving the segments as one continuous bar.
+      className={`flex h-full w-full overflow-hidden ${
         horizontal ? 'flex-row' : 'flex-col'
       }`}
       style={{ gap: `${PANE_MAP_GAP_PX}px` }}
@@ -268,6 +277,7 @@ export function TabBar({
   progressByPane,
   attentionPanes,
   titleByPane,
+  paneBackground,
   onSelect,
   onClose,
   onNew,
@@ -479,16 +489,25 @@ export function TabBar({
                 setDraggedId(null)
                 setDropTargetId(null)
               }}
-              style={{ paddingTop: `${tabContentTopPx}px` }}
+              style={{
+                paddingTop: `${tabContentTopPx}px`,
+                // Skipped while this tab is the drop target, so the sky wash
+                // marking it as such isn't painted over by an inline fill.
+                ...(active && dropTargetId !== tab.id ? { background: paneBackground } : {}),
+              }}
               // Only one tab is a shape: the active one. It takes the
               // window's own corner radius (`rounded-t-lg` — see the root
               // element in App.tsx) so the tab and the frame it sits in read
-              // as the same object, and a fill light enough to lift it off the
-              // strip. The rest carry no fill at all, which leaves them the
-              // strip's own tone, and no radius — a row of identically rounded
-              // tabs spends the shape on every tab and so says nothing with
-              // it, whereas rounding exactly one is what makes that one look
-              // like the sheet in front. Chrome and Edge both settled here.
+              // as the same object, and the terminal's own background as its
+              // fill, so its lower edge doesn't exist: the tab is the top of
+              // the pane, drawn up into the strip. A lighter tint stood it off
+              // the strip just as well but made it a third surface, neither
+              // strip nor pane. The rest carry no fill at all, which leaves
+              // them the strip's own tone, and no radius — a row of
+              // identically rounded tabs spends the shape on every tab and so
+              // says nothing with it, whereas rounding exactly one is what
+              // makes that one look like the sheet in front. Chrome and Edge
+              // both settled here.
               //
               // Hovering an inactive tab lends it the same shape and a fill
               // partway to the active one's, so the thing under the pointer is
@@ -502,7 +521,7 @@ export function TabBar({
               // rather than also shifting the row.
               className={`group relative mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 px-3 text-xs transition-colors duration-150 ${
                 active
-                  ? 'rounded-t-lg bg-white/10 text-white'
+                  ? 'rounded-t-lg text-white'
                   : 'text-white/45 hover:rounded-t-lg hover:bg-white/[0.08] hover:text-white/80'
               } ${draggedId === tab.id ? 'opacity-40' : ''} ${
                 dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''

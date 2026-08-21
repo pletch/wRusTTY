@@ -1138,17 +1138,19 @@ function App() {
     ? activePaneLeaves.findIndex((l) => l.id === activePaneId) + 1
     : 0
 
+  // Shared with the tab strip, where the active tab takes it as its own fill
+  // so that tab and terminal read as one surface.
+  const paneBackground = backgroundWithOpacity(
+    findTheme(terminalSettings.themeName),
+    terminalSettings.backgroundOpacity,
+  )
+
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden ${
         maximized ? '' : 'rounded-lg border border-white/10'
       }`}
-      style={{
-        background: backgroundWithOpacity(
-          findTheme(terminalSettings.themeName),
-          terminalSettings.backgroundOpacity,
-        ),
-      }}
+      style={{ background: paneBackground }}
     >
       {/* No bottom hairline: the tabs above it have rounded tops now, and a
        * line running under the active one cut it off from the terminal it
@@ -1157,8 +1159,9 @@ function App() {
        * translucent, so overpainting a translucent border tints it rather than
        * removing it, and segmenting the line leaves 2px breaks at the gaps
        * between tabs). Dropping it outright is the better answer anyway: the
-       * strip's own black/20 already separates it from the terminal by tone,
-       * and now the active tab's fill runs straight down into it. */}
+       * strip's own black/20 is what separates it from the terminal by tone,
+       * and the active tab, painted in the terminal's own colour, now runs
+       * straight down into it with nothing crossing the join. */}
       <div className="flex h-10 shrink-0 items-stretch bg-black/20">
         <TabBar
           tabs={tabs}
@@ -1168,6 +1171,7 @@ function App() {
           progressByPane={progressByPane}
           attentionPanes={attentionPanes}
           titleByPane={titleByPane}
+          paneBackground={paneBackground}
           onSelect={selectTab}
           onClose={closeTab}
           onNew={newTab}
