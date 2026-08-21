@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { PRESET_THEMES, findTheme, hexToRgb, backgroundWithOpacity, backgroundTint } from './theme'
+import {
+  PRESET_THEMES,
+  findTheme,
+  hexToRgb,
+  backgroundWithOpacity,
+  backgroundTint,
+  stripOverlay,
+} from './theme'
 
 describe('findTheme', () => {
   it('finds a preset by exact name', () => {
@@ -84,6 +91,30 @@ describe('backgroundWithOpacity', () => {
   it('rounds a fractional opacity to the nearest byte', () => {
     // 0.5 * 255 = 127.5 -> rounds to 128 = 0x80
     expect(backgroundWithOpacity(theme, 0.5)).toBe(`${theme.background}80`)
+  })
+})
+
+describe('stripOverlay', () => {
+  it('lightens every dark preset', () => {
+    for (const theme of PRESET_THEMES.filter((t) => t.name !== 'Light')) {
+      expect(stripOverlay(theme)).toBe('rgba(255, 255, 255, 0.08)')
+    }
+  })
+
+  it('darkens a light one', () => {
+    expect(stripOverlay(findTheme('Light'))).toBe('rgba(0, 0, 0, 0.08)')
+  })
+
+  it('separates the strip from the terminal on every preset', () => {
+    // What bg-black/20 failed to do: as a multiply it moved Campbell
+    // (#0c0c0c) two levels, which is not visible. Composite the overlay over
+    // each background and check the result actually went somewhere.
+    for (const theme of PRESET_THEMES) {
+      const [tone, , , alpha] = stripOverlay(theme).match(/[\d.]+/g)!.map(Number)
+      for (const channel of hexToRgb(theme.background)) {
+        expect(Math.abs(tone * alpha - channel * alpha)).toBeGreaterThan(10)
+      }
+    }
   })
 })
 

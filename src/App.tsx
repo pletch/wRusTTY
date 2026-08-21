@@ -38,7 +38,7 @@ import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/conne
 import { loadSettings, saveSettings, DEFAULT_FONT_SIZE, FONT_SIZE_RANGE } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
-import { backgroundWithOpacity, backgroundTint, findTheme } from './lib/theme'
+import { backgroundWithOpacity, backgroundTint, findTheme, stripOverlay } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
 import { DRAG_PANE_MIME } from './lib/dragTypes'
 import {
@@ -1161,10 +1161,17 @@ function App() {
        * translucent, so overpainting a translucent border tints it rather than
        * removing it, and segmenting the line leaves 2px breaks at the gaps
        * between tabs). Dropping it outright is the better answer anyway: the
-       * strip's own black/20 is what separates it from the terminal by tone,
-       * and the active tab, painted in the terminal's own colour, now runs
+       * strip's own wash is what separates it from the terminal by tone, and
+       * the active tab, painted in the terminal's own colour, now runs
        * straight down into it with nothing crossing the join. */}
-      <div className="flex h-10 shrink-0 items-stretch bg-black/20">
+      <div
+        className="flex h-10 shrink-0 items-stretch"
+        // Away from the theme's background rather than a fixed direction —
+        // see stripOverlay. A hardcoded bg-black/20 here had nowhere to go on
+        // Campbell and left the strip, the quiet tabs and the active tab all
+        // the same colour.
+        style={{ background: stripOverlay(findTheme(terminalSettings.themeName)) }}
+      >
         <TabBar
           tabs={tabs}
           activeTabId={activeTabId}

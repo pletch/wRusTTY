@@ -180,6 +180,41 @@ export function backgroundWithOpacity(theme: TerminalTheme, opacity: number): st
   return `${theme.background}${alphaHex}`
 }
 
+/** How much of the overlay below the tab strip gets, as a 0-1 alpha. Flat
+ * addition of roughly 15-20 levels on any background, which is enough to
+ * separate two surfaces and little enough not to look like a panel. */
+const STRIP_OVERLAY_ALPHA = 0.08
+
+/** The wash the tab strip is painted with, over the window's own background,
+ * as a CSS color.
+ *
+ * Which way it goes depends on how dark the theme is, because a fixed
+ * direction cannot work for all of them. This was `bg-black/20` — a
+ * *multiply*, which scales with what it is given and so has nowhere to go on
+ * a background that is already near black: Campbell (#0c0c0c) came out two
+ * levels darker, invisible, and the strip, the quiet tabs and the active tab
+ * all collapsed into one flat field. The same 20% took 51 levels out of the
+ * Light theme, a slab. Adding a fixed amount instead, away from whatever the
+ * background is, lands within a few levels of the same separation on every
+ * preset.
+ *
+ * On a dark theme this puts the strip *lighter* than the terminal rather
+ * than darker, which is the arrangement Windows Terminal uses.
+ *
+ * Returned as an overlay rather than a finished colour so the strip keeps
+ * compositing over the window the way it always has, and a translucent
+ * window stays translucent up here too. */
+export function stripOverlay(theme: TerminalTheme): string {
+  const [r, g, b] = hexToRgb(theme.background)
+  // Rec. 709 luma. The exact coefficients matter little at this job — the
+  // question is only "is this closer to black or to white" — but a plain
+  // channel average would call Solarized Dark (#002b36, two thirds of its
+  // light in the blue channel) lighter than it looks.
+  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  const tone = luma < 128 ? 255 : 0
+  return `rgba(${tone}, ${tone}, ${tone}, ${STRIP_OVERLAY_ALPHA})`
+}
+
 /** Same color as an (r, g, b, a 0-255) tuple, for window-vibrancy's acrylic
  * tint — a separate, OS-compositor-level parameter from the DOM alpha
  * above, but kept in sync with it so the whole window reads as one
