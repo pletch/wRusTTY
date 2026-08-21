@@ -1,4 +1,5 @@
 import { suggestionSuffix, type SuggestionView } from '../lib/autocomplete'
+import { domBaselineShift } from '../lib/cellBaseline'
 import { fitToCells, toCellUnits } from '../lib/cellText'
 
 /**
@@ -33,6 +34,13 @@ import { fitToCells, toCellUnits } from '../lib/cellText'
  * italic face, so the browser synthesises an oblique whose metrics differ
  * again — and once each character is boxed, a slanted glyph leans out of its
  * box and gets clipped. Dimming alone reads clearly enough as "not yet real".
+ *
+ * **And nudged onto the grid's baseline**, which is the vertical half of the
+ * same argument. A line box centres the face's own ascent and descent; the
+ * atlas centres a measured box and rounds it. Those agree for some faces and
+ * not others — in Monaspace Neon and JetBrains Mono the ghost text sat a pixel
+ * above the real text, in Fira Code and Consolas it did not. See
+ * lib/cellBaseline.ts.
  */
 export function InlineSuggestion({
   view,
@@ -84,6 +92,10 @@ export function InlineSuggestion({
         fontFamily,
         fontSize,
         lineHeight: `${cell.height}px`,
+        // Onto the grid's baseline rather than the line box's. Zero for a
+        // face where the two already agree, and zero where it cannot be
+        // measured at all.
+        transform: `translateY(${domBaselineShift(fontFamily, fontSize, cell.height)}px)`,
         // `pre` keeps a run of spaces inside a command from collapsing, which
         // would put every character after it in the wrong column even with the
         // per-cell boxes below.

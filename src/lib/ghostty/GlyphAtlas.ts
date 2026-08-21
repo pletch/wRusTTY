@@ -6,6 +6,7 @@ import {
 } from './wasmBindings'
 import { isBoxGlyph, drawBoxGlyph } from './boxDrawing'
 import { familyForCodepoint, type FontSelection } from '../fontStack'
+import { cellBaseline } from '../cellBaseline'
 
 export interface GlyphRect {
   x: number
@@ -238,10 +239,10 @@ export class GlyphAtlas {
     const ascent = m.fontBoundingBoxAscent ?? fontSize * 0.8
     const descent = m.fontBoundingBoxDescent ?? fontSize * 0.2
     this.ascent = ascent
-    this.baseline = Math.max(
-      0,
-      Math.min(cellHeight, Math.round((cellHeight - (ascent + descent)) / 2 + ascent)),
-    )
+    // Shared with the DOM side rather than spelled out here: the inline
+    // suggestion has to land on this exact baseline, and two copies of the
+    // expression is how it stops doing so. See lib/cellBaseline.ts.
+    this.baseline = cellBaseline(ascent, descent, cellHeight)
     this.lineThickness = Math.max(1, Math.round(fontSize / 14))
 
     // Single-channel: the shader only ever reads coverage, and caching each
