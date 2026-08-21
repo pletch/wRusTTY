@@ -1,4 +1,10 @@
 import type { FontRange } from './settings'
+import {
+  bundledDefaultFeatures,
+  bundledFaces,
+  ensureBundledLoaded,
+  weightDescriptor,
+} from './bundledFonts'
 
 /**
  * Turning the font settings into the four family strings the atlas rasterizes
@@ -121,20 +127,41 @@ function faceWithDescriptors(family: string, features: string, axes: string): st
     // Not in the DOM typings yet, though it has been a descriptor since CSS
     // Fonts 4 and the browsers this runs on take it.
     if (axes) (descriptors as { variationSettings?: string }).variationSettings = axes
-    const face = new FontFace(name, `local(${JSON.stringify(family)})`, descriptors)
-    // Added before it resolves: `load()` is a promise, the atlas rasterizes
-    // synchronously, and a face that is still loading falls back for a frame
-    // rather than failing. The engine redraws on the next write anyway.
-    void face.load().then(
-      (loaded) => document.fonts.add(loaded),
-      () => {
-        // A family the machine does not have. The generated name then resolves
-        // to nothing, so fall back to naming the family directly — features
-        // lost, glyphs correct, which is the right way round.
-        registered.set(key, family)
-      },
-    )
-    document.fonts.add(face)
+
+    // A bundled family cannot be reached with `local()` — it was never
+    // installed — so the wrapper points at the same files `bundledFonts.ts`
+    // registered the plain family from, and declares each of them at the
+    // weight it actually covers. `url()` names a single file, so the axis a
+    // `local()` wrapper can leave wide open is only as wide as what is
+    // shipped: one entry per weight for a static family, and the real axis
+    // for a variable one.
+    //
+    // Uprights only, for the reason the note at the top of this file gives:
+    // this face declares itself upright, and an italic slot is expected to
+    // name a face of its own rather than ask this one to lean.
+    const bundled = (bundledFaces(family) ?? []).filter((f) => f.style === 'normal')
+    const sources = bundled.length
+      ? bundled.map((f) => ({ src: `url(${JSON.stringify(f.url)})`, weight: weightDescriptor(f) }))
+      : [{ src: `local(${JSON.stringify(family)})`, weight: '1 1000' }]
+
+    for (const source of sources) {
+      const face = new FontFace(name, source.src, { ...descriptors, weight: source.weight })
+      // Added before it resolves: `load()` is a promise, the atlas rasterizes
+      // synchronously, and a face that is still loading falls back for a frame
+      // rather than failing. The engine redraws on the next write anyway.
+      void face.load().then(
+        (loaded) => document.fonts.add(loaded),
+        () => {
+          // A family the machine does not have. The generated name then
+          // resolves to nothing, so fall back to naming the family directly —
+          // features lost, glyphs correct, which is the right way round. For a
+          // bundled family that fallback is the plainly registered face, so
+          // the glyphs are still the shipped ones.
+          registered.set(key, family)
+        },
+      )
+      document.fonts.add(face)
+    }
   } catch {
     // Not the malformed-descriptor path, which was the assumption here until
     // it was measured: the constructor takes a descriptor it cannot parse
@@ -149,8 +176,9 @@ function faceWithDescriptors(family: string, features: string, axes: string): st
   return name
 }
 
-/** The first family in a CSS list, unquoted — what `local()` needs. */
-function headFamily(stack: string): string {
+/** The first family in a CSS list, unquoted — what `local()` needs, and what
+ *  anything asking whether a stack names a particular face has to compare. */
+export function headFamily(stack: string): string {
   const named = stack.match(/"([^"]+)"|'([^']+)'|^([^,]+)/)
   return (named?.[1] ?? named?.[2] ?? named?.[3] ?? stack).trim()
 }
@@ -177,8 +205,22 @@ function slot(stack: string, features: string, axes: string): string {
 }
 
 export function buildFontSelection(s: FontSettings): FontSelection {
-  const features = s.fontFeatures ?? ''
+  // A shipped family may need features before it looks like itself —
+  // Monaspace keeps its ligatures in stylistic sets rather than in `liga`. Its
+  // defaults stand in only for an empty field, so anything typed there is the
+  // whole answer and every one of these tags can be turned back off.
+  const features =
+    (s.fontFeatures ?? '').trim() || bundledDefaultFeatures(headFamily(s.fontFamily))
   const axes = s.fontVariations ?? ''
+
+  // The one chokepoint every font change flows through, which is why the
+  // bundled fetch is started here: a shipped face is declared at startup but
+  // not loaded, and `fillText` against an unloaded face silently draws the
+  // fallback. Naming one in any slot is what says it is wanted.
+  for (const stack of [s.fontFamily, s.fontFamilyBold, s.fontFamilyItalic, s.fontFamilyBoldItalic]) {
+    if (stack.trim()) ensureBundledLoaded(headFamily(stack))
+  }
+
   const base = slot(s.fontFamily, features, axes)
 
   const boldIsFace = s.fontFamilyBold.trim() !== ''

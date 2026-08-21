@@ -28,6 +28,12 @@ import {
 } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
+  bundledDefaultFeatures,
+  bundledFaces,
+  bundledLacksItalic,
+  ensureBundledLoaded,
+} from '../lib/bundledFonts'
+import {
   descriptorIsValid,
   formatCodepoint,
   ligatureConflict,
@@ -101,7 +107,9 @@ const selectClass =
  *
  * Installed families are offered wrapped in the same symbol tier the curated
  * stacks carry, and the ones a curated stack already names are dropped so the
- * list does not say Consolas twice.
+ * list does not say Consolas twice. That covers the bundled families too: a
+ * machine that also has JetBrains Mono installed should offer it once, and the
+ * bundled entry is the one that resolves either way.
  */
 function fontOptions(current: string, installed: InstalledFont[] | null) {
   const curatedNames = new Set(FONT_STACKS.map((f) => familyName(f.value).toLowerCase()))
@@ -110,7 +118,11 @@ function fontOptions(current: string, installed: InstalledFont[] | null) {
     .map((f) => ({ label: f.name, value: stackFor(f.name) }))
   const known = [...FONT_STACKS, ...installedStacks]
   return {
-    curated: FONT_STACKS,
+    curated: FONT_STACKS.filter((f) => !f.bundled),
+    // Grouped separately because the distinction is worth stating: these need
+    // nothing from the machine, so they are the entries that look the same on
+    // every install.
+    bundled: FONT_STACKS.filter((f) => f.bundled),
     installed: installedStacks,
     extra: known.some((f) => f.value === current)
       ? null
@@ -166,6 +178,12 @@ function resolveFace(stack: string): { using: string; missing: string[] } | null
  * missing, and only one of the two is worth telling someone about.
  */
 function hasFamily(bare: string): boolean | null {
+  // A family that ships in the app is present by construction, and asking is
+  // actively misleading: `check` answers "can this be drawn *right now*", and
+  // a declared face that has not been fetched yet reads there as absent. That
+  // is the difference between a font this machine does not have and a font
+  // whose bytes are still on their way, and only the first is worth a warning.
+  if (bundledFaces(bare)) return true
   if (typeof document === 'undefined' || !document.fonts?.check) return null
   try {
     // Quoted so a family with spaces parses as one name rather than as an
@@ -246,12 +264,32 @@ function Toggle({
 function FontResolution({
   stack,
   installed,
+  italicFace,
 }: {
   stack: string
   installed: InstalledFont[] | null
+  /** The configured italic slot, only so the note below can stop saying
+   *  anything once it has been filled in. */
+  italicFace: string
 }) {
   const resolved = resolveFace(stack)
   const wanted = familyName(stack)
+  // Settings can be open with no pane on screen, and a pane is otherwise the
+  // only thing that asks for a font. Without this, picking a bundled family
+  // here would declare interest in it and fetch nothing.
+  useEffect(() => {
+    ensureBundledLoaded(wanted)
+  }, [wanted])
+  // Said here rather than left to be discovered, for the same reason the rest
+  // of this component exists: Fira Code ships uprights only, which is its
+  // authors' decision and not something wrong with this install, but italic
+  // text coming out unslanted reads exactly like a bug in the renderer.
+  const noItalic = bundledLacksItalic(wanted) && !italicFace.trim() ? (
+    <p className="px-0.5 leading-relaxed text-chrome/30">
+      {wanted} has no italic face — italic text renders without a true italic until you
+      name one under Faces below.
+    </p>
+  ) : null
   // Only ever said of a family we enumerated and were told is proportional —
   // never inferred from a name, and never guessed when enumeration is
   // unavailable. The engine measures one glyph and assumes the rest match, so
@@ -267,15 +305,19 @@ function FontResolution({
       </p>
     )
   }
-  if (!resolved) return null
-  if (resolved.missing.length === 0) {
-    return <p className="px-0.5 leading-relaxed text-chrome/30">Rendering in {resolved.using}.</p>
-  }
+  if (!resolved) return noItalic
   return (
-    <p className="px-0.5 leading-relaxed text-amber-300/50">
-      {resolved.missing.length === 1 ? `${wanted} is` : `${resolved.missing.join(', ')} are`} not
-      installed — falling back to {resolved.using}.
-    </p>
+    <>
+      {resolved.missing.length === 0 ? (
+        <p className="px-0.5 leading-relaxed text-chrome/30">Rendering in {resolved.using}.</p>
+      ) : (
+        <p className="px-0.5 leading-relaxed text-amber-300/50">
+          {resolved.missing.length === 1 ? `${wanted} is` : `${resolved.missing.join(', ')} are`}{' '}
+          not installed — falling back to {resolved.using}.
+        </p>
+      )}
+      {noItalic}
+    </>
   )
 }
 
@@ -632,6 +674,7 @@ function AdvancedFontSettings({
   installed: InstalledFont[] | null
 }) {
   const families = familyChoices(installed)
+  const defaultFeatures = bundledDefaultFeatures(familyName(settings.fontFamily))
   return (
     <details className="rounded-md border border-chrome/5 bg-black/10">
       <summary className="cursor-pointer px-2 py-1.5 text-chrome/55 transition-colors duration-100 hover:text-chrome/85">
@@ -677,13 +720,22 @@ function AdvancedFontSettings({
           <input
             type="text"
             spellCheck={false}
-            placeholder={'"ss01" 1, "zero" 1'}
+            // The family's own defaults where it has them, so what is in force
+            // while the field is empty is legible rather than invisible.
+            placeholder={defaultFeatures || '"ss01" 1, "zero" 1'}
             className={`${selectClass} w-52 font-mono`}
             value={settings.fontFeatures}
             onChange={(e) => onChange({ ...settings, fontFeatures: e.target.value })}
           />
         </label>
         <DescriptorNote property="font-feature-settings" value={settings.fontFeatures} />
+        {defaultFeatures && !settings.fontFeatures.trim() && (
+          <p className="px-0.5 leading-relaxed text-chrome/30">
+            {familyName(settings.fontFamily)} keeps its ligatures in stylistic sets rather
+            than in the usual place, so those are on by default. Anything typed here replaces
+            them outright.
+          </p>
+        )}
         <LigatureConflictNote settings={settings} />
         <label className="flex items-center justify-between gap-3 text-chrome/85">
           <span>Variable axes</span>
@@ -907,6 +959,15 @@ export function SettingsDialog({
                                       {f.label}
                                     </option>
                                   ))}
+                                  {opts.bundled.length > 0 && (
+                                    <optgroup label="Bundled with wRusTTY">
+                                      {opts.bundled.map((f) => (
+                                        <option key={f.value} value={f.value}>
+                                          {f.label}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
                                   {opts.extra && (
                                     <option key={opts.extra.value} value={opts.extra.value}>
                                       {opts.extra.label}
@@ -926,7 +987,11 @@ export function SettingsDialog({
                             })()}
                           </select>
                         </label>
-                        <FontResolution stack={settings.fontFamily} installed={installedFonts} />
+                        <FontResolution
+                          stack={settings.fontFamily}
+                          installed={installedFonts}
+                          italicFace={settings.fontFamilyItalic}
+                        />
                         <AdvancedFontSettings
                           settings={settings}
                           onChange={onChange}
@@ -1023,8 +1088,10 @@ export function SettingsDialog({
                           point — a program that picks its own cursor, as vim and many TUIs
                           do, overrides it. Ligatures join runs of operators like{' '}
                           <code className="text-chrome/50">=&gt;</code> into one glyph, and need
-                          a font that has them — Cascadia Code above does, Cascadia Mono and
-                          Consolas do not. The cursor's own cell always shows the plain
+                          a font that has them — all three bundled fonts do, as does Cascadia
+                          Code; Cascadia Mono and Consolas do not. Monaspace Neon also spaces
+                          awkward letter pairs apart through the same mechanism, so it wants
+                          this on too. The cursor's own cell always shows the plain
                           character.
                         </p>
                       </div>

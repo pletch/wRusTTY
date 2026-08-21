@@ -108,7 +108,8 @@ describe('loadSettings', () => {
       STORAGE_KEY,
       JSON.stringify({ fontFamily: '"Cascadia Mono", ui-monospace, monospace' }),
     )
-    expect(loadSettings().fontFamily).toBe(FONT_STACKS[1].value)
+    const cascadiaMono = FONT_STACKS.find((f) => f.label === 'Cascadia Mono')
+    expect(loadSettings().fontFamily).toBe(cascadiaMono?.value)
     expect(loadSettings().fontFamily).toContain('Segoe UI Symbol')
   })
 

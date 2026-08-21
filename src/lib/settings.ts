@@ -371,11 +371,34 @@ export interface FontRange {
  * Cascadia Code is offered alongside Cascadia Mono again: the two differ only
  * in ligatures, which the renderer can now form, so choosing it is once more
  * a choice that does something. It needs `ligatures` on to show them.
+ *
+ * Two entries are marked `bundled`: their head family ships in the app (see
+ * `bundledFonts.ts`) rather than being asked of the machine, so they resolve
+ * on a fresh install. They still carry the same symbol tier and the same
+ * system tail — a machine that has the font installed is welcome to it, and
+ * the tail is what catches a webview that could not register the shipped face
+ * at all.
  */
-export const FONT_STACKS: ReadonlyArray<{ label: string; value: string }> = [
+export const FONT_STACKS: ReadonlyArray<{ label: string; value: string; bundled?: true }> = [
   {
     label: 'System default',
     value: 'ui-monospace, Consolas, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+  },
+  {
+    label: 'JetBrains Mono',
+    value: '"JetBrains Mono", ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+    bundled: true,
+  },
+  {
+    label: 'Fira Code',
+    value: '"Fira Code", ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+    bundled: true,
+  },
+  {
+    label: 'Monaspace Neon',
+    value:
+      '"Monaspace Neon", ui-monospace, "Symbols Nerd Font Mono", "Segoe UI Symbol", monospace',
+    bundled: true,
   },
   {
     label: 'Cascadia Mono',
@@ -408,12 +431,25 @@ export const FONT_STACKS: ReadonlyArray<{ label: string; value: string }> = [
  * as it is.
  */
 const FONT_STACK_MIGRATIONS: Record<string, string> = {
-  'ui-monospace, Consolas, monospace': FONT_STACKS[0].value,
-  '"Cascadia Mono", ui-monospace, monospace': FONT_STACKS[1].value,
-  '"Cascadia Code", ui-monospace, monospace': FONT_STACKS[2].value,
-  'Consolas, ui-monospace, monospace': FONT_STACKS[3].value,
-  '"Courier New", monospace': FONT_STACKS[4].value,
-  '"Lucida Console", ui-monospace, monospace': FONT_STACKS[5].value,
+  'ui-monospace, Consolas, monospace': curatedStack('System default'),
+  '"Cascadia Mono", ui-monospace, monospace': curatedStack('Cascadia Mono'),
+  '"Cascadia Code", ui-monospace, monospace': curatedStack('Cascadia Code'),
+  'Consolas, ui-monospace, monospace': curatedStack('Consolas'),
+  '"Courier New", monospace': curatedStack('Courier New'),
+  '"Lucida Console", ui-monospace, monospace': curatedStack('Lucida Console'),
+}
+
+/** The current stack for a curated entry, by the name the picker shows.
+ *
+ *  By label rather than by position: this table used to index `FONT_STACKS`
+ *  directly, which silently remapped every migration the moment an entry was
+ *  inserted above the ones it named. A label that no longer exists is a
+ *  mistake worth failing on at load rather than migrating someone's font
+ *  setting to whatever now sits at that index. */
+function curatedStack(label: string): string {
+  const entry = FONT_STACKS.find((f) => f.label === label)
+  if (!entry) throw new Error(`no curated font stack labelled ${label}`)
+  return entry.value
 }
 
 /**

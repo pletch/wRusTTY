@@ -387,6 +387,71 @@ describe('variable axes', () => {
   })
 })
 
+describe('the families that ship with the app', () => {
+  it('wraps a bundled family through its own files, which is all local() cannot reach', () => {
+    const sel = buildFontSelection(
+      settings({ fontFamily: '"JetBrains Mono", monospace', fontFeatures: '"zero" 1' }),
+    )
+    expect(declared.map((d) => d.source.slice(0, 4))).toEqual(['url(', 'url('])
+    // One generated family, two files behind it: `url()` names a single face,
+    // so the weight range a `local()` wrapper leaves open has to be spelled
+    // out as the weights actually shipped.
+    expect(new Set(declared.map((d) => d.family)).size).toBe(1)
+    expect(declared.map((d) => d.descriptors.weight)).toEqual(['400', '700'])
+    expect(declared.every((d) => d.descriptors.featureSettings === '"zero" 1')).toBe(true)
+    expect(sel.regular).toBe(`"${declared[0].family}", "JetBrains Mono", monospace`)
+  })
+
+  it('wraps only the uprights, leaving the slant to a face of its own', () => {
+    buildFontSelection(settings({ fontFamily: 'JetBrains Mono', fontFeatures: '"cv02" 1' }))
+    expect(declared.map((d) => d.descriptors.style)).toEqual(['normal', 'normal'])
+  })
+
+  it('keeps the configured stack behind it, so a webview that took no face still draws', () => {
+    const sel = buildFontSelection(
+      settings({ fontFamily: '"Fira Code", monospace', fontFeatures: '"ss09" 1' }),
+    )
+    expect(sel.regular.endsWith('"Fira Code", monospace')).toBe(true)
+  })
+
+  it('declares a variable bundled family across its axis, not at one weight', () => {
+    // One file covers 200-800, so bold has to be instanced out of it rather
+    // than emboldened from the single weight the wrapper was told about.
+    buildFontSelection(settings({ fontFamily: 'Monaspace Neon', fontFeatures: '"ss01" 2' }))
+    expect(declared).toHaveLength(1)
+    expect(declared[0].source.startsWith('url(')).toBe(true)
+    expect(declared[0].descriptors.weight).toBe('200 800')
+  })
+
+  it("applies a family's own features when the field is empty, or it looks broken", () => {
+    // Monaspace renders `!=` and `->` as plain characters otherwise, however
+    // the ligature toggle is set.
+    const sel = buildFontSelection(settings({ fontFamily: '"Monaspace Neon", monospace' }))
+    expect(declared).toHaveLength(1)
+    expect(declared[0].descriptors.featureSettings).toContain('"ss01" 1')
+    expect(declared[0].descriptors.featureSettings).toContain('"ss10" 1')
+    expect(sel.regular.startsWith(`"${declared[0].family}"`)).toBe(true)
+  })
+
+  it('lets a typed string replace those defaults rather than joining them', () => {
+    // Otherwise a set turned on by default could not be turned off.
+    buildFontSelection(settings({ fontFamily: 'Monaspace Neon', fontFeatures: '"ss03" 0' }))
+    expect(declared[0].descriptors.featureSettings).toBe('"ss03" 0')
+  })
+
+  it('leaves a family with no defaults of its own declaring nothing', () => {
+    buildFontSelection(settings({ fontFamily: '"Fira Code", monospace' }))
+    expect(declared).toEqual([])
+  })
+
+  it('reaches an installed family through local() as it always did', () => {
+    buildFontSelection(settings({ fontFamily: 'Consolas', fontFeatures: '"ss10" 1' }))
+    expect(declared).toHaveLength(1)
+    expect(declared[0].source).toBe('local("Consolas")')
+    expect(declared[0].descriptors.weight).toBe('1 1000')
+  })
+})
+
 describe('descriptorIsValid', () => {
   /** Stands in for the CSS parser, which jsdom does not have. */
   function stubSupports(impl: ((p: string, v: string) => boolean) | null) {

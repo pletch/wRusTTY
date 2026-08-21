@@ -28,7 +28,8 @@ import { scanOsc } from './oscScanner'
 import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
 import { cursorStyleSequence, type CursorStyleSetting, type TextBlending } from '../settings'
-import { plainSelection, type FontSelection } from '../fontStack'
+import { headFamily, plainSelection, type FontSelection } from '../fontStack'
+import { bundledSettled } from '../bundledFonts'
 import {
   compileGhosttyWasm,
   instantiateGhosttyModule,
@@ -2187,6 +2188,32 @@ export class GhosttyEngine implements TerminalEngine {
       // no longer fills the container.
       this.fit(true)
     }
+
+    // Everything above measured the cell and built the atlas against whatever
+    // face resolved *now*. For an installed family that is the final answer —
+    // it is on the machine, so it is available the moment it is named. A
+    // family that ships in the app arrives over a fetch, and until it does,
+    // the measurement is of the fallback: the columns come out at one face's
+    // advance with the other face's glyphs in them, which is visible as
+    // spacing that is plainly wrong and then silently corrects itself the
+    // next time anything rebuilds the renderer.
+    //
+    // So re-apply once, when the fetch lands. It resolves false — and this
+    // does nothing at all — for every configuration naming no bundled family,
+    // and for every later call once one has arrived, which is what stops the
+    // re-application from re-applying itself.
+    void bundledSettled([
+      headFamily(fonts.regular),
+      headFamily(fonts.bold),
+      headFamily(fonts.italic),
+      headFamily(fonts.boldItalic),
+    ])
+      .then((wasPending) => {
+        if (wasPending && !this.disposed && this.fonts === fonts) {
+          this.setFont(fonts, this.fontSize)
+        }
+      })
+      .catch(() => {})
   }
   // The core takes its scrollback limit at construction and exposes no setter,
   // so a change here only takes effect for panes opened afterwards. Recreating

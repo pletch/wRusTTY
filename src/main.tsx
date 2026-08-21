@@ -3,6 +3,12 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { ConfirmProvider } from './components/ConfirmProvider'
+import { registerBundledFonts } from './lib/bundledFonts'
+
+// Before anything renders, so the settings dialog's resolution report and the
+// atlas both find the shipped families already declared. Declaring is all this
+// does — the bytes are fetched only for a family something actually names.
+registerBundledFonts()
 
 // The measurement instruments, behind a build flag.
 //

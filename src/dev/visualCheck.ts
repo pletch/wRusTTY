@@ -13,6 +13,12 @@
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import type { TextBlending } from '../lib/settings'
 import { buildFontSelection } from '../lib/fontStack'
+import { registerBundledFonts } from '../lib/bundledFonts'
+
+// This page bypasses `main.tsx` entirely — it is its own entry — so the
+// families that ship with the app have to be declared here too, or `?font=Fira
+// Code` silently compares the fallback against itself.
+registerBundledFonts()
 
 const ESC = '\x1b'
 const RESET = `${ESC}[0m`

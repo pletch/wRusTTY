@@ -259,10 +259,35 @@ so borders in `htop`, `nmtui`, `dialog` and vendor menu UIs tile without the
 hairline gaps a font's own glyphs leave at fractional cell heights — and they
 work on a machine where you cannot install a font. Nothing needs configuring.
 
+**Three fonts ship with the app.** JetBrains Mono, Fira Code and Monaspace Neon
+are in the installer, listed in Settings → Terminal → Font under *Bundled with
+wRusTTY*, and need nothing from the machine — no install step, no admin rights
+on a locked-down box, and the same terminal on every host you set it up on. All
+three have ligatures. Monaspace Neon is a variable font, so one ~500 KB file
+carries every weight and answers the *Variable axes* setting (`wdth`, `slnt`)
+as well; it keeps its ligatures in ten stylistic sets rather than in `liga`, so
+wRusTTY turns those on for it by default — typing anything into *OpenType
+features* replaces that outright.
+
+Only JetBrains Mono carries italic faces. Fira Code ships uprights only — its
+authors' decision, not a gap in what's bundled — and Monaspace reaches its
+italics through the `slnt` axis rather than through a separate file, which is
+configured for the whole terminal rather than per style. For either, name an
+italic family under *Faces* if you want real italics.
+
+All three are SIL OFL 1.1 and the license travels with them in
+`src/assets/fonts/<family>/OFL.txt`. Monaspace carries a Reserved Font Name, so
+its file ships byte-for-byte as published and must not be subset. Everything
+else in the font picker is whatever the machine has, enumerated natively
+through DirectWrite — Iosevka and the rest work that way, they just aren't in
+the installer.
+
 **Ligatures.** Off by default; turn them on in Settings → Terminal. They need
-a font that has them (Cascadia Code does, Cascadia Mono and Consolas do not),
-and the cell under the cursor always shows the plain character rather than a
-slice of the ligature.
+a font that has them (all three bundled fonts do, as does Cascadia Code;
+Cascadia Mono and Consolas do not), and the cell under the cursor always shows
+the plain character rather than a slice of the ligature. Monaspace's texture
+healing — the spacing fix it applies to awkward letter pairs — reaches the face
+as a run of characters only when this is on, so it needs it too.
 
 **Serial break.** The `BRK` button in the status bar holds a break condition
 on the line, for Cisco password recovery, ROMMON entry, and bootloader
