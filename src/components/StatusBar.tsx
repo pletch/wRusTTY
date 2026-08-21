@@ -10,7 +10,7 @@ import { estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
  * anchor rather than blinking in and out. */
 function statusDotColor(status: string | undefined): string {
   if (status === 'connected') return 'bg-emerald-400'
-  if (!status) return 'bg-white/25'
+  if (!status) return 'bg-chrome/25'
   if (status.startsWith('failed') || status === 'disconnected' || status === 'lost') {
     return 'bg-red-400'
   }
@@ -180,15 +180,15 @@ export function StatusBar({
       : null
 
   return (
-    <footer className="flex h-6 shrink-0 items-center gap-2 border-t border-white/10 bg-black/20 px-3 text-xs text-white/45">
+    <footer className="flex h-6 shrink-0 items-center gap-2 border-t border-chrome/10 bg-black/20 px-3 text-xs text-chrome/45">
       <span
         className={`h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-base ease-swift ${statusDotColor(status)}`}
       />
       {protocol && (
-        <span className="shrink-0 font-medium tracking-wide text-white/55">{protocol}</span>
+        <span className="shrink-0 font-medium tracking-wide text-chrome/55">{protocol}</span>
       )}
       {target && (
-        <span className="min-w-0 truncate text-white/70" title={target}>
+        <span className="min-w-0 truncate text-chrome/70" title={target}>
           {target}
         </span>
       )}
@@ -200,7 +200,7 @@ export function StatusBar({
           the bar is tight, ahead of anything the app itself is saying. */}
       {remoteCwd && (
         <span
-          className="min-w-0 shrink truncate border-l border-white/10 pl-2 text-white/50"
+          className="min-w-0 shrink truncate border-l border-chrome/10 pl-2 text-chrome/50"
           title={`Working directory reported by the remote host: ${remoteCwd}`}
         >
           {remoteCwd}
@@ -208,7 +208,7 @@ export function StatusBar({
       )}
       {remoteTitle && (
         <span
-          className="min-w-0 shrink truncate text-white/40"
+          className="min-w-0 shrink truncate text-chrome/40"
           title={`Title set by the remote host: ${remoteTitle}`}
         >
           {remoteTitle}
@@ -219,12 +219,12 @@ export function StatusBar({
           console cable these are used mid-session, often urgently — a break
           has to land inside a boot window measured in seconds. */}
       {serialSessionId && (
-        <span className="flex shrink-0 items-center gap-1.5 border-l border-white/10 pl-2">
+        <span className="flex shrink-0 items-center gap-1.5 border-l border-chrome/10 pl-2">
           <button
             onClick={doSendBreak}
             disabled={breaking}
             title="Send a break condition (Cisco password recovery, ROMMON, bootloader entry)"
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-amber-300 disabled:opacity-40"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-chrome/60 transition-colors duration-100 hover:bg-chrome/10 hover:text-amber-300 disabled:opacity-40"
           >
             <Zap size={11} strokeWidth={2} />
             BRK
@@ -232,8 +232,8 @@ export function StatusBar({
           <button
             onClick={() => toggleLine('dtr')}
             title={`Data Terminal Ready — currently ${dtr ? 'asserted' : 'deasserted'}`}
-            className={`rounded px-1.5 py-0.5 transition-colors duration-100 hover:bg-white/10 ${
-              dtr ? 'text-emerald-400/80' : 'text-white/35'
+            className={`rounded px-1.5 py-0.5 transition-colors duration-100 hover:bg-chrome/10 ${
+              dtr ? 'text-emerald-400/80' : 'text-chrome/35'
             }`}
           >
             DTR
@@ -241,8 +241,8 @@ export function StatusBar({
           <button
             onClick={() => toggleLine('rts')}
             title={`Request To Send — currently ${rts ? 'asserted' : 'deasserted'}`}
-            className={`rounded px-1.5 py-0.5 transition-colors duration-100 hover:bg-white/10 ${
-              rts ? 'text-emerald-400/80' : 'text-white/35'
+            className={`rounded px-1.5 py-0.5 transition-colors duration-100 hover:bg-chrome/10 ${
+              rts ? 'text-emerald-400/80' : 'text-chrome/35'
             }`}
           >
             RTS
@@ -270,7 +270,7 @@ export function StatusBar({
                 sitting next to it — reading them as a pair is the point, and
                 two separate figures about the same pane read as clutter. */}
             {scrollbackDepth !== null && (
-              <span className="text-white/30">{` · ~${formatRows(scrollbackDepth)}`}</span>
+              <span className="text-chrome/30">{` · ~${formatRows(scrollbackDepth)}`}</span>
             )}
           </span>
         )}

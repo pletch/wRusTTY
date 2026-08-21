@@ -6,6 +6,7 @@ import {
   backgroundWithOpacity,
   backgroundTint,
   stripOverlay,
+  tabHoverBackground,
 } from './theme'
 
 describe('findTheme', () => {
@@ -114,6 +115,28 @@ describe('stripOverlay', () => {
       for (const channel of hexToRgb(theme.background)) {
         expect(Math.abs(tone * alpha - channel * alpha)).toBeGreaterThan(10)
       }
+    }
+  })
+})
+
+describe('tabHoverBackground', () => {
+  it('lays half the strip wash over the background, not over the strip', () => {
+    const theme = findTheme('Campbell')
+    expect(tabHoverBackground(theme, 1)).toBe(
+      'linear-gradient(rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.04)), #0c0c0cff',
+    )
+  })
+
+  it('sits between the strip and the active tab', () => {
+    // The active tab is the background exactly, the strip is that plus a
+    // full wash — so half a wash is the midpoint, and on a dark theme that
+    // has to be *darker* than the strip rather than lighter.
+    for (const theme of PRESET_THEMES) {
+      const [tone, , , full] = stripOverlay(theme).match(/[\d.]+/g)!.map(Number)
+      const [, , , half] = tabHoverBackground(theme, 1).match(/[\d.]+/g)!.map(Number)
+      expect(half).toBeCloseTo(full / 2)
+      expect(tabHoverBackground(theme, 1)).toContain(`${theme.background}ff`)
+      expect(tone).toBe(theme.name === 'Light' ? 0 : 255)
     }
   })
 })

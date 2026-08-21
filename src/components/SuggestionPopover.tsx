@@ -50,7 +50,7 @@ export function SuggestionPopover({
       // Not focusable and not in the tab order: focus belongs to the terminal
       // the whole time, and taking it would stop the next keystroke reaching
       // the far end. The list is driven entirely from the pane's key handler.
-      className="pointer-events-auto absolute z-20 overflow-y-auto overscroll-contain rounded-md border border-white/10 bg-[#1b1d22]/95 shadow-lg shadow-black/40 backdrop-blur-sm"
+      className="pointer-events-auto absolute z-20 overflow-y-auto overscroll-contain rounded-md border border-chrome/10 bg-[#1b1d22]/95 shadow-lg shadow-black/40 backdrop-blur-sm"
       style={{
         left: Math.max(0, view.origin.col * cell.width),
         top: Math.max(0, place.top),
@@ -77,13 +77,13 @@ export function SuggestionPopover({
             onPick(i)
           }}
           className={`block w-full truncate px-2 py-1 text-left font-mono ${
-            i === view.index ? 'bg-sky-400/20 text-white' : 'text-white/60 hover:bg-white/5'
+            i === view.index ? 'bg-sky-400/20 text-chrome' : 'text-chrome/60 hover:bg-chrome/5'
           }`}
           title={item}
         >
           {/* What was typed is dimmed and the completion is not, so the eye
               goes straight to the part that is new. */}
-          <span className="text-white/35">{item.slice(0, view.typed.length)}</span>
+          <span className="text-chrome/35">{item.slice(0, view.typed.length)}</span>
           {item.slice(view.typed.length)}
         </button>
       ))}

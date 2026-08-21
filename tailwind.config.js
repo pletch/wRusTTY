@@ -6,6 +6,14 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      colors: {
+        // The tone the app's chrome is drawn in, flipped to black over a
+        // light terminal theme so one set of classes serves both — see
+        // chromeRgb in src/lib/theme.ts, which sets the variable. The
+        // <alpha-value> placeholder is what keeps `/40`, `/[0.06]` and the
+        // rest working exactly as they did on `white`.
+        chrome: 'rgb(var(--chrome-rgb) / <alpha-value>)',
+      },
       // App-wide motion vocabulary. Using these named tokens instead of
       // Tailwind's default `ease`/ad-hoc `duration-150` everywhere keeps
       // every transition sharing one character — the mark of an authored

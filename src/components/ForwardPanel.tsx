@@ -24,7 +24,7 @@ interface Props {
 // isn't guaranteed to match className order (see ConnectDialog's inputClass
 // for the same issue with `w-full`/`w-16`, caught via manual testing).
 const inputClass =
-  'min-w-0 rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'min-w-0 rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 function describe(spec: ForwardSpec): string {
   if (spec.type === 'dynamic') return `SOCKS5 :${spec.bindPort}`
@@ -156,16 +156,16 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
   return (
     <div
       data-forward-panel
-      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="flex items-center gap-1.5 font-medium text-white/90">
+        <h2 className="flex items-center gap-1.5 font-medium text-chrome/90">
           <ArrowLeftRight size={13} /> Port forwarding
         </h2>
         <button
           onClick={onClose}
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
         >
           <X size={13} />
         </button>
@@ -178,7 +178,7 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
               <div className="flex items-center justify-between gap-2">
                 <span
                   className={`flex min-w-0 items-center gap-1.5 truncate ${
-                    f.active ? 'text-white/70' : 'text-amber-300/80'
+                    f.active ? 'text-chrome/70' : 'text-amber-300/80'
                   }`}
                 >
                   {!f.active && <AlertTriangle size={11} className="shrink-0" />}
@@ -188,14 +188,14 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
                   {!f.active && (
                     <button
                       onClick={() => retry(f.id)}
-                      className="flex items-center gap-1 text-white/40 transition-colors duration-100 hover:text-sky-300"
+                      className="flex items-center gap-1 text-chrome/40 transition-colors duration-100 hover:text-sky-300"
                     >
                       <RotateCw size={10} /> retry
                     </button>
                   )}
                   <button
                     onClick={() => remove(f.id)}
-                    className="flex items-center gap-1 text-white/40 transition-colors duration-100 hover:text-red-300"
+                    className="flex items-center gap-1 text-chrome/40 transition-colors duration-100 hover:text-red-300"
                   >
                     <Square size={10} /> {f.active ? 'stop' : 'dismiss'}
                   </button>
@@ -222,7 +222,7 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
               type="button"
               onClick={() => setType(t)}
               className={`flex-1 rounded py-1 uppercase transition-colors duration-100 ${
-                type === t ? 'bg-white/15 text-white' : 'text-white/40 hover:text-white/70'
+                type === t ? 'bg-chrome/15 text-chrome' : 'text-chrome/40 hover:text-chrome/70'
               }`}
             >
               {t}

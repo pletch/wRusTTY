@@ -55,23 +55,23 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="animate-in fade-in zoom-in-95 slide-in-from-top-2 w-96 rounded-xl border border-white/10 bg-[#1f2028] shadow-2xl duration-150"
+        className="animate-in fade-in zoom-in-95 slide-in-from-top-2 w-96 rounded-xl border border-chrome/10 bg-[#1f2028] shadow-2xl duration-150"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 border-b border-white/10 px-3">
-          <Search size={14} className="shrink-0 text-white/40" />
+        <div className="flex items-center gap-2 border-b border-chrome/10 px-3">
+          <Search size={14} className="shrink-0 text-chrome/40" />
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Jump to session..."
-            className="w-full bg-transparent py-2.5 text-sm text-white/90 outline-none placeholder:text-white/30"
+            className="w-full bg-transparent py-2.5 text-sm text-chrome/90 outline-none placeholder:text-chrome/30"
           />
         </div>
         <div className="max-h-72 overflow-y-auto p-1 text-xs">
           {results.length === 0 && (
-            <p className="px-3 py-3 text-white/30">No matching sessions</p>
+            <p className="px-3 py-3 text-chrome/30">No matching sessions</p>
           )}
           {results.map((s, i) => (
             <div
@@ -79,17 +79,17 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
               onMouseEnter={() => setIndex(i)}
               onClick={() => onSelect(s)}
               className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors duration-100 ${
-                i === index ? 'bg-white/10 text-white' : 'text-white/70'
+                i === index ? 'bg-chrome/10 text-chrome' : 'text-chrome/70'
               }`}
             >
               {s.protocol === 'telnet' ? (
                 <Network size={13} className="shrink-0 text-amber-400/40" />
               ) : (
-                <Server size={13} className="shrink-0 text-white/30" />
+                <Server size={13} className="shrink-0 text-chrome/30" />
               )}
               <div className="min-w-0">
                 <div className="truncate">{s.label}</div>
-                <div className="truncate text-white/40">{profileSubtitle(s)}</div>
+                <div className="truncate text-chrome/40">{profileSubtitle(s)}</div>
               </div>
             </div>
           ))}

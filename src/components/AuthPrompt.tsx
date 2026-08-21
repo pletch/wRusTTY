@@ -49,7 +49,7 @@ export function AuthPrompt({
   return (
     <div className="animate-in fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
       <form
-        className="animate-in zoom-in-95 w-96 space-y-3 rounded-lg border border-white/10 bg-[#1f2028] p-5 shadow-2xl duration-150"
+        className="animate-in zoom-in-95 w-96 space-y-3 rounded-lg border border-chrome/10 bg-[#1f2028] p-5 shadow-2xl duration-150"
         onSubmit={(e) => {
           e.preventDefault()
           onAnswer(values)
@@ -61,7 +61,7 @@ export function AuthPrompt({
           }
         }}
       >
-        <h1 className="flex items-center gap-2 text-sm font-semibold text-white">
+        <h1 className="flex items-center gap-2 text-sm font-semibold text-chrome">
           <ServerCog size={16} className="text-sky-400" />
           {name.trim() || 'Authentication required'}
         </h1>
@@ -70,16 +70,16 @@ export function AuthPrompt({
             authenticates twice with prompts that can be word-for-word
             identical, and without this the target's password gets typed into
             the bastion. */}
-        <p className="text-xs text-white/60">
+        <p className="text-xs text-chrome/60">
           {isJump ? 'Jump host' : 'Server'}{' '}
-          <span className="font-mono text-white/80">
+          <span className="font-mono text-chrome/80">
             {host}:{port}
           </span>{' '}
           is asking:
         </p>
 
         {instructions.trim() && (
-          <p className="whitespace-pre-wrap rounded bg-black/30 p-2 text-xs leading-relaxed text-white/70">
+          <p className="whitespace-pre-wrap rounded bg-black/30 p-2 text-xs leading-relaxed text-chrome/70">
             {instructions.trim()}
           </p>
         )}
@@ -87,8 +87,8 @@ export function AuthPrompt({
         <div className="space-y-2">
           {fields.map((field, i) => (
             <label key={i} className="block space-y-1">
-              <span className="flex items-center gap-1.5 text-[11px] text-white/60">
-                <KeyRound size={11} className="shrink-0 text-white/40" />
+              <span className="flex items-center gap-1.5 text-[11px] text-chrome/60">
+                <KeyRound size={11} className="shrink-0 text-chrome/40" />
                 {/* Verbatim, trailing colon and all — rewording it would be
                     guessing at a PAM stack we can't see. */}
                 <span className="font-mono">{field.prompt.trim() || `Response ${i + 1}`}</span>
@@ -105,7 +105,7 @@ export function AuthPrompt({
                 }
                 autoComplete="off"
                 spellCheck={false}
-                className="w-full rounded border border-white/10 bg-black/30 px-2 py-1.5 font-mono text-xs text-white outline-none focus:border-sky-500/60"
+                className="w-full rounded border border-chrome/10 bg-black/30 px-2 py-1.5 font-mono text-xs text-chrome outline-none focus:border-sky-500/60"
               />
             </label>
           ))}
@@ -114,7 +114,7 @@ export function AuthPrompt({
         <div className="flex justify-end gap-2 pt-1">
           <button
             type="button"
-            className="rounded px-3 py-1.5 text-xs text-white/70 transition-colors duration-100 hover:bg-white/10"
+            className="rounded px-3 py-1.5 text-xs text-chrome/70 transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => onAnswer(null)}
           >
             Cancel

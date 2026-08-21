@@ -4,7 +4,7 @@ import * as serial from '../lib/serial'
 import type { SerialConfig } from '../lib/serial'
 
 const inputClass =
-  'w-full rounded border border-white/10 bg-black/20 px-2 py-1 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'w-full rounded border border-chrome/10 bg-black/20 px-2 py-1 text-sm text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 const selectClass = inputClass
 
 interface Props {
@@ -65,7 +65,7 @@ export function SerialFields({ config, onChange, onIdentityChange }: Props) {
           type="button"
           onClick={refresh}
           title="Refresh ports"
-          className="flex items-center justify-center rounded border border-white/10 px-2 text-white/70 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+          className="flex items-center justify-center rounded border border-chrome/10 px-2 text-chrome/70 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome"
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
@@ -134,7 +134,7 @@ export function SerialFields({ config, onChange, onIdentityChange }: Props) {
         </select>
       </div>
 
-      <div className="flex items-center gap-2 text-xs text-white/70">
+      <div className="flex items-center gap-2 text-xs text-chrome/70">
         <select
           className={`${selectClass} min-w-0 flex-1`}
           value={config.inputMode}
@@ -147,7 +147,7 @@ export function SerialFields({ config, onChange, onIdentityChange }: Props) {
           <option value="ReadlineHex">Readline (hex)</option>
         </select>
         <select
-          className="rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+          className="rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
           value={config.lineEnding}
           onChange={(e) => set('lineEnding', e.target.value as SerialConfig['lineEnding'])}
         >
@@ -156,7 +156,7 @@ export function SerialFields({ config, onChange, onIdentityChange }: Props) {
           <option value="CrLf">CRLF</option>
         </select>
       </div>
-      <p className="text-[11px] leading-relaxed text-white/40">{inputModeHints[config.inputMode]}</p>
+      <p className="text-[11px] leading-relaxed text-chrome/40">{inputModeHints[config.inputMode]}</p>
     </>
   )
 }

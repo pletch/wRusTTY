@@ -2133,7 +2133,7 @@ export function Terminal({
         <button
           type="button"
           onClick={onBackToConnect}
-          className="rounded-md bg-white/10 px-3 py-1.5 text-sm font-medium text-white/80 transition-colors duration-fast ease-swift hover:bg-white/15 hover:text-white"
+          className="rounded-md bg-chrome/10 px-3 py-1.5 text-sm font-medium text-chrome/80 transition-colors duration-fast ease-swift hover:bg-chrome/15 hover:text-chrome"
         >
           Connection settings
         </button>
@@ -2270,7 +2270,7 @@ export function Terminal({
         )}
       </div>
       {connecting && (
-        <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-white/50 duration-150">
+        <div className="animate-in fade-in pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#16171d] text-xs text-chrome/50 duration-150">
           <Loader2 size={20} className="animate-spin text-sky-400" />
           Connecting to {label}...
         </div>
@@ -2280,9 +2280,9 @@ export function Terminal({
         // etc.) leaves this pane stuck showing a dead terminal with no way
         // back to the connect dialog short of closing the whole pane —
         // which, in a split, takes any sibling panes down with it too.
-        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-fast">
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-chrome/60 duration-fast">
           <AlertTriangle size={20} className="text-red-400" />
-          <p className="max-w-xs text-white/70">{connectFailed}</p>
+          <p className="max-w-xs text-chrome/70">{connectFailed}</p>
           {disconnectActions}
         </div>
       )}
@@ -2303,9 +2303,9 @@ export function Terminal({
         // A clean remote-initiated disconnect with auto-close turned off:
         // offer to reconnect or reopen the connect dialog rather than leaving
         // a dead terminal behind.
-        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-fast">
-          <Unplug size={20} className="text-white/40" />
-          <p className="max-w-xs text-white/70">Connection closed.</p>
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-chrome/60 duration-fast">
+          <Unplug size={20} className="text-chrome/40" />
+          <p className="max-w-xs text-chrome/70">Connection closed.</p>
           {disconnectActions}
         </div>
       )}
@@ -2322,11 +2322,11 @@ export function Terminal({
         // broken" rather than as one component failing. There is no in-app
         // engine switch to point at, so this says what happened and where the
         // detail is, and stops short of implying a fix that doesn't exist.
-        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-white/60 duration-fast">
+        <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-chrome/60 duration-fast">
           <AlertTriangle size={20} className="text-red-400" />
-          <p className="max-w-xs text-white/70">This pane's terminal renderer failed to start.</p>
-          <p className="max-w-xs text-white/40">{engineFailed}</p>
-          <p className="max-w-xs text-white/40">Details are in the application log.</p>
+          <p className="max-w-xs text-chrome/70">This pane's terminal renderer failed to start.</p>
+          <p className="max-w-xs text-chrome/40">{engineFailed}</p>
+          <p className="max-w-xs text-chrome/40">Details are in the application log.</p>
         </div>
       )}
       {markMode && (
@@ -2334,10 +2334,10 @@ export function Terminal({
         // the mode is the thing you need to see while looking at text in the
         // middle of the pane. The keys are spelled out because a mode that
         // swallows typing has to say how to get back out of it.
-        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs text-white/70 shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-[#1f2028] px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
           <TextCursorInput size={13} className="text-emerald-400" />
           <span className="font-medium">Mark</span>
-          <span className="text-white/40">Shift+arrows select · Enter copies · Esc exits</span>
+          <span className="text-chrome/40">Shift+arrows select · Enter copies · Esc exits</span>
         </div>
       )}
       {hintMode && (
@@ -2345,10 +2345,10 @@ export function Terminal({
         // taken the keyboard, so it has to say what the keys do now and how to
         // get out. An empty screen of labels means there were no links, which
         // this leaves visible rather than explaining away.
-        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs text-white/70 shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-[#1f2028] px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
           <ExternalLink size={13} className="text-amber-400" />
           <span className="font-medium">Links</span>
-          <span className="text-white/40">Type a label to open · Esc exits</span>
+          <span className="text-chrome/40">Type a label to open · Esc exits</span>
         </div>
       )}
       {dropTarget && canUpload && (
@@ -2356,7 +2356,7 @@ export function Terminal({
         // file is being aimed at, and covering it would hide the directory the
         // prompt line is showing.
         <div className="pointer-events-none absolute inset-0 z-40 flex items-start justify-center rounded-sm bg-sky-400/5 ring-2 ring-inset ring-sky-400/70">
-          <span className="mt-3 rounded-md border border-white/10 bg-[#1f2028] px-2 py-1 text-xs text-white/80 shadow-xl">
+          <span className="mt-3 rounded-md border border-chrome/10 bg-[#1f2028] px-2 py-1 text-xs text-chrome/80 shadow-xl">
             {remoteCwdRef.current && remoteCwdRef.current === confirmedDestRef.current
               ? `Send to ${remoteCwdRef.current}`
               : (remoteCwdRef.current ?? titleCwdRef.current)
@@ -2369,9 +2369,9 @@ export function Terminal({
         // Where the destination is agreed rather than assumed: once per
         // directory, and again whenever the reported one changes.
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-80 rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl">
-            <p className="mb-1 font-medium text-white/90">Send {dropDest.file.name}</p>
-            <p className="mb-2 text-white/40">
+          <div className="w-80 rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl">
+            <p className="mb-1 font-medium text-chrome/90">Send {dropDest.file.name}</p>
+            <p className="mb-2 text-chrome/40">
               {dropDest.source === 'reported'
                 ? 'This is the directory the host says it is in. Confirmed once, and again whenever it changes — a host can report any directory it likes, and a file sent to the wrong one is hard to notice.'
                 : dropDest.source === 'title'
@@ -2390,12 +2390,12 @@ export function Terminal({
                 }
               }}
               placeholder="/var/tmp"
-              className="mb-2 w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-white/90 outline-none placeholder:text-white/25"
+              className="mb-2 w-full rounded border border-chrome/10 bg-black/30 px-2 py-1 text-chrome/90 outline-none placeholder:text-chrome/25"
             />
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setDropDest(null)}
-                className="rounded px-2 py-1 text-white/50 transition-colors duration-100 hover:bg-white/10 hover:text-white/90"
+                className="rounded px-2 py-1 text-chrome/50 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/90"
               >
                 Cancel
               </button>
@@ -2411,21 +2411,21 @@ export function Terminal({
         </div>
       )}
       {transfer && (
-        <div className="animate-in fade-in slide-in-from-bottom-1 absolute bottom-2 right-2 z-40 flex w-64 flex-col gap-1.5 rounded-lg border border-white/10 bg-[#1f2028] px-2.5 py-2 text-xs shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-bottom-1 absolute bottom-2 right-2 z-40 flex w-64 flex-col gap-1.5 rounded-lg border border-chrome/10 bg-[#1f2028] px-2.5 py-2 text-xs shadow-xl duration-fast ease-swift">
           <div className="flex items-center gap-2">
             <Upload size={13} className="shrink-0 text-sky-400" />
-            <span className="min-w-0 flex-1 truncate text-white/80">{transfer.name}</span>
+            <span className="min-w-0 flex-1 truncate text-chrome/80">{transfer.name}</span>
             <button
               onClick={() => {
                 if (transfer.id) void sftp.cancelTransfer(transfer.id).catch(() => {})
               }}
               title="Cancel this upload"
-              className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+              className="flex items-center justify-center rounded p-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
             >
               <X size={12} />
             </button>
           </div>
-          <div className="h-1 overflow-hidden rounded-full bg-white/10">
+          <div className="h-1 overflow-hidden rounded-full bg-chrome/10">
             <div
               className="h-full bg-sky-400 transition-[width] duration-150"
               style={{
@@ -2433,7 +2433,7 @@ export function Terminal({
               }}
             />
           </div>
-          <span className="text-white/40">
+          <span className="text-chrome/40">
             {formatBytes(transfer.sent)} of {formatBytes(transfer.total)}
           </span>
         </div>
@@ -2450,11 +2450,11 @@ export function Terminal({
               while the menu stayed up. */}
           <div className="fixed inset-0 z-40" onMouseDown={() => setLinkMenu(null)} />
           <div
-            className="animate-in fade-in zoom-in-95 fixed z-50 max-w-xs origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs text-white/80 shadow-xl duration-100"
+            className="animate-in fade-in zoom-in-95 fixed z-50 max-w-xs origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs text-chrome/80 shadow-xl duration-100"
             style={{ left: linkMenu.x, top: linkMenu.y }}
           >
             <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10"
               onClick={() => {
                 termRef.current?.openLink?.(linkMenu.url)
                 setLinkMenu(null)
@@ -2463,7 +2463,7 @@ export function Terminal({
               <ExternalLink size={13} /> Open link
             </button>
             <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10"
               onClick={() => {
                 writeText(linkMenu.url).catch(() => {})
                 setLinkMenu(null)
@@ -2471,15 +2471,15 @@ export function Terminal({
             >
               <Copy size={13} /> Copy link
             </button>
-            <div className="mt-1 break-all border-t border-white/10 px-3 pt-1.5 text-[11px] text-white/40">
+            <div className="mt-1 break-all border-t border-chrome/10 px-3 pt-1.5 text-[11px] text-chrome/40">
               {linkMenu.url}
             </div>
           </div>
         </>
       )}
       {searchOpen && (
-        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-white/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-fast ease-swift">
-          <Search size={13} className="mr-1 text-white/40" />
+        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-chrome/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-fast ease-swift">
+          <Search size={13} className="mr-1 text-chrome/40" />
           <input
             ref={searchInputRef}
             value={searchQuery}
@@ -2503,9 +2503,9 @@ export function Terminal({
               }
             }}
             placeholder="Find..."
-            className="w-40 bg-transparent text-white/90 outline-none placeholder:text-white/30"
+            className="w-40 bg-transparent text-chrome/90 outline-none placeholder:text-chrome/30"
           />
-          <span className="mx-1 min-w-[3.25rem] shrink-0 text-right tabular-nums text-white/40">
+          <span className="mx-1 min-w-[3.25rem] shrink-0 text-right tabular-nums text-chrome/40">
             {searchResults.count > 0
               ? `${searchResults.index + 1}/${searchResults.count}`
               : searchQuery
@@ -2517,7 +2517,7 @@ export function Terminal({
             className={`flex items-center justify-center rounded p-1 transition-colors duration-fast ease-swift ${
               searchCaseSensitive
                 ? 'bg-sky-500/25 text-sky-200'
-                : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+                : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
             }`}
             title="Match case"
           >
@@ -2528,7 +2528,7 @@ export function Terminal({
             className={`flex items-center justify-center rounded p-1 transition-colors duration-fast ease-swift ${
               searchRegex
                 ? 'bg-sky-500/25 text-sky-200'
-                : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+                : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
             }`}
             title="Use regular expression"
           >
@@ -2536,21 +2536,21 @@ export function Terminal({
           </button>
           <button
             onClick={() => runSearch(searchQuery, { back: true })}
-            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
             title="Previous (Shift+Enter)"
           >
             <ChevronUp size={14} />
           </button>
           <button
             onClick={() => runSearch(searchQuery)}
-            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
             title="Next (Enter)"
           >
             <ChevronDown size={14} />
           </button>
           <button
             onClick={() => setSearchOpen(false)}
-            className="flex items-center justify-center rounded p-1 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
+            className="flex items-center justify-center rounded p-1 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
             title="Close (Esc)"
           >
             <X size={14} />

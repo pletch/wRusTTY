@@ -61,7 +61,7 @@ export interface ConnectDialogInitial {
 // Tailwind's generated-CSS order rather than className order to resolve the
 // conflict, which isn't guaranteed to go the way it reads left-to-right.
 const inputClass =
-  'rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'rounded border border-chrome/10 bg-black/20 px-2 py-1.5 text-sm text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 const protocolIcons: Record<Protocol, typeof TerminalIcon> = {
   ssh: TerminalIcon,
@@ -542,8 +542,8 @@ export function ConnectDialog({
                 onClick={() => switchProtocol(p)}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded py-1.5 uppercase tracking-wide transition-colors duration-150 ${
                   protocol === p
-                    ? 'bg-white/15 text-white shadow-sm'
-                    : 'text-white/40 hover:text-white/70'
+                    ? 'bg-chrome/15 text-chrome shadow-sm'
+                    : 'text-chrome/40 hover:text-chrome/70'
                 }`}
               >
                 <Icon size={13} />
@@ -587,7 +587,7 @@ export function ConnectDialog({
                   required
                 />
 
-                <div className="flex gap-3 text-xs text-white/70">
+                <div className="flex gap-3 text-xs text-chrome/70">
                   <label className="flex items-center gap-1.5">
                     <input
                       type="radio"
@@ -627,13 +627,13 @@ export function ConnectDialog({
                 </div>
 
                 {authType === 'Agent' ? (
-                  <p className="text-xs text-white/40">
+                  <p className="text-xs text-chrome/40">
                     Keys come from Pageant or the Windows OpenSSH agent — whichever is running.
                     Nothing is stored here, and hardware keys (FIDO2, PIV, YubiKey) work this way
                     only.
                   </p>
                 ) : authType === 'Interactive' ? (
-                  <p className="text-xs text-white/40">
+                  <p className="text-xs text-chrome/40">
                     The server asks, you answer, nothing is stored. Use this when the password
                     shouldn&apos;t live on this machine, or when logging in takes more than a
                     password — a one-time code, a push, or anything else a server puts in front of
@@ -651,7 +651,7 @@ export function ConnectDialog({
                       onChange={(e) => setPassword(e.target.value)}
                     />
                     {initial?.hasCredential && !password && (
-                      <p className="text-xs text-white/40">
+                      <p className="text-xs text-chrome/40">
                         Password is stored in the vault — enter a new one to replace it.
                       </p>
                     )}
@@ -674,7 +674,7 @@ export function ConnectDialog({
                         type="button"
                         onClick={browseForKey}
                         title="Browse for key file"
-                        className="flex shrink-0 items-center justify-center rounded border border-white/10 bg-black/20 px-2 text-white/50 transition-colors duration-100 hover:text-white/90"
+                        className="flex shrink-0 items-center justify-center rounded border border-chrome/10 bg-black/20 px-2 text-chrome/50 transition-colors duration-100 hover:text-chrome/90"
                       >
                         <FolderOpen size={13} />
                       </button>
@@ -691,7 +691,7 @@ export function ConnectDialog({
                       onChange={(e) => setPassphrase(e.target.value)}
                     />
                     {keyStorage === 'vault' && vaultedInitially && !keyPath && (
-                      <p className="text-xs text-white/40">
+                      <p className="text-xs text-chrome/40">
                         Key is stored in the vault — browse above to replace it.
                       </p>
                     )}
@@ -705,7 +705,7 @@ export function ConnectDialog({
                     names needed. Hoisting it to a caption says it once. */}
                 {sessions && sessions.filter((s) => s.id !== initial?.id).length > 0 && (
                   <label className="block space-y-1">
-                    <span className="text-xs text-white/40">Jump host</span>
+                    <span className="text-xs text-chrome/40">Jump host</span>
                     <select
                       // Same indicator-overlap fix as the terminal-type
                       // select — more pressing here, since these labels are
@@ -748,7 +748,7 @@ export function ConnectDialog({
                 list to a single entry and the control appears broken
                 until the field is cleared. */}
             <label className="block space-y-1">
-              <span className="text-xs text-white/40">Terminal type</span>
+              <span className="text-xs text-chrome/40">Terminal type</span>
               <select
                 // pr-7 rather than inputClass's px-2: a native select
                 // draws its indicator inside the padding box, so the
@@ -787,7 +787,7 @@ export function ConnectDialog({
             keepalives", which is where a migrating user will look. */}
         {protocol === 'ssh' && (
           <label className="block space-y-1">
-            <span className="text-xs text-white/40">Keepalive (seconds)</span>
+            <span className="text-xs text-chrome/40">Keepalive (seconds)</span>
             <input
               className={`${inputClass} w-full`}
               inputMode="numeric"
@@ -808,7 +808,7 @@ export function ConnectDialog({
         {protocol === 'ssh' && !jumpProfileId && (
           <div className="space-y-1">
             <label className="block space-y-1">
-              <span className="text-xs text-white/40">Wake-on-LAN (MAC address)</span>
+              <span className="text-xs text-chrome/40">Wake-on-LAN (MAC address)</span>
               <input
                 className={`${inputClass} w-full`}
                 placeholder="blank — don't wake this host"
@@ -824,7 +824,7 @@ export function ConnectDialog({
             {wakeMac.trim() !== '' && (
               <div className="flex gap-2">
                 <label className="block flex-1 space-y-1">
-                  <span className="text-xs text-white/40">Broadcast to</span>
+                  <span className="text-xs text-chrome/40">Broadcast to</span>
                   <input
                     className={`${inputClass} w-full`}
                     placeholder="255.255.255.255"
@@ -834,7 +834,7 @@ export function ConnectDialog({
                   />
                 </label>
                 <label className="block w-32 space-y-1">
-                  <span className="text-xs text-white/40">Wait (seconds)</span>
+                  <span className="text-xs text-chrome/40">Wait (seconds)</span>
                   <input
                     className={`${inputClass} w-full`}
                     inputMode="numeric"
@@ -855,7 +855,7 @@ export function ConnectDialog({
             profile silently stops waking and the only trace is a log line a
             release build doesn't show. */}
         {protocol === 'ssh' && jumpProfileId && initial?.wakeOnLan && (
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-chrome/40">
             This session has a MAC saved, but it won't be woken while it goes through a jump host —
             a magic packet is a broadcast on this machine's network, and this host isn't on it.
           </p>
@@ -864,7 +864,7 @@ export function ConnectDialog({
         {/* Applies to every protocol: this is the local terminal choosing
             which byte to emit, not anything negotiated with the far end. */}
         <label className="block space-y-1">
-          <span className="text-xs text-white/40">Backspace key sends</span>
+          <span className="text-xs text-chrome/40">Backspace key sends</span>
           <select
             className={`${inputClass} w-full truncate pr-7`}
             value={backspace}
@@ -883,7 +883,7 @@ export function ConnectDialog({
             in the SSH block. Worded as an opt-out because that is all it is:
             ticked stores nothing and follows Settings, and neither state can
             make a session come back whose credential has to be typed in. */}
-        <label className="flex items-center gap-2 text-xs text-white/70">
+        <label className="flex items-center gap-2 text-xs text-chrome/70">
           <input
             type="checkbox"
             className="accent-sky-400"
@@ -893,7 +893,7 @@ export function ConnectDialog({
           Reconnect automatically if the link drops
         </label>
         {!autoReconnect && (
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-chrome/40">
             This session will stay down until you reconnect it by hand, whatever the global setting
             says.
           </p>
@@ -909,10 +909,10 @@ export function ConnectDialog({
             for a customer's bastion even if the global setting is later turned
             on. */}
         {protocol === 'ssh' && (
-          <label className="flex items-center gap-2 text-xs text-white/70">
+          <label className="flex items-center gap-2 text-xs text-chrome/70">
             Import this host's shell history
             <select
-              className="rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+              className="rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
               value={importRemoteHistory === null ? 'global' : importRemoteHistory ? 'yes' : 'no'}
               onChange={(e) =>
                 setImportRemoteHistory(
@@ -927,7 +927,7 @@ export function ConnectDialog({
           </label>
         )}
         {importRemoteHistory === true && (
-          <p className="text-xs text-white/40">
+          <p className="text-xs text-chrome/40">
             Once per connection, wRusTTY will read this host's shell history file over its own
             channel and add what it finds to autocomplete. Nothing is written on the host and its
             history file is not changed.
@@ -939,15 +939,15 @@ export function ConnectDialog({
             records the adapter's USB VID/PID/serial instead, and resolves a
             live COM number at connect time. */}
         {onSaveProfile && (
-          <div className="space-y-2 border-t border-white/10 pt-2.5">
-            <label className="flex items-center gap-2 text-xs text-white/70">
+          <div className="space-y-2 border-t border-chrome/10 pt-2.5">
+            <label className="flex items-center gap-2 text-xs text-chrome/70">
               <input
                 type="checkbox"
                 className="accent-sky-400"
                 checked={saveProfile}
                 onChange={(e) => setSaveProfile(e.target.checked)}
               />
-              <Save size={12} className="text-white/40" />
+              <Save size={12} className="text-chrome/40" />
               Save as session
             </label>
             {protocol === 'serial' && saveProfile && !serialUsb && (
@@ -982,7 +982,7 @@ export function ConnectDialog({
                       onClick={() =>
                         dispatch({ type: 'newFolderCancelled', initialFolder: initial?.folder ?? '' })
                       }
-                      className="shrink-0 rounded border border-white/10 bg-black/20 px-2 text-xs text-white/50 transition-colors duration-100 hover:text-white/90"
+                      className="shrink-0 rounded border border-chrome/10 bg-black/20 px-2 text-xs text-chrome/50 transition-colors duration-100 hover:text-chrome/90"
                     >
                       Cancel
                     </button>
@@ -1005,7 +1005,7 @@ export function ConnectDialog({
                 {onSaveCredential && storesSecret && (authType === 'Password' || keyStorage === 'path') && (
                   <label
                     className={`flex items-center gap-2 text-xs ${
-                      vaultUnlocked ? 'text-white/70' : 'text-white/30'
+                      vaultUnlocked ? 'text-chrome/70' : 'text-chrome/30'
                     }`}
                   >
                     <input
@@ -1021,7 +1021,7 @@ export function ConnectDialog({
                   </label>
                 )}
                 {authType === 'PublicKey' && onImportKeyToVault && (
-                  <div className="flex gap-3 text-xs text-white/70">
+                  <div className="flex gap-3 text-xs text-chrome/70">
                     <label className="flex items-center gap-1.5">
                       <input
                         type="radio"
@@ -1032,7 +1032,7 @@ export function ConnectDialog({
                       Key file on disk
                     </label>
                     <label
-                      className={`flex items-center gap-1.5 ${vaultUnlocked ? '' : 'text-white/30'}`}
+                      className={`flex items-center gap-1.5 ${vaultUnlocked ? '' : 'text-chrome/30'}`}
                     >
                       <input
                         type="radio"
@@ -1052,7 +1052,7 @@ export function ConnectDialog({
 
         {error && <p className="text-xs text-red-400">{error}</p>}
 
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-white/70">
+        <label className="flex cursor-pointer items-center gap-2 text-xs text-chrome/70">
           <input
             type="checkbox"
             className="accent-sky-400"

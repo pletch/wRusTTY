@@ -23,7 +23,7 @@ interface Props {
 }
 
 const secondaryButton =
-  'flex w-full items-center gap-1.5 rounded py-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white/90'
+  'flex w-full items-center gap-1.5 rounded py-1.5 text-chrome/60 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/90'
 
 export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
   const confirm = useConfirm()
@@ -105,14 +105,14 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
     <div className="relative" data-workspace-menu>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-150 hover:bg-white/10 hover:text-white/90"
+        className="flex items-center justify-center rounded p-1.5 text-chrome/50 transition-colors duration-150 hover:bg-chrome/10 hover:text-chrome/90"
         title="Workspaces"
       >
         <LayoutGrid size={15} strokeWidth={2} />
       </button>
       {open && (
         <div
-          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
           onClick={(e) => e.stopPropagation()}
         >
           {saved.length > 0 && (
@@ -120,18 +120,18 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
               {saved.map((w) => (
                 <div
                   key={w.id}
-                  className="group flex items-center gap-1.5 rounded px-1.5 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
+                  className="group flex items-center gap-1.5 rounded px-1.5 py-1.5 text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06]"
                 >
                   <button
                     onClick={() => {
                       onOpen(w)
                       setOpen(false)
                     }}
-                    className="min-w-0 flex-1 truncate text-left hover:text-white/90"
+                    className="min-w-0 flex-1 truncate text-left hover:text-chrome/90"
                     title="Open this workspace alongside the current tabs"
                   >
                     {w.name}
-                    <span className="block text-white/35">
+                    <span className="block text-chrome/35">
                       {w.tabs.length === 1 ? '1 tab' : `${w.tabs.length} tabs`}
                     </span>
                   </button>
@@ -143,14 +143,14 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
                         ? 'Nothing open that can be saved'
                         : `Replace with the current ${arrangement}`
                     }
-                    className="shrink-0 text-white/25 opacity-0 transition-opacity duration-100 hover:text-sky-300 disabled:cursor-not-allowed disabled:hover:text-white/25 group-hover:opacity-100"
+                    className="shrink-0 text-chrome/25 opacity-0 transition-opacity duration-100 hover:text-sky-300 disabled:cursor-not-allowed disabled:hover:text-chrome/25 group-hover:opacity-100"
                   >
                     <RefreshCw size={12} />
                   </button>
                   <button
                     onClick={() => doDelete(w)}
                     title="Delete workspace"
-                    className="shrink-0 text-white/25 opacity-0 transition-opacity duration-100 hover:text-red-300 group-hover:opacity-100"
+                    className="shrink-0 text-chrome/25 opacity-0 transition-opacity duration-100 hover:text-red-300 group-hover:opacity-100"
                   >
                     <Trash2 size={12} />
                   </button>
@@ -159,8 +159,8 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
             </div>
           )}
 
-          <form onSubmit={doSave} className="space-y-2 border-t border-white/10 pt-2.5">
-            <p className="text-white/60">
+          <form onSubmit={doSave} className="space-y-2 border-t border-chrome/10 pt-2.5">
+            <p className="text-chrome/60">
               {nothingToSave ? 'Nothing open that can be saved.' : `Save ${arrangement}.`}
             </p>
             {/* Said before saving, not discovered on reopen. Both causes are
@@ -173,7 +173,7 @@ export function WorkspaceMenu({ tabs, saved, onOpen, onChanged }: Props) {
               </p>
             )}
             <input
-              className="w-full rounded border border-white/10 bg-black/20 px-2 py-1.5 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+              className="w-full rounded border border-chrome/10 bg-black/20 px-2 py-1.5 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
               placeholder="workspace name"
               value={name}
               onChange={(e) => setName(e.target.value)}

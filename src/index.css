@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 :root {
+  /* Overwritten from the terminal theme on every render (see App.tsx). The
+     default is the dark-theme answer, so anything painted before the first
+     effect runs is right for five of the six presets rather than none. */
+  --chrome-rgb: 255 255 255;
   color-scheme: light dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;

@@ -13,11 +13,11 @@ interface Props {
 }
 
 const fieldClass =
-  'w-full rounded border border-white/10 bg-black/20 px-2 py-1.5 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'w-full rounded border border-chrome/10 bg-black/20 px-2 py-1.5 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 const primaryButton =
   'w-full rounded bg-sky-500/90 py-1.5 font-medium text-white transition-colors duration-100 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50'
 const secondaryButton =
-  'flex w-full items-center gap-1.5 rounded py-1.5 text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white/90'
+  'flex w-full items-center gap-1.5 rounded py-1.5 text-chrome/60 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/90'
 
 export function VaultMenu({ status, onStatusChange }: Props) {
   const confirm = useConfirm()
@@ -163,25 +163,25 @@ export function VaultMenu({ status, onStatusChange }: Props) {
       ? 'text-emerald-400'
       : status === 'locked'
         ? 'text-red-400'
-        : 'text-white/50 hover:text-white/90'
+        : 'text-chrome/50 hover:text-chrome/90'
 
   return (
     <div className="relative" data-vault-menu>
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${iconColorClass}`}
+        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${iconColorClass}`}
         title={`Vault: ${status}`}
       >
         <Icon size={15} strokeWidth={2} />
       </button>
       {open_ && (
         <div
-          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
           onClick={(e) => e.stopPropagation()}
         >
           {status === 'uninitialized' && (
             <form onSubmit={submitCreate} className="space-y-2">
-              <p className="text-white/60">
+              <p className="text-chrome/60">
                 Create a master password to encrypt saved credentials.
               </p>
               <input
@@ -225,12 +225,12 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                     <Fingerprint size={13} />
                     {osUnlockMethod ? `Unlock with ${osUnlockMethod.label}` : 'Unlock with Windows sign-in'}
                   </button>
-                  <p className="flex items-center gap-2 text-white/30">
-                    <span className="h-px flex-1 bg-white/10" /> or <span className="h-px flex-1 bg-white/10" />
+                  <p className="flex items-center gap-2 text-chrome/30">
+                    <span className="h-px flex-1 bg-chrome/10" /> or <span className="h-px flex-1 bg-chrome/10" />
                   </p>
                 </>
               )}
-              <p className="text-white/60">Enter your master password to unlock.</p>
+              <p className="text-chrome/60">Enter your master password to unlock.</p>
               <input
                 type="password"
                 autoFocus
@@ -262,7 +262,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                 <Unlock size={13} /> Vault is unlocked
               </p>
               <label
-                className={`flex items-start gap-2 py-1 text-white/70 ${
+                className={`flex items-start gap-2 py-1 text-chrome/70 ${
                   osUnlockBusy ? 'cursor-wait opacity-60' : ''
                 }`}
               >
@@ -287,7 +287,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                       behind this window.
                     </span>
                   ) : osUnlockOn && osUnlockMethod ? (
-                    <span className="block text-white/40">
+                    <span className="block text-chrome/40">
                       Using {osUnlockMethod.label}.{' '}
                       {/* Non-exportability is left unsaid on purpose: it's
                           true of every Hello credential, so stating it tells
@@ -313,7 +313,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                       )}
                     </span>
                   ) : (
-                    <span className="block text-white/40">
+                    <span className="block text-chrome/40">
                       Skips the master password, using Windows Hello where this machine supports it.
                     </span>
                   )}

@@ -205,14 +205,76 @@ const STRIP_OVERLAY_ALPHA = 0.08
  * compositing over the window the way it always has, and a translucent
  * window stays translucent up here too. */
 export function stripOverlay(theme: TerminalTheme): string {
+  return wash(theme, STRIP_OVERLAY_ALPHA)
+}
+
+/** The strip's own colour as something paintable — the window background
+ * with the full wash on it, rather than the wash alone. The strip itself
+ * doesn't need this (it lays its wash over the window and is done), but
+ * anything drawing a piece of strip *on top of* something else does: the
+ * fillets under the active tab's bottom corners have the terminal's colour
+ * behind them and have to put the strip back over part of it. */
+export function stripBackground(theme: TerminalTheme, opacity: number): string {
+  return washed(theme, opacity, STRIP_OVERLAY_ALPHA)
+}
+
+/** The fill a quiet tab takes while the pointer is over it: the terminal's
+ * own colour with half the strip's wash on it, which lands it midway between
+ * the strip it sits in and the active tab it would become.
+ *
+ * Two layers rather than one, because a hovered tab has to *replace* the
+ * strip's wash rather than add to it — washing the strip further only ever
+ * moves away from the active tab, which on a dark theme meant hovering a tab
+ * made it lighter when the thing it was reaching towards is darker. Painting
+ * the background again underneath hides the strip, and the half wash on top
+ * then measures from the same place the active tab does. A one-stop gradient
+ * is how CSS states a flat layer above a background colour. */
+export function tabHoverBackground(theme: TerminalTheme, opacity: number): string {
+  return washed(theme, opacity, STRIP_OVERLAY_ALPHA / 2)
+}
+
+/** The window background with `alpha` of the wash laid over it, as one CSS
+ * background value. A one-stop gradient is how CSS states a flat layer above
+ * a background colour. */
+function washed(theme: TerminalTheme, opacity: number, alpha: number): string {
+  const layer = wash(theme, alpha)
+  return `linear-gradient(${layer}, ${layer}), ${backgroundWithOpacity(theme, opacity)}`
+}
+
+/** A translucent black or white, whichever this theme's background is
+ * further from, at the given alpha. */
+function wash(theme: TerminalTheme, alpha: number): string {
+  const tone = backgroundIsDark(theme) ? 255 : 0
+  return `rgba(${tone}, ${tone}, ${tone}, ${alpha})`
+}
+
+/** Whether this theme's background is nearer black than white — the one
+ * question everything the app paints *around* the terminal has to answer,
+ * since all of it is drawn as some alpha of a single tone over that
+ * background.
+ *
+ * Rec. 709 luma. The exact coefficients matter little for a yes/no this
+ * coarse, but a plain channel average would call Solarized Dark (#002b36,
+ * two thirds of its light in the blue channel) lighter than it looks. */
+function backgroundIsDark(theme: TerminalTheme): boolean {
   const [r, g, b] = hexToRgb(theme.background)
-  // Rec. 709 luma. The exact coefficients matter little at this job — the
-  // question is only "is this closer to black or to white" — but a plain
-  // channel average would call Solarized Dark (#002b36, two thirds of its
-  // light in the blue channel) lighter than it looks.
-  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-  const tone = luma < 128 ? 255 : 0
-  return `rgba(${tone}, ${tone}, ${tone}, ${STRIP_OVERLAY_ALPHA})`
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128
+}
+
+/** The tone the app's chrome — every label, hairline and hover wash outside
+ * the terminal itself — is drawn in, as the space-separated RGB triplet
+ * Tailwind's `chrome` color reads from `--chrome-rgb`.
+ *
+ * All of that chrome was a literal `white/N`, which is right over five of
+ * the six presets and invisible over the sixth: a `text-white/45` label on
+ * the Light theme's #ffffff is one nobody can read. Naming the tone once and
+ * flipping it here is what lets one set of classes serve both.
+ *
+ * Text sitting on a saturated accent fill — a sky or a red button — stays
+ * literally white, since what it needs contrast against is the button, not
+ * the window. */
+export function chromeRgb(theme: TerminalTheme): string {
+  return backgroundIsDark(theme) ? '255 255 255' : '0 0 0'
 }
 
 /** Same color as an (r, g, b, a 0-255) tuple, for window-vibrancy's acrylic

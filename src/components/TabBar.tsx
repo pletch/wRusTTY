@@ -49,6 +49,15 @@ interface Props {
    * here because it follows the chosen theme and the window's background
    * opacity, neither of which the strip otherwise knows about. */
   paneBackground: string
+  /** The fill a quiet tab takes under the pointer — the terminal's colour
+   * with half the strip's wash on it, so it lands midway between the strip
+   * and the active tab. Comes from the same place `paneBackground` does, and
+   * for the same reason: it is measured from the theme, which the strip has
+   * no way to see. */
+  tabHoverBackground: string
+  /** The strip's own colour, paintable — for the fillets that flare the
+   * active tab's bottom corners out into it. See stripBackground. */
+  stripBackground: string
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
@@ -278,6 +287,8 @@ export function TabBar({
   attentionPanes,
   titleByPane,
   paneBackground,
+  tabHoverBackground,
+  stripBackground,
   onSelect,
   onClose,
   onNew,
@@ -391,7 +402,14 @@ export function TabBar({
         // up even for the ~1px subpixel-rounding gaps that aren't real
         // overflow at all. Wheel/trackpad scrolling still works with it
         // hidden; only the visible bar is gone.
-        className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto"
+        // `pr-2` reserves the width the last tab's right-hand fillet hangs
+        // into. The fillets are absolutely positioned outside their tab, and
+        // an out-of-flow descendant still counts towards a scroll
+        // container's scrollable overflow — so on the last tab it added 8px
+        // the container could not show, and the check below reported a strip
+        // that fits exactly as overflowing, fading its own last tab. Padding
+        // is inside clientWidth, so the same 8px stops being an overflow.
+        className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto pr-2"
         style={
           overflowing
             ? {
@@ -491,9 +509,18 @@ export function TabBar({
               }}
               style={{
                 paddingTop: `${tabContentTopPx}px`,
-                // Skipped while this tab is the drop target, so the sky wash
-                // marking it as such isn't painted over by an inline fill.
-                ...(active && dropTargetId !== tab.id ? { background: paneBackground } : {}),
+                // Both skipped while this tab is the drop target, so the sky
+                // wash marking it as such isn't painted over by an inline
+                // fill. Hover is driven from `hoveredId` rather than a
+                // `hover:` class because what it paints is a colour computed
+                // from the theme, not one Tailwind can name.
+                ...(dropTargetId === tab.id
+                  ? {}
+                  : active
+                    ? { background: paneBackground }
+                    : hoveredId === tab.id
+                      ? { background: tabHoverBackground }
+                      : {}),
               }}
               // Only one tab is a shape: the active one. It takes the
               // window's own corner radius (`rounded-t-lg` — see the root
@@ -512,6 +539,10 @@ export function TabBar({
               // Hovering an inactive tab lends it the same shape and a fill
               // partway to the active one's, so the thing under the pointer is
               // legible as a target without being mistaken for the selection.
+              // Partway *towards* it: this was a white wash, which on a dark
+              // theme moved a hovered tab lighter than the strip while the
+              // tab it was reaching for is darker — the wrong direction, and
+              // the reason it needs a computed colour rather than a class.
               //
               // `mt-1` drops every tab clear of the window's top edge: a tab
               // whose corner starts in the same pixel row as the frame's has
@@ -521,14 +552,57 @@ export function TabBar({
               // rather than also shifting the row.
               className={`group relative mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 px-3 text-xs transition-colors duration-150 ${
                 active
-                  ? 'rounded-t-lg text-white'
-                  : 'text-white/45 hover:rounded-t-lg hover:bg-white/[0.08] hover:text-white/80'
+                  ? 'z-10 rounded-t-lg text-chrome'
+                  : 'text-chrome/45 hover:rounded-t-lg hover:text-chrome/80'
               } ${draggedId === tab.id ? 'opacity-40' : ''} ${
                 dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''
               }`}
             >
               {separator && (
-                <span className="pointer-events-none absolute inset-y-2 left-0 w-px bg-white/10" />
+                <span className="pointer-events-none absolute inset-y-2 left-0 w-px bg-chrome/10" />
+              )}
+              {/* The tab's bottom corners, flared outwards into the strip
+                  instead of stopping square — the join a browser tab makes
+                  with the page it belongs to, and Windows Terminal with its
+                  terminal. Without them the active tab meets the pane in two
+                  right angles, which reads as a rectangle overlapping the
+                  strip rather than as the top of the surface below.
+                  Deliberately absent while a tab is merely hovered: that
+                  shape is a floating highlight, not something joined to
+                  anything.
+
+                  A corner CSS cannot round directly — the curve is convex
+                  from the pane's side, and border-radius only ever cuts
+                  inwards. Each is a square of pane colour just outside the
+                  tab with the strip painted back over it under an opposite
+                  rounded corner, which leaves exactly the quarter that
+                  should stay: full height against the tab, nothing at all a
+                  radius away. `stripBackground` rather than the wash alone
+                  because here the strip is being drawn *over* the terminal's
+                  colour rather than over the window. */}
+              {active && dropTargetId !== tab.id && (
+                <>
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute -left-2 bottom-0 h-2 w-2"
+                    style={{ background: paneBackground }}
+                  >
+                    <span
+                      className="block h-full w-full rounded-br-lg"
+                      style={{ background: stripBackground }}
+                    />
+                  </span>
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute -right-2 bottom-0 h-2 w-2"
+                    style={{ background: paneBackground }}
+                  >
+                    <span
+                      className="block h-full w-full rounded-bl-lg"
+                      style={{ background: stripBackground }}
+                    />
+                  </span>
+                </>
               )}
               {/* A single-pane tab only shows this bar when it's the active
                   tab — plain and full-bright, same as before. A split tab
@@ -590,7 +664,7 @@ export function TabBar({
                   content-driven between its min and max, so 12px of icon plus
                   its gap moved the whole thing. */}
               <span
-                className={`relative shrink-0 ${ProtocolIcon ? 'text-white/40' : 'text-white/20'}`}
+                className={`relative shrink-0 ${ProtocolIcon ? 'text-chrome/40' : 'text-chrome/20'}`}
               >
                 {ProtocolIcon ? <ProtocolIcon size={12} /> : <CircleDashed size={12} />}
                 {dotColor && (
@@ -624,7 +698,7 @@ export function TabBar({
                   e.stopPropagation()
                   onClose(tab.id)
                 }}
-                className={`ml-auto shrink-0 rounded p-1 text-white/40 transition-opacity duration-150 hover:bg-white/10 hover:text-white ${
+                className={`ml-auto shrink-0 rounded p-1 text-chrome/40 transition-opacity duration-150 hover:bg-chrome/10 hover:text-chrome ${
                   active ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                 }`}
               >
@@ -636,7 +710,7 @@ export function TabBar({
       </div>
       <button
         onClick={onNew}
-        className="flex shrink-0 items-center justify-center px-3 py-2 text-white/45 transition-colors duration-150 hover:bg-white/[0.06] hover:text-white"
+        className="flex shrink-0 items-center justify-center px-3 py-2 text-chrome/45 transition-colors duration-150 hover:bg-chrome/[0.06] hover:text-chrome"
         title="New connection (Ctrl+Shift+T)"
       >
         <Plus size={16} strokeWidth={2} />
@@ -644,11 +718,11 @@ export function TabBar({
 
       {menu && (
         <div
-          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs text-white/80 shadow-xl duration-100"
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs text-chrome/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
           <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => {
               onReconnect(menu.tabId)
               setMenu(null)
@@ -657,7 +731,7 @@ export function TabBar({
             <RotateCw size={13} /> Reconnect
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => {
               onDuplicate(menu.tabId)
               setMenu(null)
@@ -666,7 +740,7 @@ export function TabBar({
             <Copy size={13} /> Duplicate
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => {
               onClose(menu.tabId)
               setMenu(null)

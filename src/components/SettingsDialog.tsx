@@ -86,7 +86,7 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]['id']
 
 const selectClass =
-  'rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 /**
  * What the font select offers: the curated stacks, then whatever monospaced
@@ -224,16 +224,16 @@ function Toggle({
   hint: string
 }) {
   return (
-    <label className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 transition-colors duration-100 hover:bg-white/5">
+    <label className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-2 transition-colors duration-100 hover:bg-chrome/5">
       <input
         type="checkbox"
         className="mt-0.5 accent-sky-400"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
       />
-      <span className="text-white/85">
+      <span className="text-chrome/85">
         {label}
-        <span className="mt-0.5 block leading-relaxed text-white/40">{hint}</span>
+        <span className="mt-0.5 block leading-relaxed text-chrome/40">{hint}</span>
       </span>
     </label>
   )
@@ -269,7 +269,7 @@ function FontResolution({
   }
   if (!resolved) return null
   if (resolved.missing.length === 0) {
-    return <p className="px-0.5 leading-relaxed text-white/30">Rendering in {resolved.using}.</p>
+    return <p className="px-0.5 leading-relaxed text-chrome/30">Rendering in {resolved.using}.</p>
   }
   return (
     <p className="px-0.5 leading-relaxed text-amber-300/50">
@@ -422,15 +422,15 @@ function FontRangeTable({
   // white one is a coin toss — and it lands on white, which is how this shipped
   // marking nothing at all.
   const fieldBase =
-    'w-20 rounded border bg-black/20 px-1.5 py-1 text-center font-mono text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+    'w-20 rounded border bg-black/20 px-1.5 py-1 text-center font-mono text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
   const fieldClass = (flagged: boolean) =>
-    `${fieldBase} ${flagged ? 'border-amber-300/50' : 'border-white/10'}`
+    `${fieldBase} ${flagged ? 'border-amber-300/50' : 'border-chrome/10'}`
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-3 text-white/85">
+      <div className="flex items-center justify-between gap-3 text-chrome/85">
         <span>Ranges</span>
         <button
-          className="rounded border border-white/10 px-1.5 py-1 text-white/70 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+          className="rounded border border-chrome/10 px-1.5 py-1 text-chrome/70 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome"
           onClick={() => commit([...rows, { lo: '', hi: '', family: '' }])}
         >
           Add range
@@ -455,7 +455,7 @@ function FontRangeTable({
               value={row.lo}
               onChange={(e) => edit(i, { lo: e.target.value })}
             />
-            <span className="text-white/30">–</span>
+            <span className="text-chrome/30">–</span>
             <input
               type="text"
               spellCheck={false}
@@ -475,7 +475,7 @@ function FontRangeTable({
             <button
               aria-label="Remove range"
               title="Remove range"
-              className="rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+              className="rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome"
               onClick={() => commit(rows.filter((_, j) => j !== i))}
             >
               <X size={12} strokeWidth={2} />
@@ -512,7 +512,7 @@ function SliderRow({
   format: (value: number) => string
 }) {
   return (
-    <label className="flex items-center justify-between gap-3 text-white/85">
+    <label className="flex items-center justify-between gap-3 text-chrome/85">
       <span>{label}</span>
       <span className="flex items-center gap-2">
         <input
@@ -524,7 +524,7 @@ function SliderRow({
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
         />
-        <span className="w-10 text-right text-white/50">{format(value)}</span>
+        <span className="w-10 text-right text-chrome/50">{format(value)}</span>
       </span>
     </label>
   )
@@ -633,8 +633,8 @@ function AdvancedFontSettings({
 }) {
   const families = familyChoices(installed)
   return (
-    <details className="rounded-md border border-white/5 bg-black/10">
-      <summary className="cursor-pointer px-2 py-1.5 text-white/55 transition-colors duration-100 hover:text-white/85">
+    <details className="rounded-md border border-chrome/5 bg-black/10">
+      <summary className="cursor-pointer px-2 py-1.5 text-chrome/55 transition-colors duration-100 hover:text-chrome/85">
         Faces, weight, spacing and ranges
       </summary>
       <div className="space-y-2.5 px-2 pt-1 pb-2.5">
@@ -645,7 +645,7 @@ function AdvancedFontSettings({
             ['Bold italic', 'fontFamilyBoldItalic'],
           ] as const
         ).map(([label, key]) => (
-          <label key={key} className="flex items-center justify-between gap-3 text-white/85">
+          <label key={key} className="flex items-center justify-between gap-3 text-chrome/85">
             <span>{label}</span>
             <FamilySelect
               value={settings[key]}
@@ -672,7 +672,7 @@ function AdvancedFontSettings({
           step={100}
           format={(v) => String(v)}
         />
-        <label className="flex items-center justify-between gap-3 text-white/85">
+        <label className="flex items-center justify-between gap-3 text-chrome/85">
           <span>OpenType features</span>
           <input
             type="text"
@@ -685,7 +685,7 @@ function AdvancedFontSettings({
         </label>
         <DescriptorNote property="font-feature-settings" value={settings.fontFeatures} />
         <LigatureConflictNote settings={settings} />
-        <label className="flex items-center justify-between gap-3 text-white/85">
+        <label className="flex items-center justify-between gap-3 text-chrome/85">
           <span>Variable axes</span>
           <input
             type="text"
@@ -718,12 +718,12 @@ function AdvancedFontSettings({
           families={families}
         />
         <NamedFaceReport settings={settings} />
-        <p className="leading-relaxed text-white/30">
+        <p className="leading-relaxed text-chrome/30">
           Leaving a style on the body font asks that font for the weight or slant, which is
           what it has always done. Naming a face instead is worth it for italic in
           particular, where a real cursive face is a different thing from a slanted upright
           one. Features are passed through as{' '}
-          <code className="text-white/50">font-feature-settings</code>, so a font's stylistic
+          <code className="text-chrome/50">font-feature-settings</code>, so a font's stylistic
           sets and its slashed zero are reachable by tag — they reach italic text only when
           an italic face is named above. Variable axes go the same way, so a face's width,
           slant or optical size is reachable by tag too; weight has a control of its own
@@ -732,7 +732,7 @@ function AdvancedFontSettings({
           to a Nerd Font, or CJK to a font that covers it. A row that is not a complete range
           yet has no effect.
         </p>
-        <p className="leading-relaxed text-white/30">
+        <p className="leading-relaxed text-chrome/30">
           Weight is a number because that is what the axis is: 400 and 700 are what normal
           and bold mean, and a family with six cuts has no keyword for the one you probably
           want. A family without a face at the weight asked for gets the nearest it has.
@@ -832,8 +832,8 @@ export function SettingsDialog({
     <>
       <button
         onClick={() => setOpen(true)}
-        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
-          open ? 'text-white/90' : 'text-white/50 hover:text-white/90'
+        className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
+          open ? 'text-chrome/90' : 'text-chrome/50 hover:text-chrome/90'
         }`}
         title="Settings"
       >
@@ -855,18 +855,18 @@ export function SettingsDialog({
               // between them would shift the category list out from under
               // the pointer. Capped against the window so a short one still
               // fits on a small screen.
-              className="animate-in zoom-in-95 flex h-[430px] max-h-full w-[660px] max-w-full overflow-hidden rounded-xl border border-white/10 bg-[#1f2028] text-xs shadow-2xl duration-150"
+              className="animate-in zoom-in-95 flex h-[430px] max-h-full w-[660px] max-w-full overflow-hidden rounded-xl border border-chrome/10 bg-[#1f2028] text-xs shadow-2xl duration-150"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2">
+              <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2">
                 {SECTIONS.map(({ id, label, icon: Icon }) => (
                   <button
                     key={id}
                     onClick={() => setSection(id)}
                     className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 ${
                       section === id
-                        ? 'bg-white/10 text-white'
-                        : 'text-white/50 hover:bg-white/5 hover:text-white/80'
+                        ? 'bg-chrome/10 text-chrome'
+                        : 'text-chrome/50 hover:bg-chrome/5 hover:text-chrome/80'
                     }`}
                   >
                     <Icon size={13} className="shrink-0" />
@@ -875,13 +875,13 @@ export function SettingsDialog({
                 ))}
               </div>
               <div className="flex min-w-0 flex-1 flex-col">
-                <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2.5">
-                  <span className="font-medium text-white/90">
+                <div className="flex shrink-0 items-center justify-between border-b border-chrome/10 px-4 py-2.5">
+                  <span className="font-medium text-chrome/90">
                     {SECTIONS.find((s) => s.id === section)?.label}
                   </span>
                   <button
                     onClick={() => setOpen(false)}
-                    className="rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white"
+                    className="rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome"
                     title="Close (Esc)"
                   >
                     <X size={14} strokeWidth={2} />
@@ -891,7 +891,7 @@ export function SettingsDialog({
                   {section === 'terminal' && (
                     <>
                       <div className="space-y-3 px-2 py-1.5">
-                        <label className="flex items-center justify-between gap-3 text-white/85">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Font</span>
                           <select
                             className={selectClass}
@@ -932,7 +932,7 @@ export function SettingsDialog({
                           onChange={onChange}
                           installed={installedFonts}
                         />
-                        <label className="flex items-center justify-between gap-3 text-white/85">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Font size</span>
                           <span className="flex items-center gap-2">
                             <input
@@ -946,12 +946,12 @@ export function SettingsDialog({
                                 onChange({ ...settings, fontSize: Number(e.target.value) })
                               }
                             />
-                            <span className="w-8 text-right text-white/50">
+                            <span className="w-8 text-right text-chrome/50">
                               {settings.fontSize}px
                             </span>
                           </span>
                         </label>
-                        <label className="flex items-center justify-between gap-3 text-white/85">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Scrollback memory</span>
                           <select
                             className={selectClass}
@@ -975,7 +975,7 @@ export function SettingsDialog({
                             ))}
                           </select>
                         </label>
-                        <label className="flex items-center justify-between gap-3 text-white/85">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Cursor</span>
                           <select
                             className={selectClass}
@@ -992,7 +992,7 @@ export function SettingsDialog({
                             <option value="underline">Underline</option>
                           </select>
                         </label>
-                        <label className="flex items-center justify-between gap-3 text-white/85">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Blink cursor</span>
                           <input
                             type="checkbox"
@@ -1003,7 +1003,7 @@ export function SettingsDialog({
                             }
                           />
                         </label>
-                        <label className="flex items-center justify-between gap-3 text-white/85">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Ligatures</span>
                           <input
                             type="checkbox"
@@ -1014,7 +1014,7 @@ export function SettingsDialog({
                             }
                           />
                         </label>
-                        <p className="leading-relaxed text-white/30">
+                        <p className="leading-relaxed text-chrome/30">
                           Font changes apply to open sessions immediately. Scrollback is set
                           as memory per pane because memory is what's actually reserved; the
                           row estimates are for a {cols}-column pane and counted in wrapped
@@ -1022,7 +1022,7 @@ export function SettingsDialog({
                           applies to panes opened afterwards. The cursor setting is a starting
                           point — a program that picks its own cursor, as vim and many TUIs
                           do, overrides it. Ligatures join runs of operators like{' '}
-                          <code className="text-white/50">=&gt;</code> into one glyph, and need
+                          <code className="text-chrome/50">=&gt;</code> into one glyph, and need
                           a font that has them — Cascadia Code above does, Cascadia Mono and
                           Consolas do not. The cursor's own cell always shows the plain
                           character.
@@ -1051,10 +1051,10 @@ export function SettingsDialog({
 
                   {section === 'appearance' && (
                     <div className="space-y-4 px-2 py-1.5">
-                      <label className="flex items-center justify-between gap-3 text-white/85">
+                      <label className="flex items-center justify-between gap-3 text-chrome/85">
                         <span>Theme</span>
                         <select
-                          className="rounded border border-white/10 bg-black/20 px-1.5 py-1 text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+                          className="rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
                           value={settings.themeName}
                           onChange={(e) => onChange({ ...settings, themeName: e.target.value })}
                         >
@@ -1066,9 +1066,9 @@ export function SettingsDialog({
                         </select>
                       </label>
                       <div>
-                        <label className="flex items-center justify-between gap-2 text-white/85">
+                        <label className="flex items-center justify-between gap-2 text-chrome/85">
                           <span>Background opacity</span>
-                          <span className="text-white/50">
+                          <span className="text-chrome/50">
                             {Math.round(settings.backgroundOpacity * 100)}%
                           </span>
                         </label>
@@ -1088,7 +1088,7 @@ export function SettingsDialog({
                         />
                       </div>
                       <div>
-                        <span className="text-white/85">Window effect</span>
+                        <span className="text-chrome/85">Window effect</span>
                         <div className="mt-1.5 flex gap-1 rounded-md bg-black/20 p-1">
                           {(
                             [
@@ -1104,15 +1104,15 @@ export function SettingsDialog({
                               onClick={() => onChange({ ...settings, vibrancyMode: mode })}
                               className={`flex-1 rounded py-1 transition-colors duration-150 ${
                                 settings.vibrancyMode === mode
-                                  ? 'bg-white/15 text-white'
-                                  : 'text-white/40 hover:text-white/70'
+                                  ? 'bg-chrome/15 text-chrome'
+                                  : 'text-chrome/40 hover:text-chrome/70'
                               }`}
                             >
                               {mLabel}
                             </button>
                           ))}
                         </div>
-                        <p className="mt-1.5 leading-relaxed text-white/40">
+                        <p className="mt-1.5 leading-relaxed text-chrome/40">
                           {settings.vibrancyMode === 'acrylic'
                             ? 'Live blur-behind, at opacity below 100% — Windows has a documented lag bug on some builds while resizing/dragging.'
                             : settings.vibrancyMode === 'mica'
@@ -1127,7 +1127,7 @@ export function SettingsDialog({
                           nothing left to tune once it is on. Names and
                           behaviour are ghostty's alpha-blending option. */}
                       <div>
-                        <span className="text-white/85">Text blending</span>
+                        <span className="text-chrome/85">Text blending</span>
                         <div className="mt-1.5 flex gap-1 rounded-md bg-black/20 p-1">
                           {(
                             [
@@ -1142,15 +1142,15 @@ export function SettingsDialog({
                               onClick={() => onChange({ ...settings, textBlending: mode })}
                               className={`flex-1 rounded py-1 transition-colors duration-150 ${
                                 settings.textBlending === mode
-                                  ? 'bg-white/15 text-white'
-                                  : 'text-white/40 hover:text-white/70'
+                                  ? 'bg-chrome/15 text-chrome'
+                                  : 'text-chrome/40 hover:text-chrome/70'
                               }`}
                             >
                               {mLabel}
                             </button>
                           ))}
                         </div>
-                        <p className="mt-1.5 leading-relaxed text-white/40">
+                        <p className="mt-1.5 leading-relaxed text-chrome/40">
                           {settings.textBlending === 'linear'
                             ? 'Blends antialiased edges in linear light. Physically correct, and removes the dark fringe — but draws light-on-dark text heavier and dark-on-light thinner than the font intends.'
                             : settings.textBlending === 'linear-corrected'
@@ -1182,7 +1182,7 @@ export function SettingsDialog({
                           it saturates. */}
                       {settings.autoReconnect && (
                         <div className="space-y-2 pl-8">
-                          <label className="flex items-center justify-between gap-3 text-white/85">
+                          <label className="flex items-center justify-between gap-3 text-chrome/85">
                             <span>Give up after</span>
                             <select
                               className={selectClass}
@@ -1201,7 +1201,7 @@ export function SettingsDialog({
                               ))}
                             </select>
                           </label>
-                          <label className="flex items-center justify-between gap-3 text-white/85">
+                          <label className="flex items-center justify-between gap-3 text-chrome/85">
                             <span>...or after</span>
                             <select
                               className={selectClass}
@@ -1226,7 +1226,7 @@ export function SettingsDialog({
                               ))}
                             </select>
                           </label>
-                          <p className="leading-relaxed text-white/40">
+                          <p className="leading-relaxed text-chrome/40">
                             Whichever comes first. The wait doubles from one second to a
                             thirty-second ceiling, so the clock is usually the one that decides.
                           </p>
@@ -1249,36 +1249,36 @@ export function SettingsDialog({
 
                   {section === 'files' && (
                     <div className="space-y-3 px-2 py-1.5">
-                      <label className="flex flex-col gap-1.5 text-white/85">
+                      <label className="flex flex-col gap-1.5 text-chrome/85">
                         <span>Open remote files with</span>
                         <input
                           type="text"
                           spellCheck={false}
                           placeholder="Windows default (leave empty)"
-                          className="w-full rounded border border-white/10 bg-black/20 px-2 py-1 font-mono text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+                          className="w-full rounded border border-chrome/10 bg-black/20 px-2 py-1 font-mono text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
                           value={settings.externalEditor}
                           onChange={(e) => onChange({ ...settings, externalEditor: e.target.value })}
                         />
                       </label>
-                      <p className="leading-relaxed text-white/50">
+                      <p className="leading-relaxed text-chrome/50">
                         Empty opens the file in whatever Windows uses for its type. That
                         works with no setup, but nothing can tell when you have finished
                         with it — the editor usually hands the file to a copy of itself
                         that is already running and returns at once — so the panel's
                         “watching” marker has to be dismissed by hand.
                       </p>
-                      <p className="leading-relaxed text-white/50">
+                      <p className="leading-relaxed text-chrome/50">
                         A command that <em>waits</em> fixes that: wRusTTY knows when you
                         close the file, uploads the last save, and stops watching on its
                         own. The wait flag is the whole point — without it the command
                         returns immediately and nothing is gained.
                       </p>
-                      <div className="space-y-1 font-mono text-white/40">
+                      <div className="space-y-1 font-mono text-chrome/40">
                         <div>code --wait</div>
                         <div>"C:\Program Files\Sublime Text\subl.exe" --wait</div>
                         <div>gvim -f</div>
                       </div>
-                      <p className="leading-relaxed text-white/30">
+                      <p className="leading-relaxed text-chrome/30">
                         The file path is added at the end, or put <code>{'{file}'}</code>{' '}
                         where you need it. Quote a program path containing spaces;
                         backslashes are literal.
@@ -1332,7 +1332,7 @@ export function SettingsDialog({
                           autocomplete that reads anything on a remote
                           machine, so it is off by default even here. */}
                       {settings.autocompleteEnabled && (
-                        <div className="ml-6 border-l border-white/10 pl-2">
+                        <div className="ml-6 border-l border-chrome/10 pl-2">
                           <Toggle
                             checked={settings.autocompleteImportRemoteHistory}
                             onChange={(v) =>
@@ -1349,7 +1349,7 @@ export function SettingsDialog({
 
                   {section === 'shell' && (
                     <div className="space-y-3 px-2 py-1.5">
-                      <p className="leading-relaxed text-white/50">
+                      <p className="leading-relaxed text-chrome/50">
                         Append the snippet to the rc file on a host once and every session
                         there reports when its commands start and finish, and which
                         directory it is in — to any terminal that speaks OSC 133 and
@@ -1372,13 +1372,13 @@ export function SettingsDialog({
                                 .catch((e) => toast.error(`Couldn't copy to clipboard: ${e}`))
                             }}
                             title={`Copy the ${snippet.label} snippet for ${snippet.rcFile}`}
-                            className="flex flex-1 items-center justify-center gap-1.5 rounded bg-white/[0.06] py-1.5 text-white/70 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white"
+                            className="flex flex-1 items-center justify-center gap-1.5 rounded bg-chrome/[0.06] py-1.5 text-chrome/70 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome"
                           >
                             <ClipboardCopy size={12} /> {snippet.label}
                           </button>
                         ))}
                       </div>
-                      <p className="leading-relaxed text-white/30">
+                      <p className="leading-relaxed text-chrome/30">
                         Install notes and caveats — including what to do if your shell
                         already has an integration — are in docs/SHELL_INTEGRATION.md.
                       </p>
@@ -1398,12 +1398,12 @@ export function SettingsDialog({
                         onClick={() =>
                           revealLogs().catch((e) => toast.error(`Couldn't open logs folder: ${e}`))
                         }
-                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5"
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5"
                       >
-                        <FolderOpen size={14} className="mt-0.5 shrink-0 text-white/50" />
-                        <span className="text-white/85">
+                        <FolderOpen size={14} className="mt-0.5 shrink-0 text-chrome/50" />
+                        <span className="text-chrome/85">
                           Open logs folder
-                          <span className="mt-0.5 block text-white/40">
+                          <span className="mt-0.5 block text-chrome/40">
                             Where session transcripts are saved.
                           </span>
                         </span>
@@ -1413,7 +1413,7 @@ export function SettingsDialog({
                   {section === 'import' && (
                     <>
                       <div className="px-2 py-1.5">
-                        <p className="text-white/40">
+                        <p className="text-chrome/40">
                           Your saved credentials, sessions and workspaces move as one bundle —
                           each is meaningless without the others, so a backup carries all three.
                           Only the credentials are encrypted.
@@ -1423,12 +1423,12 @@ export function SettingsDialog({
                         type="button"
                         disabled={vaultStatus !== 'unlocked'}
                         onClick={() => void exportVaultBundle(confirm)}
-                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                       >
-                        <Download size={14} className="mt-0.5 shrink-0 text-white/50" />
-                        <span className="text-white/85">
+                        <Download size={14} className="mt-0.5 shrink-0 text-chrome/50" />
+                        <span className="text-chrome/85">
                           Export a backup…
-                          <span className="mt-0.5 block text-white/40">
+                          <span className="mt-0.5 block text-chrome/40">
                             {vaultStatus === 'unlocked'
                               ? 'Vault, saved sessions and workspaces, in one file.'
                               : // Not a limitation worth hiding: an export has to
@@ -1446,20 +1446,20 @@ export function SettingsDialog({
                             onSessionsImported?.()
                           }
                         }}
-                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5"
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5"
                       >
-                        <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
-                        <span className="text-white/85">
+                        <Upload size={14} className="mt-0.5 shrink-0 text-chrome/50" />
+                        <span className="text-chrome/85">
                           Restore from a backup…
-                          <span className="mt-0.5 block text-white/40">
+                          <span className="mt-0.5 block text-chrome/40">
                             Replaces everything currently saved. You will need the backup&apos;s
                             own master password.
                           </span>
                         </span>
                       </button>
 
-                      <div className="mt-2 border-t border-white/10 px-2 pb-1.5 pt-3">
-                        <p className="text-white/40">
+                      <div className="mt-2 border-t border-chrome/10 px-2 pb-1.5 pt-3">
+                        <p className="text-chrome/40">
                           Migrating from another client. Additive — a session already saved here
                           with the same name and host is left exactly as it is, so running one
                           twice is harmless.
@@ -1469,12 +1469,12 @@ export function SettingsDialog({
                         type="button"
                         disabled={importing !== null || puttyCount === 0}
                         onClick={() => void runImport('putty')}
-                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                       >
-                        <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
-                        <span className="text-white/85">
+                        <Upload size={14} className="mt-0.5 shrink-0 text-chrome/50" />
+                        <span className="text-chrome/85">
                           {importing === 'putty' ? 'Importing…' : 'Import from PuTTY'}
-                          <span className="mt-0.5 block text-white/40">
+                          <span className="mt-0.5 block text-chrome/40">
                             {puttyCount === null
                               ? 'Checking for saved PuTTY sessions…'
                               : puttyCount === 0
@@ -1487,12 +1487,12 @@ export function SettingsDialog({
                         type="button"
                         disabled={importing !== null || sshConfigCount === 0}
                         onClick={() => void runImport('sshConfig')}
-                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                        className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                       >
-                        <Upload size={14} className="mt-0.5 shrink-0 text-white/50" />
-                        <span className="text-white/85">
+                        <Upload size={14} className="mt-0.5 shrink-0 text-chrome/50" />
+                        <span className="text-chrome/85">
                           {importing === 'sshConfig' ? 'Importing…' : 'Import from your SSH config'}
-                          <span className="mt-0.5 block text-white/40">
+                          <span className="mt-0.5 block text-chrome/40">
                             {sshConfigCount === null
                               ? 'Checking ~/.ssh/config…'
                               : sshConfigCount === 0
@@ -1510,7 +1510,7 @@ export function SettingsDialog({
                   {section === 'about' && (
                     <>
                       <div className="px-2 py-1.5">
-                        <p className="leading-relaxed text-white/40">
+                        <p className="leading-relaxed text-chrome/40">
                           The terminal engine is a build of ghostty compiled to WebAssembly, not a
                           released version of it — the commit and hash below are what identify it.
                           Quote all of this in a bug report about parsing or rendering.
@@ -1519,11 +1519,11 @@ export function SettingsDialog({
                       <dl className="space-y-1.5 px-2 py-1.5">
                         {ABOUT_FACTS.map(([label, value]) => (
                           <div key={label} className="flex items-baseline gap-3">
-                            <dt className="w-28 shrink-0 text-white/40">{label}</dt>
+                            <dt className="w-28 shrink-0 text-chrome/40">{label}</dt>
                             {/* break-all, not truncate: the hash is the field most
                                 likely to be read off the screen rather than copied,
                                 and half a hash is no use. */}
-                            <dd className="min-w-0 break-all font-mono text-white/85">{value}</dd>
+                            <dd className="min-w-0 break-all font-mono text-chrome/85">{value}</dd>
                           </div>
                         ))}
                       </dl>
@@ -1534,12 +1534,12 @@ export function SettingsDialog({
                             .then(() => toast.success('Version details copied'))
                             .catch((e) => toast.error(`Couldn't copy: ${e}`))
                         }
-                        className="mt-1 flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-white/5"
+                        className="mt-1 flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5"
                       >
-                        <ClipboardCopy size={14} className="mt-0.5 shrink-0 text-white/50" />
-                        <span className="text-white/85">
+                        <ClipboardCopy size={14} className="mt-0.5 shrink-0 text-chrome/50" />
+                        <span className="text-chrome/85">
                           Copy version details
-                          <span className="mt-0.5 block text-white/40">
+                          <span className="mt-0.5 block text-chrome/40">
                             As plain text, ready to paste into an issue.
                           </span>
                         </span>

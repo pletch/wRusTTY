@@ -52,6 +52,8 @@ function bar(props: Partial<Parameters<typeof TabBar>[0]> = {}) {
       attentionPanes={{}}
       titleByPane={{}}
       paneBackground="#16171d"
+      tabHoverBackground="#1b1c22"
+      stripBackground="#212227"
       onSelect={() => {}}
       onClose={() => {}}
       onNew={() => {}}

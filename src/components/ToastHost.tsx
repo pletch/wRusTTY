@@ -32,10 +32,10 @@ export function ToastHost() {
             className={`animate-in fade-in slide-in-from-bottom-2 pointer-events-auto flex w-80 items-start gap-2 rounded-lg border bg-[#1f2028] px-3 py-2.5 text-xs shadow-2xl duration-150 ${accents[t.kind]}`}
           >
             <Icon size={15} className="mt-0.5 shrink-0" />
-            <p className="min-w-0 flex-1 break-words text-white/85">{t.message}</p>
+            <p className="min-w-0 flex-1 break-words text-chrome/85">{t.message}</p>
             <button
               onClick={() => dismiss(t.id)}
-              className="shrink-0 text-white/30 transition-colors duration-100 hover:text-white/70"
+              className="shrink-0 text-chrome/30 transition-colors duration-100 hover:text-chrome/70"
             >
               <X size={13} />
             </button>

@@ -38,7 +38,15 @@ import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/conne
 import { loadSettings, saveSettings, DEFAULT_FONT_SIZE, FONT_SIZE_RANGE } from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
-import { backgroundWithOpacity, backgroundTint, findTheme, stripOverlay } from './lib/theme'
+import {
+  backgroundWithOpacity,
+  backgroundTint,
+  findTheme,
+  stripOverlay,
+  stripBackground,
+  tabHoverBackground,
+  chromeRgb,
+} from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
 import { DRAG_PANE_MIME } from './lib/dragTypes'
 import {
@@ -354,6 +362,17 @@ function App() {
       .show()
       .catch(() => {})
   }, [])
+
+  // The tone every label, hairline and hover wash outside the terminal is
+  // drawn in — see chromeRgb. Set on the document element rather than on
+  // this component's own root because the dialogs and menus that need it are
+  // portalled out to the body, which is not inside that root.
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--chrome-rgb',
+      chromeRgb(findTheme(terminalSettings.themeName)),
+    )
+  }, [terminalSettings.themeName])
 
   // Panes with an auto-reconnect run under way, so the per-attempt failures a
   // run produces don't each raise a toast. A ref rather than state because the
@@ -1150,7 +1169,7 @@ function App() {
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden ${
-        maximized ? '' : 'rounded-lg border border-white/10'
+        maximized ? '' : 'rounded-lg border border-chrome/10'
       }`}
       style={{ background: paneBackground }}
     >
@@ -1181,6 +1200,14 @@ function App() {
           attentionPanes={attentionPanes}
           titleByPane={titleByPane}
           paneBackground={paneBackground}
+          tabHoverBackground={tabHoverBackground(
+            findTheme(terminalSettings.themeName),
+            terminalSettings.backgroundOpacity,
+          )}
+          stripBackground={stripBackground(
+            findTheme(terminalSettings.themeName),
+            terminalSettings.backgroundOpacity,
+          )}
           onSelect={selectTab}
           onClose={closeTab}
           onNew={newTab}
@@ -1218,10 +1245,10 @@ function App() {
           }}
         />
         {activeTab && (
-          <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
+          <div className="flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5">
             {activeLeaf?.source && (
               <button
-                className="flex items-center justify-center rounded p-1.5 text-white/50 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-white/90"
+                className="flex items-center justify-center rounded p-1.5 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
                 title="Find in terminal (Ctrl+Shift+F)"
                 onClick={() =>
                   activePaneId &&
@@ -1237,10 +1264,10 @@ function App() {
                 it on. */}
             {activeTab && allLeaves(activeTab.root).length > 1 && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
                   broadcastTabs.has(activeTab.id)
                     ? 'bg-amber-400/20 text-amber-300 hover:text-amber-200'
-                    : 'text-white/50 hover:text-white/90'
+                    : 'text-chrome/50 hover:text-chrome/90'
                 }`}
                 title={
                   broadcastTabs.has(activeTab.id)
@@ -1254,10 +1281,10 @@ function App() {
             )}
             {activeLeaf?.source && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
                   activePaneId && loggingByPane[activePaneId]
                     ? 'text-red-400 hover:text-red-300'
-                    : 'text-white/50 hover:text-white/90'
+                    : 'text-chrome/50 hover:text-chrome/90'
                 }`}
                 title={
                   activePaneId && loggingByPane[activePaneId]
@@ -1271,10 +1298,10 @@ function App() {
             )}
             {activeIsSsh && activeSessionId && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
                   activePaneId && forwardsOpenByPane[activePaneId]
-                    ? 'text-white/90'
-                    : 'text-white/50 hover:text-white/90'
+                    ? 'text-chrome/90'
+                    : 'text-chrome/50 hover:text-chrome/90'
                 }`}
                 // Marks this button as part of the panel's own interaction
                 // scope, so the panel's click-away doesn't treat opening it as
@@ -1289,10 +1316,10 @@ function App() {
             )}
             {activeIsSsh && activeSessionId && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-white/10 ${
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
                   activePaneId && filesOpenByPane[activePaneId]
-                    ? 'text-white/90'
-                    : 'text-white/50 hover:text-white/90'
+                    ? 'text-chrome/90'
+                    : 'text-chrome/50 hover:text-chrome/90'
                 }`}
                 data-files-toggle
                 title="Remote files"
@@ -1308,8 +1335,8 @@ function App() {
               disabled={!!rightBlocked}
               className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
                 rightBlocked
-                  ? 'cursor-default text-white/15'
-                  : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+                  ? 'cursor-default text-chrome/15'
+                  : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
               }`}
               title={rightBlocked ? splitLimitHint(rightBlocked) : 'Split right'}
               onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'horizontal')}
@@ -1320,8 +1347,8 @@ function App() {
               disabled={!!downBlocked}
               className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
                 downBlocked
-                  ? 'cursor-default text-white/15'
-                  : 'text-white/50 hover:bg-white/10 hover:text-white/90'
+                  ? 'cursor-default text-chrome/15'
+                  : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
               }`}
               title={downBlocked ? splitLimitHint(downBlocked) : 'Split down'}
               onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'vertical')}
@@ -1330,7 +1357,7 @@ function App() {
             </button>
           </div>
         )}
-        <div className="flex shrink-0 items-center gap-0.5 border-l border-white/10 px-1.5">
+        <div className="flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5">
           <WorkspaceMenu
             tabs={tabs}
             saved={savedWorkspaces}
@@ -1352,7 +1379,7 @@ function App() {
       <div className="relative flex min-h-0 flex-1">
         <main className="relative min-h-0 flex-1">
           {tabs.length === 0 && (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-white/30">
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-chrome/30">
               <TerminalSquare size={28} strokeWidth={1.5} />
               No open sessions
             </div>

@@ -718,7 +718,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   }
 
   const menuItem =
-    'flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent'
+    'flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10 disabled:opacity-30 disabled:hover:bg-transparent'
 
   /** The inline name field, shared by rename and mkdir.
    *
@@ -740,14 +740,14 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         if (e.key === 'Enter') void commitNaming()
         if (e.key === 'Escape') setNaming(null)
       }}
-      className="min-w-0 flex-1 rounded border border-sky-400/40 bg-black/30 px-1 py-0.5 text-white/90 outline-none"
+      className="min-w-0 flex-1 rounded border border-sky-400/40 bg-black/30 px-1 py-0.5 text-chrome/90 outline-none"
     />
   )
 
   return (
     <div
       data-files-panel
-      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-white/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
       onClick={(e) => {
         e.stopPropagation()
         // The panel stops the click reaching window, so the menu cannot rely on
@@ -758,12 +758,12 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       }}
     >
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="flex items-center gap-1.5 font-medium text-white/90">
+        <h2 className="flex items-center gap-1.5 font-medium text-chrome/90">
           <Folder size={13} /> Remote files
         </h2>
         <button
           onClick={onClose}
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
         >
           <X size={13} />
         </button>
@@ -774,16 +774,16 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
           onClick={() => cwd && load(parentOf(cwd))}
           disabled={!cwd || cwd === '/'}
           title="Up one directory"
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80 disabled:opacity-30"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
         >
           <ArrowUp size={13} />
         </button>
-        <span className="min-w-0 flex-1 truncate text-white/60">{cwd ?? '…'}</span>
+        <span className="min-w-0 flex-1 truncate text-chrome/60">{cwd ?? '…'}</span>
         <button
           onClick={() => setNaming({ kind: 'mkdir', draft: '' })}
           disabled={!cwd}
           title="New folder"
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80 disabled:opacity-30"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
         >
           <FolderPlus size={12} />
         </button>
@@ -791,7 +791,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
           onClick={() => uploadHere(false)}
           disabled={!cwd}
           title="Upload a file into this directory"
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80 disabled:opacity-30"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
         >
           <Upload size={12} />
         </button>
@@ -799,14 +799,14 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
           onClick={() => uploadHere(true)}
           disabled={!cwd}
           title="Upload a folder into this directory"
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80 disabled:opacity-30"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
         >
           <FolderUp size={12} />
         </button>
         <button
           onClick={() => cwd && load(cwd)}
           title="Refresh"
-          className="flex items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
         >
           <RefreshCw size={12} />
         </button>
@@ -815,9 +815,9 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       {error && <p className="mb-2 text-red-400">{error}</p>}
 
       <ul className="max-h-96 space-y-0.5 overflow-y-auto">
-        {loading && <li className="px-2 py-1.5 text-white/40">Loading…</li>}
+        {loading && <li className="px-2 py-1.5 text-chrome/40">Loading…</li>}
         {!loading && entries.length === 0 && !error && !naming && (
-          <li className="px-2 py-1.5 text-white/40">Empty directory</li>
+          <li className="px-2 py-1.5 text-chrome/40">Empty directory</li>
         )}
         {naming?.kind === 'mkdir' && (
           // At the top, where the sort would put it anyway — directories sort
@@ -838,13 +838,13 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                 e.preventDefault()
                 setMenu({ entry, x: e.clientX, y: e.clientY })
               }}
-              className="flex cursor-default items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-white/5"
+              className="flex cursor-default items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-chrome/5"
             >
-              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-white/80">
+              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-chrome/80">
                 {entry.isDir ? (
                   <Folder size={12} className="shrink-0 text-sky-400/80" />
                 ) : (
-                  <FileText size={12} className="shrink-0 text-white/40" />
+                  <FileText size={12} className="shrink-0 text-chrome/40" />
                 )}
                 {naming?.kind === 'rename' && naming.original === entry.name ? (
                   nameField(naming.draft, (draft) =>
@@ -854,7 +854,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                   <span className="truncate">{entry.name}</span>
                 )}
               </span>
-              <span className="flex shrink-0 items-center gap-2 text-white/30">
+              <span className="flex shrink-0 items-center gap-2 text-chrome/30">
                 {editId && (
                   // "watching", not "editing", and dismissable by hand —
                   // because on the default route nothing can tell when the
@@ -871,7 +871,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                   <button
                     onClick={() => stopEditing(path)}
                     title="Watching for saves and uploading each one. Click to stop — this also deletes the local temp copy, so save in your editor first."
-                    className="flex items-center gap-1 rounded px-1 py-0.5 text-sky-400/80 transition-colors duration-fast ease-swift hover:bg-white/10 hover:text-sky-300"
+                    className="flex items-center gap-1 rounded px-1 py-0.5 text-sky-400/80 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-sky-300"
                   >
                     <File size={10} /> watching <X size={9} />
                   </button>
@@ -892,12 +892,12 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                       if (e.key === 'Escape') setNaming(null)
                     }}
                     size={4}
-                    className="w-12 rounded border border-sky-400/40 bg-black/30 px-1 py-0.5 text-right font-mono text-white/90 outline-none"
+                    className="w-12 rounded border border-sky-400/40 bg-black/30 px-1 py-0.5 text-right font-mono text-chrome/90 outline-none"
                   />
                 ) : (
                   entry.mode !== null && (
                     <span
-                      className="font-mono text-white/25"
+                      className="font-mono text-chrome/25"
                       // The octal is what you type into the field and what
                       // every chmod example is written in; the letters are what
                       // you can scan a column of. Both, rather than a choice.
@@ -917,7 +917,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       </ul>
 
       {transfers.length > 0 && (
-        <div className="mt-2 flex max-h-32 flex-col gap-2 overflow-y-auto border-t border-white/10 pt-2">
+        <div className="mt-2 flex max-h-32 flex-col gap-2 overflow-y-auto border-t border-chrome/10 pt-2">
           {transfers.map((t) => (
             <div key={t.key} className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
@@ -926,7 +926,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                 ) : (
                   <Upload size={13} className="shrink-0 text-sky-400" />
                 )}
-                <span className="min-w-0 flex-1 truncate text-white/80">{t.name}</span>
+                <span className="min-w-0 flex-1 truncate text-chrome/80">{t.name}</span>
                 {t.failed && (
                   <button
                     onClick={() => {
@@ -936,7 +936,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                       t.restart()
                     }}
                     title="Try again, skipping whatever already arrived"
-                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-sky-400/80 transition-colors duration-100 hover:bg-white/10 hover:text-sky-300"
+                    className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-sky-400/80 transition-colors duration-100 hover:bg-chrome/10 hover:text-sky-300"
                   >
                     <RotateCw size={11} /> Retry
                   </button>
@@ -957,12 +957,12 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                     } else if (t.id) void sftp.cancelTransfer(t.id).catch(() => {})
                   }}
                   title={t.failed ? 'Dismiss' : 'Cancel this transfer'}
-                  className="flex items-center justify-center rounded p-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+                  className="flex items-center justify-center rounded p-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
                 >
                   <X size={12} />
                 </button>
               </div>
-              <div className="h-1 overflow-hidden rounded-full bg-white/10">
+              <div className="h-1 overflow-hidden rounded-full bg-chrome/10">
                 <div
                   className={`h-full transition-[width] duration-150 ${
                     t.failed ? 'bg-red-400/70' : t.interrupted ? 'bg-amber-400/70' : 'bg-sky-400'
@@ -985,7 +985,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                   {formatBytes(t.transferred)} so far)
                 </span>
               ) : (
-                <span className="flex items-baseline gap-2 text-white/40">
+                <span className="flex items-baseline gap-2 text-chrome/40">
                   <span className="shrink-0">
                     {formatBytes(t.transferred)}
                     {t.total > 0 && ` of ${formatBytes(t.total)}`}
@@ -995,7 +995,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                     // the name without "3 of 57" gives no sense of how far along
                     // it is, and the count without the name gives no sense of
                     // whether it is stuck.
-                    <span className="min-w-0 truncate text-white/25">
+                    <span className="min-w-0 truncate text-chrome/25">
                       {t.file.index} of {t.file.count} — {t.file.name}
                     </span>
                   )}
@@ -1012,7 +1012,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         // matches on `[data-files-panel]`) doesn't read using the menu as
         // clicking away from the panel.
         <div
-          className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs text-white/80 shadow-xl duration-100"
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs text-chrome/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
           <button className={menuItem} onClick={() => open(menu.entry)}>
@@ -1034,7 +1034,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
             <ClipboardCopy size={13} /> Copy path
           </button>
 
-          <div className="my-1 border-t border-white/10" />
+          <div className="my-1 border-t border-chrome/10" />
 
           {/* The two that change the host, kept below a divider and with the
               destructive one last and coloured. Everything above is a read. */}

@@ -39,19 +39,19 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
       onClick={onCancel}
     >
       <div
-        className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-white/10 bg-[#1f2028] p-5 shadow-2xl duration-150"
+        className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-chrome/10 bg-[#1f2028] p-5 shadow-2xl duration-150"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-2 text-white/90">
+        <div className="flex items-center gap-2 text-chrome/90">
           <AlertTriangle size={15} className="shrink-0 text-amber-400" />
           <span className="font-medium">{title}</span>
         </div>
-        <p className="text-xs leading-relaxed text-white/50">{body}</p>
+        <p className="text-xs leading-relaxed text-chrome/50">{body}</p>
         <div className="flex justify-end gap-2 pt-1">
           <button
             ref={cancelRef}
             onClick={onCancel}
-            className="rounded px-3 py-1.5 text-xs text-white/70 transition-colors duration-100 hover:bg-white/10"
+            className="rounded px-3 py-1.5 text-xs text-chrome/70 transition-colors duration-100 hover:bg-chrome/10"
           >
             Cancel
           </button>

@@ -76,7 +76,7 @@ export function InlineSuggestion({
     <div
       // Never interactive. There is nothing to click, and taking a pointer
       // event here would put the cursor somewhere the user did not ask for.
-      className="pointer-events-none absolute select-none text-white/30"
+      className="pointer-events-none absolute select-none text-chrome/30"
       style={{
         left: view.cursor.col * cell.width,
         top: screenRow * cell.height,

@@ -134,7 +134,7 @@ export function CommandHistorySection() {
   return (
     <div className="space-y-3 px-2 py-1.5">
       <div className="flex items-start justify-between gap-3">
-        <p className="leading-relaxed text-white/50">
+        <p className="leading-relaxed text-chrome/50">
           What has been remembered, newest and most-used first. Kept on this machine
           only — never synced, never sent anywhere, and not part of a backup bundle.
           Lines that looked like they carried a password or a token were never stored
@@ -144,16 +144,16 @@ export function CommandHistorySection() {
           type="button"
           onClick={() => void load()}
           title="Reload"
-          className="mt-0.5 flex shrink-0 items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+          className="mt-0.5 flex shrink-0 items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
         >
           <RefreshCw size={12} />
         </button>
       </div>
 
       {error && <p className="text-red-400">{error}</p>}
-      {hosts === null && !error && <p className="text-white/40">Loading…</p>}
+      {hosts === null && !error && <p className="text-chrome/40">Loading…</p>}
       {hosts?.length === 0 && (
-        <p className="text-white/40">
+        <p className="text-chrome/40">
           Nothing remembered yet. Commands are recorded as you run them, once
           autocomplete is turned on above.
         </p>
@@ -168,7 +168,7 @@ export function CommandHistorySection() {
             <button
               type="button"
               onClick={() => void forgetImported()}
-              className="flex-1 rounded bg-white/[0.06] py-1.5 text-white/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
+              className="flex-1 rounded bg-chrome/[0.06] py-1.5 text-chrome/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
             >
               Forget imported history
             </button>
@@ -176,7 +176,7 @@ export function CommandHistorySection() {
           <button
             type="button"
             onClick={() => void forgetEverything()}
-            className="flex-1 rounded bg-white/[0.06] py-1.5 text-white/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
+            className="flex-1 rounded bg-chrome/[0.06] py-1.5 text-chrome/70 transition-colors duration-fast ease-swift hover:bg-red-500/20 hover:text-red-200"
           >
             Forget everything
           </button>
@@ -185,18 +185,18 @@ export function CommandHistorySection() {
 
       <div className="space-y-2">
         {hosts?.map((host) => (
-          <div key={host.host} className="rounded-md border border-white/10 bg-black/15 p-2">
+          <div key={host.host} className="rounded-md border border-chrome/10 bg-black/15 p-2">
             <div className="mb-1.5 flex items-center gap-2">
-              <Server size={13} className="shrink-0 text-white/40" />
-              <span className="min-w-0 flex-1 truncate font-medium text-white/85">
+              <Server size={13} className="shrink-0 text-chrome/40" />
+              <span className="min-w-0 flex-1 truncate font-medium text-chrome/85">
                 {host.host}
               </span>
-              <span className="shrink-0 text-white/30">{host.entries.length}</span>
+              <span className="shrink-0 text-chrome/30">{host.entries.length}</span>
               <button
                 type="button"
                 onClick={() => void forgetHost(host)}
                 title="Forget every command remembered for this host"
-                className="shrink-0 rounded px-1.5 py-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-red-300"
+                className="shrink-0 rounded px-1.5 py-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-red-300"
               >
                 Forget host
               </button>
@@ -205,7 +205,7 @@ export function CommandHistorySection() {
               {host.entries.slice(0, SHOWN_PER_HOST).map((entry) => (
                 <div key={entry.command} className="flex items-center gap-2">
                   <span
-                    className="min-w-0 flex-1 truncate font-mono text-white/60"
+                    className="min-w-0 flex-1 truncate font-mono text-chrome/60"
                     title={entry.command}
                   >
                     {entry.command}
@@ -213,21 +213,21 @@ export function CommandHistorySection() {
                   {/* Imported entries are marked, because "when" means
                       something different for them: it is when the import ran,
                       not when the command did — the file could not say. */}
-                  <span className="w-20 shrink-0 text-right text-white/25">
+                  <span className="w-20 shrink-0 text-right text-chrome/25">
                     {entry.source === 'harvest' ? 'imported' : relativeDay(entry.lastUsed, now)}
                   </span>
                   <button
                     type="button"
                     onClick={() => void forgetOne(host.host, entry)}
                     title="Forget this command"
-                    className="flex shrink-0 items-center justify-center rounded p-1 text-white/30 transition-colors duration-100 hover:bg-white/10 hover:text-red-300"
+                    className="flex shrink-0 items-center justify-center rounded p-1 text-chrome/30 transition-colors duration-100 hover:bg-chrome/10 hover:text-red-300"
                   >
                     <Trash2 size={12} />
                   </button>
                 </div>
               ))}
               {host.entries.length > SHOWN_PER_HOST && (
-                <p className="pt-1 text-white/25">
+                <p className="pt-1 text-chrome/25">
                   …and {host.entries.length - SHOWN_PER_HOST} more, ranked below these.
                   Forget the host to remove them all.
                 </p>

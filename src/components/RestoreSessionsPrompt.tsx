@@ -23,7 +23,7 @@ interface Props {
 }
 
 const inputClass =
-  'rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'rounded border border-chrome/10 bg-black/20 px-2 py-1.5 text-sm text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 export function RestoreSessionsPrompt({
   count,
@@ -69,14 +69,14 @@ export function RestoreSessionsPrompt({
 
   return (
     <div className="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
-      <div className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-white/10 bg-[#1f2028] p-5 shadow-2xl duration-150">
-        <div className="flex items-center gap-2 text-white/90">
+      <div className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-chrome/10 bg-[#1f2028] p-5 shadow-2xl duration-150">
+        <div className="flex items-center gap-2 text-chrome/90">
           <RotateCcw size={15} className="text-sky-400" />
           <span className="font-medium">
             {title ?? `Restore ${count} session${count === 1 ? '' : 's'}?`}
           </span>
         </div>
-        <p className="text-xs leading-relaxed text-white/50">
+        <p className="text-xs leading-relaxed text-chrome/50">
           {body ??
             `${count === 1 ? 'A session was' : 'Sessions were'} open when wRusTTY last closed.`}
         </p>
@@ -94,9 +94,9 @@ export function RestoreSessionsPrompt({
                   <Fingerprint size={14} />
                   Unlock with Windows sign-in
                 </button>
-                <p className="flex items-center gap-2 text-white/30">
-                  <span className="h-px flex-1 bg-white/10" /> or{' '}
-                  <span className="h-px flex-1 bg-white/10" />
+                <p className="flex items-center gap-2 text-chrome/30">
+                  <span className="h-px flex-1 bg-chrome/10" /> or{' '}
+                  <span className="h-px flex-1 bg-chrome/10" />
                 </p>
               </>
             )}
@@ -120,7 +120,7 @@ export function RestoreSessionsPrompt({
             <button
               type="button"
               onClick={onDiscard}
-              className="w-full text-center text-xs text-white/40 hover:text-white/70"
+              className="w-full text-center text-xs text-chrome/40 hover:text-chrome/70"
             >
               {cancelLabel ?? 'Cancel — start fresh instead'}
             </button>
@@ -129,7 +129,7 @@ export function RestoreSessionsPrompt({
           <div className="flex justify-end gap-2 pt-1">
             <button
               onClick={onDiscard}
-              className="rounded px-3 py-1.5 text-xs text-white/70 transition-colors duration-100 hover:bg-white/10"
+              className="rounded px-3 py-1.5 text-xs text-chrome/70 transition-colors duration-100 hover:bg-chrome/10"
             >
               Start fresh
             </button>

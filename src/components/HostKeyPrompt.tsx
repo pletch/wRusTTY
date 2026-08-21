@@ -24,10 +24,10 @@ export function HostKeyPrompt({
     <div className="animate-in fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
       <div
         className={`animate-in zoom-in-95 w-96 space-y-3 rounded-lg border p-5 shadow-2xl duration-150 ${
-          isChanged ? 'border-red-500/50 bg-red-950/80' : 'border-white/10 bg-[#1f2028]'
+          isChanged ? 'border-red-500/50 bg-red-950/80' : 'border-chrome/10 bg-[#1f2028]'
         }`}
       >
-        <h1 className="flex items-center gap-2 text-sm font-semibold text-white">
+        <h1 className="flex items-center gap-2 text-sm font-semibold text-chrome">
           {isChanged ? (
             <ShieldAlert size={16} className="text-red-400" />
           ) : (
@@ -36,9 +36,9 @@ export function HostKeyPrompt({
           {isChanged ? 'Host key has changed' : 'Unknown host'}
         </h1>
 
-        <p className="text-xs text-white/80">
+        <p className="text-xs text-chrome/80">
           The authenticity of host{' '}
-          <span className="font-mono text-white">
+          <span className="font-mono text-chrome">
             {host}:{port}
           </span>{' '}
           {isChanged ? 'does not match the key on record' : "can't be established"}.
@@ -46,18 +46,18 @@ export function HostKeyPrompt({
 
         {isChanged && storedFingerprint && (
           <div className="space-y-1">
-            <p className="text-[11px] uppercase tracking-wide text-white/40">Key on record</p>
-            <p className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-white/60">
-              <KeyRound size={12} className="shrink-0 text-white/40" />
+            <p className="text-[11px] uppercase tracking-wide text-chrome/40">Key on record</p>
+            <p className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-chrome/60">
+              <KeyRound size={12} className="shrink-0 text-chrome/40" />
               <span className="break-all line-through decoration-red-400/50">
                 {storedFingerprint}
               </span>
             </p>
-            <p className="text-[11px] uppercase tracking-wide text-white/40">Offered now</p>
+            <p className="text-[11px] uppercase tracking-wide text-chrome/40">Offered now</p>
           </div>
         )}
-        <p className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-white/80">
-          <KeyRound size={12} className="shrink-0 text-white/40" />
+        <p className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-chrome/80">
+          <KeyRound size={12} className="shrink-0 text-chrome/40" />
           <span className="break-all">{fingerprint}</span>
         </p>
 
@@ -100,7 +100,7 @@ export function HostKeyPrompt({
           ) : (
             <>
               <button
-                className="rounded px-3 py-1.5 text-xs text-white/70 transition-colors duration-100 hover:bg-white/10"
+                className="rounded px-3 py-1.5 text-xs text-chrome/70 transition-colors duration-100 hover:bg-chrome/10"
                 onClick={() => onAnswer(false)}
               >
                 Reject

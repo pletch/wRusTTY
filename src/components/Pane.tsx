@@ -90,7 +90,7 @@ export function Pane(props: Props) {
           <Pane {...props} node={node.children[0]} />
         </Panel>
         <PanelResizeHandle
-          className={`bg-white/5 transition-colors duration-150 hover:bg-sky-400/40 active:bg-sky-400/60 ${
+          className={`bg-chrome/5 transition-colors duration-150 hover:bg-sky-400/40 active:bg-sky-400/60 ${
             node.direction === 'horizontal' ? 'w-[3px]' : 'h-[3px]'
           }`}
         />
@@ -194,7 +194,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 title="Drag to move this pane to a new tab"
-                className="cursor-grab rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm hover:bg-black/60 hover:text-white/90 active:cursor-grabbing"
+                className="cursor-grab rounded bg-black/40 p-1 text-chrome/50 backdrop-blur-sm hover:bg-black/60 hover:text-chrome/90 active:cursor-grabbing"
               >
                 <GripVertical size={12} />
               </span>
@@ -206,7 +206,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
                 }}
                 onMouseDown={(e) => e.stopPropagation()}
                 title="Close this pane"
-                className="rounded bg-black/40 p-1 text-white/50 backdrop-blur-sm hover:bg-red-500/60 hover:text-white"
+                className="rounded bg-black/40 p-1 text-chrome/50 backdrop-blur-sm hover:bg-red-500/60 hover:text-chrome"
               >
                 <X size={12} />
               </button>

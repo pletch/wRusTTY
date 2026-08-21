@@ -3,7 +3,7 @@ import { Minus, Square, Copy, X } from 'lucide-react'
 
 
 const buttonClass =
-  'flex w-11 items-center justify-center text-white/60 transition-colors duration-100 hover:bg-white/10 hover:text-white'
+  'flex w-11 items-center justify-center text-chrome/60 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome'
 
 interface Props {
   maximized: boolean

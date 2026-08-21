@@ -21,7 +21,7 @@ import { useDismissable } from '../hooks/useDismissable'
 import { menuAnchor } from '../lib/sessionMenu'
 
 const inputClass =
-  'rounded border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-white/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
+  'rounded border border-chrome/10 bg-black/20 px-2 py-1.5 text-sm text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 const COLLAPSED_FOLDERS_KEY = 'wrustty.collapsed-session-folders'
 
@@ -190,13 +190,13 @@ export function SessionBrowser({
       <div className="flex h-full w-full overflow-auto p-4">
         <form
           onSubmit={submitUnlock}
-          className="m-auto w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-white/10 bg-white/[0.04] p-5 shadow-2xl duration-150"
+          className="m-auto w-80 animate-in fade-in zoom-in-95 space-y-3 rounded-xl border border-chrome/10 bg-chrome/[0.04] p-5 shadow-2xl duration-150"
         >
-          <div className="flex items-center gap-2 text-white/90">
+          <div className="flex items-center gap-2 text-chrome/90">
             <Lock size={15} className="text-amber-400" />
             <span className="truncate font-medium">{pendingUnlock.label}</span>
           </div>
-          <p className="text-xs leading-relaxed text-white/50">
+          <p className="text-xs leading-relaxed text-chrome/50">
             This session has a saved credential. Unlock the vault to connect automatically.
           </p>
           {osUnlockAvailable && onUnlockWithOsAndSelectSession && (
@@ -210,9 +210,9 @@ export function SessionBrowser({
                 <Fingerprint size={14} />
                 Unlock with Windows sign-in
               </button>
-              <p className="flex items-center gap-2 text-white/30">
-                <span className="h-px flex-1 bg-white/10" /> or{' '}
-                <span className="h-px flex-1 bg-white/10" />
+              <p className="flex items-center gap-2 text-chrome/30">
+                <span className="h-px flex-1 bg-chrome/10" /> or{' '}
+                <span className="h-px flex-1 bg-chrome/10" />
               </p>
             </>
           )}
@@ -233,18 +233,18 @@ export function SessionBrowser({
             <Lock size={14} />
             Unlock & Connect
           </button>
-          <div className="flex items-center justify-between text-xs text-white/40">
+          <div className="flex items-center justify-between text-xs text-chrome/40">
             <button
               type="button"
               onClick={() => {
                 onSelectSession?.(pendingUnlock)
                 setPendingUnlock(null)
               }}
-              className="hover:text-white/70"
+              className="hover:text-chrome/70"
             >
               Enter manually instead
             </button>
-            <button type="button" onClick={() => setPendingUnlock(null)} className="hover:text-white/70">
+            <button type="button" onClick={() => setPendingUnlock(null)} className="hover:text-chrome/70">
               Cancel
             </button>
           </div>
@@ -269,7 +269,7 @@ export function SessionBrowser({
           forces a scrollbar on a window with plenty of room the moment the
           form grows past it. The 2rem subtracted is the wrapper's p-4, which
           `max-h-full` alone wouldn't account for. */}
-      <div className="animate-in fade-in zoom-in-95 m-auto flex max-h-[calc(100%-2rem)] shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] shadow-2xl duration-150">
+      <div className="animate-in fade-in zoom-in-95 m-auto flex max-h-[calc(100%-2rem)] shrink-0 overflow-hidden rounded-xl border border-chrome/10 bg-chrome/[0.04] shadow-2xl duration-150">
         {sessions && sessions.length > 0 && (
           // Fixed width, scrolls independently of the form — so having a
           // handful of saved sessions or a hundred never pushes the connect
@@ -279,25 +279,25 @@ export function SessionBrowser({
           // full-height column that the folder list expands *into* as folders
           // are opened, rather than a panel whose own framing grows and
           // shrinks and leaves an edge partway down the dialog.
-          <div className="w-44 shrink-0 overflow-y-auto border-r border-white/10 bg-black/10 py-2 text-xs">
+          <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2 text-xs">
             {/* Above the session folders, because a workspace is the larger
                 unit — "open all of this" rather than "open one of these" —
                 and because arriving at a blank tab and having to leave the
                 dialog for the toolbar to open one is the wrong first move. */}
             {workspaces && workspaces.length > 0 && onOpenWorkspace && (
-              <div className="mb-1 border-b border-white/10 pb-1.5">
-                <div className="px-2 py-1 font-medium tracking-wide text-white/30">WORKSPACES</div>
+              <div className="mb-1 border-b border-chrome/10 pb-1.5">
+                <div className="px-2 py-1 font-medium tracking-wide text-chrome/30">WORKSPACES</div>
                 {workspaces.map((w) => (
                   <div
                     key={w.id}
                     onClick={() => onOpenWorkspace(w)}
-                    className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06]"
+                    className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06]"
                     title={`Open ${w.name}`}
                   >
                     <LayoutGrid size={11} className="mt-0.5 shrink-0 text-sky-400/40" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-white/90">{w.name}</div>
-                      <div className="truncate text-white/40">
+                      <div className="truncate text-chrome/90">{w.name}</div>
+                      <div className="truncate text-chrome/40">
                         {w.tabs.length === 1 ? '1 tab' : `${w.tabs.length} tabs`}
                       </div>
                     </div>
@@ -312,7 +312,7 @@ export function SessionBrowser({
                   <button
                     type="button"
                     onClick={() => toggleFolder(folderName)}
-                    className="flex w-full items-center gap-1 px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-white/60 transition-colors duration-100 hover:text-white/90"
+                    className="flex w-full items-center gap-1 px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-chrome/60 transition-colors duration-100 hover:text-chrome/90"
                   >
                     {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
                     <Folder size={10} />
@@ -348,7 +348,7 @@ export function SessionBrowser({
                           e.preventDefault()
                           setMenu({ profile: s, ...menuPosition(e) })
                         }}
-                        className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-white/70 transition-colors duration-100 hover:bg-white/[0.06] ${
+                        className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06] ${
                           draggedId === s.id ? 'opacity-40' : ''
                         } ${dropTargetId === s.id && draggedId !== s.id ? 'bg-sky-400/10' : ''}`}
                         title={`${s.username}@${s.host}:${s.port}`}
@@ -364,13 +364,13 @@ export function SessionBrowser({
                         {s.protocol === 'telnet' ? (
                           <Network size={11} className="mt-0.5 shrink-0 text-amber-400/40" />
                         ) : (
-                          <Server size={11} className="mt-0.5 shrink-0 text-white/30" />
+                          <Server size={11} className="mt-0.5 shrink-0 text-chrome/30" />
                         )}
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-white/90">{s.label}</div>
-                          <div className="truncate text-white/40">{profileSubtitle(s)}</div>
+                          <div className="truncate text-chrome/90">{s.label}</div>
+                          <div className="truncate text-chrome/40">{profileSubtitle(s)}</div>
                         </div>
-                        {s.hasCredential && <Lock size={10} className="mt-0.5 shrink-0 text-white/25" />}
+                        {s.hasCredential && <Lock size={10} className="mt-0.5 shrink-0 text-chrome/25" />}
                       </div>
                     ))}
                 </div>
@@ -413,11 +413,11 @@ export function SessionBrowser({
       )}
       {menu && (
         <div
-          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-white/10 bg-[#1f2028] py-1 text-xs shadow-xl duration-100"
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
           <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-chrome/80 transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => {
               pickSession(menu.profile)
               setMenu(null)
@@ -426,7 +426,7 @@ export function SessionBrowser({
             <Plug size={13} /> Connect
           </button>
           <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-chrome/80 transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => {
               onEditSession?.(menu.profile)
               setMenu(null)
@@ -439,7 +439,7 @@ export function SessionBrowser({
               a row. Sits above Delete so the destructive item stays last. */}
           {menu.profile.wakeOnLan && (
             <button
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 transition-colors duration-100 hover:bg-white/10"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-chrome/80 transition-colors duration-100 hover:bg-chrome/10"
               onClick={() => {
                 onWakeSession?.(menu.profile)
                 setMenu(null)
@@ -449,7 +449,7 @@ export function SessionBrowser({
             </button>
           )}
           <button
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-white/10"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-red-300 transition-colors duration-100 hover:bg-chrome/10"
             onClick={() => {
               onDeleteSession?.(menu.profile)
               setMenu(null)

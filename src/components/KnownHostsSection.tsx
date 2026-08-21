@@ -84,7 +84,7 @@ export function KnownHostsSection() {
   return (
     <div className="space-y-3 px-2 py-1.5">
       <div className="flex items-start justify-between gap-3">
-        <p className="leading-relaxed text-white/50">
+        <p className="leading-relaxed text-chrome/50">
           Keys accepted at a fingerprint prompt, one per algorithm per host. Forgetting one
           is safe: it asks you to confirm the fingerprint again next time rather than
           weakening anything. Do it when a host has been rebuilt and its key legitimately
@@ -94,26 +94,26 @@ export function KnownHostsSection() {
           type="button"
           onClick={() => void load()}
           title="Reload from disk"
-          className="mt-0.5 flex shrink-0 items-center justify-center rounded p-1 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-white/80"
+          className="mt-0.5 flex shrink-0 items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
         >
           <RefreshCw size={12} />
         </button>
       </div>
 
       {error && <p className="text-red-400">{error}</p>}
-      {groups === null && !error && <p className="text-white/40">Loading…</p>}
+      {groups === null && !error && <p className="text-chrome/40">Loading…</p>}
       {groups?.length === 0 && (
-        <p className="text-white/40">
+        <p className="text-chrome/40">
           No host keys stored yet. One is added each time you accept a fingerprint.
         </p>
       )}
 
       <div className="space-y-2">
         {groups?.map((group) => (
-          <div key={group.id} className="rounded-md border border-white/10 bg-black/15 p-2">
+          <div key={group.id} className="rounded-md border border-chrome/10 bg-black/15 p-2">
             <div className="mb-1.5 flex items-center gap-2">
-              <ShieldCheck size={13} className="shrink-0 text-white/40" />
-              <span className="min-w-0 flex-1 truncate font-medium text-white/85">
+              <ShieldCheck size={13} className="shrink-0 text-chrome/40" />
+              <span className="min-w-0 flex-1 truncate font-medium text-chrome/85">
                 {hostLabel(group.host, group.port)}
               </span>
               {group.keys.length > 1 && (
@@ -125,7 +125,7 @@ export function KnownHostsSection() {
                   type="button"
                   onClick={() => void removeHost(group)}
                   title="Forget every key stored for this host"
-                  className="shrink-0 rounded px-1.5 py-0.5 text-white/40 transition-colors duration-100 hover:bg-white/10 hover:text-red-300"
+                  className="shrink-0 rounded px-1.5 py-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-red-300"
                 >
                   Forget host
                 </button>
@@ -136,11 +136,11 @@ export function KnownHostsSection() {
                 <div key={key.keyText} className="flex items-center gap-2">
                   {key.fingerprint ? (
                     <>
-                      <span className="w-40 shrink-0 truncate text-white/45">
+                      <span className="w-40 shrink-0 truncate text-chrome/45">
                         {key.algorithm}
                       </span>
                       <span
-                        className="min-w-0 flex-1 truncate font-mono text-white/30"
+                        className="min-w-0 flex-1 truncate font-mono text-chrome/30"
                         title={key.fingerprint}
                       >
                         {key.fingerprint}
@@ -164,7 +164,7 @@ export function KnownHostsSection() {
                     type="button"
                     onClick={() => void removeKey(group, key.keyText, key.algorithm)}
                     title="Forget this key"
-                    className="flex shrink-0 items-center justify-center rounded p-1 text-white/30 transition-colors duration-100 hover:bg-white/10 hover:text-red-300"
+                    className="flex shrink-0 items-center justify-center rounded p-1 text-chrome/30 transition-colors duration-100 hover:bg-chrome/10 hover:text-red-300"
                   >
                     <Trash2 size={12} />
                   </button>
