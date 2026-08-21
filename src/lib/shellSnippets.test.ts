@@ -37,6 +37,27 @@ describe('shell snippets', () => {
     expect(script).toContain(']133;D')
   })
 
+  it.each(SHELL_SNIPPETS)('$id marks where the prompt ends', ({ script }) => {
+    // `B` is the only sequence that says which cell your own typing starts
+    // in, and it is what autocomplete reads the current line from. Without it
+    // the prompt's end is inferred from a quiet period, which cannot tell a
+    // shell prompt from a program pausing for a keypress.
+    expect(script).toContain(']133;B')
+  })
+
+  it.each(SHELL_SNIPPETS.filter((s) => s.id === 'bash' || s.id === 'zsh'))(
+    '$id re-adds B every prompt without stacking it up',
+    ({ script }) => {
+      // `B` has to go in PS1, and a prompt framework (starship,
+      // powerlevel10k) assigns PS1 afresh on every prompt — so a one-time
+      // edit at install would simply be dropped. Appending each cycle fixes
+      // that and creates the opposite hazard: a prompt that is *not* rebuilt
+      // would grow one copy per prompt. The test for what is already there is
+      // what makes both cases work, so it is the part worth pinning.
+      expect(script).toContain("[[ $PS1 == *'133;B'* ]] ||")
+    },
+  )
+
   it.each(SHELL_SNIPPETS)('$id reports the working directory', ({ script }) => {
     expect(script).toContain(']7;file://')
   })

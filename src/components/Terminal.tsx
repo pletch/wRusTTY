@@ -1155,6 +1155,10 @@ export function Terminal({
     // it can produce. Both identifiers get the same handler: OSC 633 is
     // VS Code's superset of the same letters, and a shell configured for
     // one commonly emits the other alongside it.
+    // Whether this host has ever named a command it ran, via OSC 633 `E`.
+    // Once it has, passive capture from the screen has nothing left to add —
+    // see `captureTypedLine`.
+    let reportsCommandText = false
     const tracker = new CommandTracker({
       onChange: (activity) => {
         if (!disposed) onActivityRef.current?.(activity)
@@ -1162,6 +1166,10 @@ export function Terminal({
       onComplete: (result) => {
         if (disposed) return
         onCommandCompleteRef.current?.(result)
+        // The shell named what it ran, so it will keep doing so, and there is
+        // no longer any reason to reconstruct command lines from the screen.
+        // See `captureTypedLine`.
+        if (result.command) reportsCommandText = true
         // Tier 2 capture. The command line arrives here already verbatim —
         // the shell said what it ran, via OSC 633 `E` — so there is nothing to
         // reconstruct and nothing that can be mistaken for a password: a
@@ -1285,16 +1293,24 @@ export function Terminal({
      */
     function captureTypedLine() {
       if (!settingsRef.current.autocompleteEnabled) return
-      // An integrated host reports its own command lines; recording this one
-      // too would only add a worse copy of the same thing.
-      if (promptInput.exact) return
+      // This host reports its own command lines, so reading one off the grid
+      // would only add a worse copy of the same thing.
+      //
+      // Keyed on having actually seen a reported command rather than on the
+      // prompt being marked, and the difference matters: a shell that brackets
+      // its prompt without emitting OSC 633 `E` — the original OSC 133, which
+      // has no field for the command text — would otherwise have a marked
+      // prompt, no reported commands, and nothing recorded at all. Our own
+      // snippets emit both, so for them this flips on the first command and
+      // stays on.
+      if (reportsCommandText) return
       const input = promptInput.read()
       if (!input || input.text.trim() === '') return
-      // Nothing here is a marked prompt (see above), so the origin is a guess,
-      // and a guess cannot tell a shell prompt from a program waiting for a
-      // keypress. The `n` that answers apt's `[Y/n]` would otherwise be stored
-      // as a command. See `tooShortToInfer`.
-      if (tooShortToInfer(input.text)) return
+      // An unmarked prompt is a guessed one, and a guess cannot tell a shell
+      // prompt from a program waiting for a keypress. The `n` that answers
+      // apt's `[Y/n]` would otherwise be stored as a command. See
+      // `tooShortToInfer`.
+      if (!promptInput.exact && tooShortToInfer(input.text)) return
       if (input.text.length < promptInput.typedCount) return
       void recordCommand({
         host: historyKeyForSource(source),

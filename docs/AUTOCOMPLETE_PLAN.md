@@ -257,6 +257,25 @@ has said where the line begins, and `n` is simply a one-character command.
 offer and the store, since the same keystroke would otherwise leave `n` in the
 history as a command.
 
+**And the snippets were emitting no `B` at all.** Found while checking a host
+against this: all four shell snippets bracketed commands (`A`, `C`, `D`, `E`)
+but never marked the prompt's *end*, which is the marker this whole design
+reads the typed line from. `B` had been left out deliberately — it is the one
+sequence that has to go in `PS1`, where prompt frameworks fight — so every
+host, integrated or not, was on the inferred path and `originExact` was never
+once true.
+
+All four now emit it, appended to the prompt on every cycle from the hook that
+runs last, guarded against stacking. See docs/SHELL_INTEGRATION.md.
+
+That made a dormant branch live for the first time: `captureTypedLine` skipped
+passive capture when the prompt was marked, on the reasoning that an
+integrated host reports its own command lines. True of our snippets, which
+emit `E` — but not of a plain OSC 133 integration, which has no field for the
+command text and would have gone from capturing every command to capturing
+none. The guard is now "this host has actually reported a command line",
+which is the condition that was meant all along.
+
 **Gates.** Suggestion is off entirely while:
 
 - the alternate screen is up (`onBufferChange`) — vim's `:` line is not a

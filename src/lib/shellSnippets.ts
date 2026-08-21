@@ -104,7 +104,24 @@ ${indent(POSIX_OSC7)}
 
   # Runs last in PROMPT_COMMAND, so the next command to fire the DEBUG trap
   # really is one you typed.
-  __osc133_arm() { __osc133_ready=1; }
+  __osc133_arm() {
+    __osc133_ready=1
+    # OSC 133 \`B\`: the end of the prompt, which is the first cell of
+    # whatever you type. It has to live *in* PS1 rather than be printed from
+    # a hook, because every hook runs before the prompt is drawn — printed
+    # here it would mark the cell the previous line ended in.
+    #
+    # Appended on each prompt rather than once at install, because a dynamic
+    # prompt (starship, powerlevel10k, anything that assigns PS1 from
+    # PROMPT_COMMAND) rewrites the variable every cycle and would drop a
+    # one-time edit. This entry runs last, after those have had their turn,
+    # and the test keeps it from stacking up on the prompts that don't.
+    #
+    # \\[ \\] tells bash these bytes take no space on screen. Without them it
+    # counts them toward the prompt's width and wraps the line you are
+    # editing in the wrong column.
+    [[ $PS1 == *'133;B'* ]] || PS1=$PS1'\\[\\e]133;B\\a\\]'
+  }
 
   __osc133_preexec() {
     # Programmable completion also fires the DEBUG trap; it isn't a command.
@@ -163,6 +180,13 @@ __osc133_precmd() {
   fi
   __osc7_report
   print -n "\\e]133;A\\a"
+  # OSC 133 \`B\`: where the prompt ends and your own typing begins. In PS1
+  # rather than printed here, because this hook runs before the prompt is
+  # drawn. Re-checked every cycle so a theme that rebuilds PS1 cannot drop
+  # it, and wrapped in %{ %} so zsh knows the bytes occupy no columns —
+  # without that it mismeasures the prompt and redraws the line you are
+  # editing in the wrong place.
+  [[ $PS1 == *'133;B'* ]] || PS1=$PS1$'%{\\e]133;B\\a%}'
 }
 
 __osc133_preexec() {
@@ -183,6 +207,19 @@ add-zsh-hook preexec __osc133_preexec`
 const FISH = `${PREAMBLE}
 function __osc133_prompt --on-event fish_prompt
     printf '\\e]133;A\\a'
+end
+
+# OSC 133 \`B\`: where the prompt ends and your own typing begins. The event
+# above fires *before* the prompt function runs, so B cannot come from there —
+# it has to be written after the prompt itself, hence the wrapper. Copied
+# once, and only over a prompt that exists; a theme that replaces fish_prompt
+# after this block runs would need it run again.
+if functions -q fish_prompt; and not functions -q __osc133_prompt_orig
+    functions --copy fish_prompt __osc133_prompt_orig
+    function fish_prompt
+        __osc133_prompt_orig
+        printf '\\e]133;B\\a'
+    end
 end
 
 function __osc133_preexec --on-event fish_preexec
@@ -299,7 +336,15 @@ if (-not [Console]::IsInputRedirected -and -not $Global:__osc133_installed) {
     }
     __osc7_report
     [Console]::Write("$__osc133_esc]133;A$__osc133_bel")
-    & $Global:__osc133_prompt
+    # OSC 133 \`B\` marks the end of the prompt, so it is appended to what the
+    # prompt returns rather than written here: the host writes that string
+    # after this function returns, and anything sent to the console now would
+    # land in front of it. Onto the last line only, so a multi-line prompt
+    # keeps its shape and the mark still lands on the line you type on.
+    $rendered = @(& $Global:__osc133_prompt)
+    if ($rendered.Count -eq 0) { $rendered = @('') }
+    $rendered[-1] = "$($rendered[-1])$__osc133_esc]133;B$__osc133_bel"
+    $rendered
   }
 
   # Progress reporting (OSC 9;4) is emitted by programs, not by the shell, and
