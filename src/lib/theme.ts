@@ -208,37 +208,25 @@ export function stripOverlay(theme: TerminalTheme): string {
   return wash(theme, STRIP_OVERLAY_ALPHA)
 }
 
-/** The strip's own colour as something paintable — the window background
- * with the full wash on it, rather than the wash alone. The strip itself
- * doesn't need this (it lays its wash over the window and is done), but
- * anything drawing a piece of strip *on top of* something else does: the
- * fillets under the active tab's bottom corners have the terminal's colour
- * behind them and have to put the strip back over part of it. */
-export function stripBackground(theme: TerminalTheme, opacity: number): string {
-  return washed(theme, opacity, STRIP_OVERLAY_ALPHA)
-}
-
-/** The fill a quiet tab takes while the pointer is over it: the terminal's
- * own colour with half the strip's wash on it, which lands it midway between
- * the strip it sits in and the active tab it would become.
+/** The layer a quiet tab lays over the terminal's colour while the pointer
+ * is over it: half the strip's wash, which puts the tab midway between the
+ * strip it sits in and the active tab it would become.
  *
- * Two layers rather than one, because a hovered tab has to *replace* the
- * strip's wash rather than add to it — washing the strip further only ever
- * moves away from the active tab, which on a dark theme meant hovering a tab
- * made it lighter when the thing it was reaching towards is darker. Painting
- * the background again underneath hides the strip, and the half wash on top
- * then measures from the same place the active tab does. A one-stop gradient
- * is how CSS states a flat layer above a background colour. */
-export function tabHoverBackground(theme: TerminalTheme, opacity: number): string {
-  return washed(theme, opacity, STRIP_OVERLAY_ALPHA / 2)
-}
-
-/** The window background with `alpha` of the wash laid over it, as one CSS
- * background value. A one-stop gradient is how CSS states a flat layer above
- * a background colour. */
-function washed(theme: TerminalTheme, opacity: number, alpha: number): string {
-  const layer = wash(theme, alpha)
-  return `linear-gradient(${layer}, ${layer}), ${backgroundWithOpacity(theme, opacity)}`
+ * Half a wash *over the background* rather than any amount over the strip,
+ * because washing the strip further only ever moves away from the active
+ * tab — on a dark theme that made hovering a tab lighter when the thing it
+ * is reaching towards is darker. Painting the background again underneath
+ * (the caller sets it as the background-color) hides the strip, and this
+ * then measures from the same place the active tab does.
+ *
+ * An image rather than a finished colour so the two can be set as separate
+ * properties. As one `background` shorthand — `linear-gradient(...), <color>`
+ * — Chrome keeps the gradient and silently drops the colour, leaving the
+ * wash sitting on the strip after all, which is the bug this is shaped to
+ * avoid. A one-stop gradient is how CSS states a flat layer. */
+export function tabHoverWash(theme: TerminalTheme): string {
+  const half = wash(theme, STRIP_OVERLAY_ALPHA / 2)
+  return `linear-gradient(${half}, ${half})`
 }
 
 /** A translucent black or white, whichever this theme's background is

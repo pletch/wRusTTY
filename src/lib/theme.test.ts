@@ -6,7 +6,7 @@ import {
   backgroundWithOpacity,
   backgroundTint,
   stripOverlay,
-  tabHoverBackground,
+  tabHoverWash,
 } from './theme'
 
 describe('findTheme', () => {
@@ -119,23 +119,22 @@ describe('stripOverlay', () => {
   })
 })
 
-describe('tabHoverBackground', () => {
-  it('lays half the strip wash over the background, not over the strip', () => {
-    const theme = findTheme('Campbell')
-    expect(tabHoverBackground(theme, 1)).toBe(
-      'linear-gradient(rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.04)), #0c0c0cff',
+describe('tabHoverWash', () => {
+  it('is half the strip wash, as a flat one-stop layer', () => {
+    expect(tabHoverWash(findTheme('Campbell'))).toBe(
+      'linear-gradient(rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.04))'
     )
   })
 
-  it('sits between the strip and the active tab', () => {
-    // The active tab is the background exactly, the strip is that plus a
-    // full wash — so half a wash is the midpoint, and on a dark theme that
-    // has to be *darker* than the strip rather than lighter.
+  it('carries no colour of its own, so the caller sets what it sits on', () => {
+    // As one `background` shorthand Chrome keeps the gradient and drops the
+    // colour, which put the wash on the strip rather than on the terminal —
+    // the wrong side of the tab it is meant to be reaching towards.
     for (const theme of PRESET_THEMES) {
-      const [tone, , , full] = stripOverlay(theme).match(/[\d.]+/g)!.map(Number)
-      const [, , , half] = tabHoverBackground(theme, 1).match(/[\d.]+/g)!.map(Number)
+      expect(tabHoverWash(theme)).not.toContain(theme.background)
+      const [tone, , , half] = tabHoverWash(theme).match(/[\d.]+/g)!.map(Number)
+      const [, , , full] = stripOverlay(theme).match(/[\d.]+/g)!.map(Number)
       expect(half).toBeCloseTo(full / 2)
-      expect(tabHoverBackground(theme, 1)).toContain(`${theme.background}ff`)
       expect(tone).toBe(theme.name === 'Light' ? 0 : 255)
     }
   })

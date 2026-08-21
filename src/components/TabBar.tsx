@@ -49,15 +49,11 @@ interface Props {
    * here because it follows the chosen theme and the window's background
    * opacity, neither of which the strip otherwise knows about. */
   paneBackground: string
-  /** The fill a quiet tab takes under the pointer — the terminal's colour
-   * with half the strip's wash on it, so it lands midway between the strip
-   * and the active tab. Comes from the same place `paneBackground` does, and
-   * for the same reason: it is measured from the theme, which the strip has
-   * no way to see. */
-  tabHoverBackground: string
-  /** The strip's own colour, paintable — for the fillets that flare the
-   * active tab's bottom corners out into it. See stripBackground. */
-  stripBackground: string
+  /** The layer a quiet tab lays over `paneBackground` under the pointer, to
+   * land midway between the strip and the active tab. Comes from the same
+   * place `paneBackground` does, and for the same reason: it is measured
+   * from the theme, which the strip has no way to see. */
+  tabHoverWash: string
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
@@ -93,6 +89,15 @@ const PANE_MAP_SEGMENT_PX = 2
  * PANE_MAP_SEGMENT_PX — the right failure for a case that can no longer be
  * created. */
 const PANE_MAP_MAX_ROWS = 4
+
+/** Keeps the quarter of a corner fillet that is nearest the tab and drops
+ * the rest — see where it is used. `centre` is the corner of the 8px box
+ * the arc is struck from: the top-left for the fillet on the tab's left,
+ * the top-right for the one on its right. */
+function filletMask(centre: string): { WebkitMaskImage: string; maskImage: string } {
+  const mask = `radial-gradient(circle at ${centre}, transparent 7.5px, #000 8.5px)`
+  return { WebkitMaskImage: mask, maskImage: mask }
+}
 
 /** Gap between the top of the tab and the pane map, in px. The map used to
  * sit flush against the edge, which on a square corner was simply where the
@@ -287,8 +292,7 @@ export function TabBar({
   attentionPanes,
   titleByPane,
   paneBackground,
-  tabHoverBackground,
-  stripBackground,
+  tabHoverWash,
   onSelect,
   onClose,
   onNew,
@@ -402,14 +406,18 @@ export function TabBar({
         // up even for the ~1px subpixel-rounding gaps that aren't real
         // overflow at all. Wheel/trackpad scrolling still works with it
         // hidden; only the visible bar is gone.
-        // `pr-2` reserves the width the last tab's right-hand fillet hangs
-        // into. The fillets are absolutely positioned outside their tab, and
-        // an out-of-flow descendant still counts towards a scroll
-        // container's scrollable overflow — so on the last tab it added 8px
-        // the container could not show, and the check below reported a strip
-        // that fits exactly as overflowing, fading its own last tab. Padding
-        // is inside clientWidth, so the same 8px stops being an overflow.
-        className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto pr-2"
+        // `px-2` reserves the width the first and last tabs' fillets hang
+        // into, which they need for opposite reasons. The fillets are
+        // absolutely positioned outside their tab, and at the end an
+        // out-of-flow descendant still counts towards a scroll container's
+        // scrollable overflow — so on the last tab it added 8px the
+        // container could not show, and the check below called a strip that
+        // fits exactly overflowing and faded its own last tab. At the start
+        // there is no scrollable overflow to be had at all: content before
+        // the content edge is simply clipped, so the first tab's left
+        // shoulder was cut off square. Padding answers both, being inside
+        // clientWidth at one end and inside the content box at the other.
+        className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto px-2"
         style={
           overflowing
             ? {
@@ -517,9 +525,9 @@ export function TabBar({
                 ...(dropTargetId === tab.id
                   ? {}
                   : active
-                    ? { background: paneBackground }
+                    ? { backgroundColor: paneBackground }
                     : hoveredId === tab.id
-                      ? { background: tabHoverBackground }
+                      ? { backgroundColor: paneBackground, backgroundImage: tabHoverWash }
                       : {}),
               }}
               // Only one tab is a shape: the active one. It takes the
@@ -573,35 +581,34 @@ export function TabBar({
 
                   A corner CSS cannot round directly — the curve is convex
                   from the pane's side, and border-radius only ever cuts
-                  inwards. Each is a square of pane colour just outside the
-                  tab with the strip painted back over it under an opposite
-                  rounded corner, which leaves exactly the quarter that
-                  should stay: full height against the tab, nothing at all a
-                  radius away. `stripBackground` rather than the wash alone
-                  because here the strip is being drawn *over* the terminal's
-                  colour rather than over the window. */}
+                  inwards. So each is a square of pane colour with the
+                  quarter disc nearest the tab's own corner masked out of it,
+                  leaving exactly the part that should stay: full height
+                  against the tab, nothing at all a radius away.
+
+                  Masked rather than overpainted. Painting the strip back
+                  over the rest of the square is the same shape and antialiases
+                  a little more crisply, but it is 8px of opaque strip laid on
+                  top of whatever is actually there — which on the tab next
+                  door, while the pointer is over it, is its hover fill: a
+                  small wrong-coloured box beside the shoulder. Masking leaves
+                  that ground untouched.
+
+                  The two-pixel ramp either side of the radius is what does
+                  the antialiasing; a hard stop leaves the arc visibly
+                  stepped. */}
               {active && dropTargetId !== tab.id && (
                 <>
                   <span
                     aria-hidden
                     className="pointer-events-none absolute -left-2 bottom-0 h-2 w-2"
-                    style={{ background: paneBackground }}
-                  >
-                    <span
-                      className="block h-full w-full rounded-br-lg"
-                      style={{ background: stripBackground }}
-                    />
-                  </span>
+                    style={{ background: paneBackground, ...filletMask('0 0') }}
+                  />
                   <span
                     aria-hidden
                     className="pointer-events-none absolute -right-2 bottom-0 h-2 w-2"
-                    style={{ background: paneBackground }}
-                  >
-                    <span
-                      className="block h-full w-full rounded-bl-lg"
-                      style={{ background: stripBackground }}
-                    />
-                  </span>
+                    style={{ background: paneBackground, ...filletMask('100% 0') }}
+                  />
                 </>
               )}
               {/* A single-pane tab only shows this bar when it's the active

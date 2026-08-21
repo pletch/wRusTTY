@@ -43,8 +43,7 @@ import {
   backgroundTint,
   findTheme,
   stripOverlay,
-  stripBackground,
-  tabHoverBackground,
+  tabHoverWash,
   chromeRgb,
 } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
@@ -1200,14 +1199,7 @@ function App() {
           attentionPanes={attentionPanes}
           titleByPane={titleByPane}
           paneBackground={paneBackground}
-          tabHoverBackground={tabHoverBackground(
-            findTheme(terminalSettings.themeName),
-            terminalSettings.backgroundOpacity,
-          )}
-          stripBackground={stripBackground(
-            findTheme(terminalSettings.themeName),
-            terminalSettings.backgroundOpacity,
-          )}
+          tabHoverWash={tabHoverWash(findTheme(terminalSettings.themeName))}
           onSelect={selectTab}
           onClose={closeTab}
           onNew={newTab}

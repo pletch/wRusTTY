@@ -52,8 +52,7 @@ function bar(props: Partial<Parameters<typeof TabBar>[0]> = {}) {
       attentionPanes={{}}
       titleByPane={{}}
       paneBackground="#16171d"
-      tabHoverBackground="#1b1c22"
-      stripBackground="#212227"
+      tabHoverWash="linear-gradient(rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.04))"
       onSelect={() => {}}
       onClose={() => {}}
       onNew={() => {}}
