@@ -20,6 +20,7 @@ export type VaultGatedAction =
   | { kind: 'restoreSessions'; snapshot: SessionSnapshot }
   | { kind: 'openWorkspace'; workspace: Workspace; originTabId: string | null }
   | { kind: 'connectProfile'; tabId: string; paneId: string; profile: SessionProfile }
+  | { kind: 'reconnectPane'; tabId: string; paneId: string }
 
 /** The effects the dispatcher performs, injected rather than closed over.
  * These are the parts that genuinely need App — they touch reducers, modal
@@ -35,6 +36,11 @@ export interface VaultGateEffects {
   /** Asked of the Rust side rather than of React state, for the same reason. */
   hasCredential(profileId: string): Promise<boolean>
   applyProfileToPane(tabId: string, paneId: string, source: ConnectionSource | null, profile: SessionProfile): void
+  /** Bumps the pane's generation so its Terminal remounts and dials again.
+   * Nothing is re-derived on the way through: the pane already carries the
+   * source it dropped from, and the unlock is the only thing that was
+   * missing. */
+  reconnectPane(tabId: string, paneId: string): void
 }
 
 /** Where a just-unlocked profile's connection should read its credentials
@@ -71,5 +77,9 @@ export async function runVaultGatedAction(
       )
       return
     }
+    case 'reconnectPane':
+      effects.reconnectPane(action.tabId, action.paneId)
+      effects.closeModal()
+      return
   }
 }

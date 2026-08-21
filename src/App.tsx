@@ -161,6 +161,7 @@ type Modal =
   | { kind: 'confirmCloseWindow'; count: number }
   | { kind: 'restorePrompt'; snapshot: SessionSnapshot }
   | { kind: 'workspacePrompt'; workspace: Workspace; originTabId: string | null }
+  | { kind: 'reconnectPrompt'; tabId: string; paneId: string }
 
 function App() {
   // tabs/activeTabId used to be two separately-updated useState hooks; see
@@ -499,6 +500,7 @@ function App() {
     hasCredential: (profileId) => vault.hasCredential(profileId),
     applyProfileToPane: (tabId, paneId, source, profile) =>
       applyProfileToPane(tabId, paneId, source, profileToInitial(profile)),
+    reconnectPane: reconnectPaneNow,
   }
 
   /** Unlocks the vault with a freshly-typed master password, then runs
@@ -603,8 +605,31 @@ function App() {
 
   /** Reconnects one specific pane in place (generation bump remounts its
    * Terminal, which reconnects). */
-  function reconnectPane(tabId: string, paneId: string) {
+  function reconnectPaneNow(tabId: string, paneId: string) {
     dispatchTabs({ type: 'paneReconnected', tabId, paneId })
+  }
+
+  /** The Reconnect action, gated on the vault the same way opening a
+   * workspace is.
+   *
+   * The case this exists for: the machine sleeps, every link drops, and the
+   * vault's idle timer locks it while nothing is watching. Reconnect on a
+   * profile-backed pane then remounts the Terminal, which dials, which fails
+   * on "vault is locked" — and the button, pressed again, fails again with no
+   * hint that the missing piece is one password away. Asking for it here
+   * turns that dead end into the unlock prompt the pane actually needs.
+   *
+   * Only vault-bound panes are gated: a telnet or serial pane, or a
+   * profile whose auth needs no secret, reconnects with the vault left
+   * locked exactly as before. */
+  function reconnectPane(tabId: string, paneId: string) {
+    const tab = tabs.find((t) => t.id === tabId)
+    const leaf = tab && allLeaves(tab.root).find((l) => l.id === paneId)
+    if (leaf && vaultStatus === 'locked' && sessionSnapshot.isVaultBound(leaf.source, sessions)) {
+      setModal({ kind: 'reconnectPrompt', tabId, paneId })
+      return
+    }
+    reconnectPaneNow(tabId, paneId)
   }
 
   /** Reconnects the tab's active pane in place (the tab-context-menu action). */
@@ -1756,6 +1781,39 @@ function App() {
                   })
                 }
                 onDiscard={openPendingWorkspace}
+              />
+            )
+          case 'reconnectPrompt':
+            return (
+              <RestoreSessionsPrompt
+                count={1}
+                // Always true here — reconnectPane only reaches this state
+                // for a vault-bound pane with the vault locked.
+                needsVaultUnlock
+                osUnlockAvailable={osUnlockAvailable}
+                title="Unlock the vault to reconnect?"
+                body="This session signs in with a credential from the vault, and the vault is locked."
+                submitLabel="Unlock & Reconnect"
+                cancelLabel="Cancel"
+                // Unreachable while needsVaultUnlock is true, but the prop is
+                // required: reconnecting without the unlock is the failure
+                // this prompt exists to avoid, so it cancels instead.
+                onRestore={closeModal}
+                onUnlockAndRestore={(password) =>
+                  unlockAndRun(password, {
+                    kind: 'reconnectPane',
+                    tabId: modal.tabId,
+                    paneId: modal.paneId,
+                  })
+                }
+                onUnlockWithOsAndRestore={() =>
+                  unlockWithOsAndRun({
+                    kind: 'reconnectPane',
+                    tabId: modal.tabId,
+                    paneId: modal.paneId,
+                  })
+                }
+                onDiscard={closeModal}
               />
             )
           default:

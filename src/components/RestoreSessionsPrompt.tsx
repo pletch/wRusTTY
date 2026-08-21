@@ -16,6 +16,10 @@ interface Props {
   title?: string
   body?: string
   cancelLabel?: string
+  /** The unlock button's verb, for callers whose action isn't a restore —
+   * "Unlock & Reconnect" on the reconnect gate. Only wording; the button
+   * still runs onUnlockAndRestore. */
+  submitLabel?: string
 }
 
 const inputClass =
@@ -32,6 +36,7 @@ export function RestoreSessionsPrompt({
   title,
   body,
   cancelLabel,
+  submitLabel,
 }: Props) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -110,7 +115,7 @@ export function RestoreSessionsPrompt({
               className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Lock size={14} />
-              Unlock & Restore
+              {submitLabel ?? 'Unlock & Restore'}
             </button>
             <button
               type="button"

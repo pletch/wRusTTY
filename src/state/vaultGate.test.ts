@@ -30,6 +30,7 @@ function effects(overrides: Partial<VaultGateEffects> = {}) {
     closeModal: vi.fn(),
     hasCredential: vi.fn().mockResolvedValue(true),
     applyProfileToPane: vi.fn(),
+    reconnectPane: vi.fn(),
     ...overrides,
   } satisfies VaultGateEffects
 }
@@ -96,6 +97,19 @@ describe('runVaultGatedAction', () => {
   // between the unlock and this call). A rejection has to read as "no
   // credential" and still apply the profile, or picking a session leaves the
   // pane sitting on nothing at all.
+  // The pane already holds the source it dropped from, so unlocking is the
+  // whole of the fix: remount that one pane and dismiss the prompt, without
+  // touching the restore or workspace paths.
+  it('reconnects the waiting pane and closes the prompt', async () => {
+    const e = effects()
+    await runVaultGatedAction({ kind: 'reconnectPane', tabId: 't1', paneId: 'a' }, e)
+    expect(e.reconnectPane).toHaveBeenCalledWith('t1', 'a')
+    expect(e.closeModal).toHaveBeenCalled()
+    expect(e.applyRestore).not.toHaveBeenCalled()
+    expect(e.materializeWorkspace).not.toHaveBeenCalled()
+    expect(e.applyProfileToPane).not.toHaveBeenCalled()
+  })
+
   it('treats a failed vault query as no credential rather than aborting', async () => {
     const e = effects({ hasCredential: vi.fn().mockRejectedValue(new Error('locked')) })
     const p = profile()
