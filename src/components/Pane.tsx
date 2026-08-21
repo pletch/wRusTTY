@@ -41,6 +41,12 @@ interface Props {
   titleByPane: Record<string, string | null>
   /** The `externalEditor` setting, for the Files panel's edit route. */
   editorCommand: string
+  /** The colour a connected terminal paints itself, ready to use as a CSS
+   * background. A pane still waiting for a connection paints it too, so the
+   * pane doesn't change tone the moment a session opens — and so that it
+   * matches its own tab, which is painted from the same value. Only the
+   * connect dialog floating on top of it is a lighter shade. */
+  paneBackground: string
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
   workspaces: Workspace[]
@@ -112,6 +118,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     cwdByPane,
     titleByPane,
     editorCommand,
+    paneBackground,
     sessionIdByPane,
     sessions,
     workspaces,
@@ -218,6 +225,12 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         <div ref={slotRef} className="relative h-full w-full" />
       ) : (
         <div
+          // Painted rather than left to show the window's own background: at
+          // less than full background opacity those are not the same colour,
+          // since the terminal paints this over the window rather than
+          // instead of it. Left bare, a pane lightened while it waited for a
+          // connection and settled a shade darker the moment one opened.
+          style={{ background: paneBackground }}
           className={`h-full w-full min-w-0 transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes(DRAG_TAB_MIME)) return

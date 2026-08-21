@@ -1139,7 +1139,9 @@ function App() {
     : 0
 
   // Shared with the tab strip, where the active tab takes it as its own fill
-  // so that tab and terminal read as one surface.
+  // so that tab and terminal read as one surface, and with panes that have no
+  // connection yet, which paint it for themselves so waiting for one doesn't
+  // look different from having one.
   const paneBackground = backgroundWithOpacity(
     findTheme(terminalSettings.themeName),
     terminalSettings.backgroundOpacity,
@@ -1371,6 +1373,7 @@ function App() {
                 cwdByPane={cwdByPane}
                 titleByPane={titleByPane}
                 editorCommand={terminalSettings.externalEditor}
+                paneBackground={paneBackground}
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
                 workspaces={savedWorkspaces}
