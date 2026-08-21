@@ -231,6 +231,32 @@ Recording, in this tier, should be **conservative**: only store a line when
 Enter follows a stretch where every typed printable character visibly landed
 at the cursor. A single non-echoing keystroke disqualifies the whole line.
 
+**What inference cannot see, found in use.** A quiet period followed by a
+printable character is also exactly what `apt` looks like when it prints `Do
+you want to continue? [Y/n]` and waits — and pressing `n` there was reported
+offering every remembered command starting with `n`, mid-install. There are no
+markers on such a host, so nothing says a program is running; the guess has no
+way to tell that prompt from a shell's.
+
+Three fixes were considered. Requiring the cursor to have little text to its
+left fails on a long `user@host:~/deep/path$` prompt. Installing shell
+integration removes the guess rather than improving it, and is the right
+answer but not one the app can impose. What shipped is a length floor:
+
+> **At an inferred origin only, offer nothing and record nothing until two
+> characters have been typed.**
+
+The confusable case is always exactly one key — `y`, `n`, a menu's `1`, a
+pager's `q` — so two characters separates it cleanly, and nothing is given up,
+because a one-character prefix matches so much of any history that it was
+never a suggestion worth making. A marked prompt is exempt: there the shell
+has said where the line begins, and `n` is simply a one-character command.
+
+`tooShortToInfer` in `lib/promptInput.ts`, applied in
+`AutocompleteController.shouldOffer` and in `captureTypedLine` — both the
+offer and the store, since the same keystroke would otherwise leave `n` in the
+history as a command.
+
 **Gates.** Suggestion is off entirely while:
 
 - the alternate screen is up (`onBufferChange`) — vim's `:` line is not a

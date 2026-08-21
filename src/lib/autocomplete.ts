@@ -11,7 +11,12 @@
  * whatever state it reports, so the rules below can be tested as rules.
  */
 
-import type { Cell, PromptInput, PromptInputTracker } from './promptInput'
+import {
+  tooShortToInfer,
+  type Cell,
+  type PromptInput,
+  type PromptInputTracker,
+} from './promptInput'
 
 /** What a key does while a suggestion is showing. */
 export type SuggestionKeyAction =
@@ -350,9 +355,16 @@ export class AutocompleteController {
    *
    * `atEnd` is the load-bearing one: accepting appends, so offering while the
    * cursor sits mid-line would splice text into the middle of the command.
+   *
+   * The length floor applies only to an inferred origin, and only there
+   * because an inferred origin cannot tell a shell prompt from a program
+   * pausing for a keypress — see `tooShortToInfer`. Pressing `n` at apt's
+   * `[Y/n]` should not summon the history of everything beginning with `n`.
    */
   private shouldOffer(input: PromptInput | null): input is PromptInput {
-    return input !== null && input.atEnd && input.text.trim() !== ''
+    if (input === null || !input.atEnd || input.text.trim() === '') return false
+    if (!this.deps.tracker.exact && tooShortToInfer(input.text)) return false
+    return true
   }
 
   move(delta: number): void {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { PromptInputTracker, sliceColumns, type GridReader } from './promptInput'
+import { PromptInputTracker, sliceColumns, tooShortToInfer, type GridReader } from './promptInput'
 import type { RowText } from './ghostty/rowText'
 
 /**
@@ -304,5 +304,31 @@ describe('sliceColumns', () => {
     expect(sliceColumns(row, 0, 99)).toBe('abc')
     expect(sliceColumns(row, -5, 2)).toBe('ab')
     expect(sliceColumns(row, 2, 1)).toBe('')
+  })
+})
+
+describe('tooShortToInfer', () => {
+  it('rejects the single key that answers a program', () => {
+    // `y`, `n`, a menu's `1`, a pager's `q` — the whole confusable set is one
+    // character long.
+    for (const reply of ['y', 'n', 'Y', '1', 'q', ' n ']) {
+      expect(tooShortToInfer(reply)).toBe(true)
+    }
+  })
+
+  it('accepts anything two characters or longer', () => {
+    for (const command of ['ls', 'cd ..', 'git status']) {
+      expect(tooShortToInfer(command)).toBe(false)
+    }
+  })
+
+  it('counts an astral character as one character, not two', () => {
+    // `'🚀'.length` is 2 in UTF-16, which would let a single keystroke through
+    // on a count of code units.
+    expect(tooShortToInfer('🚀')).toBe(true)
+  })
+
+  it('treats a blank line as too short, as an empty one already was', () => {
+    expect(tooShortToInfer('   ')).toBe(true)
   })
 })

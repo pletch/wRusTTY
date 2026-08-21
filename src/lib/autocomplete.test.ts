@@ -93,10 +93,21 @@ describe('suggestionKeyAction', () => {
   })
 })
 
-/** A tracker stub whose read is set by the test. */
-function fakeTracker(input: PromptInput | null) {
-  const state = { input }
-  const tracker = { read: () => state.input } as unknown as PromptInputTracker
+/**
+ * A tracker stub whose read is set by the test.
+ *
+ * `exact` defaults to true — a host with shell integration — because that is
+ * the case with no extra rules attached, and the tests below are about the
+ * controller rather than about inference. The inferred case has its own tests.
+ */
+function fakeTracker(input: PromptInput | null, exact = true) {
+  const state = { input, exact }
+  const tracker = {
+    read: () => state.input,
+    get exact() {
+      return state.exact
+    },
+  } as unknown as PromptInputTracker
   return { tracker, state }
 }
 
@@ -117,9 +128,9 @@ function promptInput(text: string, atEnd = true): PromptInput {
 function makeController(
   input: PromptInput | null,
   items: string[],
-  overrides: { enabled?: boolean } = {},
+  overrides: { enabled?: boolean; exact?: boolean } = {},
 ) {
-  const { tracker, state } = fakeTracker(input)
+  const { tracker, state } = fakeTracker(input, overrides.exact ?? true)
   const views: (SuggestionView | null)[] = []
   const sent: string[] = []
   const accepted: string[] = []
@@ -160,6 +171,36 @@ describe('AutocompleteController', () => {
     controller.refresh()
     await new Promise((r) => setTimeout(r, 0))
     expect(controller.current).toBeNull()
+  })
+
+  it('offers nothing for a single key at an inferred prompt', async () => {
+    // What `n` at apt's `Do you want to continue? [Y/n]` looks like from here:
+    // output stopped, a printable character was typed, and there are no
+    // markers to say a program is running. Answering that with every command
+    // beginning with `n` is the fault this guards.
+    const { controller } = makeController(promptInput('n'), ['nmap -sV host', 'nano notes.md'], {
+      exact: false,
+    })
+    controller.refresh()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(controller.current).toBeNull()
+  })
+
+  it('offers on the second character of an inferred line', async () => {
+    // The floor is one key, not a general reluctance — two characters is a
+    // command being typed.
+    const { controller } = makeController(promptInput('nm'), ['nmap -sV host'], { exact: false })
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+    expect(controller.current?.items).toEqual(['nmap -sV host'])
+  })
+
+  it('still offers on a single character when the prompt was marked', async () => {
+    // An integrated shell said where the line begins, so there is nothing to
+    // confuse a command with and no reason to hold back.
+    const { controller } = makeController(promptInput('n'), ['nmap -sV host'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
   })
 
   it('offers nothing when the feature is off', async () => {

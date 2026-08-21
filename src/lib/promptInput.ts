@@ -83,6 +83,40 @@ export interface PromptInput {
  */
 const QUIET_BEFORE_INPUT_MS = 500
 
+/**
+ * How much has to have been typed before an inferred prompt is believed.
+ *
+ * Only applies when the origin was guessed from a quiet period rather than
+ * given by an OSC 133 marker, and it exists because of what that guess cannot
+ * distinguish. `apt` printing `Do you want to continue? [Y/n]` and waiting,
+ * then the user pressing `n`, is the same shape as a shell drawing a prompt
+ * and the user starting a command: output stops, then a printable character
+ * is typed. So a single keystroke answering a program's question gets read as
+ * a one-character command line, and every remembered command beginning with
+ * that letter is offered — which is what someone actually hit, mid-install.
+ *
+ * Two characters is enough to separate them, because the confusable case is
+ * always exactly one key: `y`, `n`, a menu's `1`, a pager's `q`. Nothing is
+ * given up in exchange — a one-character prefix matches so much of any real
+ * history that it was never a suggestion worth making.
+ *
+ * A marked prompt needs none of this. There the shell has said where the line
+ * begins, and a one-character command is simply a one-character command.
+ */
+export const MIN_INFERRED_INPUT_LEN = 2
+
+/**
+ * Whether this line is too short to be believed as a command at an inferred
+ * prompt — a single key answering a program, most likely. Callers check
+ * `exact` first; this says nothing about a marked prompt.
+ *
+ * Counts code points rather than UTF-16 units, so one astral character is one
+ * character and not two.
+ */
+export function tooShortToInfer(text: string): boolean {
+  return [...text.trim()].length < MIN_INFERRED_INPUT_LEN
+}
+
 /** Rows a single logical input line may span before it is abandoned. A command
  * being typed can wrap a few times; a hundred rows means the origin is stale
  * and we are reading a screenful of program output as if it were a prompt. */

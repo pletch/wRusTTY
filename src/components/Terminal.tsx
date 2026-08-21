@@ -44,7 +44,7 @@ import {
   recordCommand,
   suggestCommands,
 } from '../lib/commandHistory'
-import { PromptInputTracker } from '../lib/promptInput'
+import { PromptInputTracker, tooShortToInfer } from '../lib/promptInput'
 import { AutocompleteController, type SuggestionView } from '../lib/autocomplete'
 import { SuggestionPopover } from './SuggestionPopover'
 import { InlineSuggestion } from './InlineSuggestion'
@@ -1290,6 +1290,11 @@ export function Terminal({
       if (promptInput.exact) return
       const input = promptInput.read()
       if (!input || input.text.trim() === '') return
+      // Nothing here is a marked prompt (see above), so the origin is a guess,
+      // and a guess cannot tell a shell prompt from a program waiting for a
+      // keypress. The `n` that answers apt's `[Y/n]` would otherwise be stored
+      // as a command. See `tooShortToInfer`.
+      if (tooShortToInfer(input.text)) return
       if (input.text.length < promptInput.typedCount) return
       void recordCommand({
         host: historyKeyForSource(source),
