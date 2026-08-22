@@ -373,8 +373,10 @@ export class GlyphAtlas {
    * every decision that rests on one-quad-per-cell: the baked underline, the
    * unfocused cursor outline, the DECSCUSR shapes.
    *
-   * Returns null once `RUN_CACHE_CAP` distinct runs are held, so the caller
-   * can fall back rather than fill the atlas with them.
+   * Returns null once the held runs reach `RUN_CACHE_CELL_BUDGET` cells, so
+   * the caller can fall back rather than fill the atlas with them. The budget
+   * is in cells rather than runs so that what it reserves does not move every
+   * time `MAX_RUN_CELLS` does.
    */
   getRunGlyph(text: string, style: number, cells: number): GlyphRect | null {
     const key = `${style}:${cells}:${text}`

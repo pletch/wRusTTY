@@ -23,8 +23,8 @@ import { MAX_RUN_CELLS } from './GlyphAtlas'
  * The alphabet is what bounds the run cache, and is the only thing that does.
  * A run's key is its own text, so unlike a codepoint it has no ceiling from
  * the character repertoire — but a run is at most `MAX_RUN_CELLS` long and
- * built only from these, so the whole key space is that many characters
- * choose three. Prose and paths cost nothing because their letters are not in
+ * built only from these, so the whole key space is bounded by that many of
+ * these characters in a row. Prose and paths cost nothing because their letters are not in
  * here at all.
  *
  * Two deliberate inclusions past the operators:

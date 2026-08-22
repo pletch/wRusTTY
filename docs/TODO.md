@@ -4,7 +4,7 @@ Open items with enough context to pick up cold. Design decisions and the
 gotchas already found live here so they don't have to be rediscovered — see
 PROJECT_PLAN.md for the phased plan this sits alongside.
 
-## ~~Rounded tab corners~~ — shipped
+## ~~Rounded tab corners~~ — shipped, and the chrome went with them
 
 Kept because the shape it landed in is not the shape either option here
 described, and the difference is the interesting part.
@@ -32,6 +32,60 @@ the active fill runs into the terminal rather than being cut off from it. The
 strip's own `black/20` still separates it by tone. Erasing that line under only
 the active tab was never available — every fill in the strip is translucent, so
 overpainting tints the border rather than removing it.
+
+**And then the half this section rejected shipped after all**, which is the
+correction worth keeping. `9a7506e` gave the active tab the terminal's own
+colour — exactly the "full version" ruled out above. The tangle it predicted
+with vibrancy and per-pane opacity never appeared, because the tab is painted
+the *theme's* background rather than the pane's composited result: the strip
+stays an overlay rather than a finished colour, so a translucent window is
+still translucent up here. What the objection got right is that it could not
+be done by matching a fixed colour; what it got wrong is concluding that meant
+it could not be done.
+
+Three things followed that nothing above anticipated:
+
+- **The strip's separation had to stop being a multiply** (`3d2ff1f`).
+  `bg-black/20` scales with whatever it is given, so it has nowhere to go on a
+  near-black background: Campbell (#0c0c0c) came out two levels darker than the
+  terminal, and the strip, the quiet tabs and the active tab collapsed into one
+  flat field. The same 20% took 51 levels out of the Light theme. It is now a
+  wash chosen *away* from the background — white over dark, black over light,
+  8% either way — which is flat addition and so lands 15-20 levels of
+  separation on every preset instead of tracking how dark the theme is. It also
+  no longer depends on what the OS paints behind the window, which mica and
+  tabbed tint from the wallpaper.
+- **Once the chrome sits on the terminal's colour, every literal `white/N` in
+  it is wrong on a light theme** (`ae42c25`). On Light's #ffffff a
+  `text-white/45` label is a label nobody can read. The tone is named once
+  instead: a Tailwind `chrome` colour reading `--chrome-rgb`, set from the
+  theme's luma, and 380-odd `white/N` became `chrome/N` mechanically so `/40`,
+  `/[0.06]`, `hover:` and `group-hover:` all kept working. Two things not to
+  undo — text on a saturated accent fill stays *literally* white, since what it
+  needs contrast against is the button rather than the window; and the variable
+  goes on the document element, not the app root, because dialogs and menus are
+  portalled to the body.
+- **The active tab's bottom corners flare out into the strip**, the join a
+  browser tab makes with its page. `border-radius` cannot draw it — the curve
+  is convex from the pane's side and a radius only cuts inwards — so each
+  corner is a square of pane colour with a quarter *masked out* of it
+  (`fb833db`). The first attempt painted the strip back over the square
+  instead, which puts 8px of opaque strip on top of whatever is actually
+  there — and what is there, when the pointer is on the tab next door, is that
+  tab's hover fill. Keep the two-pixel ramp either side of the radius; a hard
+  stop leaves the arc visibly stepped.
+
+**Two gotchas from that work, both cheap to hit again:**
+
+- `background: linear-gradient(…), <color>` is valid CSS that Chrome parses
+  into a gradient and a *transparent* background-color — the colour layer is
+  silently dropped. Set as two properties it composes as intended. This is what
+  left the hover fill measuring from the strip rather than from the terminal.
+- The corner fillets are positioned outside their tab, and an out-of-flow
+  descendant still counts towards a scroll container's scrollable overflow — so
+  at the *end* of the strip it added width the container could not show and
+  faded a strip that fits exactly, while at the *start* there is no such thing
+  and the first tab's fillet was simply clipped. `px-2` answers both ends.
 
 ## Settings not yet exposed
 
@@ -66,22 +120,106 @@ reopens three shipped decisions.
 Two places instead:
 
 - The atlas key stops being a codepoint and becomes run text, so the cache
-  needs a bound it never needed. `RUN_CACHE_CAP` is that bound, and the
-  alphabet in `ligatureRuns.ts` is what keeps a path or a word from ever
-  reaching it. Past the cap `getRunGlyph` declines and the cells fall back to
-  drawing one at a time.
+  needs a bound it never needed, and the alphabet in `ligatureRuns.ts` is what
+  keeps a path or a word from ever reaching it. Past the bound `getRunGlyph`
+  declines and the cells fall back to drawing one at a time.
+
+  **The bound counts cells, not runs** (`RUN_CACHE_CELL_BUDGET`), which is the
+  half worth keeping. Counting runs meant what it reserved moved every time the
+  maximum run length did: 512 runs of up to three already reserved 1536 cells
+  of a 1024x1024 atlas that holds 1920 at an ordinary 16x34 device cell, so
+  taking the maximum to five would have let one cache take the whole atlas.
 - Every partial-cell case has to break the run. `computeRuns` breaks on the
   cursor's own cell (which is what other terminals do), on hint labels, on link
   state, and on any change of flags, second attribute byte or resolved colour.
   Selection and search highlighting deliberately do *not* break: those only
   tint a background, and each column carries its own in the instance data.
 
+**Runs reach five cells** (`MAX_RUN_CELLS`), not three. At three, `<==>`,
+`<-->`, `!===` and `====` were chopped and `<--->`, `=====` and `<===>` never
+had a chance — not because the faces lack them, but for the same reason the
+punctuation ligatures were missing until the alphabet grew past the operators
+to the characters the substitution tables actually reach (`...`, `??`, `^=`,
+and `w`, for `www` alone). Five is where the arrows stop; past it the faces
+mostly stop enumerating and start repeating, which no fixed cap can follow.
+
 **Off by default**, and not tied to the font. It costs atlas slots whether or
 not the resolved face has the substitutions, and the platform default
 (`ui-monospace`, Consolas) has none — so a default install would pay for
-nothing. `Cascadia Code` is offered in the picker again now that choosing it
-does something; it and Cascadia Mono differ only in ligatures, which is why
-offering both used to be a choice that did nothing.
+nothing. Cascadia Code and Cascadia Mono differ only in ligatures,
+which is why offering both used to be a choice that did nothing; the picker no
+longer has to curate either, since it is populated from the installed families
+(see below).
+
+## Font handling: shipped, with the non-obvious routes written down
+
+The ligature work above pulled the rest of the font stack with it. Recorded
+because three of these went through routes that look closed from the API docs,
+and someone reading the code will otherwise assume they were unavailable.
+
+- **`setFont` takes a `FontSelection`, not a family string.** A family per
+  style; a flag per style saying that family *is already* a face of it (asking
+  a face that is italic for italic gets a double slant on a good day and an
+  upright on a bad one); and a sorted codepoint range table consulted ahead of
+  all of them. Previously bold and italic were CSS keywords asked of one
+  family, so a font shipping a real cursive italic rendered as its upright
+  slanted by the rasterizer, and which face drew the private use area was
+  whatever the webview picked, silently, per glyph.
+- **OpenType features and variable axes reach Canvas through `@font-face`.**
+  Canvas 2D has no API for either, but `font-feature-settings` and
+  `font-variation-settings` are valid descriptors and Canvas resolves its
+  shorthand against document fonts — so the family is declared again under a
+  generated name with the descriptor baked in, and the atlas is handed that
+  name. Measured, not assumed: ten H's of Bahnschrift are 325.8px plain and
+  203.9px through a wrapped face at `"wdth" 75`.
+  - **`FontFace` does not throw on a descriptor it cannot parse.** The code
+    used to claim it did and had a `catch` written for that. It takes the
+    string, discards it, and reads back `normal` — no exception, no error,
+    which is exactly why a typo'd feature looked identical to a face lacking
+    the feature. `CSS.supports` answers the question instead.
+- **Fonts are enumerated by DirectWrite in the Rust process**, not by Local
+  Font Access, which is Chromium-only and permission-gated. DirectWrite is
+  already in the process, resolves against the same collection the webview
+  will, and answers the monospace question outright via `IsMonospacedFont`
+  rather than leaving it to PANOSE. Settings also reports which face in the
+  stack actually *resolved* — a stack is a list of hopes, and which came true
+  is the one thing worth knowing when the terminal is not drawing what you
+  picked.
+- **The range table resolves overlaps by rule, not by typing order.** It was
+  documented sorted and non-overlapping and only the first was true, so
+  `familyForCodepoint` — a binary search — landed on whichever claimant the
+  table happened to split near, and adding an unrelated range further down
+  could change the answer. `resolveRangeOverlaps` orders by start then widest
+  first, and sets an overlapping entry aside whole rather than clipping it.
+- **The atlas grows instead of falling off a cliff.** Running out used to be
+  every glyph past the last slot drawing blank, with nothing evicted and one
+  console warning — and the cliff is close: at DPR 2 a 14px cell is 16x34, so
+  1024x1024 holds 1920 slots, or 960 of the double-width ones CJK uses. It now
+  doubles to a 4096 ceiling on demand. Cached rects are mutated in place rather
+  than replaced, because the renderer holds them across cells within a frame.
+- **Colour glyphs get their own texture.** A colour glyph ignores `fillStyle`
+  entirely, so an emoji through the single-channel atlas came out as a solid
+  block of the cell's foreground. The companion first shared the coverage
+  atlas's packing, which meant sharing its dimensions and therefore its every
+  growth — a CJK pane dragged a 64MB companion along to hold three emoji. It is
+  packed separately now, starting at 512.
+- **Box drawing, blocks, Powerline and sextants are drawn to the cell rect**,
+  not taken from the font's em box, which almost never matches
+  `round(ceil(fontSize * 1.2) * dpr)` — so border rules fell a fraction short
+  of the row beneath and the hairline gaps marched as the pane resized. Same
+  substitution `GLYPH_CURSOR_OUTLINE` already made; the cache, slot packing and
+  one-quad-per-cell are untouched. It also drops the font dependency for the
+  glyphs covering the most screen on machines where fonts cannot be installed.
+
+**Two non-goals, both deliberate:**
+
+- **Relocating atlas rects on growth.** Slots are handed out strictly forward,
+  so a doubling buys about three times the capacity rather than four. Recovering
+  the rest means moving rects already given out, and the renderer holds them
+  across a frame.
+- **A run cap that follows the faces.** See `MAX_RUN_CELLS` above — past five
+  the faces repeat rather than enumerate, so there is nothing for a cap to
+  track.
 
 ## Autocomplete: what is left is preference, not unfinished work
 
@@ -102,6 +240,37 @@ is a default to pick, and picking none of them leaves a working feature.
 - **Vault-encrypting the store.** Deliberately a plain file today, because
   suggestions that need an unlock before they work feel broken. The command
   surface is shaped so this is a change to one module and nothing above it.
+
+**Two things have changed under this since it was written, and neither is a
+preference.** Both are about where a prompt ends, which is the input everything
+above assumes it has.
+
+- **OSC 133 `B` now ships in all four snippets** (`a1077ba`). They bracketed
+  commands — `A`, `C`, `D`, `E` — and stopped there, because `B` has to live in
+  `PS1`, the part most likely to fight starship or powerlevel10k. That was a
+  fair trade while the sequences existed for notifications; autocomplete
+  changed it, because without `B` the prompt's end is inferred from a quiet
+  period, and a quiet period cannot tell a shell prompt from `apt` pausing on
+  `[Y/n]`. Every host was therefore on the inferred path and `originExact` was
+  never once true. The framework fight is handled rather than assumed away:
+  each snippet appends `B` from the hook that runs last and skips the append
+  when it is already present, inside the shell's own zero-width wrapper so
+  nothing mismeasures the prompt and wraps an edited line in the wrong column.
+  - It also made a dormant branch live. `captureTypedLine` skipped passive
+    capture whenever the prompt was marked, reasoning that an integrated host
+    reports its own command lines — true of these snippets, which emit `E`, and
+    false of a plain OSC 133 integration, which has no field for the command
+    text. That host would have gone from recording every command to recording
+    none. The guard is now "this host has actually reported a command line".
+- **An inferred origin needs two characters before anything is offered or
+  recorded** (`MIN_INFERRED_INPUT_LEN`, `db7f77c`). Pressing `n` at apt's
+  `[Y/n]` was offering every remembered command beginning with `n`, and storing
+  `n` itself as a command on Enter. The confusable case is always exactly one
+  key — `y`, `n`, a menu's `1`, a pager's `q` — and nothing is given up in
+  exchange, since a one-character prefix matches so much of any history that it
+  was never a suggestion worth making. A marked prompt keeps the single
+  character and needs no rule at all: `C` already says a command is running, so
+  nothing is offered for the duration of the install in the first place.
 
 PowerShell and CMD hosts stay a non-goal: the prompt and echo model differs
 enough to be its own piece of work. Note this is *autocomplete* only — those
