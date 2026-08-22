@@ -19,6 +19,7 @@
  *
  *   OSC   ESC ] <digits> ; <payload> (BEL | ESC \)
  *   bell  BEL
+ *   RIS   ESC c        (only when the caller asks for it — see `wantRis`)
  *
  * The payload deliberately cannot span BEL or ESC: that is what bounds it, and
  * what an unterminated sequence would otherwise run past.
@@ -29,6 +30,7 @@ const BEL = 0x07
 const OSC_INTRO = 0x5d // ']', as in ESC ]
 const ST_TAIL = 0x5c // '\', as in ESC \
 const SEMICOLON = 0x3b
+const RIS_TAIL = 0x63 // 'c', as in ESC c
 const ZERO = 0x30
 const NINE = 0x39
 
@@ -55,10 +57,10 @@ const NINE = 0x39
 export const OSC_PENDING_MAX = 1024 * 1024
 
 export interface OscScanEvent {
-  kind: 'osc' | 'bell'
-  /** OSC ident; 0 for a bell. */
+  kind: 'osc' | 'bell' | 'ris'
+  /** OSC ident; 0 for a bell or a RIS. */
   ident: number
-  /** Decoded OSC payload; empty for a bell. */
+  /** Decoded OSC payload; empty for a bell or a RIS. */
   payload: string
   /**
    * Offset into the *current* chunk that the parser must reach before this event
@@ -82,11 +84,19 @@ const NO_EVENTS: OscScanEvent[] = []
  *                already been parsed — they are retained only so a sequence
  *                split across the boundary still matches — so offsets returned
  *                are relative to `bytes` alone.
+ * @param wantRis also report `ESC c` (RIS). Off by default because it is not
+ *                free: 'c' is an ordinary letter, so hunting it costs an
+ *                `indexOf` call per occurrence, where ']' costs one scan that
+ *                finds nothing. Measured on colour-wrapped prose — the shape
+ *                real SSH traffic has — this scan goes from 0.43 to 1.92 ms/MB,
+ *                4.4x, which is why it is asked for only while something is
+ *                listening. See `GhosttyEngine.registerResetHandler`.
  */
 export function scanOsc(
   bytes: Uint8Array,
   pending: Uint8Array | null,
   decoder: TextDecoder,
+  wantRis = false,
 ): OscScanResult {
   let scan: Uint8Array
   if (pending && pending.length > 0) {
@@ -128,18 +138,34 @@ export function scanOsc(
   const anyEsc = scan.indexOf(ESC) >= 0
   let oscAt = anyEsc ? scan.indexOf(OSC_INTRO) : -1
   let belAt = scan.indexOf(BEL)
+  let risAt = wantRis && anyEsc ? scan.indexOf(RIS_TAIL) : -1
 
   while (i < scan.length) {
     if (oscAt >= 0 && oscAt < i) oscAt = scan.indexOf(OSC_INTRO, i)
     if (belAt >= 0 && belAt < i) belAt = scan.indexOf(BEL, i)
-    if (oscAt < 0 && belAt < 0) break
+    if (risAt >= 0 && risAt < i) risAt = scan.indexOf(RIS_TAIL, i)
+    if (oscAt < 0 && belAt < 0 && risAt < 0) break
 
     // A bell only counts if it comes first. Ordering is checked against the
     // ']' rather than the ESC before it, which is safe because that byte is an
     // ESC by definition and so cannot itself be the BEL: the two can never tie.
-    if (belAt >= 0 && (oscAt < 0 || belAt < oscAt)) {
+    if (belAt >= 0 && (oscAt < 0 || belAt < oscAt) && (risAt < 0 || belAt < risAt)) {
       ;(events ??= []).push({ kind: 'bell', ident: 0, payload: '', segEnd: belAt + 1 - base })
       i = belAt + 1
+      continue
+    }
+
+    // Same shape as the ']' branch below: the hunted byte is the *second* of
+    // the pair, so a bare 'c' is only a reset if an ESC precedes it. Checked
+    // before the OSC branch when it comes first, so `ESC c` inside a chunk that
+    // also carries an OSC is still seen — and never checked *inside* an OSC
+    // string, because that branch consumes the whole sequence and the cached
+    // positions are recomputed from `i` on the next turn of the loop.
+    if (risAt >= 0 && (oscAt < 0 || risAt < oscAt)) {
+      if (risAt > 0 && scan[risAt - 1] === ESC) {
+        ;(events ??= []).push({ kind: 'ris', ident: 0, payload: '', segEnd: risAt + 1 - base })
+      }
+      i = risAt + 1
       continue
     }
 

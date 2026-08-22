@@ -97,6 +97,14 @@ export interface TerminalEngine {
   onBufferChange(cb: (isAlternate: boolean) => void): IDisposable
   onBell(cb: () => void): IDisposable
   registerOscHandler(ident: number, cb: (data: string) => boolean | Promise<boolean>): IDisposable
+  /**
+   * `ESC c` (RIS) seen in the stream, for host-side state the engine itself
+   * knows nothing about — a progress report being the case this exists for.
+   *
+   * Costs something to watch for, so register only while it is needed and
+   * dispose when it is not; see `GhosttyEngine.registerResetHandler`.
+   */
+  registerResetHandler(cb: () => void): IDisposable
 
   resize(cols: number, rows: number): void
   /** Re-measures the container and updates the terminal size to fit. */

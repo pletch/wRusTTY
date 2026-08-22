@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ d9ffbbf17c11f570897a49d4c722130e8698d93b
+ghostty-org/ghostty @ 5851d98615187d85052e41042bcf66e0ccec11d4
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -38,7 +38,36 @@ Chosen deliberately, not merely "what was current":
 It keeps going *down*, and that is consolidation rather than a broken build: see
 the ABI breaks below.
 
-### Moving from `6b22215c` (2026-08-14) to this pin
+### Moving from `d9ffbbf17` (2026-08-19) to this pin
+
+131 commits, a clean fast-forward, and **no ABI break at all** — the export
+surface is byte-for-byte the same 180 names, and every struct layout `abi.ts`
+transcribes is unmoved (`abi.manifest.test.ts` re-verified against the new
+binary). The bump was taken for one commit:
+
+- **`33cda4dc`** — a use-after-free in `Terminal.print`'s wide/grapheme path.
+  Four sites held a raw cell pointer across an operation that can grow, and so
+  replace, the page underneath it: the spacer-tail write growing the page to fit
+  the cursor hyperlink, the grapheme move after a wrap, the `appendGrapheme`
+  loop, and `printCell`'s assert after a failed hyperlink write. In wasm the
+  result is a write into freed linear memory — silent corruption, not a trap.
+  The hyperlink variants need OSC 8 output (`ls --hyperlink`, `gh`, `delta`)
+  alongside an emoji; the wrap variant needs only a VS16-widened character
+  landing at the right margin, which is ordinary remote output. Upstream
+  #11261.
+
+Everything else in the range is inert here: kitty graphics (animation, relative
+placements, validation), the new kitty clipboard protocol (OSC 5522), and OSC 99
+desktop notifications. The binary grew 19.5 kB (1,029,546 -> 1,049,099) carrying
+them, which is the argument for `-Dvt-features` below rather than against the
+bump.
+
+One addition worth knowing about and **deliberately not adopted**:
+`GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ = 38` (`e03475c0`), which answers OSC 52
+`?` queries. Leaving it unset is the point — it is a read channel from the
+user's clipboard to whatever is on the far end of the connection.
+
+### Moving from `6b22215c` (2026-08-14) to `d9ffbbf17`
 
 120 commits, another clean fast-forward, and **two more ABI breaks**:
 
@@ -93,7 +122,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout d9ffbbf17c11f570897a49d4c722130e8698d93b
+cd ghostty && git checkout 5851d98615187d85052e41042bcf66e0ccec11d4
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm

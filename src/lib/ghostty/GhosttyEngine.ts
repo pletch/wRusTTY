@@ -358,6 +358,9 @@ export class GhosttyEngine implements TerminalEngine {
   private oscEncoder = new TextEncoder()
   private oscHandlers = new Map<number, ((data: string) => boolean | Promise<boolean>)[]>()
   private onBellHandlers = new Set<() => void>()
+  /** See `registerResetHandler`. Kept separate from the bell handlers because
+   *  its presence, not just its contents, changes what the scanner hunts for. */
+  private onResetHandlers = new Set<() => void>()
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
   private lastIsAlternate = false
 
@@ -1630,6 +1633,7 @@ export class GhosttyEngine implements TerminalEngine {
     this.onRenderHandlers.clear()
     this.onSelectionChangeHandlers.clear()
     this.onBellHandlers.clear()
+    this.onResetHandlers.clear()
     this.oscHandlers.clear()
     this.oscPending = null
   }
@@ -1754,7 +1758,7 @@ export class GhosttyEngine implements TerminalEngine {
     // registers none — never pays it. That asymmetry is the first suspect for
     // the harness/production throughput gap.
     const { events, pending } = phases.time('scan', () =>
-      scanOsc(bytes, this.oscPending, this.oscDecoder),
+      scanOsc(bytes, this.oscPending, this.oscDecoder, this.onResetHandlers.size > 0),
     )
     this.oscPending = pending
 
@@ -1770,6 +1774,12 @@ export class GhosttyEngine implements TerminalEngine {
       if (ev.kind === 'bell') {
         phases.time('handlers', () => {
           for (const h of this.onBellHandlers) h()
+        })
+        continue
+      }
+      if (ev.kind === 'ris') {
+        phases.time('handlers', () => {
+          for (const h of this.onResetHandlers) h()
         })
         continue
       }
@@ -1818,7 +1828,11 @@ export class GhosttyEngine implements TerminalEngine {
     // an exception; the failure is recorded and reported instead, and the guard
     // at the top of this method makes every later write a no-op.
     try {
-      if (this.oscHandlers.size > 0 || this.onBellHandlers.size > 0) {
+      if (
+        this.oscHandlers.size > 0 ||
+        this.onBellHandlers.size > 0 ||
+        this.onResetHandlers.size > 0
+      ) {
         this.parseAndDispatch(bytes)
       } else {
         this.parseSegment(bytes)
@@ -1940,6 +1954,25 @@ export class GhosttyEngine implements TerminalEngine {
   onBell(cb: () => void): IDisposable {
     this.onBellHandlers.add(cb)
     return { dispose: () => this.onBellHandlers.delete(cb) }
+  }
+
+  /**
+   * `ESC c` — RIS, a full terminal reset — seen in the stream.
+   *
+   * Register only while something actually depends on it, and dispose as soon
+   * as it does not. Unlike the other handlers here this one has a cost even
+   * when it never fires: the scanner hunts ']' because an OSC cannot open
+   * without one and escape-dense output contains none, while RIS ends in an
+   * ordinary 'c', so watching for it puts an `indexOf` call on every letter 'c'
+   * the remote sends. See the hunting note in `oscScanner.ts`.
+   *
+   * The core resets itself from the same bytes regardless — this is only for
+   * host-side state that the core knows nothing about, of which a progress
+   * report is currently the only case.
+   */
+  registerResetHandler(cb: () => void): IDisposable {
+    this.onResetHandlers.add(cb)
+    return { dispose: () => this.onResetHandlers.delete(cb) }
   }
 
   onSelectionChange(cb: () => void): IDisposable {

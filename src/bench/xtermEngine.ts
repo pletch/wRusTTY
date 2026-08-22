@@ -178,6 +178,15 @@ export class XtermEngine implements TerminalEngine {
     return this.term.parser.registerOscHandler(ident, cb)
   }
 
+  registerResetHandler(cb: () => void) {
+    // `false` so the sequence still reaches xterm's own handling: this is a
+    // notification, not a replacement for the reset.
+    return this.term.parser.registerEscHandler({ final: 'c' }, () => {
+      cb()
+      return false
+    })
+  }
+
   resize(cols: number, rows: number) {
     this.term.resize(cols, rows)
   }

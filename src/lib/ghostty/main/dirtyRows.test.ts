@@ -66,10 +66,10 @@ run('render-state dirty', () => {
 
     /** Per-row flags, counted the long way round. */
     const dirtyRowCount = () => {
-      const it = seed()
+      const iter = seed()
       let n = 0
-      while (ex.ghostty_render_state_row_iterator_next(it)) {
-        abi.expectOk(ex.ghostty_render_state_row_get(it, abi.RS_ROW_DATA_DIRTY, out), 'row_get DIRTY')
+      while (ex.ghostty_render_state_row_iterator_next(iter)) {
+        abi.expectOk(ex.ghostty_render_state_row_get(iter, abi.RS_ROW_DATA_DIRTY, out), 'row_get DIRTY')
         if (new DataView(ex.memory.buffer).getUint8(out) !== 0) n++
       }
       return n
@@ -77,10 +77,10 @@ run('render-state dirty', () => {
 
     /** The y of every row `next_dirty` offers, and how many calls it took. */
     const dirtyYs = () => {
-      const it = seed()
+      const iter = seed()
       const ys: number[] = []
       let calls = 0
-      while ((calls++, ex.ghostty_render_state_row_iterator_next_dirty(it, out))) {
+      while ((calls++, ex.ghostty_render_state_row_iterator_next_dirty(iter, out))) {
         ys.push(new DataView(ex.memory.buffer).getUint16(out, true))
       }
       return { ys, calls }
@@ -160,10 +160,10 @@ run('render-state dirty', () => {
     const handle = new DataView(ex.memory.buffer).getUint32(iterSlot, true)
     new DataView(ex.memory.buffer).setUint32(iterSlot, handle, true)
     abi.expectOk(ex.ghostty_render_state_get(state, abi.RS_DATA_ROW_ITERATOR, iterSlot), 'get iter')
-    const it = new DataView(ex.memory.buffer).getUint32(iterSlot, true)
+    const iter = new DataView(ex.memory.buffer).getUint32(iterSlot, true)
 
     // Nothing is dirty, so this must report false and write nothing.
-    expect(ex.ghostty_render_state_row_iterator_next_dirty(it, out)).toBeFalsy()
+    expect(ex.ghostty_render_state_row_iterator_next_dirty(iter, out)).toBeFalsy()
     expect(new DataView(ex.memory.buffer).getUint16(out, true)).toBe(sentinel)
   })
 })

@@ -224,3 +224,100 @@ describe('parseOsc777', () => {
     expect(parseOsc777('notify;;')).toBeNull()
   })
 })
+
+/**
+ * The reset watch: what the tracker asks the engine for, and when.
+ *
+ * The *when* is the whole of it. Recognising `ESC c` costs the output scanner
+ * a hunt for the letter 'c' through every byte the remote sends, so a watch
+ * left open while nothing is showing is a per-byte tax on every pane for a
+ * signal nobody would act on. These pin that it is open exactly across the
+ * life of a report and no longer.
+ */
+describe('ProgressTracker — the reset watch', () => {
+  function tracker() {
+    const changes: (AppProgress | null)[] = []
+    let watchers = 0
+    let live = 0
+    const watch: { fire: (() => void) | null } = { fire: null }
+    const t = new ProgressTracker({
+      onChange: (p) => changes.push(p),
+      onComplete: () => {},
+      watchReset: (cb) => {
+        watchers++
+        live++
+        watch.fire = cb
+        return {
+          dispose: () => {
+            live--
+            watch.fire = null
+          },
+        }
+      },
+    })
+    return { t, changes, stats: () => ({ watchers, live }), reset: () => watch.fire?.() }
+  }
+
+  const BUSY: AppProgress = { state: 'active', percent: null }
+
+  it('watches only while a report is showing', () => {
+    const { t, stats } = tracker()
+    expect(stats()).toEqual({ watchers: 0, live: 0 })
+    t.set(BUSY)
+    expect(stats()).toEqual({ watchers: 1, live: 1 })
+    t.set(null)
+    expect(stats()).toEqual({ watchers: 1, live: 0 })
+  })
+
+  it('does not re-subscribe while the same run keeps reporting', () => {
+    const { t, stats } = tracker()
+    t.set(BUSY)
+    t.set({ state: 'active', percent: 10 })
+    t.set({ state: 'active', percent: 20 })
+    expect(stats()).toEqual({ watchers: 1, live: 1 })
+  })
+
+  it('clears the report when the reset fires, and stops watching', () => {
+    const { t, changes, stats, reset } = tracker()
+    t.set(BUSY)
+    reset()
+    expect(changes).toEqual([BUSY, null])
+    expect(stats().live).toBe(0)
+  })
+
+  it('reports the reset-driven clear as a drop, not a completion', () => {
+    // A run abandoned by a RIS did not finish, so it must not raise the
+    // "your job is done" marker — the same distinction `reset()` exists for.
+    const completions: number[] = []
+    // A box rather than a bare `let`: assigned only inside the callback, which
+    // TypeScript narrows to `never` at the call below.
+    const watch: { fire: (() => void) | null } = { fire: null }
+    const t = new ProgressTracker({
+      onChange: () => {},
+      onComplete: (ms) => completions.push(ms),
+      watchReset: (cb) => {
+        watch.fire = cb
+        return { dispose: () => {} }
+      },
+    })
+    t.set(BUSY)
+    watch.fire?.()
+    expect(completions).toEqual([])
+  })
+
+  it('takes the watch down on dispose, for a pane going away mid-run', () => {
+    const { t, stats } = tracker()
+    t.set(BUSY)
+    t.dispose()
+    expect(stats().live).toBe(0)
+  })
+
+  it('works with no watchReset supplied at all', () => {
+    const changes: (AppProgress | null)[] = []
+    const t = new ProgressTracker({ onChange: (p) => changes.push(p), onComplete: () => {} })
+    t.set(BUSY)
+    t.set(null)
+    t.dispose()
+    expect(changes).toEqual([BUSY, null])
+  })
+})

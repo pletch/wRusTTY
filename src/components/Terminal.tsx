@@ -1207,6 +1207,15 @@ export function Terminal({
       onComplete: (durationMs) => {
         if (!disposed) onProgressCompleteRef.current?.(durationMs)
       },
+      // A full terminal reset takes any progress with it: the program that set
+      // it has just had the screen pulled out from under it, which is what
+      // `reset` at a shell, or a full-screen program starting up, does to a
+      // half-finished report. The core handles the RIS itself — this is only
+      // the indicator on the tab strip, which the core knows nothing about.
+      //
+      // The tracker holds this open only while a report is showing, because
+      // watching is not free; see the note on `watchReset`.
+      watchReset: (cb) => term.registerResetHandler(cb),
     })
 
     // What is being typed at the prompt right now, read off the grid rather
@@ -2096,6 +2105,7 @@ export function Terminal({
       searchResultsListener.dispose()
       initErrorListener?.dispose()
       bellListener.dispose()
+      progressTracker.dispose()
       bufferListener.dispose()
       autocompleteRef.current = null
       autocomplete.reset()

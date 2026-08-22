@@ -14,12 +14,12 @@ const B = (s: string) => enc.encode(s)
  * has reached the parser. Asserting on this log is what pins that down, since
  * the events alone would look identical whatever order the parser saw.
  */
-function replay(chunks: string[]) {
+function replay(chunks: string[], wantRis = false) {
   let pending: Uint8Array | null = null
   const log: string[] = []
   for (const c of chunks) {
     const bytes = B(c)
-    const { events, pending: next } = scanOsc(bytes, pending, dec)
+    const { events, pending: next } = scanOsc(bytes, pending, dec, wantRis)
     pending = next
     let cursor = 0
     for (const ev of events) {
@@ -27,7 +27,7 @@ function replay(chunks: string[]) {
         log.push(`parse:${dec.decode(bytes.subarray(cursor, ev.segEnd))}`)
         cursor = ev.segEnd
       }
-      log.push(ev.kind === 'bell' ? 'bell' : `osc:${ev.ident}:${ev.payload}`)
+      log.push(ev.kind === 'osc' ? `osc:${ev.ident}:${ev.payload}` : ev.kind)
     }
     if (cursor < bytes.length) log.push(`parse:${dec.decode(bytes.subarray(cursor))}`)
   }
@@ -288,6 +288,85 @@ describe('scanOsc', () => {
         out.push(...part)
       }
       expect(out).toEqual(Array.from(full))
+    })
+  })
+
+  /**
+   * `ESC c` (RIS), which is opt-in because watching for it is not free — see
+   * the `wantRis` note in the scanner. The pane asks for it only while a
+   * progress report is on screen, so every case here is one that can happen
+   * inside that window.
+   */
+  describe('RIS', () => {
+    it('reports nothing unless asked, which is the default', () => {
+      expect(replay(['\x1bc']).log).toEqual(['parse:\x1bc'])
+    })
+
+    it('recognises a reset and parses it like any other bytes', () => {
+      expect(replay(['a\x1bcb'], true).log).toEqual(['parse:a\x1bc', 'ris', 'parse:b'])
+    })
+
+    it('ignores a bare c, which is an ordinary letter', () => {
+      // Coloured, so the buffer holds escapes and the hunt actually runs —
+      // text with no ESC at all never gets as far as looking.
+      const text = '\x1b[32mthe quick brown fox, etc.\x1b[0m'
+      expect(replay([text], true).log).toEqual([`parse:${text}`])
+    })
+
+    it('ignores a c that is not preceded by ESC even with escapes around', () => {
+      // CSI c is DA1: the 'c' is real, the ESC is two bytes away, and calling
+      // this a reset would clear the indicator on a device-attributes query.
+      expect(replay(['\x1b[c'], true).log).toEqual(['parse:\x1b[c'])
+      expect(replay(['\x1b[0;1c'], true).log).toEqual(['parse:\x1b[0;1c'])
+    })
+
+    it('sees a reset split across deliveries', () => {
+      // The ESC ends one chunk and the 'c' opens the next — the same carried
+      // pending buffer that keeps a split `ESC ]` recognisable.
+      // The ESC itself is parsed with the chunk it arrived in; only the 'c'
+      // and the event land in the next one.
+      const { log } = replay(['done\x1b', 'c'], true)
+      expect(log).toEqual(['parse:done\x1b', 'parse:c', 'ris'])
+    })
+
+    it('does not find a reset inside an OSC payload', () => {
+      // A title containing "…c" is not a reset, and the OSC branch consumes
+      // the whole string before the hunt resumes.
+      const { log } = replay(['\x1b]0;abc\x07'], true)
+      expect(log).toEqual(['parse:\x1b]0;abc\x07', 'osc:0:abc'])
+    })
+
+    it('keeps a reset and a following OSC in stream order', () => {
+      const { log } = replay(['\x1bc\x1b]9;4;0\x07'], true)
+      expect(log).toEqual(['parse:\x1bc', 'ris', 'parse:\x1b]9;4;0\x07', 'osc:9:4;0'])
+    })
+
+    it('keeps an OSC and a following reset in stream order', () => {
+      // The order a program abandoning a run actually emits: it reported
+      // progress, then reset the terminal without clearing it.
+      const { log } = replay(['\x1b]9;4;3\x07working\x1bc'], true)
+      expect(log).toEqual([
+        'parse:\x1b]9;4;3\x07',
+        'osc:9:4;3',
+        'parse:working\x1bc',
+        'ris',
+      ])
+    })
+
+    it('keeps a bell between two resets in order', () => {
+      expect(replay(['\x1bc\x07\x1bc'], true).log).toEqual([
+        'parse:\x1bc',
+        'ris',
+        'parse:\x07',
+        'bell',
+        'parse:\x1bc',
+        'ris',
+      ])
+    })
+
+    it('passes every byte to the parser exactly once', () => {
+      const src = 'x\x1bc\x1b]0;t\x07c\x07\x1bcy'
+      expect(parsedText(replay([src], true).log)).toBe(src)
     })
   })
 })

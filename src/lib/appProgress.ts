@@ -130,6 +130,22 @@ interface ProgressHandlers {
   /** Progress that had been up has ended, with how long it lasted. Never
    * fired for a `reset()`. */
   onComplete: (durationMs: number) => void
+  /**
+   * Start watching for a full terminal reset (`ESC c`), which abandons any
+   * report the tracker is holding — the program that set it has just had the
+   * screen pulled out from under it. Called when a report goes up, and the
+   * returned handle disposed when it comes down.
+   *
+   * A subscription rather than a plain flag because watching costs something:
+   * recognising `ESC c` puts a hunt for the letter 'c' through every byte the
+   * remote sends, so the tracker holds it open only for as long as there is an
+   * indicator that a reset would have to take away. See
+   * `GhosttyEngine.registerResetHandler`.
+   *
+   * Optional: a caller with no engine to ask (a test, the bench) simply never
+   * hears about resets.
+   */
+  watchReset?: (cb: () => void) => { dispose: () => void }
 }
 
 /**
@@ -149,6 +165,8 @@ export class ProgressTracker {
    * run rather than the last step. */
   private since = 0
   private readonly handlers: ProgressHandlers
+  /** Live only while `progress` is non-null — see `watchReset`. */
+  private resetWatch: { dispose: () => void } | null = null
 
   constructor(handlers: ProgressHandlers) {
     this.handlers = handlers
@@ -166,6 +184,7 @@ export class ProgressTracker {
     }
     this.progress = next
     if (next && !previous) this.since = Date.now()
+    this.syncResetWatch()
     this.handlers.onChange(next)
     if (previous && !next) this.handlers.onComplete(Date.now() - this.since)
   }
@@ -182,7 +201,33 @@ export class ProgressTracker {
   reset(): void {
     if (this.progress === null) return
     this.progress = null
+    this.syncResetWatch()
     this.handlers.onChange(null)
+  }
+
+  /** Releases the reset watch. For a pane being torn down, where nothing more
+   *  is coming and the engine is about to go with it. */
+  dispose(): void {
+    this.resetWatch?.dispose()
+    this.resetWatch = null
+  }
+
+  /**
+   * Watch exactly while there is something for a reset to invalidate.
+   *
+   * Called *before* `onChange`, so the watch is already down by the time a
+   * reset-driven clear reaches the pane — and safe to call from inside the
+   * watch's own callback, which is where a reset-driven `reset()` comes from.
+   */
+  private syncResetWatch(): void {
+    const want = this.progress !== null
+    if (want === (this.resetWatch !== null)) return
+    if (!want) {
+      this.resetWatch?.dispose()
+      this.resetWatch = null
+      return
+    }
+    this.resetWatch = this.handlers.watchReset?.(() => this.reset()) ?? null
   }
 }
 

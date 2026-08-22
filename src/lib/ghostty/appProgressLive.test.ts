@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { parseOsc9, parseOsc777 } from '../appProgress'
+import { parseOsc9, parseOsc777, ProgressTracker } from '../appProgress'
 import type { AppProgress } from '../appProgress'
 import { CommandTracker } from '../shellIntegration'
+import { MODE_BRACKETED_PASTE, type GhosttyWasm } from './wasmBindings'
 import type { CommandActivity } from '../shellIntegration'
 
 /**
@@ -41,12 +42,18 @@ describe('an application reporting its own progress over the wire', () => {
   })
   afterEach(() => vi.unstubAllGlobals())
 
-  async function ready() {
+  /** A live core with nothing registered on it. */
+  async function boot() {
     const { GhosttyEngine } = await import('./GhosttyEngine')
     const engine = new GhosttyEngine()
     const inner = engine as unknown as Internals
     for (let i = 0; i < 200 && !inner.termPtr; i++) await new Promise((r) => setTimeout(r, 5))
     if (!inner.termPtr) throw new Error('core did not load')
+    return engine
+  }
+
+  async function ready() {
+    const engine = await boot()
 
     const progress: (AppProgress | null)[] = []
     const notes: string[] = []
@@ -85,6 +92,69 @@ describe('an application reporting its own progress over the wire', () => {
     // every byte of the sequence.
     writeInChunks('\x1b]9;4;1;40\x07', 1)
     expect(progress).toEqual([{ state: 'active', percent: 40 }])
+    engine.dispose()
+  })
+
+  /**
+   * The whole path for a report the program never clears: the engine
+   * recognising `ESC c` in the stream, the tracker's watch being open at that
+   * moment, and the indicator coming down.
+   *
+   * Worth a live test rather than only the unit ones either side of it,
+   * because the two halves have to agree about a cost: the engine hunts for
+   * `ESC c` only while a handler is registered, and the tracker registers one
+   * only while a report is up. Get that backwards in either place and this
+   * still compiles — it just never fires.
+   */
+  it('drops a report the program abandoned with a full reset', async () => {
+    // `boot()` rather than `ready()`: that helper claims OSC 9 for itself, and
+    // a claimed ident stops every later handler for it.
+    const engine = await boot()
+    const changes: (AppProgress | null)[] = []
+    const completions: number[] = []
+    const tracker = new ProgressTracker({
+      onChange: (p) => changes.push(p),
+      onComplete: (ms) => completions.push(ms),
+      watchReset: (cb) => engine.registerResetHandler(cb),
+    })
+    engine.registerOscHandler(9, (data) => {
+      const result = parseOsc9(data)
+      if (result.kind === 'progress') tracker.set(result.progress)
+      return true
+    })
+
+    engine.write('\x1b]9;4;3\x07working...')
+    expect(changes).toEqual([{ state: 'active', percent: null }])
+
+    // `reset` at the shell, or a full-screen program taking the terminal.
+    engine.write('\x1bc')
+    expect(changes).toEqual([{ state: 'active', percent: null }, null])
+    // Abandoned, not finished — so no "your job is done" marker.
+    expect(completions).toEqual([])
+
+    // And the watch is down again: a second reset has nothing to clear and
+    // must not re-report.
+    engine.write('\x1bc')
+    expect(changes).toHaveLength(2)
+    tracker.dispose()
+    engine.dispose()
+  })
+
+  it('still lets the reset through to the core when nothing is watching', async () => {
+    // The other half of the gate: with no report showing, nothing registers a
+    // reset handler and the scanner never hunts for `ESC c` — but the bytes
+    // must still reach the core, which is what actually performs the reset.
+    // Bracketed paste stands in for "any state a RIS clears" because it is the
+    // one mode this engine can be asked about directly.
+    const engine = await boot()
+    const inner = engine as unknown as Internals & { wasm: GhosttyWasm }
+    const bracketed = () =>
+      inner.wasm.exports.ghostty_terminal_get_mode(inner.termPtr, MODE_BRACKETED_PASTE, 0) !== 0
+
+    engine.write('\x1b[?2004h')
+    expect(bracketed()).toBe(true)
+    engine.write('\x1bc')
+    expect(bracketed()).toBe(false)
     engine.dispose()
   })
 

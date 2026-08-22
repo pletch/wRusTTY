@@ -23,7 +23,7 @@ import * as abi from './abi'
  *   GHOSTTY_MAIN_WASM=/path/to/ghostty-vt.wasm npx vitest run abi.parity
  *
  * It must be built from the pin in `docs/PORT_GHOSTTY_MAIN.md`
- * (d9ffbbf17c11f570897a49d4c722130e8698d93b) with Zig 0.16.0. Skipping is
+ * (5851d98615187d85052e41042bcf66e0ccec11d4) with Zig 0.16.0. Skipping is
  * deliberate: CI has no such binary, and a suite that silently passed without
  * one would assert nothing while looking like coverage.
  */

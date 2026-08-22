@@ -11,9 +11,9 @@ comparison oracle.
 ## The expected artifact
 
 ```text
-SHA-256  ca89d1c0ac4b20dcbe292135f9b2d7ee1f6516318408bb825398812a080f0011
-Size     1,029,546 bytes
-Source   ghostty-org/ghostty @ d9ffbbf17c11f570897a49d4c722130e8698d93b
+SHA-256  dff8531d3a0bfed8baff7f04ddd523b966ffc750b5a6d1eeda23180a96fbc6f9
+Size     1,049,099 bytes
+Source   ghostty-org/ghostty @ 5851d98615187d85052e41042bcf66e0ccec11d4
          + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
@@ -51,7 +51,7 @@ unicode table generator. Build under `~`, not `/mnt/c`.
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin d9ffbbf17c11f570897a49d4c722130e8698d93b
+git fetch -q --depth 1 origin 5851d98615187d85052e41042bcf66e0ccec11d4
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
