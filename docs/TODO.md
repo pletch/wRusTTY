@@ -82,10 +82,14 @@ Three things followed that nothing above anticipated:
   variable. And `color-scheme` itself is set from the theme, so the widgets the
   engine paints rather than we do — `select` drop-downs especially — stop
   coming up dark inside a light dialog.
-  One thing it does not fix: an `<input type="range">` keeps a dark unfilled
-  track on a light theme. `accent-color` appears to win over `color-scheme`
-  there. It is legible, so it is left alone rather than hand-painted, which
-  would mean giving up the automatic fill to the left of the thumb.
+  The one widget `color-scheme` could not reach was `<input type="range">`,
+  whose unfilled track Chromium keeps dark once `accent-color` is set. That
+  is now painted here instead (`.range`), which meant taking over the fill to
+  the left of the thumb as well — `accent-color`'s other job — so the value
+  reaches CSS as a `--range-fill` percentage and the track is one gradient
+  with a hard stop at it. The seam between the two halves never shows: it
+  drifts from the thumb's centre by `thumbWidth * (fraction - 0.5)`, which
+  peaks at half a thumb width at either end and so stays under the thumb.
 - **The active tab's bottom corners flare out into the strip**, the join a
   browser tab makes with its page. `border-radius` cannot draw it — the curve
   is convex from the pane's side and a radius only cuts inwards — so each

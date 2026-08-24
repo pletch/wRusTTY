@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Settings,
@@ -538,6 +538,51 @@ function FontRangeTable({
 
 /** A labelled slider with its value beside it — the shape the font size
  *  control already had, now that weight and the two cell metrics want it too. */
+/**
+ * A range slider whose track this app paints (see `.range` in index.css).
+ *
+ * Exists because painting the track means the fill to the left of the thumb
+ * has to be worked out here — `accent-color` used to do it, and taking the
+ * track over to get it onto the theme gave that up with it. The percentage
+ * goes to CSS as a custom property rather than into a computed gradient
+ * string, so the colours stay in the stylesheet with the rest of them.
+ */
+function RangeInput({
+  min,
+  max,
+  step = 1,
+  value,
+  onChange,
+  className = '',
+  'aria-label': ariaLabel,
+}: {
+  min: number
+  max: number
+  step?: number
+  value: number
+  onChange: (value: number) => void
+  className?: string
+  'aria-label'?: string
+}) {
+  // Guarding the degenerate range rather than dividing by it: a slider whose
+  // bounds are equal has no position to be in, and NaN% is a track that
+  // paints nothing at all.
+  const filled = max === min ? 0 : ((value - min) / (max - min)) * 100
+  return (
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className={`range ${className}`}
+      style={{ '--range-fill': `${Math.min(100, Math.max(0, filled))}%` } as CSSProperties}
+    />
+  )
+}
+
 function SliderRow({
   label,
   value,
@@ -557,14 +602,14 @@ function SliderRow({
     <label className="flex items-center justify-between gap-3 text-chrome/85">
       <span>{label}</span>
       <span className="flex items-center gap-2">
-        <input
-          type="range"
+        <RangeInput
           min={range.min}
           max={range.max}
           step={step}
-          className="w-32 accent-sky-400"
+          className="w-32"
           value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
+          onChange={onChange}
+          aria-label={label}
         />
         <span className="w-10 text-right text-chrome/50">{format(value)}</span>
       </span>
@@ -1000,16 +1045,14 @@ export function SettingsDialog({
                         <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Font size</span>
                           <span className="flex items-center gap-2">
-                            <input
-                              type="range"
+                            <RangeInput
                               min={FONT_SIZE_RANGE.min}
                               max={FONT_SIZE_RANGE.max}
                               step={1}
-                              className="w-40 accent-sky-400"
+                              className="w-40"
                               value={settings.fontSize}
-                              onChange={(e) =>
-                                onChange({ ...settings, fontSize: Number(e.target.value) })
-                              }
+                              aria-label="Font size"
+                              onChange={(size) => onChange({ ...settings, fontSize: size })}
                             />
                             <span className="w-8 text-right text-chrome/50">
                               {settings.fontSize}px
@@ -1126,18 +1169,15 @@ export function SettingsDialog({
                             {Math.round(settings.backgroundOpacity * 100)}%
                           </span>
                         </label>
-                        <input
-                          type="range"
+                        <RangeInput
                           min={40}
                           max={100}
                           step={5}
-                          className="mt-1.5 w-full accent-sky-400"
+                          className="mt-1.5 w-full"
                           value={Math.round(settings.backgroundOpacity * 100)}
-                          onChange={(e) =>
-                            onChange({
-                              ...settings,
-                              backgroundOpacity: Number(e.target.value) / 100,
-                            })
+                          aria-label="Background opacity"
+                          onChange={(percent) =>
+                            onChange({ ...settings, backgroundOpacity: percent / 100 })
                           }
                         />
                       </div>

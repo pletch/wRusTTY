@@ -185,6 +185,54 @@ body {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Cpath d='M4 6L1 2H7Z'/%3E%3C/svg%3E");
 }
 
+/* Range sliders, painted here rather than left to the engine.
+   `color-scheme` moves every other native widget onto the theme (see
+   themeColorScheme), but not this one: with `accent-color` set, Chromium
+   picks the *unfilled* half of the track itself and keeps it dark whatever
+   the scheme says, which left a black track lying in a cream dialog.
+
+   Taking the track over means the fill no longer comes for free -- that was
+   accent-color's other job -- so the value arrives as `--range-fill`, a
+   percentage the caller computes, and the track is one gradient with a hard
+   stop at it. Two stops at the same position, not a blend: this is two flat
+   segments that meet, not a fade.
+
+   The filled half stays literally sky-400 rather than following the theme,
+   for the same reason text on an accent fill stays literally white: what it
+   has to read against is the track, not the window. */
+.range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+.range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    theme(colors.sky.400) 0 var(--range-fill, 0%),
+    rgb(var(--chrome-rgb) / 0.2) var(--range-fill, 0%) 100%
+  );
+}
+.range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  /* Centres the thumb on a 4px track: (4 - 14) / 2. */
+  margin-top: -5px;
+  border-radius: 9999px;
+  background: theme(colors.sky.400);
+}
+.range:focus-visible {
+  outline: none;
+}
+.range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgb(var(--chrome-rgb) / 0.25);
+}
+
 /* The tab strip signals overflow with its own right-edge fade instead of a
    scrollbar — the global scrollbar above doesn't fit inside its 40px-tall
    row, and would show up even for sub-pixel rounding gaps that aren't real
