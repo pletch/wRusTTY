@@ -13,6 +13,13 @@ export default {
         // <alpha-value> placeholder is what keeps `/40`, `/[0.06]` and the
         // rest working exactly as they did on `white`.
         chrome: 'rgb(var(--chrome-rgb) / <alpha-value>)',
+        // What every floating surface -- dialog, menu, popover, toast --
+        // is painted with, a few levels away from the terminal behind it
+        // so the two read as separate planes. Follows the theme for the
+        // same reason `chrome` does: these were a hardcoded dark hex, and
+        // a dark dialog carrying text that had flipped to black is a
+        // dialog nobody can read. See surfaceRgb in src/lib/theme.ts.
+        surface: 'rgb(var(--surface-rgb) / <alpha-value>)',
       },
       // App-wide motion vocabulary. Using these named tokens instead of
       // Tailwind's default `ease`/ad-hoc `duration-150` everywhere keeps

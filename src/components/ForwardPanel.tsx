@@ -156,7 +156,7 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
   return (
     <div
       data-forward-panel
-      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">

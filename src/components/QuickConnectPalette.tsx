@@ -55,7 +55,7 @@ export function QuickConnectPalette({ sessions, onSelect, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="animate-in fade-in zoom-in-95 slide-in-from-top-2 w-96 rounded-xl border border-chrome/10 bg-[#1f2028] shadow-2xl duration-150"
+        className="animate-in fade-in zoom-in-95 slide-in-from-top-2 w-96 rounded-xl border border-chrome/10 bg-surface shadow-2xl duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-chrome/10 px-3">

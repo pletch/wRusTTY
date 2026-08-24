@@ -176,7 +176,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
       </button>
       {open_ && (
         <div
-          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+          className="animate-in fade-in slide-in-from-top-1 absolute right-0 top-full z-50 mt-1.5 w-72 origin-top-right rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100"
           onClick={(e) => e.stopPropagation()}
         >
           {status === 'uninitialized' && (

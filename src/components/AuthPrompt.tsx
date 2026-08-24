@@ -49,7 +49,7 @@ export function AuthPrompt({
   return (
     <div className="animate-in fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
       <form
-        className="animate-in zoom-in-95 w-96 space-y-3 rounded-lg border border-chrome/10 bg-[#1f2028] p-5 shadow-2xl duration-150"
+        className="animate-in zoom-in-95 w-96 space-y-3 rounded-lg border border-chrome/10 bg-surface p-5 shadow-2xl duration-150"
         onSubmit={(e) => {
           e.preventDefault()
           onAnswer(values)

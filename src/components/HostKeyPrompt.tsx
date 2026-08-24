@@ -24,7 +24,16 @@ export function HostKeyPrompt({
     <div className="animate-in fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
       <div
         className={`animate-in zoom-in-95 w-96 space-y-3 rounded-lg border p-5 shadow-2xl duration-150 ${
-          isChanged ? 'border-red-500/50 bg-red-950/80' : 'border-chrome/10 bg-[#1f2028]'
+          // The alarm state is a red wash *over* the surface rather than a
+          // fixed near-black red, for the reason every other panel here
+          // stopped being a fixed dark hex: `text-chrome` turns black on a
+          // light theme, and black on red-950 is the warning nobody can
+          // read. As a colour plus a one-stop gradient, not one shorthand —
+          // Chrome keeps the gradient and drops the colour if they are
+          // written together (see tabHoverWash).
+          isChanged
+            ? 'border-red-500/50 bg-surface bg-gradient-to-b from-red-500/20 to-red-500/20'
+            : 'border-chrome/10 bg-surface'
         }`}
       >
         <h1 className="flex items-center gap-2 text-sm font-semibold text-chrome">

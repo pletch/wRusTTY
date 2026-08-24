@@ -3,10 +3,16 @@
 @tailwind utilities;
 
 :root {
-  /* Overwritten from the terminal theme on every render (see App.tsx). The
-     default is the dark-theme answer, so anything painted before the first
-     effect runs is right for five of the six presets rather than none. */
+  /* Both overwritten from the terminal theme on every render (see App.tsx).
+     The defaults are the dark-theme answers, so anything painted before the
+     first effect runs is right for the dark presets rather than for none. */
   --chrome-rgb: 255 255 255;
+  /* The floating surface -- dialogs, menus, toasts. The literal here is what
+     every one of them used to hardcode, which is wRusTTY Dark's answer. */
+  --surface-rgb: 31 32 40;
+  /* Replaced from the theme on every render too (see themeColorScheme):
+     this is only what the widgets the browser paints itself get before the
+     first effect runs. */
   color-scheme: light dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -33,13 +39,12 @@ body {
      of background color poking out past them — the OS window itself has
      no shape of its own once decorations are off and transparent is on. */
   background: transparent;
-  color: #e5e4e7;
-}
-
-@media (prefers-color-scheme: light) {
-  body {
-    color: #16171d;
-  }
+  /* The base text colour, for anything not carrying a `chrome` class of its
+     own. Keyed to the terminal theme rather than to the OS: as a
+     prefers-color-scheme pair it disagreed with every `chrome` class on the
+     page whenever the two did not happen to match -- an OS set to light and
+     a dark theme picked put dark base text on a dark window. */
+  color: rgb(var(--chrome-rgb));
 }
 
 /* Honor the OS "reduce motion" preference in one place rather than auditing
@@ -90,13 +95,13 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.3);
+  background-color: rgb(var(--chrome-rgb) / 0.3);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.45);
+  background-color: rgb(var(--chrome-rgb) / 0.45);
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
@@ -190,13 +195,4 @@ body {
 }
 .tab-strip-scroll::-webkit-scrollbar {
   display: none;
-}
-
-@media (prefers-color-scheme: light) {
-  ::-webkit-scrollbar-thumb {
-    background-color: rgba(0, 0, 0, 0.32);
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(0, 0, 0, 0.48);
-  }
 }

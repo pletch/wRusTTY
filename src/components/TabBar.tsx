@@ -725,7 +725,7 @@ export function TabBar({
 
       {menu && (
         <div
-          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs text-chrome/80 shadow-xl duration-100"
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-36 origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
           <button

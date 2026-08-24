@@ -747,7 +747,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   return (
     <div
       data-files-panel
-      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl duration-100"
+      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100"
       onClick={(e) => {
         e.stopPropagation()
         // The panel stops the click reaching window, so the menu cannot rely on
@@ -1012,7 +1012,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         // matches on `[data-files-panel]`) doesn't read using the menu as
         // clicking away from the panel.
         <div
-          className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs text-chrome/80 shadow-xl duration-100"
+          className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
           <button className={menuItem} onClick={() => open(menu.entry)}>

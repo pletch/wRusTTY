@@ -39,7 +39,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
       onClick={onCancel}
     >
       <div
-        className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-chrome/10 bg-[#1f2028] p-5 shadow-2xl duration-150"
+        className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-chrome/10 bg-surface p-5 shadow-2xl duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 text-chrome/90">

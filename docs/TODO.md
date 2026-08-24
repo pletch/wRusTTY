@@ -65,6 +65,27 @@ Three things followed that nothing above anticipated:
   needs contrast against is the button rather than the window; and the variable
   goes on the document element, not the app root, because dialogs and menus are
   portalled to the body.
+- **Flipping the text was only half of it: the surface under it had to move
+  too.** `ae42c25` named the tone but left every floating surface a literal
+  `bg-[#1f2028]`, in twenty-one places, so a light theme drew black labels on a
+  near-black dialog — worse than what it replaced, and true of the `Light`
+  preset from the day it shipped. Same treatment: a Tailwind `surface` colour
+  reading `--surface-rgb`, set from `surfaceRgb`, which steps ten levels *away
+  from* the theme's background — flat, not proportional, for the reason
+  `stripOverlay` is. Ten because that is what the literal already was against
+  wRusTTY Dark, so the dark presets do not move.
+  Three related things went with it. The host-key panel's alarm state was a
+  fixed `bg-red-950/80` with the same unreadable outcome, and is now a red wash
+  over the surface. `body`'s colour and the scrollbar thumbs were keyed to
+  `prefers-color-scheme`, which is the *OS* — they disagreed with every
+  `chrome` class whenever the OS and the theme differed, and now read the same
+  variable. And `color-scheme` itself is set from the theme, so the widgets the
+  engine paints rather than we do — `select` drop-downs especially — stop
+  coming up dark inside a light dialog.
+  One thing it does not fix: an `<input type="range">` keeps a dark unfilled
+  track on a light theme. `accent-color` appears to win over `color-scheme`
+  there. It is legible, so it is left alone rather than hand-painted, which
+  would mean giving up the automatic fill to the left of the thumb.
 - **The active tab's bottom corners flare out into the strip**, the join a
   browser tab makes with its page. `border-radius` cannot draw it — the curve
   is convex from the pane's side and a radius only cuts inwards — so each

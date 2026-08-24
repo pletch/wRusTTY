@@ -538,6 +538,61 @@ export function chromeRgb(theme: TerminalTheme): string {
   return backgroundIsDark(theme) ? '255 255 255' : '0 0 0'
 }
 
+/** How far a floating surface sits from the terminal behind it, in levels
+ * per channel.
+ *
+ * Ten because that is what the hardcoded #1f2028 already was: against
+ * wRusTTY Dark's #16171d it is (9, 9, 11) lighter. Deriving it rather than
+ * keeping the literal changes nothing on the dark presets -- the default
+ * lands within two levels of the colour it replaces -- and is what lets a
+ * light theme get a light dialog instead of a dark one. */
+const SURFACE_LEVELS = 10
+
+/**
+ * The tone every floating surface is painted with -- dialogs, menus,
+ * popovers, toasts -- as the triplet Tailwind's `surface` color reads from
+ * `--surface-rgb`.
+ *
+ * All of it was a literal `bg-[#1f2028]`, in twenty-one places. That is
+ * right over the dark presets and unreadable over a light one: `chromeRgb`
+ * flips the text inside these surfaces to black, so a Light or Solarized
+ * Light theme got black labels on a near-black dialog. Naming the surface
+ * and moving it with the theme is what lets one set of classes serve both,
+ * exactly as `chrome` already does for the text.
+ *
+ * A flat step *away from* the background rather than a multiply, and for
+ * the same reason `stripOverlay` is: a multiply has nowhere to go on
+ * Campbell's #0c0c0c, and takes a slab out of a white one.
+ *
+ * Opaque, unlike the washes above. These surfaces float over arbitrary
+ * terminal content, and one you can read the scrollback through is one
+ * nobody can read.
+ */
+export function surfaceRgb(theme: TerminalTheme): string {
+  const step = backgroundIsDark(theme) ? SURFACE_LEVELS : -SURFACE_LEVELS
+  return hexToRgb(theme.background)
+    .map((channel) => Math.min(255, Math.max(0, channel + step)))
+    .join(' ')
+}
+
+/**
+ * What to tell the engine the page's own colour scheme is, so the widgets
+ * this app does not paint itself follow the theme too.
+ *
+ * A range track, a `<select>` drop-down and a native scrollbar are drawn by
+ * the browser, not by any class here, and they take their light or dark
+ * appearance from `color-scheme`. That was the static `light dark` in
+ * index.css, which resolves against the *OS* preference — so on a machine
+ * set to dark, picking a light terminal theme left a black slider track and
+ * a black drop-down sitting in a cream dialog.
+ *
+ * The terminal theme is the honest answer here: it is what the surface
+ * around these widgets is painted from.
+ */
+export function themeColorScheme(theme: TerminalTheme): 'dark' | 'light' {
+  return backgroundIsDark(theme) ? 'dark' : 'light'
+}
+
 /** Same color as an (r, g, b, a 0-255) tuple, for window-vibrancy's acrylic
  * tint — a separate, OS-compositor-level parameter from the DOM alpha
  * above, but kept in sync with it so the whole window reads as one

@@ -15,6 +15,8 @@ import {
   backgroundWithOpacity,
   backgroundTint,
   stripOverlay,
+  surfaceRgb,
+  themeColorScheme,
   tabHoverWash,
   type TerminalTheme,
 } from './theme'
@@ -357,6 +359,71 @@ describe('the editor grid', () => {
     // brightGreen -- editable, saved, and wrong.
     for (const { normal, bright } of PALETTE_ROWS) {
       expect(bright).toBe(`bright${normal[0].toUpperCase()}${normal.slice(1)}`)
+    }
+  })
+})
+
+describe('surfaceRgb', () => {
+  it('lands where the hardcoded surface was, on the theme it was picked for', () => {
+    // Every dialog and menu was a literal #1f2028. Deriving it must not
+    // restyle the default theme, so this pins how close the derived value
+    // is to the one it replaced -- within two levels per channel, which is
+    // not a visible change.
+    const derived = surfaceRgb(PRESET_THEMES[0]).split(' ').map(Number)
+    const replaced = hexToRgb('#1f2028')
+    for (let i = 0; i < 3; i++) {
+      expect(Math.abs(derived[i] - replaced[i])).toBeLessThanOrEqual(2)
+    }
+  })
+
+  it('steps away from the background in the direction that has somewhere to go', () => {
+    // The bug this fixes: a fixed dark surface under text that flips to
+    // black. On a light theme the surface has to go darker, not lighter.
+    for (const theme of PRESET_THEMES) {
+      const [r] = surfaceRgb(theme).split(' ').map(Number)
+      const [bgR] = hexToRgb(theme.background)
+      expect(looksLight(theme) ? r < bgR : r > bgR).toBe(true)
+    }
+  })
+
+  it('separates the surface from the terminal behind it on every preset', () => {
+    // The same check stripOverlay gets: a step that lands nowhere is a
+    // dialog with no edge. Campbell (#0c0c0c) and Light (#ffffff) are the
+    // two that a proportional step would fail.
+    for (const theme of PRESET_THEMES) {
+      const surface = surfaceRgb(theme).split(' ').map(Number)
+      const background = hexToRgb(theme.background)
+      for (let i = 0; i < 3; i++) {
+        expect(Math.abs(surface[i] - background[i])).toBeGreaterThanOrEqual(8)
+      }
+    }
+  })
+
+  it('stays inside 0-255 at both extremes', () => {
+    // Pure black and pure white are both reachable as a custom theme's
+    // background, and a channel of -10 or 265 is not a colour.
+    const black = { ...PRESET_THEMES[0], background: '#000000' }
+    const white = { ...PRESET_THEMES[0], background: '#ffffff' }
+    for (const value of [...surfaceRgb(black).split(' '), ...surfaceRgb(white).split(' ')]) {
+      expect(Number(value)).toBeGreaterThanOrEqual(0)
+      expect(Number(value)).toBeLessThanOrEqual(255)
+    }
+  })
+
+  it('is the space-separated triplet the CSS variable expects', () => {
+    // Fed straight into `rgb(var(--surface-rgb) / <alpha-value>)`, which
+    // silently paints nothing if the shape is wrong.
+    expect(surfaceRgb(PRESET_THEMES[0])).toMatch(/^\d{1,3} \d{1,3} \d{1,3}$/)
+  })
+})
+
+describe('themeColorScheme', () => {
+  it('follows the theme, not the OS', () => {
+    // What the browser paints for us -- range tracks, select drop-downs,
+    // native scrollbars -- reads this. Keyed to the OS it left a black
+    // slider in a cream dialog.
+    for (const theme of PRESET_THEMES) {
+      expect(themeColorScheme(theme)).toBe(looksLight(theme) ? 'light' : 'dark')
     }
   })
 })

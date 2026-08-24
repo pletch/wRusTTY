@@ -29,7 +29,7 @@ export function ToastHost() {
         return (
           <div
             key={t.id}
-            className={`animate-in fade-in slide-in-from-bottom-2 pointer-events-auto flex w-80 items-start gap-2 rounded-lg border bg-[#1f2028] px-3 py-2.5 text-xs shadow-2xl duration-150 ${accents[t.kind]}`}
+            className={`animate-in fade-in slide-in-from-bottom-2 pointer-events-auto flex w-80 items-start gap-2 rounded-lg border bg-surface px-3 py-2.5 text-xs shadow-2xl duration-150 ${accents[t.kind]}`}
           >
             <Icon size={15} className="mt-0.5 shrink-0" />
             <p className="min-w-0 flex-1 break-words text-chrome/85">{t.message}</p>

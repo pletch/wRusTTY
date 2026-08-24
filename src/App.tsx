@@ -45,6 +45,8 @@ import {
   stripOverlay,
   tabHoverWash,
   chromeRgb,
+  surfaceRgb,
+  themeColorScheme,
 } from './lib/theme'
 import { setWindowVibrancy } from './lib/windowEffects'
 import { DRAG_PANE_MIME } from './lib/dragTypes'
@@ -363,14 +365,21 @@ function App() {
   }, [])
 
   // The tone every label, hairline and hover wash outside the terminal is
-  // drawn in — see chromeRgb. Set on the document element rather than on
-  // this component's own root because the dialogs and menus that need it are
-  // portalled out to the body, which is not inside that root.
+  // drawn in, and the surface every dialog and menu is painted with — see
+  // chromeRgb and surfaceRgb. Set on the document element rather than on
+  // this component's own root because the dialogs and menus that need them
+  // are portalled out to the body, which is not inside that root.
+  //
+  // Both together, because they are two halves of one answer: the text tone
+  // flips on a light theme, so the surface under it has to move in the same
+  // breath or the two end up the same colour.
   useEffect(() => {
-    document.documentElement.style.setProperty(
-      '--chrome-rgb',
-      chromeRgb(findTheme(terminalSettings.themeName)),
-    )
+    const theme = findTheme(terminalSettings.themeName)
+    document.documentElement.style.setProperty('--chrome-rgb', chromeRgb(theme))
+    document.documentElement.style.setProperty('--surface-rgb', surfaceRgb(theme))
+    // And the widgets the browser paints rather than we do — see
+    // themeColorScheme.
+    document.documentElement.style.colorScheme = themeColorScheme(theme)
   }, [terminalSettings.themeName])
 
   // Panes with an auto-reconnect run under way, so the per-attempt failures a

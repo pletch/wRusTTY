@@ -2365,7 +2365,7 @@ export function Terminal({
         // the mode is the thing you need to see while looking at text in the
         // middle of the pane. The keys are spelled out because a mode that
         // swallows typing has to say how to get back out of it.
-        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-[#1f2028] px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-surface px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
           <TextCursorInput size={13} className="text-emerald-400" />
           <span className="font-medium">Mark</span>
           <span className="text-chrome/40">Shift+arrows select · Enter copies · Esc exits</span>
@@ -2376,7 +2376,7 @@ export function Terminal({
         // taken the keyboard, so it has to say what the keys do now and how to
         // get out. An empty screen of labels means there were no links, which
         // this leaves visible rather than explaining away.
-        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-[#1f2028] px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-surface px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
           <ExternalLink size={13} className="text-amber-400" />
           <span className="font-medium">Links</span>
           <span className="text-chrome/40">Type a label to open · Esc exits</span>
@@ -2387,7 +2387,7 @@ export function Terminal({
         // file is being aimed at, and covering it would hide the directory the
         // prompt line is showing.
         <div className="pointer-events-none absolute inset-0 z-40 flex items-start justify-center rounded-sm bg-sky-400/5 ring-2 ring-inset ring-sky-400/70">
-          <span className="mt-3 rounded-md border border-chrome/10 bg-[#1f2028] px-2 py-1 text-xs text-chrome/80 shadow-xl">
+          <span className="mt-3 rounded-md border border-chrome/10 bg-surface px-2 py-1 text-xs text-chrome/80 shadow-xl">
             {remoteCwdRef.current && remoteCwdRef.current === confirmedDestRef.current
               ? `Send to ${remoteCwdRef.current}`
               : (remoteCwdRef.current ?? titleCwdRef.current)
@@ -2400,7 +2400,7 @@ export function Terminal({
         // Where the destination is agreed rather than assumed: once per
         // directory, and again whenever the reported one changes.
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-80 rounded-lg border border-chrome/10 bg-[#1f2028] p-3 text-xs shadow-xl">
+          <div className="w-80 rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl">
             <p className="mb-1 font-medium text-chrome/90">Send {dropDest.file.name}</p>
             <p className="mb-2 text-chrome/40">
               {dropDest.source === 'reported'
@@ -2442,7 +2442,7 @@ export function Terminal({
         </div>
       )}
       {transfer && (
-        <div className="animate-in fade-in slide-in-from-bottom-1 absolute bottom-2 right-2 z-40 flex w-64 flex-col gap-1.5 rounded-lg border border-chrome/10 bg-[#1f2028] px-2.5 py-2 text-xs shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-bottom-1 absolute bottom-2 right-2 z-40 flex w-64 flex-col gap-1.5 rounded-lg border border-chrome/10 bg-surface px-2.5 py-2 text-xs shadow-xl duration-fast ease-swift">
           <div className="flex items-center gap-2">
             <Upload size={13} className="shrink-0 text-sky-400" />
             <span className="min-w-0 flex-1 truncate text-chrome/80">{transfer.name}</span>
@@ -2481,7 +2481,7 @@ export function Terminal({
               while the menu stayed up. */}
           <div className="fixed inset-0 z-40" onMouseDown={() => setLinkMenu(null)} />
           <div
-            className="animate-in fade-in zoom-in-95 fixed z-50 max-w-xs origin-top-left rounded-md border border-chrome/10 bg-[#1f2028] py-1 text-xs text-chrome/80 shadow-xl duration-100"
+            className="animate-in fade-in zoom-in-95 fixed z-50 max-w-xs origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
             style={{ left: linkMenu.x, top: linkMenu.y }}
           >
             <button
@@ -2509,7 +2509,7 @@ export function Terminal({
         </>
       )}
       {searchOpen && (
-        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-chrome/10 bg-[#1f2028] px-2 py-1.5 text-xs shadow-xl duration-fast ease-swift">
+        <div className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-2 z-40 flex items-center gap-0.5 rounded-lg border border-chrome/10 bg-surface px-2 py-1.5 text-xs shadow-xl duration-fast ease-swift">
           <Search size={13} className="mr-1 text-chrome/40" />
           <input
             ref={searchInputRef}
