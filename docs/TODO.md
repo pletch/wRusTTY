@@ -371,16 +371,29 @@ protocol; it needs your machine, mains power and roughly an untouched hour.
 Do not let the harness's existence imply the perf track is unfinished. It is
 finished bar B4.
 
-## Watch: cursor position after closing a tab
+## ~~Watch: cursor position after closing a tab~~ — not a bug here
 
-Fixed in 872b9b3 by giving `closeTabNow` the `refit()` every other
-visibility-changing path already had. That fix is probabilistic, not proven —
-the race is too rare to reproduce on demand, so what it claims is parity with
-its siblings, not a bug observed disappearing.
+Kept for the correction, because the trail this laid points at the wrong layer
+entirely.
 
-If the cursor lands a few columns off after a tab close *again*, the
-transitional-size theory is wrong and the next place to look is the
-`ResizeObserver` / WebGL-reload interaction in `Terminal.tsx:786`.
+`872b9b3` gave `closeTabNow` the `refit()` every other visibility-changing path
+already had, on a transitional-size theory, and this section then recorded the
+fix as probabilistic — parity with its siblings rather than a bug observed
+disappearing. It could not be more than that, because **the symptom was
+hardware**: the mouse was double-clicking on a single left-click, so a "close a
+tab" gesture was frequently closing two, and what looked like a cursor landing
+a few columns off was a pane laid out for a tab count that had moved twice.
+Replacing the mouse ended it.
+
+The `refit()` stays — it is correct on its own terms and costs nothing. But
+nothing here was ever evidence about `ResizeObserver` or the WebGL reload, and
+the next person should not start at `Terminal.tsx:786` on the strength of it.
+
+**The lesson worth keeping:** an input device that reports one gesture as two
+manufactures races in any code path where a *count* changes, and it never looks
+like a hardware fault, because every event the app sees is well-formed. Before
+theorising about a layout race that will not reproduce, check whether the
+gesture that triggers it fired once.
 
 ## Wake-on-LAN: the two pieces deliberately left out
 

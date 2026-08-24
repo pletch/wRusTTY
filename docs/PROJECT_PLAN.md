@@ -510,8 +510,10 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - Port forwarding (local/remote/dynamic) with a management panel **(shipped)**
 - Jump host chains **(shipped)**; outbound proxy support **not built**
 - Font settings, paste protection, scrollback search, session logging
-  **(shipped)**; colour-scheme import **not built** — six presets, no way to
-  bring in an existing scheme
+  **(shipped)**; colour-scheme import **(shipped)** — eleven presets, a palette
+  editor for custom themes, and Import… reads an iTerm2 `.itermcolors` or a
+  VS Code theme (`4f6dc85`). An imported theme is a custom theme like any
+  other; nothing downstream knows where it came from
 - Win11 polish: Mica and single instance **(shipped)**; jump list and portable
   mode **not built**
 - Installer (NSIS/MSI via the Tauri bundler) **(shipped)**; auto-update and code
