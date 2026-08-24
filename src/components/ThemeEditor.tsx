@@ -1,44 +1,17 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Copy, Trash2 } from 'lucide-react'
 import type { TerminalSettings } from '../lib/settings'
 import {
   PRESET_THEMES,
-  THEME_COLOR_KEYS,
   copyOfTheme,
   findTheme,
   isHexColor,
   uniqueThemeName,
+  PALETTE_ROWS,
+  SURFACE_FIELDS,
   type TerminalTheme,
-  type ThemeColorKey,
 } from '../lib/theme'
 import { useConfirm } from './confirmContext'
-
-/** What each colour is called in the editor. The field names are the ANSI
- *  slot names, which is right for the code and wrong for a label: nobody
- *  choosing a colour thinks of the background as "background" and of black
- *  as "black" in the same breath, so the three that are not palette entries
- *  are named for what they paint. */
-const COLOR_LABELS: Record<ThemeColorKey, string> = {
-  background: 'Background',
-  foreground: 'Text',
-  cursor: 'Cursor',
-  black: 'Black',
-  red: 'Red',
-  green: 'Green',
-  yellow: 'Yellow',
-  blue: 'Blue',
-  magenta: 'Magenta',
-  cyan: 'Cyan',
-  white: 'White',
-  brightBlack: 'Bright black',
-  brightRed: 'Bright red',
-  brightGreen: 'Bright green',
-  brightYellow: 'Bright yellow',
-  brightBlue: 'Bright blue',
-  brightMagenta: 'Bright magenta',
-  brightCyan: 'Bright cyan',
-  brightWhite: 'Bright white',
-}
 
 const fieldClass =
   'rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
@@ -156,14 +129,36 @@ export function ThemeEditor({
               onCommit={(name) => replaceActive({ ...active, name })}
             />
           </label>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-            {THEME_COLOR_KEYS.map((key) => (
-              <ColorField
-                key={key}
-                label={COLOR_LABELS[key]}
-                value={active[key]}
-                onChange={(hex) => replaceActive({ ...active, [key]: hex })}
-              />
+          <div className="grid grid-cols-3 gap-x-3 gap-y-1">
+            {SURFACE_FIELDS.map(({ label, key }) => (
+              <div key={key} className="space-y-1">
+                <span className="block text-chrome/60">{label}</span>
+                <ColorField
+                  label={label}
+                  value={active[key]}
+                  onChange={(hex) => replaceActive({ ...active, [key]: hex })}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-[auto_1fr_1fr] items-center gap-x-3 gap-y-1">
+            <span />
+            <span className="text-chrome/60">Normal</span>
+            <span className="text-chrome/60">Bright</span>
+            {PALETTE_ROWS.map(({ label, normal, bright }) => (
+              <Fragment key={normal}>
+                <span className="text-chrome/85">{label}</span>
+                <ColorField
+                  label={label}
+                  value={active[normal]}
+                  onChange={(hex) => replaceActive({ ...active, [normal]: hex })}
+                />
+                <ColorField
+                  label={`Bright ${label.toLowerCase()}`}
+                  value={active[bright]}
+                  onChange={(hex) => replaceActive({ ...active, [bright]: hex })}
+                />
+              </Fragment>
             ))}
           </div>
         </div>
@@ -230,6 +225,10 @@ function ThemeNameField({
  * One colour: a swatch that opens the OS picker, and the hex beside it for
  * anyone transcribing a palette from somewhere else.
  *
+ * Carries no visible label — which one this is comes from where it sits in
+ * the grid — but each input still names itself for a screen reader, since
+ * position is not something that survives being read aloud.
+ *
  * The text half keeps a draft because a hex is invalid for most of the time
  * it takes to type one — committing per keystroke would repaint every pane
  * with `#f`, then `#f3`, and land on whatever those parsed to. It commits
@@ -249,29 +248,27 @@ function ColorField({
   useEffect(() => setDraft(value), [value])
 
   return (
-    <label className="flex items-center justify-between gap-2 text-chrome/85">
-      <span className="truncate">{label}</span>
-      <span className="flex shrink-0 items-center gap-1.5">
-        <input
-          type="color"
-          className="h-6 w-8 cursor-pointer rounded border border-chrome/10 bg-transparent p-0.5"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          aria-label={label}
-        />
-        <input
-          className={`${fieldClass} w-24 font-mono`}
-          value={draft}
-          spellCheck={false}
-          onChange={(e) => {
-            setDraft(e.target.value)
-            if (isHexColor(e.target.value)) onChange(e.target.value.toLowerCase())
-          }}
-          // Whatever is left half-typed is not a colour, so the field goes
-          // back to showing the colour that is actually in effect.
-          onBlur={() => setDraft(value)}
-        />
-      </span>
-    </label>
+    <span className="flex items-center gap-1.5">
+      <input
+        type="color"
+        className="h-6 w-8 shrink-0 cursor-pointer rounded border border-chrome/10 bg-transparent p-0.5"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+      />
+      <input
+        className={`${fieldClass} w-full min-w-0 font-mono`}
+        value={draft}
+        spellCheck={false}
+        aria-label={`${label} hex`}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          if (isHexColor(e.target.value)) onChange(e.target.value.toLowerCase())
+        }}
+        // Whatever is left half-typed is not a colour, so the field goes
+        // back to showing the colour that is actually in effect.
+        onBlur={() => setDraft(value)}
+      />
+    </span>
   )
 }

@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest'
 import {
   PRESET_THEMES,
   THEME_COLOR_KEYS,
+  PALETTE_ROWS,
+  SURFACE_FIELDS,
   copyOfTheme,
   findTheme,
   getCustomThemes,
@@ -332,5 +334,29 @@ describe('copyOfTheme', () => {
     // Duplicating a custom theme called "Light copy" must not produce a
     // second "Light".
     expect(copyOfTheme(customTheme('Light'), []).name).toBe('Light copy')
+  })
+})
+
+describe('the editor grid', () => {
+  it('reaches every colour a theme has, exactly once', () => {
+    // The grid is laid out by hand -- three surface colours, then eight
+    // normal/bright pairs -- rather than mapped off THEME_COLOR_KEYS, which
+    // is what makes the pairing possible and what makes it possible to
+    // forget a field. A colour missing here is one no user can edit, and
+    // nothing else would fail.
+    const reached = [
+      ...SURFACE_FIELDS.map((f) => f.key),
+      ...PALETTE_ROWS.flatMap((r) => [r.normal, r.bright]),
+    ]
+    expect(reached.slice().sort()).toEqual([...THEME_COLOR_KEYS].sort())
+    expect(new Set(reached).size).toBe(reached.length)
+  })
+
+  it('pairs each normal slot with its own bright one', () => {
+    // Off-by-one in this table would silently wire Red's bright field to
+    // brightGreen -- editable, saved, and wrong.
+    for (const { normal, bright } of PALETTE_ROWS) {
+      expect(bright).toBe(`bright${normal[0].toUpperCase()}${normal.slice(1)}`)
+    }
   })
 })

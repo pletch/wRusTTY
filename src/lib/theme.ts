@@ -300,6 +300,42 @@ export const THEME_COLOR_KEYS = [
 
 export type ThemeColorKey = (typeof THEME_COLOR_KEYS)[number]
 
+/** The three colours that are not palette entries, named for what they
+ *  paint rather than for their field: nobody choosing a colour thinks of
+ *  the background as "background" and of black as "black" in the same
+ *  breath. */
+export const SURFACE_FIELDS: ReadonlyArray<{ label: string; key: ThemeColorKey }> = [
+  { label: 'Background', key: 'background' },
+  { label: 'Text', key: 'foreground' },
+  { label: 'Cursor', key: 'cursor' },
+]
+
+/**
+ * The palette, as the eight colours it actually is, each with its normal and
+ * bright slot side by side.
+ *
+ * Laid out this way because the alternative -- one flat list of nineteen
+ * fields -- has to write "Bright magenta" in a label column narrow enough
+ * that it arrives as "Bright ma...", and "Bright bla..." and "Bright blue"
+ * are then the same string. Pairing them says which is which by position and
+ * leaves the label as one short word. It is also how a palette is actually
+ * organised, so the editor stops fighting the thing it is editing.
+ */
+export const PALETTE_ROWS: ReadonlyArray<{
+  label: string
+  normal: ThemeColorKey
+  bright: ThemeColorKey
+}> = [
+  { label: 'Black', normal: 'black', bright: 'brightBlack' },
+  { label: 'Red', normal: 'red', bright: 'brightRed' },
+  { label: 'Green', normal: 'green', bright: 'brightGreen' },
+  { label: 'Yellow', normal: 'yellow', bright: 'brightYellow' },
+  { label: 'Blue', normal: 'blue', bright: 'brightBlue' },
+  { label: 'Magenta', normal: 'magenta', bright: 'brightMagenta' },
+  { label: 'Cyan', normal: 'cyan', bright: 'brightCyan' },
+  { label: 'White', normal: 'white', bright: 'brightWhite' },
+]
+
 /**
  * The user's own themes, which `findTheme` resolves alongside the presets.
  *
