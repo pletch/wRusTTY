@@ -14,12 +14,14 @@ import {
   LINE_HEIGHT_PERCENT_RANGE,
   DEFAULT_FONT_SIZE,
 } from './settings'
+import { PRESET_THEMES, findTheme, getCustomThemes, setCustomThemes } from './theme'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
 const PREVIOUS_STORAGE_KEY = 'wr-shell.terminal-settings'
 
 beforeEach(() => {
   localStorage.clear()
+  setCustomThemes([])
 })
 
 describe('loadSettings', () => {
@@ -438,5 +440,55 @@ describe('the font settings a stored blob can carry', () => {
   it('drop a table that is not an array at all', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontRanges: { lo: 1, hi: 2 } }))
     expect(loadSettings().fontRanges).toEqual([])
+  })
+})
+
+describe('custom themes', () => {
+  const mine = { ...PRESET_THEMES[0], name: 'Mine', background: '#123456' }
+
+  it('defaults to none', () => {
+    expect(loadSettings().customThemes).toEqual([])
+  })
+
+  it('loads stored themes and makes findTheme able to resolve them', () => {
+    // The registry is the whole point of loading these: every consumer that
+    // paints a theme -- the engine, the chrome, the benchmark harness --
+    // holds only a name and asks findTheme.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ themeName: 'Mine', customThemes: [mine] }))
+    const settings = loadSettings()
+    expect(settings.customThemes).toEqual([mine])
+    expect(findTheme(settings.themeName).background).toBe('#123456')
+  })
+
+  it('cleans a malformed palette rather than passing it to the renderer', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ customThemes: [{ ...mine, red: 'rgb(1,2,3)' }, { name: '' }] }),
+    )
+    const settings = loadSettings()
+    expect(settings.customThemes).toEqual([mine])
+  })
+
+  it('drops a themes value that is not a list', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ customThemes: 'Mine' }))
+    expect(loadSettings().customThemes).toEqual([])
+  })
+
+  it('leaves an unknown theme name resolving to the default', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ themeName: 'Deleted' }))
+    expect(findTheme(loadSettings().themeName)).toBe(PRESET_THEMES[0])
+  })
+
+  it('registers on save, so a theme is paintable before it has been reloaded', () => {
+    saveSettings({ ...loadSettings(), themeName: 'Mine', customThemes: [mine] })
+    expect(getCustomThemes()).toEqual([mine])
+    expect(findTheme('Mine').background).toBe('#123456')
+  })
+
+  it('clears the registry when a corrupt blob sends load back to the defaults', () => {
+    setCustomThemes([mine])
+    localStorage.setItem(STORAGE_KEY, '{not json')
+    expect(loadSettings().customThemes).toEqual([])
+    expect(getCustomThemes()).toEqual([])
   })
 })

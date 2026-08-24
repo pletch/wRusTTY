@@ -312,12 +312,15 @@ mosh, RDP) means adding a crate, not touching the UI.
     items move between entries is harder to learn than one where they dim.
 - Session logging to file (timestamped, per-session toggle) — network/serial
   engineers rely on this constantly **(shipped)**
-- Named colour themes **(partial — six built in, and a per-pane background
-  opacity; importing iTerm/VS Code schemes and following the OS light/dark
-  setting are not built)**. The sixth is **Campbell**, at Microsoft's published
-  values and pinned by a test: it is the palette conhost and Windows Terminal
-  ship, so it is what makes a pane here look like the PowerShell window beside
-  it, and it is the one preset whose colours are not ours to taste-tune.
+- Named colour themes **(partial — eleven built in, a custom theme editor, and
+  a per-pane background opacity; importing iTerm/VS Code schemes and following
+  the OS light/dark setting are not built)**. One of the eleven is
+  **Campbell**, at Microsoft's published values and pinned by a test: it is the
+  palette conhost and Windows Terminal ship, so it is what makes a pane here
+  look like the PowerShell window beside it, and it is the one preset whose
+  colours are not ours to taste-tune. Custom themes start as a duplicate of
+  whatever is active — presets are never edited in place, which is what keeps
+  Campbell (and the name every stored session refers to) meaning what it says.
 - **Glyph blending in linear light (shipped — `textBlending`).** Three modes,
   taking ghostty's names: `native` (mix in sRGB, what this renderer always
   did), `linear`, and `linear-corrected`, which solves per pixel for the

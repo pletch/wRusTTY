@@ -1,13 +1,41 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   PRESET_THEMES,
+  THEME_COLOR_KEYS,
+  copyOfTheme,
   findTheme,
+  getCustomThemes,
   hexToRgb,
+  isHexColor,
+  sanitizeCustomThemes,
+  setCustomThemes,
+  uniqueThemeName,
   backgroundWithOpacity,
   backgroundTint,
   stripOverlay,
   tabHoverWash,
+  type TerminalTheme,
 } from './theme'
+
+// The custom-theme registry is module state, so a test that sets it would
+// otherwise decide what `findTheme` returns for every test after it.
+afterEach(() => setCustomThemes([]))
+
+/** Whether a preset is one of the light ones, worked out here rather than
+ *  imported: the tests below exist to check that the code's own answer to
+ *  this drives the chrome correctly, and asking it the same question twice
+ *  would check nothing. Was a `name !== 'Light'` list until there was more
+ *  than one light preset. */
+function looksLight(theme: TerminalTheme): boolean {
+  const [r, g, b] = hexToRgb(theme.background)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b >= 128
+}
+
+/** A minimal well-formed custom theme, for the tests that only care about
+ *  one field of one. */
+function customTheme(name: string, overrides: Partial<TerminalTheme> = {}): TerminalTheme {
+  return { ...PRESET_THEMES[0], name, ...overrides }
+}
 
 describe('findTheme', () => {
   it('finds a preset by exact name', () => {
@@ -96,14 +124,20 @@ describe('backgroundWithOpacity', () => {
 })
 
 describe('stripOverlay', () => {
-  it('lightens every dark preset', () => {
-    for (const theme of PRESET_THEMES.filter((t) => t.name !== 'Light')) {
-      expect(stripOverlay(theme)).toBe('rgba(255, 255, 255, 0.08)')
+  it('lightens a dark preset and darkens a light one', () => {
+    for (const theme of PRESET_THEMES) {
+      expect(stripOverlay(theme)).toBe(
+        looksLight(theme) ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)',
+      )
     }
   })
 
-  it('darkens a light one', () => {
-    expect(stripOverlay(findTheme('Light'))).toBe('rgba(0, 0, 0, 0.08)')
+  it('covers both directions across the presets', () => {
+    // The loop above passes vacuously if every preset happens to be dark,
+    // which is what it was before Light existed and would be again if the
+    // light ones were dropped.
+    expect(PRESET_THEMES.some(looksLight)).toBe(true)
+    expect(PRESET_THEMES.some((t) => !looksLight(t))).toBe(true)
   })
 
   it('separates the strip from the terminal on every preset', () => {
@@ -135,7 +169,7 @@ describe('tabHoverWash', () => {
       const [tone, , , half] = tabHoverWash(theme).match(/[\d.]+/g)!.map(Number)
       const [, , , full] = stripOverlay(theme).match(/[\d.]+/g)!.map(Number)
       expect(half).toBeCloseTo(full / 2)
-      expect(tone).toBe(theme.name === 'Light' ? 0 : 255)
+      expect(tone).toBe(looksLight(theme) ? 0 : 255)
     }
   })
 })
@@ -146,5 +180,157 @@ describe('backgroundTint', () => {
     const [r, g, b] = hexToRgb(theme.background)
     expect(backgroundTint(theme, 1)).toEqual([r, g, b, 255])
     expect(backgroundTint(theme, 0)).toEqual([r, g, b, 0])
+  })
+})
+
+describe('PRESET_THEMES', () => {
+  it('gives every preset a distinct name', () => {
+    // The name is the whole identity: it is what `themeName` stores and what
+    // `findTheme` resolves, so a duplicate is a preset nobody can select.
+    const names = PRESET_THEMES.map((t) => t.name)
+    expect(new Set(names).size).toBe(names.length)
+  })
+
+  it('fills in every colour the editor can reach, as a 6-digit hex', () => {
+    // THEME_COLOR_KEYS drives both the editor grid and the loader's
+    // validation, so a field missing from it is unreachable in the UI and
+    // unvalidated on the way in.
+    for (const theme of PRESET_THEMES) {
+      for (const key of THEME_COLOR_KEYS) {
+        expect(isHexColor(theme[key])).toBe(true)
+      }
+      expect(Object.keys(theme).sort()).toEqual([...THEME_COLOR_KEYS, 'name'].sort())
+    }
+  })
+})
+
+describe('findTheme with custom themes', () => {
+  it('resolves a registered custom theme by name', () => {
+    setCustomThemes([customTheme('Mine', { background: '#123456' })])
+    expect(findTheme('Mine').background).toBe('#123456')
+  })
+
+  it('falls back to the default once a custom theme is gone', () => {
+    setCustomThemes([customTheme('Mine')])
+    setCustomThemes([])
+    expect(findTheme('Mine')).toBe(PRESET_THEMES[0])
+  })
+
+  it('lets a preset win over a custom theme claiming its name', () => {
+    // sanitizeCustomThemes renames these on the way in, so this is the
+    // second line of defence -- but it is the one that decides that
+    // "Campbell" means Campbell no matter what is in storage.
+    setCustomThemes([customTheme('Campbell', { background: '#ff0000' })])
+    expect(findTheme('Campbell').background).toBe('#0c0c0c')
+  })
+
+  it('reports what is registered', () => {
+    const mine = [customTheme('Mine')]
+    setCustomThemes(mine)
+    expect(getCustomThemes()).toEqual(mine)
+  })
+})
+
+describe('isHexColor', () => {
+  it('accepts a 6-digit hex in either case', () => {
+    expect(isHexColor('#a1b2c3')).toBe(true)
+    expect(isHexColor('#A1B2C3')).toBe(true)
+  })
+
+  it('rejects the forms hexToRgb would read as NaN', () => {
+    // Each of these is something a hand-edited settings file can contain,
+    // and each parses to NaN components -- see the hexToRgb tests above.
+    for (const bad of ['#fff', 'a1b2c3', '#a1b2c', '#a1b2c3d', '#zzzzzz', '', null, 42, {}]) {
+      expect(isHexColor(bad)).toBe(false)
+    }
+  })
+})
+
+describe('sanitizeCustomThemes', () => {
+  it('returns nothing for a value that is not an array', () => {
+    for (const bad of [undefined, null, 'themes', {}, 7]) {
+      expect(sanitizeCustomThemes(bad)).toEqual([])
+    }
+  })
+
+  it('keeps a well-formed theme as it is', () => {
+    const mine = customTheme('Mine', { background: '#123456' })
+    expect(sanitizeCustomThemes([mine])).toEqual([mine])
+  })
+
+  it('substitutes the default for a colour that is not one, keeping the rest', () => {
+    // Per-field rather than dropping the theme: someone whose file lost one
+    // colour should get that colour back, not lose the palette they built.
+    const [cleaned] = sanitizeCustomThemes([
+      customTheme('Mine', { background: '#123456', red: 'not-a-colour' }),
+    ])
+    expect(cleaned.background).toBe('#123456')
+    expect(cleaned.red).toBe(PRESET_THEMES[0].red)
+  })
+
+  it('supplies every missing colour', () => {
+    const [cleaned] = sanitizeCustomThemes([{ name: 'Sparse' }])
+    for (const key of THEME_COLOR_KEYS) {
+      expect(cleaned[key]).toBe(PRESET_THEMES[0][key])
+    }
+  })
+
+  it('lower-cases hex so the editor and the stored value agree', () => {
+    // <input type="color"> emits lower case; a transcribed palette usually
+    // is not. Two spellings of one colour would make the swatch and the
+    // text field disagree about whether anything changed.
+    const [cleaned] = sanitizeCustomThemes([customTheme('Mine', { blue: '#AABBCC' })])
+    expect(cleaned.blue).toBe('#aabbcc')
+  })
+
+  it('drops entries with no usable name', () => {
+    expect(sanitizeCustomThemes([{ name: '  ' }, { name: 5 }, null, 'x', customTheme('Real')])).toEqual([
+      customTheme('Real'),
+    ])
+  })
+
+  it('trims a name', () => {
+    expect(sanitizeCustomThemes([customTheme('  Mine  ')])[0].name).toBe('Mine')
+  })
+
+  it('renames a theme that collides with a preset', () => {
+    expect(sanitizeCustomThemes([customTheme('Dracula')])[0].name).toBe('Dracula 2')
+  })
+
+  it('renames later duplicates, keeping the first', () => {
+    const names = sanitizeCustomThemes([
+      customTheme('Mine'),
+      customTheme('Mine'),
+      customTheme('Mine'),
+    ]).map((t) => t.name)
+    expect(names).toEqual(['Mine', 'Mine 2', 'Mine 3'])
+  })
+})
+
+describe('uniqueThemeName', () => {
+  it('returns the name when nothing has it', () => {
+    expect(uniqueThemeName('Mine', new Set())).toBe('Mine')
+  })
+
+  it('counts up past every taken suffix', () => {
+    expect(uniqueThemeName('Mine', new Set(['Mine', 'Mine 2', 'Mine 3']))).toBe('Mine 4')
+  })
+})
+
+describe('copyOfTheme', () => {
+  it('copies the palette under a free name', () => {
+    const copy = copyOfTheme(findTheme('Nord'), [])
+    expect(copy.name).toBe('Nord copy')
+    expect({ ...copy, name: 'Nord' }).toEqual(findTheme('Nord'))
+  })
+
+  it('avoids a name an existing custom theme already has', () => {
+    expect(copyOfTheme(findTheme('Nord'), [customTheme('Nord copy')]).name).toBe('Nord copy 2')
+  })
+
+  it('avoids a preset name', () => {
+    // Duplicating a custom theme called "Light copy" must not produce a
+    // second "Light".
+    expect(copyOfTheme(customTheme('Light'), []).name).toBe('Light copy')
   })
 })

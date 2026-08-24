@@ -1,5 +1,6 @@
 import type { VibrancyMode } from './windowEffects'
 import { resolveRangeOverlaps } from './fontStack'
+import { sanitizeCustomThemes, setCustomThemes, type TerminalTheme } from './theme'
 
 /** What Ctrl+0 restores, and what a settings blob without a size gets. */
 export const DEFAULT_FONT_SIZE = 14
@@ -246,8 +247,18 @@ export interface TerminalSettings {
    * `SessionProfile.importRemoteHistory`.
    */
   autocompleteImportRemoteHistory: boolean
-  /** Name of the active preset in lib/theme.ts. */
+  /** Name of the active theme — a preset from lib/theme.ts, or one of
+   * `customThemes` below. A name rather than the colours themselves so that
+   * editing a custom theme repaints every pane already using it, and so a
+   * theme that goes away falls back visibly instead of freezing a stale
+   * palette into every stored profile. */
   themeName: string
+  /** The user's own themes, each a full palette that stands alongside the
+   * presets in the picker. Always copies of something that already worked —
+   * the editor starts one by duplicating the active theme — so there is no
+   * partially-filled state to represent. Never shadows a preset name; see
+   * `sanitizeCustomThemes`. */
+  customThemes: TerminalTheme[]
   /** Offers to reopen whatever tabs/panes were connected when the app was
    * last closed. Off by default — it's a real behavior change (reconnecting
    * live sessions on launch) with a security angle (may need to unlock the
@@ -520,6 +531,7 @@ const defaults: TerminalSettings = {
   autocompleteEnabled: false,
   autocompleteImportRemoteHistory: false,
   themeName: 'wRusTTY Dark',
+  customThemes: [],
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,
   vibrancyMode: 'off',
@@ -683,14 +695,27 @@ export function loadSettings(): TerminalSettings {
       if (typeof merged[key] !== 'string') merged[key] = defaults[key]
     }
     merged.fontRanges = sanitizeRanges(merged.fontRanges)
+    // Straight off disk, so every colour in here is arbitrary text until it
+    // has been through this: `hexToRgb` reads a malformed one as NaN
+    // components, and a NaN reaches the renderer as a colour it will paint a
+    // whole grid with.
+    merged.customThemes = sanitizeCustomThemes(merged.customThemes)
     delete merged.scrollback
+    setCustomThemes(merged.customThemes)
     return merged
   } catch {
+    setCustomThemes(defaults.customThemes)
     return defaults
   }
 }
 
 export function saveSettings(settings: TerminalSettings) {
+  // Before the write, not after it, and outside the try: the registry is what
+  // makes `findTheme` able to resolve a custom theme, and it has to be current
+  // by the time the render that follows this call asks. Whether the blob
+  // reached localStorage is a separate question from what this session should
+  // be painting.
+  setCustomThemes(settings.customThemes)
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
   } catch {

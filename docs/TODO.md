@@ -93,7 +93,9 @@ Raised while reorganising settings into a dialog.
 
 - **Logging: auto-start per session, and a configurable path.** Logging is
   manual and writes to a fixed location.
-- **Custom theme colours.** Presets only, no import of an existing scheme.
+- **Importing a theme file.** Custom themes are built in the app by
+  duplicating a preset and editing it; there is no reader for an
+  `.itermcolors` or a VS Code scheme.
 - Lower still: selection word separators, scroll sensitivity, rebindable keys.
 
 ## Ligatures: shipped, off by default

@@ -42,7 +42,6 @@ import {
   sameRanges,
 } from '../lib/fontStack'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
-import { PRESET_THEMES } from '../lib/theme'
 import { APP_VERSION } from '../lib/version'
 import { GHOSTTY_PIN, GHOSTTY_COMMIT_SHORT } from '../lib/ghostty/vendorPin'
 import { revealLogs } from '../lib/logging'
@@ -53,6 +52,7 @@ import { runPuttyImport, runSshConfigImport } from '../lib/sessionImport'
 import { exportVaultBundle, importVaultBundle } from '../lib/vaultTransfer'
 import { useConfirm } from './confirmContext'
 import { KnownHostsSection } from './KnownHostsSection'
+import { ThemeEditor } from './ThemeEditor'
 import { CommandHistorySection } from './CommandHistorySection'
 import { useDismissable } from '../hooks/useDismissable'
 import type { VaultStatus } from '../lib/vault'
@@ -1118,20 +1118,7 @@ export function SettingsDialog({
 
                   {section === 'appearance' && (
                     <div className="space-y-4 px-2 py-1.5">
-                      <label className="flex items-center justify-between gap-3 text-chrome/85">
-                        <span>Theme</span>
-                        <select
-                          className="rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
-                          value={settings.themeName}
-                          onChange={(e) => onChange({ ...settings, themeName: e.target.value })}
-                        >
-                          {PRESET_THEMES.map((t) => (
-                            <option key={t.name} value={t.name}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <ThemeEditor settings={settings} onChange={onChange} />
                       <div>
                         <label className="flex items-center justify-between gap-2 text-chrome/85">
                           <span>Background opacity</span>

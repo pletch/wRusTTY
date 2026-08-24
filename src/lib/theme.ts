@@ -133,6 +133,116 @@ export const PRESET_THEMES: TerminalTheme[] = [
     brightWhite: '#f2f2f2',
   },
   {
+    name: 'Gruvbox Dark',
+    background: '#282828',
+    foreground: '#ebdbb2',
+    cursor: '#ebdbb2',
+    black: '#282828',
+    red: '#cc241d',
+    green: '#98971a',
+    yellow: '#d79921',
+    blue: '#458588',
+    magenta: '#b16286',
+    cyan: '#689d6a',
+    white: '#a89984',
+    brightBlack: '#928374',
+    brightRed: '#fb4934',
+    brightGreen: '#b8bb26',
+    brightYellow: '#fabd2f',
+    brightBlue: '#83a598',
+    brightMagenta: '#d3869b',
+    brightCyan: '#8ec07c',
+    brightWhite: '#ebdbb2',
+  },
+  {
+    name: 'Tokyo Night',
+    background: '#1a1b26',
+    foreground: '#c0caf5',
+    cursor: '#c0caf5',
+    black: '#15161e',
+    red: '#f7768e',
+    green: '#9ece6a',
+    yellow: '#e0af68',
+    blue: '#7aa2f7',
+    magenta: '#bb9af7',
+    cyan: '#7dcfff',
+    white: '#a9b1d6',
+    brightBlack: '#414868',
+    brightRed: '#f7768e',
+    brightGreen: '#9ece6a',
+    brightYellow: '#e0af68',
+    brightBlue: '#7aa2f7',
+    brightMagenta: '#bb9af7',
+    brightCyan: '#7dcfff',
+    brightWhite: '#c0caf5',
+  },
+  {
+    name: 'Catppuccin Mocha',
+    background: '#1e1e2e',
+    foreground: '#cdd6f4',
+    cursor: '#f5e0dc',
+    black: '#45475a',
+    red: '#f38ba8',
+    green: '#a6e3a1',
+    yellow: '#f9e2af',
+    blue: '#89b4fa',
+    magenta: '#f5c2e7',
+    cyan: '#94e2d5',
+    white: '#bac2de',
+    brightBlack: '#585b70',
+    brightRed: '#f38ba8',
+    brightGreen: '#a6e3a1',
+    brightYellow: '#f9e2af',
+    brightBlue: '#89b4fa',
+    brightMagenta: '#f5c2e7',
+    brightCyan: '#94e2d5',
+    brightWhite: '#a6adc8',
+  },
+  {
+    name: 'One Half Dark',
+    background: '#282c34',
+    foreground: '#dcdfe4',
+    cursor: '#a3b3cc',
+    black: '#282c34',
+    red: '#e06c75',
+    green: '#98c379',
+    yellow: '#e5c07b',
+    blue: '#61afef',
+    magenta: '#c678dd',
+    cyan: '#56b6c2',
+    white: '#dcdfe4',
+    brightBlack: '#5a6374',
+    brightRed: '#e06c75',
+    brightGreen: '#98c379',
+    brightYellow: '#e5c07b',
+    brightBlue: '#61afef',
+    brightMagenta: '#c678dd',
+    brightCyan: '#56b6c2',
+    brightWhite: '#dcdfe4',
+  },
+  {
+    name: 'Solarized Light',
+    background: '#fdf6e3',
+    foreground: '#657b83',
+    cursor: '#657b83',
+    black: '#073642',
+    red: '#dc322f',
+    green: '#859900',
+    yellow: '#b58900',
+    blue: '#268bd2',
+    magenta: '#d33682',
+    cyan: '#2aa198',
+    white: '#eee8d5',
+    brightBlack: '#002b36',
+    brightRed: '#cb4b16',
+    brightGreen: '#586e75',
+    brightYellow: '#657b83',
+    brightBlue: '#839496',
+    brightMagenta: '#6c71c4',
+    brightCyan: '#93a1a1',
+    brightWhite: '#fdf6e3',
+  },
+  {
     name: 'Light',
     background: '#ffffff',
     foreground: '#1f2028',
@@ -156,8 +266,135 @@ export const PRESET_THEMES: TerminalTheme[] = [
   },
 ]
 
+/** Every colour field of a theme, in the order the editor lays them out:
+ * the three that are not palette entries, then the eight ANSI colours, then
+ * their bright halves.
+ *
+ * Written out rather than taken from `Object.keys` of a preset, for two
+ * reasons: a custom theme parsed back out of storage carries whatever key
+ * order it happened to be written with, and `name` is not a colour. This is
+ * the list both the editor's grid and the loader's validation walk, so a
+ * field added to `TerminalTheme` and forgotten here is a field the editor
+ * cannot reach — `theme.test.ts` checks the two agree. */
+export const THEME_COLOR_KEYS = [
+  'background',
+  'foreground',
+  'cursor',
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite',
+] as const
+
+export type ThemeColorKey = (typeof THEME_COLOR_KEYS)[number]
+
+/**
+ * The user's own themes, which `findTheme` resolves alongside the presets.
+ *
+ * A module-level registry rather than an argument, because the callers that
+ * need to resolve a name are not all places a settings object reaches:
+ * `GhosttyEngine` holds a theme *name* and nothing else, and the benchmark
+ * harness builds an xterm theme from a name with no React tree around it.
+ * Threading a list through all of them to serve a feature none of them have
+ * an opinion about would cost more than it explains.
+ *
+ * Kept in step by `loadSettings` and `saveSettings`, which between them are
+ * every path that can change what themes exist, and both of which are
+ * synchronous — so a `findTheme` in the render that follows a save already
+ * sees the theme that save created.
+ */
+let customThemes: readonly TerminalTheme[] = []
+
+export function setCustomThemes(themes: readonly TerminalTheme[]) {
+  customThemes = themes
+}
+
+export function getCustomThemes(): readonly TerminalTheme[] {
+  return customThemes
+}
+
+/** The theme this name refers to, presets first: a custom theme can never
+ * shadow a built-in one, whatever it calls itself. An unknown name — a
+ * custom theme that has since been deleted, or a blob from a newer version —
+ * lands on the default rather than leaving the terminal unpainted. */
 export function findTheme(name: string): TerminalTheme {
-  return PRESET_THEMES.find((t) => t.name === name) ?? PRESET_THEMES[0]
+  return (
+    PRESET_THEMES.find((t) => t.name === name) ??
+    customThemes.find((t) => t.name === name) ??
+    PRESET_THEMES[0]
+  )
+}
+
+/** Whether this is a 6-digit `#rrggbb` string — the only form `hexToRgb`
+ * reads, and the only form `<input type="color">` emits. Anything else
+ * parses to NaN components (see `hexToRgb`), which is a colour no renderer
+ * can do anything sensible with, so the loader substitutes rather than
+ * passing it on. */
+export function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+}
+
+/**
+ * Custom themes as they come back out of storage, made safe to render.
+ *
+ * Hand-edited, half-written and version-skewed blobs all arrive here. The
+ * rule is per-field, matching how the rest of `loadSettings` treats a bad
+ * value: a colour that is not a colour falls back to the default theme's,
+ * so a user whose file lost one field gets that field reset rather than the
+ * theme they built deleted out from under them. Only an entry with no
+ * usable name at all is dropped, since a nameless theme is one the picker
+ * cannot offer and `findTheme` can never resolve.
+ *
+ * Names are made unique, and never collide with a preset: `themeName` is a
+ * name, so two themes sharing one means the second is unreachable. Later
+ * duplicates are the ones renamed.
+ */
+export function sanitizeCustomThemes(value: unknown): TerminalTheme[] {
+  if (!Array.isArray(value)) return []
+  const fallback = PRESET_THEMES[0]
+  const taken = new Set(PRESET_THEMES.map((t) => t.name))
+  const out: TerminalTheme[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const raw = entry as Partial<TerminalTheme>
+    if (typeof raw.name !== 'string' || raw.name.trim() === '') continue
+    const theme = { name: uniqueThemeName(raw.name.trim(), taken) } as TerminalTheme
+    for (const key of THEME_COLOR_KEYS) {
+      theme[key] = isHexColor(raw[key]) ? raw[key].toLowerCase() : fallback[key]
+    }
+    taken.add(theme.name)
+    out.push(theme)
+  }
+  return out
+}
+
+/** `name` if nothing has it, else `name 2`, `name 3`, and so on. */
+export function uniqueThemeName(name: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(name)) return name
+  for (let n = 2; ; n++) {
+    const candidate = `${name} ${n}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+/** An editable copy of `theme` under a name nothing else is using — how
+ * every custom theme starts, since building one from a palette that already
+ * works is a far shorter road than filling in nineteen colours from black. */
+export function copyOfTheme(theme: TerminalTheme, existing: readonly TerminalTheme[]): TerminalTheme {
+  const taken = new Set([...PRESET_THEMES, ...existing].map((t) => t.name))
+  return { ...theme, name: uniqueThemeName(`${theme.name} copy`, taken) }
 }
 
 export function hexToRgb(hex: string): [number, number, number] {
