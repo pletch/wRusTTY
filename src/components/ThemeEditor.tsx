@@ -1,6 +1,10 @@
 import { Fragment, useEffect, useState } from 'react'
-import { Copy, Trash2 } from 'lucide-react'
+import { Copy, Download, Trash2 } from 'lucide-react'
+import { open } from '@tauri-apps/plugin-dialog'
+import { invoke } from '@tauri-apps/api/core'
 import type { TerminalSettings } from '../lib/settings'
+import { fileStem, parseThemeFile } from '../lib/themeImport'
+import { toast } from '../lib/toast'
 import {
   PRESET_THEMES,
   copyOfTheme,
@@ -61,6 +65,49 @@ export function ThemeEditor({
     })
   }
 
+  /**
+   * Reads a scheme written for iTerm2 or VS Code and adds it as a custom
+   * theme. See `parseThemeFile` for what the two formats give up on the way.
+   *
+   * Lands as a custom theme like any other rather than as a mode of its own:
+   * an imported palette is exactly what the editor below already edits, and
+   * nothing downstream needs to know where a theme came from.
+   */
+  async function importFile() {
+    const picked = await open({
+      multiple: false,
+      filters: [
+        // `json` covers a VS Code theme and a settings.json alike; `txt`
+        // because a scheme downloaded from a browser often arrives as one,
+        // and the parser sniffs the content anyway.
+        { name: 'Colour schemes', extensions: ['itermcolors', 'json', 'jsonc', 'txt'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    })
+    if (!picked || Array.isArray(picked)) return
+
+    try {
+      const text = await invoke<string>('read_theme_file', { path: picked })
+      const { theme, missing, format } = parseThemeFile(text, fileStem(picked))
+      const named = uniqueThemeName(theme.name, new Set([...PRESET_THEMES, ...settings.customThemes].map((t) => t.name)))
+      onChange({
+        ...settings,
+        themeName: named,
+        customThemes: [...settings.customThemes, { ...theme, name: named }],
+      })
+      // Which colours were filled in matters: a scheme that named twelve of
+      // nineteen looks like the theme it came from in some places and like
+      // the default theme in others, and that is confusing until you know.
+      toast.info(
+        missing.length === 0
+          ? `Imported "${named}" from ${format}`
+          : `Imported "${named}" from ${format} — ${missing.length} colour${missing.length === 1 ? '' : 's'} it didn't set kept the default`,
+      )
+    } catch (err) {
+      toast.error(`Couldn't import that theme: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+
   async function remove() {
     const ok = await confirm({
       title: `Delete "${active.name}"?`,
@@ -107,6 +154,10 @@ export function ThemeEditor({
         <button type="button" className={buttonClass} onClick={duplicate}>
           <Copy size={14} className="text-chrome/60" />
           <span>Duplicate &amp; edit</span>
+        </button>
+        <button type="button" className={buttonClass} onClick={() => void importFile()}>
+          <Download size={14} className="text-chrome/60" />
+          <span>Import…</span>
         </button>
         {isCustom && (
           <button type="button" className={buttonClass} onClick={() => void remove()}>
@@ -164,7 +215,8 @@ export function ThemeEditor({
         </div>
       ) : (
         <p className="text-chrome/50">
-          Built-in themes stay as they are. Duplicate one to get a copy you can change.
+          Built-in themes stay as they are. Duplicate one to get a copy you can change, or import
+          an iTerm2 (.itermcolors) or VS Code theme file.
         </p>
       )}
     </div>

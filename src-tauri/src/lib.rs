@@ -17,6 +17,7 @@ mod sftp;
 mod ssh;
 mod ssh_config_import;
 mod telnet;
+mod theme_import;
 mod vault;
 mod wake;
 #[cfg(target_os = "windows")]
@@ -74,6 +75,7 @@ pub fn run() {
             ssh::ssh_retry_forward,
             wake::wake_host,
             fonts::list_fonts,
+            theme_import::read_theme_file,
             sftp::sftp_list_dir,
             sftp::sftp_canonicalize,
             sftp::sftp_edit_file,
