@@ -56,6 +56,25 @@ export function expandHome(path: string, home: string): string {
   return home === '/' ? `/${rest}` : `${home.replace(/\/+$/, '')}/${rest}`
 }
 
+/**
+ * Whether a failed operation failed *for want of privilege* — the one failure
+ * that offering sudo could actually fix.
+ *
+ * Matched on the message because that is all there is: SFTP reports a status
+ * code, the backend renders it, and by the time it reaches the panel it is a
+ * string. `PermissionDenied` is the code servers use for `EACCES`, and OpenSSH
+ * words it exactly this way.
+ *
+ * Deliberately narrow. A missing file, a full disk and a read-only mount all
+ * arrive through the same channel, and offering to open any of them as root
+ * would be offering a privilege that cannot help — which is how a prompt stops
+ * meaning anything. When in doubt this answers no, and the user is left with
+ * the host's own error.
+ */
+export function isPermissionDenied(error: unknown): boolean {
+  return /permission denied/i.test(String(error))
+}
+
 export type TransferVerdict = { ok: true } | { ok: false; reason: string }
 
 /**

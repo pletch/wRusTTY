@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   describeTree,
   expandHome,
+  isPermissionDenied,
   nameError,
   safeSuggestedName,
   startDirFor,
@@ -181,5 +182,24 @@ describe('safeSuggestedName', () => {
     expect(safeSuggestedName('.')).toBe('download')
     expect(safeSuggestedName('..')).toBe('download')
     expect(safeSuggestedName('   ')).toBe('download')
+  })
+})
+
+describe('isPermissionDenied', () => {
+  it('recognises what an SFTP server says when it refuses on permission', () => {
+    // The wire form: `StatusCode` rendered, then the server's message.
+    expect(isPermissionDenied('Permission denied: open failed')).toBe(true)
+    expect(isPermissionDenied(new Error('permission denied'))).toBe(true)
+    expect(isPermissionDenied('could not read /etc/shadow: Permission denied')).toBe(true)
+  })
+
+  it('says no to every failure sudo could not fix', () => {
+    // Offering root for these would be offering a privilege that cannot help,
+    // which is how the offer stops meaning anything.
+    expect(isPermissionDenied('No such file')).toBe(false)
+    expect(isPermissionDenied('Failure: disk full')).toBe(false)
+    expect(isPermissionDenied('the remote command did not finish in time')).toBe(false)
+    expect(isPermissionDenied(null)).toBe(false)
+    expect(isPermissionDenied(undefined)).toBe(false)
   })
 })

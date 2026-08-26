@@ -17,9 +17,11 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncRead, ReadBuf};
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{mpsc, oneshot};
 use wr_sftp::RemoteEntry;
+use wr_ssh::{SudoError, SudoWriter};
+use zeroize::Zeroizing;
 
 use crate::session_registry::Slot;
 use crate::ssh::SshState;
@@ -146,6 +148,21 @@ pub enum SftpEvent {
     TransferResumed {
         transfer_id: String,
     },
+    /// A file the connected user cannot write is being opened as root, and sudo
+    /// on the far end wants a password. Answered by `sftp_respond_sudo_prompt`.
+    ///
+    /// Sent on the panel's own channel rather than the connection's, because
+    /// this is not authentication to the *host* — the session is already up and
+    /// authenticated. It is a second, unrelated credential, and the dialog has
+    /// to be told apart from the SSH one at a glance or the user types the
+    /// wrong secret into it.
+    SudoPrompt {
+        request_id: String,
+        remote_path: String,
+        /// A password was already tried and rejected. The dialog says so rather
+        /// than reappearing blank, which reads as a dropped keystroke.
+        retry: bool,
+    },
 }
 
 /// One live edit watch, as reported to the frontend by `sftp_list_edits`.
@@ -154,6 +171,10 @@ pub enum SftpEvent {
 pub struct ActiveEdit {
     pub edit_id: String,
     pub remote_path: String,
+    /// Whether a root helper is running for this edit. Rendered, because a
+    /// standing privilege the user cannot see is one they cannot decide to end
+    /// — and stopping the watch is how they end it.
+    pub elevated: bool,
 }
 
 struct EditEntry {
@@ -169,11 +190,119 @@ struct EditEntry {
     /// wrote rather than against a value that is now two saves old and conflicts
     /// with itself.
     expected_mtime: Arc<TokioMutex<Option<i64>>>,
+    /// The privileged half of this edit — empty until, and unless, it is
+    /// opened or saved as root.
+    ///
+    /// Always present as a cell even when the edit is not elevated, and that is
+    /// the whole point of its shape. The file watcher captures this once, when
+    /// the watch is created, and goes on using that capture for every save
+    /// afterwards. If elevation were a plain `Option` swapped into the map
+    /// later, `sftp_elevate_edit` would elevate an entry the watcher can no
+    /// longer see — and the next Ctrl-S would fail exactly the way the
+    /// elevation was meant to fix, having reported success.
+    ///
+    /// Behind a mutex because the helper is one stream carrying a request and
+    /// its reply, and two saves interleaved on it would read each other's
+    /// answers.
+    elevated: SharedElevation,
     // Held only for their Drop impls: dropping the debouncer stops the
     // watcher thread, and dropping the TempDir deletes the directory (and
     // the file inside it) from disk.
     _debouncer: Debouncer<RecommendedWatcher, FileIdMap>,
     _temp_dir: tempfile::TempDir,
+}
+
+/// Everything that makes one edit privileged: the root helper, and the
+/// unprivileged scratch file on the host that saves are staged through.
+///
+/// Dropping this is the teardown. The helper is holding a channel, so dropping
+/// closes it, the root `sh` on the far end reads EOF and exits, and the
+/// privilege is gone — for every route that ends an edit, including the ones
+/// nobody wrote code for here (the pane closing, the session dropping, the app
+/// quitting). See `wr_ssh::sudo` for why privilege is held as a process rather
+/// than as a remembered password.
+/// The elevated state of one edit, shared between the watcher, the panel and
+/// whatever elevates it.
+type SharedElevation = Arc<Elevation>;
+
+/// Whether an edit is elevated, and the helper that makes it so.
+///
+/// Two representations of one fact, which is a thing to justify. The helper has
+/// to sit behind an async mutex: it is a single stream carrying a request and
+/// its reply, and a save holds it for a full round trip to the host. The flag
+/// exists so that *asking* whether an edit is elevated never has to wait for
+/// that round trip — `sftp_list_edits` reads it for every watch on a session
+/// while holding the edits map, and blocking there on someone else's save would
+/// freeze the whole Files panel behind one slow write.
+///
+/// They cannot drift because `install` is the only thing that sets either, and
+/// it sets both.
+#[derive(Default)]
+struct Elevation {
+    state: TokioMutex<Option<ElevatedEdit>>,
+    installed: AtomicBool,
+}
+
+impl Elevation {
+    /// Lock-free, and deliberately so — see the type's own note.
+    fn is_installed(&self) -> bool {
+        self.installed.load(Ordering::Relaxed)
+    }
+
+    /// Takes the helper, unless one is already here.
+    ///
+    /// Returning the loser's helper rather than dropping it inside the lock is
+    /// not fussiness: dropping an `ElevatedEdit` spawns a cleanup task, and
+    /// doing that while holding this mutex would have a save waiting on it.
+    async fn install(&self, elevated: ElevatedEdit) -> Option<ElevatedEdit> {
+        let mut slot = self.state.lock().await;
+        if slot.is_some() {
+            return Some(elevated);
+        }
+        *slot = Some(elevated);
+        self.installed.store(true, Ordering::Relaxed);
+        None
+    }
+}
+
+struct ElevatedEdit {
+    writer: SudoWriter,
+    /// A `0600` file in the host's `/tmp`, owned by the connected user, made
+    /// once and rewritten by every save. Reused rather than remade because a
+    /// name that never changes is one the helper's destination check and this
+    /// module's cleanup can both be sure of.
+    staged_path: String,
+    /// Kept only so the staged file can be unlinked when this drops — the last
+    /// moment anything knows both that the file exists and that nothing needs
+    /// it any more.
+    session: Arc<TokioMutex<Slot<wr_ssh::SshSession>>>,
+}
+
+impl Drop for ElevatedEdit {
+    fn drop(&mut self) {
+        // Best-effort, and deliberately not waited on: this runs from whichever
+        // path removed the edit, and none of them should block on a round trip
+        // to tidy up a temporary file. A host that never hears this is left
+        // with an empty `0600` file in `/tmp`, which is what any interrupted
+        // `mktemp` leaves and what `/tmp` exists to absorb.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let session = self.session.clone();
+        let staged = self.staged_path.clone();
+        handle.spawn(async move {
+            let sftp = {
+                let guard = session.lock().await;
+                match guard.ready() {
+                    Ok(session) => session.get_or_open_sftp().await.ok(),
+                    Err(_) => None,
+                }
+            };
+            if let Some(sftp) = sftp {
+                let _ = sftp.remove_file(&staged).await;
+            }
+        });
+    }
 }
 
 #[derive(Default)]
@@ -194,6 +323,13 @@ pub struct SftpState {
     /// that has happened. The running task still tears itself down normally; it
     /// simply does so having already been copied here.
     interrupted: TokioMutex<HashMap<String, InterruptedTransfer>>,
+    /// Sudo password prompts waiting on an answer, by request id.
+    ///
+    /// No owning session id beside the sender, unlike SSH's equivalent maps:
+    /// every waiter here gives up on its own after `SUDO_PROMPT_TIMEOUT`, so an
+    /// entry cannot outlive the thing that made it and there is nothing for a
+    /// disconnect to go and clean up.
+    pending_sudo: TokioMutex<HashMap<String, oneshot::Sender<Option<Zeroizing<String>>>>>,
     next_id: AtomicU64,
 }
 
@@ -206,6 +342,10 @@ impl SftpState {
     /// never have to be distinct, and one counter cannot hand out a duplicate.
     fn next_transfer_id(&self) -> String {
         format!("transfer-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn next_sudo_request_id(&self) -> String {
+        format!("sudo-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -529,6 +669,169 @@ async fn confirm_risky_open(app: &AppHandle, basename: &str) -> bool {
     rx.await.unwrap_or(false)
 }
 
+/// How long a sudo password prompt waits before it counts as cancelled.
+///
+/// A bound rather than an ownership map is what keeps this from leaking: the
+/// panel that raised the prompt can be closed, the pane can go away, the
+/// webview can stop listening, and the task parked on the answer still ends.
+/// Two minutes is long enough to go and look a password up and short enough
+/// that a forgotten dialog does not pin a task for the life of the process.
+const SUDO_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How many times a rejected password may be retyped before the open is
+/// abandoned. Three is the shape of every login prompt; more would be this app
+/// deciding on its own to keep guessing at someone's credential.
+const SUDO_PASSWORD_ATTEMPTS: usize = 3;
+
+/// Puts a sudo password prompt in front of the user and waits for the answer.
+///
+/// `None` covers every way of not getting one — cancelled, the panel closed,
+/// nobody listening, nobody answering — because they call for the same thing:
+/// abandon the elevated open, having written nothing and asked the host for
+/// nothing.
+///
+/// The answer arrives in `Zeroizing` and stays that way through to the one
+/// `sudo` invocation it authenticates. Nothing here writes it anywhere, logs
+/// it, or hands it back to the webview.
+async fn ask_sudo_password(
+    sftp_state: &SftpState,
+    channel: &Channel<SftpEvent>,
+    remote_path: &str,
+    retry: bool,
+) -> Option<Zeroizing<String>> {
+    let request_id = sftp_state.next_sudo_request_id();
+    let (tx, rx) = oneshot::channel();
+    sftp_state
+        .pending_sudo
+        .lock()
+        .await
+        .insert(request_id.clone(), tx);
+
+    if channel
+        .send(SftpEvent::SudoPrompt {
+            request_id: request_id.clone(),
+            remote_path: remote_path.to_string(),
+            retry,
+        })
+        .is_err()
+    {
+        sftp_state.pending_sudo.lock().await.remove(&request_id);
+        return None;
+    }
+
+    let answered = tokio::time::timeout(SUDO_PROMPT_TIMEOUT, rx).await;
+    // Unconditionally, including on the timeout path — the entry holds a
+    // sender nobody will ever use again either way.
+    sftp_state.pending_sudo.lock().await.remove(&request_id);
+    match answered {
+        Ok(Ok(password)) => password,
+        _ => None,
+    }
+}
+
+/// The user's answer to a sudo prompt, or `None` for "cancel".
+///
+/// Wrapped for zeroizing the moment it arrives, and never persisted: a sudo
+/// password is not the session's credential and has no business in the vault,
+/// in a profile, or in a log line.
+#[tauri::command]
+pub async fn sftp_respond_sudo_prompt(
+    request_id: String,
+    password: Option<String>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    let password = password.map(Zeroizing::new);
+    if let Some(tx) = sftp_state.pending_sudo.lock().await.remove(&request_id) {
+        let _ = tx.send(password);
+    }
+    Ok(())
+}
+
+/// Authenticates a privileged helper for one file, and optionally reads the
+/// file down through it.
+///
+/// `sink` separates the two callers. Opening a file the user cannot *read*
+/// needs the download to come through sudo, so it passes one. Elevating an edit
+/// that is already open — the far commoner case, a world-readable file that
+/// only root may write — passes `None`, because the local copy is the user's
+/// work in progress and re-reading the host's version over it would throw away
+/// everything they had typed.
+///
+/// The password's whole life is this function. It authenticates the helper, is
+/// used again for the read on its own channel — sudo's timestamp does not carry
+/// between `exec` channels, so the second call has to pay for itself — and is
+/// dropped on the way out. What the edit keeps is the running helper.
+///
+/// The first attempt deliberately carries no password at all. A host with a
+/// `NOPASSWD` sudoers entry never has to be asked, and one wasted round trip is
+/// a much better trade than a dialog the user did not need to see.
+async fn open_elevated(
+    session: Arc<TokioMutex<Slot<wr_ssh::SshSession>>>,
+    sftp_state: &SftpState,
+    channel: &Channel<SftpEvent>,
+    remote_path: &str,
+    sink: Option<&mut tokio::fs::File>,
+) -> Result<ElevatedEdit, String> {
+    let runner = {
+        let guard = session.lock().await;
+        guard.ready()?.sudo().map_err(|e| e.to_string())?
+    };
+
+    // Authentication first, before anything is created on the host or written
+    // locally: a host that will not give this user root should cost nothing to
+    // find out about.
+    let mut password: Option<Zeroizing<String>> = None;
+    let writer = match runner.start_writer(None).await {
+        Ok(writer) => writer,
+        Err(e) if e.needs_password() => {
+            let mut attempt = 0;
+            loop {
+                let Some(candidate) =
+                    ask_sudo_password(sftp_state, channel, remote_path, attempt > 0).await
+                else {
+                    return Err("opening this file as root was cancelled".to_string());
+                };
+                match runner.start_writer(Some(&candidate)).await {
+                    Ok(writer) => {
+                        password = Some(candidate);
+                        break writer;
+                    }
+                    Err(e) if e.is_retryable_password() => {
+                        attempt += 1;
+                        if attempt >= SUDO_PASSWORD_ATTEMPTS {
+                            return Err(SudoError::WrongPassword.to_string());
+                        }
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    if let Some(sink) = sink {
+        runner
+            .read_file(remote_path, password.as_ref(), sink)
+            .await
+            .map_err(|e| format!("could not read {remote_path} as root: {e}"))?;
+    }
+
+    let staged_path = runner
+        .make_staging_file()
+        .await
+        .map_err(|e| format!("could not prepare a staging file on the host: {e}"))?;
+
+    // No probe copy here, deliberately. The helper has already said READY,
+    // which is what proves it is running as root; the only thing a trial copy
+    // could add is a trial destination, and there is no harmless one — copying
+    // the staging file onto itself is an error in every `cp` there is.
+    Ok(ElevatedEdit {
+        writer,
+        staged_path,
+        session,
+    })
+}
+
 /// Downloads a remote file to a local temp copy, opens it in the OS's
 /// default application for that file type, and watches it for changes —
 /// re-uploading over SFTP on every save. Returns an edit id that identifies
@@ -546,6 +849,11 @@ pub async fn sftp_edit_file(
     // *block* until the user is done with the file. Empty hands the file to the
     // OS instead, which is the default and cannot report anything back.
     editor_command: String,
+    // Open this one as root. Never the panel's first move: it asks only after
+    // an ordinary open has actually been refused, so a user who can already
+    // write the file is never offered privilege they do not need, and one who
+    // cannot has said out loud that they want it.
+    elevate: bool,
     channel: Channel<SftpEvent>,
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
@@ -630,12 +938,34 @@ pub async fn sftp_edit_file(
     // Ordered after the filename checks on purpose. It used to run before
     // them, which meant a file the panel was never going to be able to open
     // was downloaded in full first.
-    let file = tokio::fs::File::create(&local_path)
+    let mut file = tokio::fs::File::create(&local_path)
         .await
         .map_err(|e| e.to_string())?;
-    sftp.download(&remote_path, file, |_| true)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Made whether or not this edit is elevated: the file watcher captures it
+    // once, and a later `sftp_elevate_edit` fills in this same cell rather than
+    // leaving the watcher looking at a stale one. See `EditEntry::elevated`.
+    let elevated: SharedElevation = Arc::new(Elevation::default());
+    if elevate {
+        // Read through sudo rather than SFTP. Note what this does *not* do:
+        // stage a root-owned copy anywhere on the host. The bytes come straight
+        // down the channel into the local temp file, so a file the user needed
+        // root to read is never left readable by anyone else on the far end.
+        let opened = open_elevated(
+            session.clone(),
+            &sftp_state,
+            &channel,
+            &remote_path,
+            Some(&mut file),
+        )
+        .await?;
+        // Cannot come back: this cell was made a moment ago and the edit it
+        // belongs to is not in the map yet, so nothing else can have raced it.
+        elevated.install(opened).await;
+    } else {
+        sftp.download(&remote_path, file, |_| true)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     // Taken *after* the download, not before: the window that matters runs from
     // the moment this copy stopped reading to the moment it is written back, so
     // anchoring at the end of the read is what makes "changed since" mean
@@ -647,6 +977,7 @@ pub async fn sftp_edit_file(
 
     let edit_id = sftp_state.next_edit_id();
     let watch_expected = expected_mtime.clone();
+    let watch_elevated = elevated.clone();
     let watch_path = local_path.clone();
     let watch_remote_path = remote_path.clone();
     let watch_edit_id = edit_id.clone();
@@ -674,6 +1005,7 @@ pub async fn sftp_edit_file(
             let session = watch_session.clone();
             let channel = channel.clone();
             let expected = watch_expected.clone();
+            let elevated = watch_elevated.clone();
             rt_handle.spawn(async move {
                 // Never forced. A save the *watcher* noticed is the one that
                 // has to ask — the user pressed Ctrl-S in an editor and has no
@@ -685,6 +1017,7 @@ pub async fn sftp_edit_file(
                     remote_path,
                     local_path,
                     expected,
+                    elevated,
                     false,
                     channel,
                 )
@@ -710,6 +1043,7 @@ pub async fn sftp_edit_file(
             remote_path: remote_path.clone(),
             local_path: local_path.clone(),
             expected_mtime,
+            elevated,
             _debouncer: debouncer,
             _temp_dir: temp_dir,
         },
@@ -847,12 +1181,17 @@ async fn open_in_editor(
 ///
 /// On success the expectation is advanced to what was just written, so the next
 /// save compares against this save rather than conflicting with itself forever.
+#[allow(clippy::too_many_arguments)]
 async fn save_edit(
     session: Arc<TokioMutex<Slot<wr_ssh::SshSession>>>,
     edit_id: String,
     remote_path: String,
     local_path: PathBuf,
     expected_mtime: Arc<TokioMutex<Option<i64>>>,
+    // Filled in when this edit is elevated, and then the only way its bytes can
+    // be written back — the SFTP subsystem would be refused for the same reason
+    // the ordinary write was.
+    elevated: SharedElevation,
     force: bool,
     channel: Channel<SftpEvent>,
 ) {
@@ -886,9 +1225,31 @@ async fn save_edit(
             }
         }
 
-        sftp.write(&remote_path, &bytes)
-            .await
-            .map_err(|e| e.to_string())?;
+        match elevated.state.lock().await.as_mut() {
+            None => sftp
+                .write(&remote_path, &bytes)
+                .await
+                .map_err(|e| e.to_string())?,
+            // Two steps, because neither half can do the other's job: SFTP can
+            // write as the connected user but not as root, and the root helper
+            // can move bytes already on the host but has no way to receive
+            // them. So the save lands in the user's own `0600` scratch file
+            // first and the helper copies it into place.
+            //
+            // The destination is only ever touched by that copy, so a save that
+            // dies between the two leaves the remote file exactly as it was.
+            Some(elevated) => {
+                let staged = elevated.staged_path.clone();
+                sftp.write(&staged, &bytes)
+                    .await
+                    .map_err(|e| format!("could not stage the save on the host: {e}"))?;
+                elevated
+                    .writer
+                    .copy_into(&staged, &remote_path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         // Re-stat rather than assume: the mtime the server recorded is the one
         // the next save has to match, and it is the server's clock that decides
         // it, not this machine's.
@@ -935,7 +1296,7 @@ pub async fn sftp_save_edit(
     ssh_state: State<'_, SshState>,
     sftp_state: State<'_, SftpState>,
 ) -> Result<(), String> {
-    let (session_id, remote_path, local_path, expected_mtime) = {
+    let (session_id, remote_path, local_path, expected_mtime, elevated) = {
         let edits = sftp_state.edits.lock().await;
         let entry = edits
             .get(&edit_id)
@@ -945,6 +1306,7 @@ pub async fn sftp_save_edit(
             entry.remote_path.clone(),
             entry.local_path.clone(),
             entry.expected_mtime.clone(),
+            entry.elevated.clone(),
         )
     };
     let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
@@ -954,10 +1316,65 @@ pub async fn sftp_save_edit(
         remote_path,
         local_path,
         expected_mtime,
+        elevated,
         force,
         channel,
     )
     .await;
+    Ok(())
+}
+
+/// Turns an edit that is already open into a privileged one, so its saves go
+/// through root.
+///
+/// This is the case the feature mostly exists for, and it is not the one that
+/// looks obvious from the outside. A file under `/etc` is typically
+/// world-readable and root-writable, so opening it works perfectly and it is
+/// the *save*, minutes later, that is refused. Elevating at that point costs
+/// the user nothing they have typed: the local copy is untouched, only the way
+/// back to the host changes.
+///
+/// Does not save. The panel calls `sftp_save_edit` afterwards, which keeps the
+/// mtime conflict check on the same footing it has for every other save — an
+/// elevated write must not become a way to skip past a warning that someone
+/// else changed the file.
+///
+/// Idempotent: an edit that is already elevated is left exactly as it is rather
+/// than being given a second helper.
+#[tauri::command]
+pub async fn sftp_elevate_edit(
+    edit_id: String,
+    channel: Channel<SftpEvent>,
+    ssh_state: State<'_, SshState>,
+    sftp_state: State<'_, SftpState>,
+) -> Result<(), String> {
+    let (session_id, remote_path, elevated) = {
+        let edits = sftp_state.edits.lock().await;
+        let entry = edits
+            .get(&edit_id)
+            .ok_or("that file is no longer being watched")?;
+        (
+            entry.session_id.clone(),
+            entry.remote_path.clone(),
+            entry.elevated.clone(),
+        )
+    };
+
+    // Checked before the round trip and again under the lock below, because
+    // between the two there is a prompt with a human in it — long enough for
+    // the same file to be elevated by a second panel.
+    if elevated.is_installed() {
+        return Ok(());
+    }
+
+    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
+    let opened = open_elevated(session, &sftp_state, &channel, &remote_path, None).await?;
+
+    // A helper handed back is one that lost the race with another panel doing
+    // the same thing. Dropping it here — outside the lock, which `install` is
+    // careful to make possible — ends it immediately rather than leaving a
+    // second root shell running on the host with nothing pointing at it.
+    drop(elevated.install(opened).await);
     Ok(())
 }
 
@@ -981,6 +1398,9 @@ pub async fn sftp_list_edits(
         .map(|(id, e)| ActiveEdit {
             edit_id: id.clone(),
             remote_path: e.remote_path.clone(),
+            // Lock-free, so this cannot end up waiting on a save that is
+            // holding the helper — see `Elevation`.
+            elevated: e.elevated.is_installed(),
         })
         .collect())
 }

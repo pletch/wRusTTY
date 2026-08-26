@@ -105,6 +105,21 @@ impl SshSession {
         Self::get_or_open(&self.sftp, self.handle.clone()).await
     }
 
+    /// A handle for running things as root on this connection.
+    ///
+    /// Returns rather than borrows, for the same reason `get_or_open_sftp`
+    /// hands back an `Arc`: elevated work outlives the session mutex by a long
+    /// way — a privileged helper stays open for the life of an edit — and
+    /// holding the lock for that would stop every keystroke in the pane.
+    ///
+    /// Opening no channel here is deliberate. Whether a host needs a password
+    /// at all is only knowable by trying, so the decision belongs to the caller
+    /// that can put a dialog in front of the user. See [`crate::sudo`].
+    pub fn sudo(&self) -> Result<crate::sudo::SudoRunner, SshError> {
+        let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
+        Ok(crate::sudo::SudoRunner::new(handle))
+    }
+
     /// Run one command on a channel of its own and collect what it prints.
     ///
     /// The same move as `get_or_open_transfer_sftp` below — `channel_open_session`

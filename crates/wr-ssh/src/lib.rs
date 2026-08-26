@@ -10,6 +10,7 @@ mod known_hosts;
 mod prompt;
 mod session;
 mod socks;
+mod sudo;
 
 pub use config::{AuthMethod, SshConfig};
 pub use error::SshError;
@@ -18,3 +19,4 @@ pub use handler::{HostKeyPrompt, HostKeyVerifier, RejectAll};
 pub use known_hosts::{HostKeyStatus, KnownHostEntry, KnownHostsStore};
 pub use prompt::{AuthPrompt, AuthPromptField, AuthPrompter, DenyAll};
 pub use session::{expand_tilde, parse_private_key, SshConnector, SshSession};
+pub use sudo::{SudoError, SudoRunner, SudoWriter};

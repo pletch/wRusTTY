@@ -81,6 +81,8 @@ pub fn run() {
             sftp::sftp_edit_file,
             sftp::sftp_list_edits,
             sftp::sftp_save_edit,
+            sftp::sftp_respond_sudo_prompt,
+            sftp::sftp_elevate_edit,
             sftp::sftp_stop_watching,
             sftp::sftp_exists,
             sftp::sftp_upload_begin,

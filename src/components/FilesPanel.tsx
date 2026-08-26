@@ -16,6 +16,7 @@ import {
   KeyRound,
   RefreshCw,
   RotateCw,
+  ShieldAlert,
   Trash2,
   Upload,
   X,
@@ -28,10 +29,12 @@ import { formatMode, formatOctal, parseOctal } from '../lib/fileMode'
 import {
   describeTree,
   expandHome,
+  isPermissionDenied,
   nameError,
   safeSuggestedName,
   verdictForMutation,
 } from '../lib/fileActions'
+import { SudoPrompt } from './SudoPrompt'
 import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 
@@ -148,6 +151,16 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   // outlive the panel: without that, closing and reopening the panel loses
   // every marker while the watches keep running and keep uploading on save.
   const [activeEdits, setActiveEdits] = useState<Record<string, string>>({})
+  // Which of those edits has a root helper running behind it, by remote path.
+  // Separate from `activeEdits` rather than folded into it so every existing
+  // read of "is this watched" keeps working unchanged — elevation is an extra
+  // fact about a watch, not a different kind of one.
+  const [elevatedEdits, setElevatedEdits] = useState<Record<string, boolean>>({})
+  const [sudoPrompt, setSudoPrompt] = useState<{
+    requestId: string
+    remotePath: string
+    retry: boolean
+  } | null>(null)
   const [menu, setMenu] = useState<{ entry: RemoteEntry; x: number; y: number } | null>(null)
   // A list, not one: the backend always allowed concurrent transfers — the map
   // was there from the start — and only this row's singularity stopped the panel
@@ -177,6 +190,11 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   // then refresh whichever directory the panel opened on.
   const cwdRef = useRef<string | null>(null)
   cwdRef.current = cwd
+  // Same reason as `cwdRef`: the channel callback is built once and would
+  // otherwise ask the first render whether a file is elevated — and answer
+  // "no" forever, offering to elevate a file that already is.
+  const elevatedRef = useRef<Record<string, boolean>>({})
+  elevatedRef.current = elevatedEdits
   // Row identities. A counter rather than a random id: it only has to be
   // unique within this panel's lifetime, and a counter is reproducible in a
   // test where a random one is not.
@@ -191,9 +209,46 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         case 'uploaded':
           toast.success(`Saved ${basename(event.remotePath)}`)
           break
-        case 'uploadFailed':
+        case 'uploadFailed': {
+          // The ordinary shape of this problem, and the reason the offer lives
+          // here rather than only on open: a file under `/etc` is usually
+          // readable by anyone and writable only by root, so opening it worked
+          // and it is the save — minutes and several edits later — that is
+          // refused. Nothing local has been touched, so accepting costs the
+          // user nothing they have typed.
+          if (isPermissionDenied(event.error) && !elevatedRef.current[event.remotePath]) {
+            void confirmRef
+              .current({
+                title: `Cannot save ${basename(event.remotePath)}`,
+                body:
+                  `The host refused the write: this session is connected as a user who ` +
+                  `cannot modify ${event.remotePath}.
+
+` +
+                  `Saving it as root runs sudo on the host and keeps a privileged helper ` +
+                  `running until you stop watching the file. You may be asked for that ` +
+                  `host's sudo password — which is not the password for this SSH session.`,
+                confirmLabel: 'Save as root',
+              })
+              .then(async (ok) => {
+                if (!ok) return
+                try {
+                  await sftp.elevateEdit(event.editId, getChannel())
+                  setElevatedEdits((prev) => ({ ...prev, [event.remotePath]: true }))
+                  // A separate call on purpose: the save that follows runs the
+                  // same conflict check as any other, so elevating cannot
+                  // become a way past a warning that someone else changed the
+                  // file underneath this edit.
+                  await sftp.saveEdit(event.editId, false, getChannel())
+                } catch (err) {
+                  toast.error(String(err))
+                }
+              })
+            break
+          }
           toast.error(`Failed to save ${event.remotePath}: ${event.error}`)
           break
+        }
         case 'editorExited':
           if (event.stillWatching) {
             // The command returned before the user could plausibly have
@@ -208,6 +263,15 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
             break
           }
           setActiveEdits((prev) => {
+            const next = { ...prev }
+            delete next[event.remotePath]
+            return next
+          })
+          // The watch ending is the helper ending: the backend drops the edit,
+          // which closes the channel it was running on. Clearing the marker
+          // here keeps the panel from claiming a privilege that is already
+          // gone.
+          setElevatedEdits((prev) => {
             const next = { ...prev }
             delete next[event.remotePath]
             return next
@@ -240,6 +304,13 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
             })
           break
         }
+        case 'sudoPrompt':
+          setSudoPrompt({
+            requestId: event.requestId,
+            remotePath: event.remotePath,
+            retry: event.retry,
+          })
+          break
         // An explicit transfer. Only the backend knows the total for these — a
         // download's from `stat` or the tree walk, an upload's from the file
         // or tree itself — and `transferStarted` is also where a row stops
@@ -407,6 +478,9 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       .then((edits) => {
         if (cancelled) return
         setActiveEdits(Object.fromEntries(edits.map((e) => [e.remotePath, e.editId])))
+        setElevatedEdits(
+          Object.fromEntries(edits.filter((e) => e.elevated).map((e) => [e.remotePath, true])),
+        )
       })
       .catch(() => {})
     return () => {
@@ -445,7 +519,35 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel())
       setActiveEdits((prev) => ({ ...prev, [path]: editId }))
     } catch (err) {
-      toast.error(String(err))
+      // Asked only once the host has actually refused, never predicted from the
+      // mode bits. The panel knows the connected user's name but not their
+      // groups, so a prediction is wrong often enough to be noise — and an
+      // offer of root that turns out to have been unnecessary is worse than
+      // noise.
+      if (!isPermissionDenied(err)) {
+        toast.error(String(err))
+        return
+      }
+      const ok = await confirmRef.current({
+        title: `Cannot open ${entry.name}`,
+        body:
+          `The host refused to read ${path}: this session is connected as a user who ` +
+          `cannot see it.
+
+` +
+          `Opening it as root runs sudo on the host and keeps a privileged helper running ` +
+          `until you stop watching the file. You may be asked for that host's sudo ` +
+          `password — which is not the password for this SSH session.`,
+        confirmLabel: 'Open as root',
+      })
+      if (!ok) return
+      try {
+        const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel(), true)
+        setActiveEdits((prev) => ({ ...prev, [path]: editId }))
+        setElevatedEdits((prev) => ({ ...prev, [path]: true }))
+      } catch (elevatedErr) {
+        toast.error(String(elevatedErr))
+      }
     }
   }
 
@@ -708,13 +810,26 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   async function stopEditing(path: string) {
     const editId = activeEdits[path]
     if (!editId) return
+    const wasElevated = elevatedEdits[path]
     await sftp.stopWatching(editId).catch(() => {})
     setActiveEdits((prev) => {
       const next = { ...prev }
       delete next[path]
       return next
     })
-    toast.info(`Stopped watching ${basename(path)}`)
+    setElevatedEdits((prev) => {
+      const next = { ...prev }
+      delete next[path]
+      return next
+    })
+    // Said out loud when there was one, because ending the privilege is the
+    // part worth confirming: the root helper on the host is gone, and the
+    // sentence is the user's evidence of it.
+    toast.info(
+      wasElevated
+        ? `Stopped watching ${basename(path)} — the root helper on the host has ended`
+        : `Stopped watching ${basename(path)}`,
+    )
   }
 
   const menuItem =
@@ -870,10 +985,32 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                   // than the only way out.
                   <button
                     onClick={() => stopEditing(path)}
-                    title="Watching for saves and uploading each one. Click to stop — this also deletes the local temp copy, so save in your editor first."
-                    className="flex items-center gap-1 rounded px-1 py-0.5 text-sky-400/80 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-sky-300"
+                    title={
+                      elevatedEdits[path]
+                        ? 'Watching for saves and writing each one as root. A privileged helper is running on the host until you click to stop — which also deletes the local temp copy, so save in your editor first.'
+                        : 'Watching for saves and uploading each one. Click to stop — this also deletes the local temp copy, so save in your editor first.'
+                    }
+                    // Amber and a shield when the watch is elevated, because
+                    // this chip is the only place a standing privilege on the
+                    // host is visible — and it is also the control that ends
+                    // it. A root watch that looked like every other watch would
+                    // be one nobody thinks to close.
+                    className={`flex items-center gap-1 rounded px-1 py-0.5 transition-colors duration-fast ease-swift hover:bg-chrome/10 ${
+                      elevatedEdits[path]
+                        ? 'text-amber-400/90 hover:text-amber-300'
+                        : 'text-sky-400/80 hover:text-sky-300'
+                    }`}
                   >
-                    <File size={10} /> watching <X size={9} />
+                    {elevatedEdits[path] ? (
+                      <>
+                        <ShieldAlert size={10} /> root
+                      </>
+                    ) : (
+                      <>
+                        <File size={10} /> watching
+                      </>
+                    )}{' '}
+                    <X size={9} />
                   </button>
                 )}
                 {naming?.kind === 'chmod' && naming.original === entry.name ? (
@@ -1086,6 +1223,19 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
             <Trash2 size={13} /> Delete
           </button>
         </div>
+      )}
+      {sudoPrompt && (
+        // Keyed by request, so a rejected password gets a fresh, empty dialog
+        // rather than the previous attempt still sitting in the field.
+        <SudoPrompt
+          key={sudoPrompt.requestId}
+          remotePath={sudoPrompt.remotePath}
+          retry={sudoPrompt.retry}
+          onAnswer={(password) => {
+            void sftp.respondSudoPrompt(sudoPrompt.requestId, password).catch(() => {})
+            setSudoPrompt(null)
+          }}
+        />
       )}
     </div>
   )

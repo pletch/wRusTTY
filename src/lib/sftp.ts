@@ -60,6 +60,13 @@ export type SftpEvent =
   /** The session came back and the transfer is running again from where it got
    *  to, under the same id — so the row carries on rather than being replaced. */
   | { type: 'transferResumed'; transferId: string }
+  /** Opening a file as root needs the sudo password for the remote host.
+   *
+   *  Not the SSH credential: the session is already authenticated, and this is
+   *  a second secret that may well be a different one. Answered exactly once,
+   *  with `respondSudoPrompt`; nothing is written and nothing is read until it
+   *  is. */
+  | { type: 'sudoPrompt'; requestId: string; remotePath: string; retry: boolean }
 
 export function listDir(sessionId: string, path: string) {
   return invoke<RemoteEntry[]>('sftp_list_dir', { sessionId, path })
@@ -72,6 +79,10 @@ export function canonicalize(sessionId: string, path: string) {
 export interface ActiveEdit {
   editId: string
   remotePath: string
+  /** A privileged helper is running on the host for this edit, and stays up
+   *  until the watch ends. Shown, because standing privilege the user cannot
+   *  see is privilege they cannot decide to give up. */
+  elevated: boolean
 }
 
 /**
@@ -82,14 +93,38 @@ export interface ActiveEdit {
  * so the watch has to be dismissed by hand. A command that blocks
  * (`code --wait`) reports back through `editorExited`, and the watch ends
  * itself.
+ *
+ * `elevate` opens the file as root. Only ever passed after an ordinary open has
+ * been refused and the user has said yes to a prompt about it — never
+ * speculatively, and never because the mode bits merely looked unwritable.
  */
 export function editFile(
   sessionId: string,
   remotePath: string,
   editorCommand: string,
   channel: Channel<SftpEvent>,
+  elevate = false,
 ) {
-  return invoke<string>('sftp_edit_file', { sessionId, remotePath, editorCommand, channel })
+  return invoke<string>('sftp_edit_file', {
+    sessionId,
+    remotePath,
+    editorCommand,
+    elevate,
+    channel,
+  })
+}
+
+/**
+ * Answers a `sudoPrompt`, or cancels it with `null`.
+ *
+ * The password goes straight to the backend and authenticates the one `sudo`
+ * call that starts this edit's helper. Nothing keeps it: not this module, not
+ * the dialog that collected it, and not the backend past that call. Every
+ * later save is authorised by the helper still running, not by anyone
+ * remembering what was typed here.
+ */
+export function respondSudoPrompt(requestId: string, password: string | null) {
+  return invoke<void>('sftp_respond_sudo_prompt', { requestId, password })
 }
 
 /** Every edit still being watched for this session, authoritative. Watches
@@ -113,6 +148,22 @@ export function listEdits(sessionId: string) {
  */
 export function saveEdit(editId: string, force: boolean, channel: Channel<SftpEvent>) {
   return invoke<void>('sftp_save_edit', { editId, force, channel })
+}
+
+/**
+ * Turns an edit that is already open into one whose saves go through root.
+ *
+ * The answer to a save refused for permission, which is the ordinary shape of
+ * this problem: a file under `/etc` is usually readable by anyone and writable
+ * only by root, so the open works and the save is what fails. Nothing local is
+ * touched — the copy in the editor, and everything typed into it, is exactly
+ * as it was — only the route back to the host changes.
+ *
+ * Does not save. Call `saveEdit` afterwards, so the write still goes through
+ * the same conflict check every other save does.
+ */
+export function elevateEdit(editId: string, channel: Channel<SftpEvent>) {
+  return invoke<void>('sftp_elevate_edit', { editId, channel })
 }
 
 export function stopWatching(editId: string) {
