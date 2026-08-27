@@ -196,6 +196,23 @@ interface PendingAuthPrompt {
   isJump: boolean
 }
 
+/**
+ * The one trailing newline a copy button leaves behind, removed.
+ *
+ * Nearly every documentation site's copy icon puts a terminating newline
+ * on the clipboard, and that newline is a Return: sent as-is it submits
+ * the command instead of leaving it at the prompt to be read first, and
+ * where the shell's own bracketed paste holds it back instead, it parks
+ * the cursor on a second line of a buffer the user never asked for. A
+ * paste should end where its text ends.
+ *
+ * Exactly one terminator goes: a blank line the user deliberately copied
+ * before the last one is text, and survives.
+ */
+function stripTrailingNewline(text: string): string {
+  return text.replace(/(\r\n|\r|\n)$/, '')
+}
+
 function countLines(text: string): number {
   return text.split(/\r\n|\r|\n/).length
 }
@@ -1831,7 +1848,10 @@ export function Terminal({
     // forty lines while the mouse route asked first would be the worst of both.
     const pasteFromClipboard = () => {
       readText()
-        .then((text) => {
+        .then((raw) => {
+          if (!raw) return
+          const text = stripTrailingNewline(raw)
+          // All the clipboard held was a newline; there is nothing left to send.
           if (!text) return
           const lines = countLines(text)
           // The engine's own judgement where there is one. It refuses the same
