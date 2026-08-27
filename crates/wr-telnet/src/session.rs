@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use wr_core::{ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
+use wr_core::{write_paced, ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
 
 use crate::config::TelnetConfig;
 use crate::error::TelnetError;
@@ -141,10 +141,20 @@ impl TelnetConnector {
 
         tokio::spawn(async move {
             while let Some(bytes) = input_rx.recv().await {
-                if write_half.write_all(&bytes).await.is_err() {
-                    break;
-                }
-                if write_half.flush().await.is_err() {
+                // Paced rather than written straight through -- see
+                // `wr_core::WRITE_CHUNK`. The far side of a telnet session is a
+                // pty like any other, with the same input buffer and the same
+                // silence when it overruns.
+                //
+                // This channel also carries the protocol replies `send_reply`
+                // queues -- option negotiation, terminal type, NAWS. Every one
+                // of them is a handful of bytes, so they take the single-chunk
+                // path and wait for nothing.
+                //
+                // Chunking after `escape_data` is deliberate and safe: TCP is a
+                // stream, so a doubled IAC split across two writes arrives as
+                // the pair it was sent as.
+                if write_paced(&mut write_half, &bytes).await.is_err() {
                     break;
                 }
             }
@@ -234,6 +244,9 @@ impl TelnetConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The lib writes through `write_paced` now; only these tests, driving the
+    // far end of the socket by hand, still need the extension trait.
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
     /// A listener that hands back the accepted socket, so a test can ask what

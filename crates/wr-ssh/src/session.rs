@@ -9,9 +9,8 @@ use russh::keys::key::PrivateKeyWithHashAlg;
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{decode_secret_key, PrivateKey};
 use russh::{client, ChannelMsg, Disconnect, MethodKind};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
-use wr_core::{ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
+use wr_core::{write_paced, ConnectionEvent, ConnectionStatus, Connector, DisconnectKind, Session};
 use zeroize::Zeroizing;
 
 use crate::config::{AuthMethod, SshConfig};
@@ -450,10 +449,13 @@ impl SshConnector {
         let mut writer = channel.make_writer();
         tokio::spawn(async move {
             while let Some(data) = input_rx.recv().await {
-                if writer.write_all(&data).await.is_err() {
-                    break;
-                }
-                if writer.flush().await.is_err() {
+                // Paced rather than written straight through -- see
+                // `wr_core::WRITE_CHUNK`. Here rather than at the paste site
+                // because every route to the wire passes through this one
+                // task: the three paste shortcuts, a broadcast fan-out, a drop
+                // upload. One of them being missed is exactly how this would
+                // come back.
+                if write_paced(&mut writer, &data).await.is_err() {
                     break;
                 }
             }
