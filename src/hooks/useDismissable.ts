@@ -71,7 +71,27 @@ export function useDismissable(
     const attachedAt = performance.now()
     const onClick = (e: MouseEvent) => {
       if (e.timeStamp < attachedAt) return
-      if (!(e.target as HTMLElement).closest(within)) onDismiss()
+      const target = e.target as HTMLElement
+      // A click inside a modal is never a click away from what raised it.
+      //
+      // `ConfirmProvider` renders at the app root, so a confirmation asked for
+      // *by* a panel is not in that panel's subtree — and answering it was
+      // therefore a click "away" by the selector's reckoning, which closed the
+      // panel underneath. Escape has always had the dismiss stack to sort this
+      // out; the click path never got the equivalent, and the asymmetry stayed
+      // invisible for as long as no flow needed the panel afterwards.
+      //
+      // One that does: the Files panel asks whether to save a file as root,
+      // and the answer arrives on a channel *the panel owns*. With the panel
+      // unmounted by the very click that said yes, the sudo password dialog
+      // was set on a component that no longer existed — so no dialog ever
+      // appeared, and the operation waited two minutes and gave up.
+      //
+      // Matched by attribute rather than by adding every modal to each
+      // caller's `within`: which surfaces are modal is a fact about them, not
+      // something every panel should have to enumerate.
+      if (target.closest('[data-modal]')) return
+      if (!target.closest(within)) onDismiss()
     }
     window.addEventListener('click', onClick)
     return () => window.removeEventListener('click', onClick)

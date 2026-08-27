@@ -1,4 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
+import type { RemoteIdentity } from './fileMode'
+
+export type { RemoteIdentity }
 
 export interface RemoteEntry {
   name: string
@@ -67,6 +70,22 @@ export type SftpEvent =
    *  with `respondSudoPrompt`; nothing is written and nothing is read until it
    *  is. */
   | { type: 'sudoPrompt'; requestId: string; remotePath: string; retry: boolean }
+
+/**
+ * Who the host says this session is connected as.
+ *
+ * Asked once per session and cached by the caller — it cannot change under a
+ * connection that stays authenticated as the same user. Its only job is to let
+ * the panel tell, before trying, that a write would be refused, so a file that
+ * plainly needs root goes straight to the sudo prompt instead of failing first.
+ *
+ * A host that will not answer (a restricted shell, an appliance CLI, a
+ * `ForceCommand`) leaves every field empty, and the panel then predicts
+ * nothing — which is exactly how it behaved before this existed.
+ */
+export function remoteIdentity(sessionId: string) {
+  return invoke<RemoteIdentity>('sftp_remote_identity', { sessionId })
+}
 
 export function listDir(sessionId: string, path: string) {
   return invoke<RemoteEntry[]>('sftp_list_dir', { sessionId, path })

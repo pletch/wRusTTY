@@ -669,6 +669,91 @@ async fn confirm_risky_open(app: &AppHandle, basename: &str) -> bool {
     rx.await.unwrap_or(false)
 }
 
+/// Who the session is connected as, on the host's own terms.
+///
+/// Exists so the panel can tell, *before* trying, whether a write would be
+/// refused — and route straight to sudo rather than making the user watch an
+/// attempt fail first. Names rather than ids because that is what a directory
+/// listing carries: SFTP guarantees only numeric owner and group, and the
+/// servers worth predicting for are the ones that send names.
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIdentity {
+    /// `None` when the host reported no name for the uid — an account with no
+    /// passwd entry, which happens on appliances and in some container images.
+    pub user: Option<String>,
+    /// Whether this is uid 0, which the mode bits do not constrain at all.
+    pub is_root: bool,
+    /// Every group the user is in, by name. Empty is a legitimate answer and
+    /// also what an unparseable reply looks like — see `predict` on the
+    /// frontend, which treats "no idea" as "do not predict".
+    pub groups: Vec<String>,
+}
+
+/// Reads `id`'s one line of output.
+///
+/// `uid=1000(tim) gid=1000(tim) groups=1000(tim),27(sudo)` is the shape on
+/// every Unix worth naming, and `LC_ALL=C` keeps it that shape. Anything that
+/// does not parse yields an empty identity, which the frontend reads as "do not
+/// guess" rather than as "denied" — a wrong guess in that direction would put a
+/// sudo prompt in front of a file the user could have written all along.
+fn parse_id_output(out: &str) -> RemoteIdentity {
+    let line = out.lines().find(|l| l.contains("uid=")).unwrap_or("");
+
+    // The name inside the parentheses of `uid=1000(tim)`, when there is one.
+    let field = |key: &str| -> Option<&str> {
+        let rest = line.split(&format!("{key}=")).nth(1)?;
+        let end = rest.find(' ').unwrap_or(rest.len());
+        Some(&rest[..end])
+    };
+    let name_of = |spec: &str| -> Option<String> {
+        let open = spec.find('(')?;
+        let close = spec.rfind(')')?;
+        (close > open + 1).then(|| spec[open + 1..close].to_string())
+    };
+
+    let uid_spec = field("uid").unwrap_or("");
+    let is_root = uid_spec
+        .split('(')
+        .next()
+        .and_then(|n| n.trim().parse::<u32>().ok())
+        == Some(0);
+
+    let groups = field("groups")
+        .map(|spec| spec.split(',').filter_map(name_of).collect())
+        .unwrap_or_default();
+
+    RemoteIdentity {
+        user: name_of(uid_spec),
+        is_root,
+        groups,
+    }
+}
+
+/// Asks the host who this session is.
+///
+/// One `exec` channel, once, and the panel caches it for the session — the
+/// answer cannot change under a connection that stays authenticated as the same
+/// user. Failure is not an error worth surfacing: a host that will not run `id`
+/// (a restricted shell, an appliance CLI, `ForceCommand`) simply leaves the
+/// panel unable to predict, which is the state it was in before this existed.
+#[tauri::command]
+pub async fn sftp_remote_identity(
+    session_id: String,
+    ssh_state: State<'_, SshState>,
+) -> Result<RemoteIdentity, String> {
+    let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
+    let out = {
+        let guard = session.lock().await;
+        guard
+            .ready()?
+            .exec_capture("env LC_ALL=C id", 4096, Duration::from_secs(10))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    Ok(parse_id_output(&String::from_utf8_lossy(&out)))
+}
+
 /// How long a sudo password prompt waits before it counts as cancelled.
 ///
 /// A bound rather than an ownership map is what keeps this from leaking: the
@@ -683,12 +768,21 @@ const SUDO_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 /// deciding on its own to keep guessing at someone's credential.
 const SUDO_PASSWORD_ATTEMPTS: usize = 3;
 
+/// What came back from a sudo password prompt.
+enum SudoAnswer {
+    Given(Zeroizing<String>),
+    /// The user said no, or nothing was listening to ask in the first place.
+    Cancelled,
+    /// The prompt went out and no answer ever came.
+    ///
+    /// Worth telling apart from a cancel even though both abandon the open: a
+    /// cancel is the user deciding, and this is the dialog never having reached
+    /// them. Reported in those words, because "cancelled" for a prompt nobody
+    /// saw sends the reader looking for a click that never happened.
+    Unanswered,
+}
+
 /// Puts a sudo password prompt in front of the user and waits for the answer.
-///
-/// `None` covers every way of not getting one — cancelled, the panel closed,
-/// nobody listening, nobody answering — because they call for the same thing:
-/// abandon the elevated open, having written nothing and asked the host for
-/// nothing.
 ///
 /// The answer arrives in `Zeroizing` and stays that way through to the one
 /// `sudo` invocation it authenticates. Nothing here writes it anywhere, logs
@@ -698,7 +792,7 @@ async fn ask_sudo_password(
     channel: &Channel<SftpEvent>,
     remote_path: &str,
     retry: bool,
-) -> Option<Zeroizing<String>> {
+) -> SudoAnswer {
     let request_id = sftp_state.next_sudo_request_id();
     let (tx, rx) = oneshot::channel();
     sftp_state
@@ -716,7 +810,7 @@ async fn ask_sudo_password(
         .is_err()
     {
         sftp_state.pending_sudo.lock().await.remove(&request_id);
-        return None;
+        return SudoAnswer::Cancelled;
     }
 
     let answered = tokio::time::timeout(SUDO_PROMPT_TIMEOUT, rx).await;
@@ -724,8 +818,11 @@ async fn ask_sudo_password(
     // sender nobody will ever use again either way.
     sftp_state.pending_sudo.lock().await.remove(&request_id);
     match answered {
-        Ok(Ok(password)) => password,
-        _ => None,
+        Ok(Ok(Some(password))) => SudoAnswer::Given(password),
+        // An explicit "no" from the dialog, or the panel answering on its way
+        // out.
+        Ok(Ok(None)) | Ok(Err(_)) => SudoAnswer::Cancelled,
+        Err(_) => SudoAnswer::Unanswered,
     }
 }
 
@@ -786,11 +883,19 @@ async fn open_elevated(
         Err(e) if e.needs_password() => {
             let mut attempt = 0;
             loop {
-                let Some(candidate) =
-                    ask_sudo_password(sftp_state, channel, remote_path, attempt > 0).await
-                else {
-                    return Err("opening this file as root was cancelled".to_string());
-                };
+                let candidate =
+                    match ask_sudo_password(sftp_state, channel, remote_path, attempt > 0).await {
+                        SudoAnswer::Given(candidate) => candidate,
+                        SudoAnswer::Cancelled => {
+                            return Err("opening this file as root was cancelled".to_string())
+                        }
+                        SudoAnswer::Unanswered => {
+                            return Err(format!(
+                                "no answer to the sudo password prompt after {}s — if no dialog                                  appeared, this is a bug rather than a timeout",
+                                SUDO_PROMPT_TIMEOUT.as_secs()
+                            ))
+                        }
+                    };
                 match runner.start_writer(Some(&candidate)).await {
                     Ok(writer) => {
                         password = Some(candidate);
@@ -3983,5 +4088,64 @@ mod tests {
         let mut out = Vec::new();
         reader.read_to_end(&mut out).await.unwrap();
         assert!(out.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::parse_id_output;
+
+    #[test]
+    fn reads_the_ordinary_shape() {
+        let id =
+            parse_id_output("uid=1000(tim) gid=1000(tim) groups=1000(tim),27(sudo),100(users)");
+        assert_eq!(id.user.as_deref(), Some("tim"));
+        assert!(!id.is_root);
+        assert_eq!(id.groups, vec!["tim", "sudo", "users"]);
+    }
+
+    #[test]
+    fn notices_root() {
+        // uid 0 is not constrained by the mode bits at all, so the panel must
+        // never predict a refusal for it.
+        let id = parse_id_output("uid=0(root) gid=0(root) groups=0(root)");
+        assert!(id.is_root);
+        assert_eq!(id.user.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn survives_an_account_with_no_passwd_entry() {
+        // Numeric-only output is what a uid with no name looks like, which
+        // happens on appliances and in some container images.
+        let id = parse_id_output("uid=1000 gid=1000 groups=1000");
+        assert_eq!(id.user, None);
+        assert!(id.groups.is_empty());
+        assert!(!id.is_root);
+    }
+
+    #[test]
+    fn an_unparseable_reply_predicts_nothing() {
+        // A restricted shell or an appliance CLI answering something else must
+        // leave the panel unable to guess, not guessing wrongly.
+        let id = parse_id_output("-rbash: id: command not found");
+        assert_eq!(id.user, None);
+        assert!(id.groups.is_empty());
+        assert!(!id.is_root);
+    }
+
+    #[test]
+    fn ignores_a_banner_above_the_answer() {
+        let id = parse_id_output(
+            "Welcome to example.net
+uid=501(tim) gid=20(staff) groups=20(staff)",
+        );
+        assert_eq!(id.user.as_deref(), Some("tim"));
+        assert_eq!(id.groups, vec!["staff"]);
+    }
+
+    #[test]
+    fn takes_the_last_paren_so_a_name_containing_one_survives() {
+        let id = parse_id_output("uid=1000(od(d) gid=1000(od(d) groups=1000(od(d)");
+        assert_eq!(id.user.as_deref(), Some("od(d"));
     }
 }

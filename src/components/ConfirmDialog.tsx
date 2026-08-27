@@ -35,6 +35,9 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
   // apparently frozen app whose only way out was guessing Escape.
   return createPortal(
     <div
+      // Marks this as a modal, so answering it does not read as a click away
+      // from whatever raised it — see `useDismissable`.
+      data-modal
       className="animate-in fade-in fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4 duration-150"
       onClick={onCancel}
     >

@@ -25,7 +25,8 @@ import * as sftp from '../lib/sftp'
 import type { RemoteEntry, SftpEvent } from '../lib/sftp'
 import { toast } from '../lib/toast'
 import { formatBytes } from '../lib/formatBytes'
-import { formatMode, formatOctal, parseOctal } from '../lib/fileMode'
+import { formatMode, formatOctal, needsRootToEdit, parseOctal } from '../lib/fileMode'
+import type { RemoteIdentity } from '../lib/fileMode'
 import {
   describeTree,
   expandHome,
@@ -156,6 +157,10 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   // read of "is this watched" keeps working unchanged — elevation is an extra
   // fact about a watch, not a different kind of one.
   const [elevatedEdits, setElevatedEdits] = useState<Record<string, boolean>>({})
+  // Who the host says we are, asked once per session. Null until it answers,
+  // and null forever on a host that will not — which the prediction reads as
+  // "do not guess" rather than as "denied".
+  const [identity, setIdentity] = useState<RemoteIdentity | null>(null)
   const [sudoPrompt, setSudoPrompt] = useState<{
     requestId: string
     remotePath: string
@@ -483,6 +488,14 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         )
       })
       .catch(() => {})
+    // Best-effort, like the watch adoption above: a host that will not run
+    // `id` costs the prediction, not the panel.
+    sftp
+      .remoteIdentity(sessionId)
+      .then((who) => {
+        if (!cancelled) setIdentity(who)
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
@@ -514,6 +527,19 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       load(path)
       return
     }
+    // Asked before the attempt, not after it. When the host has already told us
+    // who we are and the mode says this edit would be refused, making the user
+    // watch it fail first teaches nobody anything — the sudo dialog is what
+    // they need, and it should come up on the click.
+    //
+    // Only ever a *definite* refusal routes this way; see `needsRootToEdit`.
+    // Everything uncertain still tries the ordinary way, and the offers on the
+    // failure paths below are what catch an ACL or a read-only mount that the
+    // mode bits could not have predicted.
+    if (needsRootToEdit(entry, identity)) {
+      await openElevated(path)
+      return
+    }
     try {
       toast.info(`Opening ${entry.name}`)
       const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel())
@@ -541,13 +567,30 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
         confirmLabel: 'Open as root',
       })
       if (!ok) return
-      try {
-        const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel(), true)
-        setActiveEdits((prev) => ({ ...prev, [path]: editId }))
-        setElevatedEdits((prev) => ({ ...prev, [path]: true }))
-      } catch (elevatedErr) {
-        toast.error(String(elevatedErr))
-      }
+      await openElevated(path)
+    }
+  }
+
+  /**
+   * Opens a file as root without trying the ordinary way first.
+   *
+   * The context menu's route, and the answer to "why did it make me fail
+   * before it would offer": when the user has *said* they want root, the
+   * refused attempt teaches nobody anything and the sudo dialog should come up
+   * on the click. The failure paths still offer it too, because most people
+   * find out a file needs root by being told so.
+   *
+   * No confirmation in front of it. Choosing "Open as root…" from a menu is
+   * already the deliberate act a confirmation exists to obtain, and the sudo
+   * dialog itself says what is about to happen before any password is typed.
+   */
+  async function openElevated(path: string) {
+    try {
+      const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel(), true)
+      setActiveEdits((prev) => ({ ...prev, [path]: editId }))
+      setElevatedEdits((prev) => ({ ...prev, [path]: true }))
+    } catch (err) {
+      toast.error(String(err))
     }
   }
 
@@ -1156,6 +1199,28 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
             {menu.entry.isDir ? <FolderOpen size={13} /> : <FileText size={13} />}
             {menu.entry.isDir ? 'Open' : 'Edit'}
           </button>
+          {!menu.entry.isDir && needsRootToEdit(menu.entry, identity) && (
+            // Shown only when the mode bits and the host's own answer to `id`
+            // agree that this edit would be refused. On a file the user can
+            // write it would be an offer of privilege they do not need, which
+            // is how an offer of privilege stops being read at all.
+            //
+            // Double-clicking such a file already routes here on its own, so
+            // this is mostly a signpost — it names what is about to happen
+            // before anything happens.
+            <button
+              className={menuItem}
+              onClick={() => cwd && void openElevated(join(cwd, menu.entry.name))}
+              disabled={Boolean(cwd && activeEdits[join(cwd, menu.entry.name)])}
+              title={
+                cwd && activeEdits[join(cwd, menu.entry.name)]
+                  ? 'Already open for editing — stop watching it first'
+                  : 'This session cannot write it. Edit as root runs sudo on the host, and asks for the sudo password there.'
+              }
+            >
+              <ShieldAlert size={13} /> Edit as root…
+            </button>
+          )}
           <button
             className={menuItem}
             onClick={() => download(menu.entry)}

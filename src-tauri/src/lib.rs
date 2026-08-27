@@ -83,6 +83,7 @@ pub fn run() {
             sftp::sftp_save_edit,
             sftp::sftp_respond_sudo_prompt,
             sftp::sftp_elevate_edit,
+            sftp::sftp_remote_identity,
             sftp::sftp_stop_watching,
             sftp::sftp_exists,
             sftp::sftp_upload_begin,

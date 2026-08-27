@@ -53,6 +53,31 @@ describe('useDismissable click-away', () => {
     expect(screen.queryByText('panel contents')).toBeNull()
   })
 
+  it('stays open when a modal raised from it is clicked', async () => {
+    // The regression: `ConfirmProvider` renders at the app root, so a
+    // confirmation asked for *by* a panel is not inside the panel's subtree.
+    // Answering it therefore looked like clicking away, and the panel closed
+    // underneath its own dialog — taking with it any continuation waiting to
+    // put something else on screen.
+    function PanelWithModal() {
+      const [open, setOpen] = useState(true)
+      return (
+        <div>
+          {open && <Panel within="[data-panel]" onClose={() => setOpen(false)} />}
+          <div data-modal>
+            <button>answer</button>
+          </div>
+        </div>
+      )
+    }
+    const user = userEvent.setup()
+    render(<PanelWithModal />)
+
+    await user.click(screen.getByText('answer'))
+
+    expect(screen.queryByText('panel contents')).not.toBeNull()
+  })
+
   it('stays open when the click lands inside it', async () => {
     const user = userEvent.setup()
     render(<PanelWithOutsideTrigger within="[data-panel]" />)

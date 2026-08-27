@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ShieldAlert } from 'lucide-react'
+import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
   /** The file this is being asked for. Named, because "enter your password" with
@@ -25,10 +27,22 @@ interface Props {
  * actually consenting to. Answering this starts a privileged helper on the host
  * that stays up for as long as the file is open — a fact worth stating in the
  * dialog rather than in a release note.
+ *
+ * **Rendered through a portal, not in place.** Its only caller is the Files
+ * panel, which is a 24rem box floating in the corner of a pane — an
+ * `absolute inset-0` overlay inside that is confined to it, sits under the
+ * panel's own stacking context, and is subject to the transform its entrance
+ * animation applies. A dialog asking for a root password is app-modal or it is
+ * nothing.
  */
 export function SudoPrompt({ remotePath, retry, onAnswer }: Props) {
   const [password, setPassword] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Escape cancels, through the shared stack rather than a local handler, so
+  // that it reaches *this* and not the panel underneath — which is registered
+  // too, and would otherwise close itself while its own dialog was on screen.
+  useDismissable(true, () => onAnswer(null))
 
   // The panel behind this had focus, so the field has to claim it or the
   // password is typed into whatever the Files panel does with keystrokes.
@@ -36,19 +50,19 @@ export function SudoPrompt({ remotePath, retry, onAnswer }: Props) {
     inputRef.current?.focus()
   }, [])
 
-  return (
-    <div className="animate-in fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
+  return createPortal(
+    <div
+      // Not a click away from the Files panel that raised it — see
+      // `useDismissable`. Without this, the first click into this dialog
+      // closes the panel that is waiting for its answer.
+      data-modal
+      className="animate-in fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 duration-150"
+    >
       <form
-        className="animate-in zoom-in-95 w-[26rem] space-y-3 rounded-lg border border-amber-500/25 bg-surface p-5 shadow-2xl duration-150"
+        className="animate-in zoom-in-95 w-[26rem] max-w-full space-y-3 rounded-lg border border-amber-500/25 bg-surface p-5 shadow-2xl duration-150"
         onSubmit={(e) => {
           e.preventDefault()
           onAnswer(password)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            onAnswer(null)
-          }
         }}
       >
         <h1 className="flex items-center gap-2 text-sm font-semibold text-chrome">
@@ -107,6 +121,7 @@ export function SudoPrompt({ remotePath, retry, onAnswer }: Props) {
           </button>
         </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   )
 }
