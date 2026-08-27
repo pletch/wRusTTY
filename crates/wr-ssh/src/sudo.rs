@@ -420,6 +420,12 @@ impl SudoRunner {
             shell_quote(&script)
         );
 
+        // Logged at every stage, because this whole path is invisible when it
+        // goes wrong: it runs on a channel nobody can see, its failures arrive
+        // as an absence of output, and the user's only evidence is a dialog
+        // that did or did not appear. The command is safe to log — the
+        // password never appears in it, only ever on stdin.
+        tracing::debug!(with_password = password.is_some(), %command, "sudo: starting helper");
         let channel = self
             .handle
             .channel_open_session()
@@ -446,8 +452,15 @@ impl SudoRunner {
                 // The channel closed before the helper ran, which means sudo
                 // refused. Its reason went to stderr, which this stream does
                 // not carry, so go and ask for it properly.
-                None => return Err(self.diagnose(password).await),
-                Some(line) if line == READY => break,
+                None => {
+                    let why = self.diagnose(password).await;
+                    tracing::warn!(error = %why, "sudo: helper closed before it was ready");
+                    return Err(why);
+                }
+                Some(line) if line == READY => {
+                    tracing::debug!("sudo: helper ready");
+                    break;
+                }
                 Some(line) => push_note(&mut notes, line),
             }
         }
@@ -557,6 +570,7 @@ where
     let mut line = String::new();
     let read = tokio::time::timeout(IDLE_TIMEOUT, reader.read_line(&mut line))
         .await
+        .inspect_err(|_| tracing::warn!("sudo: the host went quiet for {IDLE_TIMEOUT:?}"))
         .map_err(|_| SudoError::Ssh(SshError::ExecTimeout))?
         .map_err(|_| SudoError::ChannelClosed)?;
     if read == 0 {

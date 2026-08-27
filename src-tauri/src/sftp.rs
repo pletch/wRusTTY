@@ -673,21 +673,27 @@ async fn confirm_risky_open(app: &AppHandle, basename: &str) -> bool {
 ///
 /// Exists so the panel can tell, *before* trying, whether a write would be
 /// refused — and route straight to sudo rather than making the user watch an
-/// attempt fail first. Names rather than ids because that is what a directory
-/// listing carries: SFTP guarantees only numeric owner and group, and the
-/// servers worth predicting for are the ones that send names.
+/// attempt fail first.
+///
+/// Numeric, because that is what a directory listing actually carries. SFTP v3
+/// — what OpenSSH speaks — has no owner *names* in its attributes at all, and
+/// `russh_sftp` decodes those fields as `None` unconditionally. A predicate
+/// written against names could never fire on any host, which is exactly what
+/// happened the first time this was built.
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteIdentity {
+    /// The numeric uid, which is what a decision is actually made from.
+    ///
+    /// `None` when `id` could not be read at all, which the frontend treats as
+    /// "predict nothing" rather than as "denied".
+    pub uid: Option<u32>,
+    /// Every group the user is in, numerically — the primary group included.
+    pub gids: Vec<u32>,
     /// `None` when the host reported no name for the uid — an account with no
     /// passwd entry, which happens on appliances and in some container images.
+    /// Display only; nothing decides anything from it.
     pub user: Option<String>,
-    /// Whether this is uid 0, which the mode bits do not constrain at all.
-    pub is_root: bool,
-    /// Every group the user is in, by name. Empty is a legitimate answer and
-    /// also what an unparseable reply looks like — see `predict` on the
-    /// frontend, which treats "no idea" as "do not predict".
-    pub groups: Vec<String>,
 }
 
 /// Reads `id`'s one line of output.
@@ -700,12 +706,16 @@ pub struct RemoteIdentity {
 fn parse_id_output(out: &str) -> RemoteIdentity {
     let line = out.lines().find(|l| l.contains("uid=")).unwrap_or("");
 
-    // The name inside the parentheses of `uid=1000(tim)`, when there is one.
+    // The value between `key=` and the next space: `1000(tim)` for `uid`, or
+    // the whole comma-separated list for `groups`.
     let field = |key: &str| -> Option<&str> {
         let rest = line.split(&format!("{key}=")).nth(1)?;
         let end = rest.find(' ').unwrap_or(rest.len());
         Some(&rest[..end])
     };
+    // `1000(tim)` -> 1000. The number is the part before any parenthesis, and
+    // it is the only part that has to be there.
+    let id_of = |spec: &str| -> Option<u32> { spec.split('(').next()?.trim().parse::<u32>().ok() };
     let name_of = |spec: &str| -> Option<String> {
         let open = spec.find('(')?;
         let close = spec.rfind(')')?;
@@ -713,20 +723,24 @@ fn parse_id_output(out: &str) -> RemoteIdentity {
     };
 
     let uid_spec = field("uid").unwrap_or("");
-    let is_root = uid_spec
-        .split('(')
-        .next()
-        .and_then(|n| n.trim().parse::<u32>().ok())
-        == Some(0);
-
-    let groups = field("groups")
-        .map(|spec| spec.split(',').filter_map(name_of).collect())
-        .unwrap_or_default();
+    // The primary gid is in `groups=` on every implementation worth naming, but
+    // it is only *guaranteed* to be in `gid=` — so take both and let the set
+    // sort out the duplicate.
+    let mut gids: Vec<u32> = field("gid").and_then(id_of).into_iter().collect();
+    if let Some(list) = field("groups") {
+        for spec in list.split(',') {
+            if let Some(gid) = id_of(spec) {
+                if !gids.contains(&gid) {
+                    gids.push(gid);
+                }
+            }
+        }
+    }
 
     RemoteIdentity {
+        uid: id_of(uid_spec),
+        gids,
         user: name_of(uid_spec),
-        is_root,
-        groups,
     }
 }
 
@@ -801,6 +815,7 @@ async fn ask_sudo_password(
         .await
         .insert(request_id.clone(), tx);
 
+    log::info!("sudo: asking for a password for {remote_path} (retry: {retry})");
     if channel
         .send(SftpEvent::SudoPrompt {
             request_id: request_id.clone(),
@@ -809,6 +824,11 @@ async fn ask_sudo_password(
         })
         .is_err()
     {
+        // Nothing is listening on the panel's channel, which means the panel
+        // that asked for this is gone. Logged rather than silent: from the
+        // user's side it is indistinguishable from a dialog that never
+        // rendered, and those have very different causes.
+        log::warn!("sudo: nothing was listening for the password prompt");
         sftp_state.pending_sudo.lock().await.remove(&request_id);
         return SudoAnswer::Cancelled;
     }
@@ -3718,6 +3738,8 @@ mod tests {
             mode: None,
             owner: None,
             group: None,
+            uid: None,
+            gid: None,
         }
     }
 
@@ -4099,9 +4121,9 @@ mod identity_tests {
     fn reads_the_ordinary_shape() {
         let id =
             parse_id_output("uid=1000(tim) gid=1000(tim) groups=1000(tim),27(sudo),100(users)");
+        assert_eq!(id.uid, Some(1000));
+        assert_eq!(id.gids, vec![1000, 27, 100]);
         assert_eq!(id.user.as_deref(), Some("tim"));
-        assert!(!id.is_root);
-        assert_eq!(id.groups, vec!["tim", "sudo", "users"]);
     }
 
     #[test]
@@ -4109,18 +4131,32 @@ mod identity_tests {
         // uid 0 is not constrained by the mode bits at all, so the panel must
         // never predict a refusal for it.
         let id = parse_id_output("uid=0(root) gid=0(root) groups=0(root)");
-        assert!(id.is_root);
-        assert_eq!(id.user.as_deref(), Some("root"));
+        assert_eq!(id.uid, Some(0));
+    }
+
+    #[test]
+    fn keeps_a_primary_group_that_is_not_in_the_list() {
+        // Only `gid=` is guaranteed to carry it. A file owned by that group
+        // would otherwise be judged against the "other" bits and predicted
+        // unwritable when it is not.
+        let id = parse_id_output("uid=1000(tim) gid=50(staff) groups=27(sudo)");
+        assert_eq!(id.gids, vec![50, 27]);
+    }
+
+    #[test]
+    fn does_not_repeat_the_primary_group() {
+        let id = parse_id_output("uid=1000(tim) gid=1000(tim) groups=1000(tim),27(sudo)");
+        assert_eq!(id.gids, vec![1000, 27]);
     }
 
     #[test]
     fn survives_an_account_with_no_passwd_entry() {
-        // Numeric-only output is what a uid with no name looks like, which
-        // happens on appliances and in some container images.
+        // Numeric-only output is what a uid with no name looks like, and it is
+        // still perfectly usable — the decision was never about names.
         let id = parse_id_output("uid=1000 gid=1000 groups=1000");
+        assert_eq!(id.uid, Some(1000));
+        assert_eq!(id.gids, vec![1000]);
         assert_eq!(id.user, None);
-        assert!(id.groups.is_empty());
-        assert!(!id.is_root);
     }
 
     #[test]
@@ -4128,9 +4164,8 @@ mod identity_tests {
         // A restricted shell or an appliance CLI answering something else must
         // leave the panel unable to guess, not guessing wrongly.
         let id = parse_id_output("-rbash: id: command not found");
-        assert_eq!(id.user, None);
-        assert!(id.groups.is_empty());
-        assert!(!id.is_root);
+        assert_eq!(id.uid, None);
+        assert!(id.gids.is_empty());
     }
 
     #[test]
@@ -4139,13 +4174,7 @@ mod identity_tests {
             "Welcome to example.net
 uid=501(tim) gid=20(staff) groups=20(staff)",
         );
-        assert_eq!(id.user.as_deref(), Some("tim"));
-        assert_eq!(id.groups, vec!["staff"]);
-    }
-
-    #[test]
-    fn takes_the_last_paren_so_a_name_containing_one_survives() {
-        let id = parse_id_output("uid=1000(od(d) gid=1000(od(d) groups=1000(od(d)");
-        assert_eq!(id.user.as_deref(), Some("od(d"));
+        assert_eq!(id.uid, Some(501));
+        assert_eq!(id.gids, vec![20]);
     }
 }

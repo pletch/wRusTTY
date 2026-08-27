@@ -51,8 +51,23 @@ pub struct RemoteEntry {
     /// tells the user nothing they can act on — so these are the names or
     /// nothing. Populated from the same attribute block as everything else, at
     /// no extra round trip.
+    ///
+    /// In practice, over SFTP v3 — which is what OpenSSH speaks — these are
+    /// always `None`. The protocol carries names only from v4, and
+    /// `russh_sftp` hardcodes them to `None` when decoding attributes. Kept
+    /// because a v4 server would fill them in and they are the nicer thing to
+    /// show; **not** something to make a decision from. `uid`/`gid` below are
+    /// the fields that actually arrive.
     pub owner: Option<String>,
     pub group: Option<String>,
+    /// The numeric owner and group, which SFTP v3 does carry.
+    ///
+    /// These exist because a name that is always absent cannot answer "could
+    /// this user write this file", and that question is what decides whether
+    /// an edit needs to go through sudo. Numbers compare exactly and need no
+    /// name resolution on either end.
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
 }
 
 /// What a `stat` on one remote file says. The same two facts `RemoteEntry`
@@ -118,6 +133,8 @@ impl SftpClient {
                     mode: metadata.permissions.map(|p| p & PERMISSION_BITS),
                     owner: metadata.user.clone(),
                     group: metadata.group.clone(),
+                    uid: metadata.uid,
+                    gid: metadata.gid,
                 }
             })
             .collect())

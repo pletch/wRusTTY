@@ -65,19 +65,26 @@ export function parseOctal(input: string): number | null {
   return mode <= 0o7777 ? mode : null
 }
 
-/** Who the session is connected as, as the host describes it. Empty fields mean
- *  the host would not say, which is a reason to predict nothing. */
+/** Who the session is connected as, on the host's own terms. A null `uid`
+ *  means the host would not say, which is a reason to predict nothing. */
 export interface RemoteIdentity {
+  uid: number | null
+  gids: number[]
+  /** Display only. Nothing here decides anything from a name. */
   user: string | null
-  isRoot: boolean
-  groups: string[]
 }
 
-/** What the panel is asking about: the two facts a mode is judged against. */
+/** What the panel is asking about: the two facts a mode is judged against.
+ *
+ *  Numeric, and that is the whole point of this revision. SFTP v3 — what
+ *  OpenSSH speaks — carries no owner *names* in its attributes, and the
+ *  library decodes those fields as null unconditionally. The first version of
+ *  this predicate compared names, so it returned "no idea" for every file on
+ *  every host and the feature it gated never once fired. */
 export interface Ownership {
   mode: number | null
-  owner: string | null
-  group: string | null
+  uid: number | null
+  gid: number | null
 }
 
 /**
@@ -90,7 +97,7 @@ export interface Ownership {
  * password dialog in front of a file the user could have written all along.
  *
  * So every uncertainty resolves to `null`: a host that reported no mode, one
- * that would not run `id`, an owner name the listing did not carry.
+ * that reported no owner, one that would not run `id`.
  *
  * What this cannot see, and why `false` from here is a strong signal while
  * `true` is only a weak one: ACLs, immutable bits, read-only mounts, SELinux
@@ -99,36 +106,38 @@ export interface Ownership {
  * predicted success is still allowed to fail and offer sudo afterwards.
  */
 export function canWrite(entry: Ownership, identity: RemoteIdentity | null): boolean | null {
-  if (!identity || entry.mode === null) return null
-  // uid 0 is not constrained by the permission bits at all, so there is nothing
-  // here to predict a refusal from.
-  if (identity.isRoot) return true
-  if (!identity.user) return null
-
-  if (entry.owner === identity.user) return (entry.mode & 0o200) !== 0
-  // A listing with no group name cannot be judged against a group list — the
-  // file might well belong to one of the user's groups.
-  if (entry.group === null) return null
-  if (identity.groups.includes(entry.group)) return (entry.mode & 0o020) !== 0
-  // Not the owner, and not in its group. This is the "other" triad, and it is
-  // the case that makes the whole feature worth having: `/etc/*` is typically
-  // `0644 root:root`, which lands here as a definite no.
-  if (entry.owner === null) return null
-  return (entry.mode & 0o002) !== 0
+  return judge(entry, identity, 0o200, 0o020, 0o002)
 }
 
 /** The same question for reading, which decides whether the *open* needs root
  *  rather than only the save. */
 export function canRead(entry: Ownership, identity: RemoteIdentity | null): boolean | null {
-  if (!identity || entry.mode === null) return null
-  if (identity.isRoot) return true
-  if (!identity.user) return null
+  return judge(entry, identity, 0o400, 0o040, 0o004)
+}
 
-  if (entry.owner === identity.user) return (entry.mode & 0o400) !== 0
-  if (entry.group === null) return null
-  if (identity.groups.includes(entry.group)) return (entry.mode & 0o040) !== 0
-  if (entry.owner === null) return null
-  return (entry.mode & 0o004) !== 0
+/** Picks the triad that applies to this user and tests one bit of it. */
+function judge(
+  entry: Ownership,
+  identity: RemoteIdentity | null,
+  owner: number,
+  group: number,
+  other: number,
+): boolean | null {
+  if (!identity || identity.uid === null || entry.mode === null) return null
+  // uid 0 is not constrained by the permission bits at all, so there is
+  // nothing here to predict a refusal from.
+  if (identity.uid === 0) return true
+
+  if (entry.uid === null) return null
+  if (entry.uid === identity.uid) return (entry.mode & owner) !== 0
+  // A listing with no group cannot be judged against a group list — the file
+  // might well belong to one the user is in.
+  if (entry.gid === null) return null
+  if (identity.gids.includes(entry.gid)) return (entry.mode & group) !== 0
+  // Neither the owner nor in its group. This is the case that makes the whole
+  // feature worth having: `/etc/*` is typically `0644 root:root`, which lands
+  // here as a definite no.
+  return (entry.mode & other) !== 0
 }
 
 /**

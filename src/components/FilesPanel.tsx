@@ -205,6 +205,14 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   // test where a random one is not.
   const nextKey = useRef(0)
 
+  /** ` — root:root`, ` — 0:0`, or nothing at all. */
+  function describeOwner(entry: RemoteEntry): string {
+    const owner = entry.owner ?? (entry.uid !== null ? String(entry.uid) : null)
+    const group = entry.group ?? (entry.gid !== null ? String(entry.gid) : null)
+    if (owner === null) return ''
+    return ` — ${owner}${group !== null ? `:${group}` : ''}`
+  }
+
   function getChannel(): Channel<SftpEvent> {
     if (channelRef.current) return channelRef.current
     const channel = new Channel<SftpEvent>()
@@ -586,6 +594,11 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
    */
   async function openElevated(path: string) {
     try {
+      // Said before anything blocks, and deliberately distinct from the
+      // ordinary "Opening x" — this is the one line that tells the user the
+      // elevated path was taken at all, before sudo is asked anything and
+      // before any dialog can appear.
+      toast.info(`Opening ${basename(path)} as root`)
       const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel(), true)
       setActiveEdits((prev) => ({ ...prev, [path]: editId }))
       setElevatedEdits((prev) => ({ ...prev, [path]: true }))
@@ -1081,9 +1094,12 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
                       // The octal is what you type into the field and what
                       // every chmod example is written in; the letters are what
                       // you can scan a column of. Both, rather than a choice.
-                      title={`${formatOctal(entry.mode)}${
-                        entry.owner ? ` — ${entry.owner}${entry.group ? `:${entry.group}` : ''}` : ''
-                      }`}
+                      // Owner falls back to the numeric id, because the name
+                      // is never there: SFTP v3 carries no owner names, so this
+                      // half of the tooltip has always been blank. `0:0` says
+                      // considerably more than nothing when the question is
+                      // why a file needs root.
+                      title={`${formatOctal(entry.mode)}${describeOwner(entry)}`}
                     >
                       {formatMode(entry.mode)}
                     </span>

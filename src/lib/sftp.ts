@@ -13,10 +13,16 @@ export interface RemoteEntry {
    *  in `isDir`/`isSymlink`. Null if the server reported none, which some
    *  appliance SFTP servers do. */
   mode: number | null
-  /** Owner and group *names*, when the server sends them. The protocol only
-   *  guarantees numeric ids, and a bare `0` tells the user nothing. */
+  /** Owner and group *names*, when the server sends them.
+   *
+   *  In practice always null: SFTP v3, which is what OpenSSH speaks, carries no
+   *  names in its attributes at all. Use `uid`/`gid` for anything that has to
+   *  decide something. */
   owner: string | null
   group: string | null
+  /** Numeric owner and group, which SFTP v3 does carry. */
+  uid: number | null
+  gid: number | null
 }
 
 export type SftpEvent =
