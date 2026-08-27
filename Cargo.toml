@@ -35,4 +35,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 anyhow = "1"
-tracing = "0.1"
+# The `log` feature, so `tracing` events reach a logger rather than nowhere.
+# Nothing in this workspace installs a `tracing` subscriber, so every
+# `tracing::warn!` in wr-ssh -- a failed connect, a failed window_change, the
+# sudo helper handshake -- was compiled in and then dropped on the floor. With
+# this, they are emitted as `log` records and picked up by tauri-plugin-log
+# like everything else. Third-party crates that also use tracing are capped at
+# warn in release by the level filters in lib.rs, which is where the decision
+# about disclosure in a file on disk already lives.
+tracing = { version = "0.1", features = ["log"] }
