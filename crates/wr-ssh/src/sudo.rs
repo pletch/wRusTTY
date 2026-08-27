@@ -233,11 +233,75 @@ where
     })
 }
 
-/// Turns sudo's own complaint into something the user can act on.
+/// The refusals no password can fix, if this is one of them.
 ///
-/// Matched on text because sudo has one exit status for every kind of refusal.
-/// `LC_ALL=C` is set on every command precisely so this is matching English
-/// that sudo actually emitted rather than a translation of it.
+/// Kept apart from everything else because these three are the only failures
+/// where prompting the user would be cruelty: the answer is a conversation with
+/// whoever administers the host, not a credential.
+fn hopeless_policy(said: &str, code: Option<u32>) -> Option<SudoError> {
+    let has = |needle: &str| said.contains(needle);
+
+    if has("no tty present") || has("must have a tty") {
+        return Some(SudoError::Unavailable(
+            "this host's sudo policy requires a terminal, which this app cannot give it              (Defaults requiretty in sudoers). Editing it as root has to be done in the pane."
+                .to_string(),
+        ));
+    }
+    if has("not in the sudoers") || has("not allowed to execute") || has("may not run sudo") {
+        return Some(SudoError::Unavailable(
+            "this account is not permitted to run sudo on this host.".to_string(),
+        ));
+    }
+    if code == Some(127) || has("command not found") {
+        return Some(SudoError::Unavailable(
+            "sudo is not installed on this host.".to_string(),
+        ));
+    }
+    None
+}
+
+/// Reads the answer to `sudo -v`, which authenticates and runs nothing.
+///
+/// **Anything unrecognised means "ask for a password".** That is the whole
+/// reason this is separate from [`classify`], and it is a correctness fix
+/// rather than a nicety. `-v` executes no command, so the only things it can
+/// fail on are authentication and policy — there is no third category for an
+/// unfamiliar message to belong to. Matching an allowlist of phrasings instead
+/// meant that a sudo saying `interactive authentication is required` rather
+/// than `a password is required` was reported to the user as a hard failure,
+/// and the password dialog that would have satisfied it never opened.
+///
+/// Sudo's wording varies by version, by build, and by the PAM stack underneath
+/// it; `LC_ALL=C` fixes the language and nothing fixes the vocabulary. So the
+/// two ends are pinned — the refusals nothing can fix, and a rejected password
+/// — and the open middle is read as the thing that is almost always true when
+/// `sudo -n` says no: it wants a password.
+fn classify_probe(outcome: &ExecOutcome, had_password: bool) -> SudoError {
+    let said = outcome.stderr.to_ascii_lowercase();
+    if let Some(hopeless) = hopeless_policy(&said, outcome.code) {
+        return hopeless;
+    }
+    if !had_password {
+        return SudoError::NeedsPassword;
+    }
+    if said.contains("incorrect password") || said.contains("sorry, try again") {
+        return SudoError::WrongPassword;
+    }
+    // A password was given, sudo would not take it, and it did not say the
+    // password was wrong. Reported as it stands rather than guessed at — a
+    // second prompt for a credential that was accepted is its own kind of
+    // wrong answer.
+    SudoError::Failed(last_line(outcome))
+}
+
+/// Turns sudo's own complaint about a *command* into something the user can act
+/// on.
+///
+/// Unlike [`classify_probe`], an unrecognised message here really can be a
+/// third thing: the command under sudo failing on its own terms — no such file,
+/// read-only file system, out of space. So this one keeps the allowlist, and an
+/// unknown message stays an error rather than becoming a password prompt for a
+/// problem no password would fix.
 fn classify(outcome: &ExecOutcome) -> SudoError {
     let said = outcome.stderr.to_ascii_lowercase();
     let has = |needle: &str| said.contains(needle);
@@ -245,37 +309,35 @@ fn classify(outcome: &ExecOutcome) -> SudoError {
     if has("incorrect password") || has("sorry, try again") {
         return SudoError::WrongPassword;
     }
-    if has("password is required") {
+    // Every phrasing seen for "sudo wants a password and did not get one".
+    // `-n` produces the first two; the third is what sudo says when it needs
+    // one, has no terminal, and was not given `-S`.
+    if has("password is required")
+        || has("interactive authentication is required")
+        || has("no password was provided")
+        || has("a terminal is required to read the password")
+    {
         return SudoError::NeedsPassword;
     }
-    if has("no tty present") || has("must have a tty") {
-        return SudoError::Unavailable(
-            "this host's sudo policy requires a terminal, which this app cannot give it \
-             (Defaults requiretty in sudoers). Editing it as root has to be done in the pane."
-                .to_string(),
-        );
+    if let Some(hopeless) = hopeless_policy(&said, outcome.code) {
+        return hopeless;
     }
-    if has("not in the sudoers") || has("not allowed to execute") || has("may not run sudo") {
-        return SudoError::Unavailable(
-            "this account is not permitted to run sudo on this host.".to_string(),
-        );
-    }
-    if outcome.code == Some(127) || has("command not found") {
-        return SudoError::Unavailable("sudo is not installed on this host.".to_string());
-    }
+    SudoError::Failed(last_line(outcome))
+}
 
+/// The sentence worth showing out of whatever the host printed.
+///
+/// The last line, because sudo and the tools under it prefix their own name and
+/// the useful part comes last. Whole multi-line stderr in a toast is unreadable.
+fn last_line(outcome: &ExecOutcome) -> String {
     let detail = outcome.stderr.trim();
     if detail.is_empty() {
-        SudoError::Failed(match outcome.code {
+        return match outcome.code {
             Some(code) => format!("the command failed on the host (exit status {code})"),
             None => "the command failed on the host".to_string(),
-        })
-    } else {
-        // Last line only: sudo and the tools under it prefix their own name,
-        // and the useful sentence is the final one. Whole multi-line stderr in
-        // a toast is unreadable.
-        SudoError::Failed(detail.lines().last().unwrap_or(detail).trim().to_string())
+        };
     }
+    detail.lines().last().unwrap_or(detail).trim().to_string()
 }
 
 /// Builds `sudo` with the flags every call here shares.
@@ -495,7 +557,7 @@ impl SudoRunner {
                  allow only specific commands."
                     .to_string(),
             ),
-            Ok(outcome) => classify(&outcome),
+            Ok(outcome) => classify_probe(&outcome, password.is_some()),
             Err(e) => SudoError::Ssh(e),
         }
     }
@@ -625,6 +687,69 @@ mod tests {
             code: Some(code),
             stderr: stderr.to_string(),
         }
+    }
+
+    #[test]
+    fn an_unfamiliar_refusal_of_the_probe_asks_for_a_password() {
+        // The regression this split exists for. `sudo -v` runs no command, so
+        // its only failures are authentication and policy — and a sudo that
+        // words the first of those unfamiliarly must still reach a password
+        // prompt rather than being reported as a hard failure.
+        for said in [
+            "sudo: interactive authentication is required",
+            "sudo: a password is required",
+            "sudo: no password was provided",
+            "sudo: a terminal is required to read the password",
+            "sudo: something no one has seen before",
+            "",
+        ] {
+            let err = classify_probe(&outcome(1, said), false);
+            assert!(
+                err.needs_password(),
+                "{said:?} should have asked for a password, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_probe_still_refuses_what_no_password_can_fix() {
+        // Prompting for these would be asking the user for a credential that
+        // cannot possibly help.
+        for said in [
+            "sudo: sorry, you must have a tty to run sudo",
+            "tim is not in the sudoers file.",
+            "bash: sudo: command not found",
+        ] {
+            let err = classify_probe(&outcome(1, said), false);
+            assert!(
+                matches!(err, SudoError::Unavailable(_)),
+                "{said:?} should have been refused outright, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_probe_that_was_given_a_password_does_not_ask_again_blindly() {
+        // A password was supplied and sudo would not take it, without saying it
+        // was wrong. Asking a second time for a credential that may have been
+        // accepted is its own wrong answer, so this reports what happened.
+        let err = classify_probe(&outcome(1, "sudo: account expired"), true);
+        assert!(!err.needs_password());
+        assert_eq!(err.to_string(), "sudo: account expired");
+        // A rejection is still a rejection.
+        assert!(
+            classify_probe(&outcome(1, "sudo: 1 incorrect password attempt"), true)
+                .is_retryable_password()
+        );
+    }
+
+    #[test]
+    fn a_command_failure_is_not_read_as_a_password_problem() {
+        // `classify`, unlike the probe, is reading a *command's* stderr — where
+        // an unknown message really can be a third thing, and prompting for a
+        // password would not fix any of them.
+        let err = classify(&outcome(1, "cat: /etc/shadow: No such file or directory"));
+        assert!(!err.needs_password());
     }
 
     #[test]

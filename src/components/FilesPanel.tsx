@@ -603,7 +603,32 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       setActiveEdits((prev) => ({ ...prev, [path]: editId }))
       setElevatedEdits((prev) => ({ ...prev, [path]: true }))
     } catch (err) {
-      toast.error(String(err))
+      // Routing a file to sudo must not cost the user the ordinary open they
+      // would have had. Before the panel could predict anything, a file like
+      // this opened fine and failed on save — worse in most ways, but not in
+      // this one: the file was at least on screen. So when elevation fails,
+      // offer exactly that.
+      //
+      // Not automatic. An edit that cannot be saved is a trap, and walking
+      // into it should be a decision — the confirmation says so plainly.
+      const ok = await confirmRef.current({
+        title: `Could not open ${basename(path)} as root`,
+        body:
+          `${String(err)}
+
+` +
+          `It can still be opened without root. You will be able to read it and edit ` +
+          `your local copy, but saving it back will be refused unless the host's ` +
+          `permissions change.`,
+        confirmLabel: 'Open without root',
+      })
+      if (!ok) return
+      try {
+        const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel())
+        setActiveEdits((prev) => ({ ...prev, [path]: editId }))
+      } catch (plainErr) {
+        toast.error(String(plainErr))
+      }
     }
   }
 
