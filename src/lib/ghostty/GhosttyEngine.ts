@@ -398,6 +398,24 @@ export class GhosttyEngine implements TerminalEngine {
   private readonly mouse: MouseReporter
   /** Scrollback depth as of the last frame, for keeping a scrolled view still. */
   private lastScrollbackCount = 0
+  /**
+   * Scrollback depth at the moment the render snapshot was last rebuilt, and
+   * the only count `readRows` may map an absolute row through.
+   *
+   * The snapshot holds the active screen as it was at the last
+   * `ghostty_render_state_update` — once a frame, or on an explicit
+   * `syncReadState`. A live `get_scrollback_length` does not belong beside it:
+   * output processed since that update has already grown the live count, so
+   * `abs - live` indexes the snapshot's grid by however many rows have scrolled
+   * in the meantime. Copy reads the tail of a selection off that grid, which is
+   * how a selection came back correct through its scrollback rows and then
+   * shifted — or blank, where the index ran past the grid — through the rows
+   * still on the active screen.
+   *
+   * -1 until the first snapshot, which is the one case where falling back to
+   * the live count is right: there is no snapshot to be out of step with.
+   */
+  private snapshotScrollback = -1
 
   constructor() {
     // Narrow by design: reads of buffer state, plus requests to move or
@@ -896,7 +914,12 @@ export class GhosttyEngine implements TerminalEngine {
     const wasm = this.wasm
     const wasmCols = wasm.exports.ghostty_render_state_get_cols(this.termPtr)
     const wasmRows = wasm.exports.ghostty_render_state_get_rows(this.termPtr)
-    const scrollbackCount = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    // The snapshot's own depth, not the core's current one — see
+    // `snapshotScrollback`. Rows that scrolled off since the snapshot are read
+    // from its screen rather than from live scrollback, which holds the same
+    // text either way; what matters is that the split and the cells agree.
+    const liveScrollback = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    const scrollbackCount = this.snapshotScrollback >= 0 ? this.snapshotScrollback : liveScrollback
     if (wasmCols <= 0) return out
 
     const cellCount = wasmCols * wasmRows
@@ -1322,6 +1345,10 @@ export class GhosttyEngine implements TerminalEngine {
       // viewport is read; mark_clean() afterwards resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
       const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+      // Read straight after the update, so it is the depth the snapshot below
+      // was taken at rather than whatever the core has reached by the time
+      // something reads a row. See the field.
+      this.snapshotScrollback = scrollbackCount
       this.pinViewport(scrollbackCount)
       // Read after update() and before the viewport, same as the cells: these
       // come off the same snapshot, and sampling them either side of it puts
@@ -2376,6 +2403,9 @@ export class GhosttyEngine implements TerminalEngine {
   syncReadState(): void {
     if (!this.wasm || !this.termPtr) return
     this.wasm.exports.ghostty_render_state_update(this.termPtr)
+    // Same pairing as the frame does: a snapshot and the depth it was taken
+    // at, recorded together and never sampled apart. See `snapshotScrollback`.
+    this.snapshotScrollback = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
   }
 
   cursorCell(): { x: number; y: number } {

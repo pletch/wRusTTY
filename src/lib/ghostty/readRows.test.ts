@@ -203,6 +203,41 @@ describe('readRows, through its three callers', () => {
     expect(engine.getSelection()).toBe('/usr/local/bin/tool')
   })
 
+  /**
+   * Output that arrives between the last painted frame and the copy must not
+   * change what a standing selection yields.
+   *
+   * `readRows` reads the active screen off the render snapshot, which is
+   * rebuilt once a frame. Pairing that snapshot with a *live* scrollback depth
+   * mapped every absolute row on the active screen by however many rows had
+   * scrolled since the frame: a selection came back correct through its
+   * scrollback rows and then jumped backwards through the rest. This is that
+   * shape — six lines still on screen, two more arriving with no frame in
+   * between — and the far end of an SSH session writing while a drag finishes
+   * is how it happened for real.
+   */
+  it('copies the rows the snapshot holds, not rows shifted by unpainted output', async () => {
+    const lines = ['L01', 'L02', 'L03', 'L04', 'L05', 'L06', 'L07', 'L08']
+    const { engine, inner } = await engineWith(lines.map((l) => l + '\r\n').join(''))
+    // Through the engine rather than the raw export, because recording the
+    // depth the snapshot was taken at is precisely what is under test.
+    engine.syncReadState()
+
+    // Rows 0-2 are scrollback (L01-L03); 3-8 are the active screen, holding
+    // L04-L08 and the row the cursor sits on.
+    select(inner, { x: 0, y: 2 }, { x: inner._cols - 1, y: 5 })
+    const before = engine.getSelection()
+    expect(before).toBe('L03\nL04\nL05\nL06')
+
+    // Two more lines, and no frame: the core's scrollback grows to five while
+    // the snapshot still holds the screen as it was at three.
+    engine.write(new TextEncoder().encode('L09\r\nL10\r\n'))
+
+    // Same rows, same text. Read live, the last row came back as L04 — the
+    // snapshot's first active row, two scrolls out of step.
+    expect(engine.getSelection()).toBe(before)
+  })
+
   it('stops a word at a space on both sides', async () => {
     const { engine, inner } = await engineWith('alpha beta gamma')
     inner.selection.selectWordAt({ x: 7, y: 0 })
