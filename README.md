@@ -139,20 +139,13 @@ safe to run twice:
 
 *Port forwarding — local, remote and dynamic, managed per session.*
 
-## Status
+## Install
 
-Version 0.2.0. It is used daily against real hosts, but it has not had a public
-release yet, and two things have to be settled before one:
+Download the latest installer — `.exe` (NSIS) or `.msi`, both x64 — from
+[**Releases**](https://github.com/pletch/wrustty/releases).
 
-- **No code signing.** Unsigned installers hit a SmartScreen wall.
-- **No auto-update.** `tauri-plugin-updater` is not wired in.
-
-Known gaps, so you can tell whether it fits: no tmux control mode, no X11
-forwarding, no outbound HTTP/SOCKS proxy for reaching a host *through* a
-corporate proxy, no SCP fallback for hosts without an SFTP subsystem, no
-configurable keyboard shortcuts, no OS light/dark sync for the terminal theme,
-no portable mode, and no per-session cipher/kex configuration. Recursive
-directory upload and download are not built — single files only.
+**The installers are not code signed, so expect a SmartScreen warning** the
+first time you run one. Click *More info* → *Run anyway*.
 
 Windows is the target. The Linux and macOS Tauri paths are not maintained, and
 several features (DirectWrite font enumeration, Windows Hello, PuTTY registry

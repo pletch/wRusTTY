@@ -78,11 +78,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
+      # tauri-action does NOT publish a release just because the workflow is
+      # running on a tag — it uploads assets only when `tagName` is set, and
+      # needs `releaseName` as well to create a release that doesn't exist yet.
+      # Without both it silently builds and attaches nothing, which is what
+      # happened here: the artifact below was the only output, and a workflow
+      # artifact expires and needs a GitHub login to download.
+      #
+      # On workflow_dispatch these resolve to empty, which is the documented
+      # way to say "build only" — a manual run must not publish a release
+      # named after whatever branch it was dispatched from.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target x86_64-pc-windows-msvc
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('wRusTTY {0}', github.ref_name) || '' }}
+          releaseBody: |
+            Windows x64 installers — `.exe` (NSIS) or `.msi`.
+
+            These are **not code signed**, so expect a SmartScreen warning on
+            first run: *More info* → *Run anyway*.
+          releaseDraft: false
       - uses: actions/upload-artifact@v7
         with:
           name: wrustty-windows-installer
