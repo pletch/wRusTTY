@@ -1,341 +1,252 @@
 # wRusTTY
 
-A lightweight SSH / Telnet / Serial client for Windows 11: modern GUI,
-tabbed sessions, encrypted local credential vault, GPU-accelerated terminal.
-Built with Tauri 2 (Rust) + React.
+A fast, native terminal client for Windows — SSH, Telnet and Serial in one
+tabbed window, with an encrypted credential vault, split panes, SFTP file
+browsing and a GPU-accelerated terminal built on
+[Ghostty](https://github.com/ghostty-org/ghostty)'s VT core.
 
-Aimed squarely at replacing PuTTY and SuperPuTTY rather than at being a
-general-purpose terminal emulator. It reads PuTTY `.ppk` keys directly (v2
-and v3, encrypted or not), authenticates through Pageant or the Windows
-OpenSSH agent, handles 2FA and PAM logins that prompt at connect time, and
-supports ProxyJump, port forwarding, Wake-on-LAN, and
-the serial line-control details a console cable actually needs — break
-signalling, DTR/RTS, local echo, and line-ending control.
+Rust + [Tauri 2](https://v2.tauri.app/) under a React front end. The installer
+is under 10 MB and it runs on the WebView2 that ships with Windows — there is no
+bundled Chromium, no Node runtime, and no ~200 MB of `app.asar` behind it.
 
-See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) for architecture,
-feature scope, and the phased build plan.
+![wRusTTY with a live SSH session, showing true colour, underline styles, box drawing and ligatures](docs/screenshots/terminal.png)
 
-## Development
+## Why this exists
 
-Prerequisites: Node.js 22+, Rust (stable), and on Linux the Tauri system
-deps (`libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
-librsvg2-dev libssl-dev`). Windows/macOS need their platform's WebView2 /
-Xcode Command Line Tools per the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
+It started as a PuTTY + SuperPuTTY replacement, and it still does that job —
+it reads PuTTY `.ppk` keys, imports your PuTTY registry sessions, talks to
+Pageant, and does serial line control properly. But it has outgrown the brief.
+What it is now is a general-purpose terminal client for people who live on
+remote hosts: network gear over serial, a rack of switches over telnet, Linux
+boxes over SSH, all in the same window, with a real modern terminal underneath
+instead of a 1999 one.
+
+The terminal is not a reimplementation. Ghostty's VT core is compiled to WASM
+and drives an in-house WebGL renderer, so parsing, keyboard encoding (including
+the Kitty protocol), mouse reporting and paste handling are all Ghostty's —
+which is why things like `CSI > flags u`, SGR-pixel mouse coordinates and
+curly underlines just work.
+
+## Features
+
+**Protocols**
+- **SSH** — password, public key, SSH agent, and keyboard-interactive
+  ("ask each time") for 2FA, Duo pushes and PAM prompts, with the server's own
+  prompts relayed verbatim
+- **Telnet** — full option negotiation (ECHO, SGA, NAWS, TTYPE)
+- **Serial** — COM enumeration with hotplug, baud/parity/stop/flow, DTR/RTS
+  toggles, break signalling for Cisco password recovery and ROMMON, local echo
+  and CR/LF/CRLF line-ending control, plus Normal / Local echo / Readline /
+  Readline-hex input modes
+
+**Keys and auth**
+- OpenSSH and PuTTY `.ppk` private keys (v2 and v3, encrypted or not) read
+  natively — no conversion step
+- Windows OpenSSH agent and Pageant, tried in that order; FIDO2 security keys
+  and PIV smartcards work because the agent holds the key
+- known_hosts TOFU with an accept/reject prompt, and a Host keys screen to
+  review and remove what you have trusted
+
+**Connectivity**
+- **ProxyJump / jump host chains**, with each hop prompting separately
+- **Port forwarding** — local, remote and dynamic (SOCKS), with a management
+  panel; forwards are owned by the backend, so they survive the panel closing
+  and are re-established after a reconnect
+- **Keepalive and auto-reconnect** — the session comes back, and so do its port
+  forwards and its in-flight file transfers
+- **Wake-on-LAN** — a per-session MAC, probed first so an awake host is never
+  sent a packet, with a *Wake* action on any saved session
+
+**Terminal**
+- Ghostty VT core + WebGL renderer: 24-bit colour, wide characters and grapheme
+  clusters, all five underline styles, overline, DECSCUSR cursor shapes
+- Kitty keyboard protocol, `modifyOtherKeys` and legacy xterm encoding, chosen
+  from the modes the far end sets
+- All five mouse tracking modes and all five wire formats, including SGR-pixels
+- Box drawing, block elements and Powerline glyphs drawn as geometry, so borders
+  in `htop`, `nmtui` and vendor menu UIs tile without hairline gaps — and work
+  on a machine where you cannot install a font
+- Font *stack*, not a family string: a family per style, OpenType features,
+  variable axes and a codepoint range table, with families enumerated through
+  DirectWrite. **JetBrains Mono, Fira Code and Monaspace Neon ship in the
+  installer**, so a locked-down box needs no font install
+- Ligatures (off by default), and glyph blending in linear light
+- Scrollback search, configurable scrollback budget, copy-on-select, right-click
+  paste, bracketed paste with a confirmation the *core* decides on
+- URL detection with Ctrl+click, plus a keyboard hint mode for when a program
+  has the mouse
+- Session logging to file, per session
+
+**Window and workflow**
+- Tabs and **split panes**, with **broadcast input** — type once, send to every
+  pane in the tab, with every pane ringed in amber while it is on
+- **Workspaces** — save which sessions are open and how the panes are split, and
+  reopen the arrangement later
+- Saved sessions in folders you create, shared across all three protocols, with
+  the transport as a per-item icon
+- A saved serial session records the adapter's **USB identity** (vendor, product
+  and serial number), not its COM number, so it survives a replug, a reboot and
+  a different socket
+- Quick-connect palette, duplicate/reconnect/restart from the tab menu
+- Mica/acrylic window material, per-pane background opacity, eleven built-in
+  themes, a custom theme editor, and an importer for iTerm2 `.itermcolors` and
+  VS Code colour themes
+- Shell integration (OSC 133/633) for per-command status and a notification when
+  a long command finishes in the background — snippets for bash, zsh, fish and
+  PowerShell
+- Recent-command autocomplete, per host, ranked in Rust and off by default
+
+**Files (SFTP)**
+- Browse, edit and transfer in both directions, streamed, with progress,
+  cancellation and resume
+- Drag a file onto a pane to upload it into that pane's current directory
+- Rename, delete, new folder and chmod from the context menu
+- Editing a root-owned file over a held sudo helper channel
+- A transfer survives the connection dropping — it is set aside and resumed onto
+  the channel the reconnect brings back
+
+**Credential vault**
+- One random data key encrypts every stored secret (XChaCha20-Poly1305), with
+  one wrapper per unlock method holding its own encrypted copy of that key
+- **Master password** (Argon2id), always present and deliberately not removable
+- **Windows Hello** (optional) — the wrapping key is derived by signing a stored
+  challenge with a TPM-held credential gated on a Hello gesture, so nothing
+  recoverable sits at rest
+- **Windows sign-in** as a fallback where Hello is unavailable (DPAPI via
+  Credential Manager)
+- Secrets are decrypted only in the Rust process and never sent to the webview
+- Encrypted `.wrb` export/import
+- An unlock lasts until the Windows session locks, the app exits, or you lock it
+  from the padlock menu
+
+**Migrating in** — two one-time imports in Settings → Import, both additive and
+safe to run twice:
+- **From PuTTY**: `HKCU\Software\SimonTatham\PuTTY\Sessions`, read-only, PuTTY's
+  own keys untouched. SSH, telnet and serial come across; `raw` and `rlogin` are
+  skipped rather than imported as something they aren't
+- **From `~/.ssh/config`**: every literal `Host` block, with `HostName`, `Port`,
+  `User`, `IdentityFile`, `ProxyJump` and `ServerAliveInterval`; `Include` is
+  followed, and a `ProxyJump` is linked to the session it names
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Split panes with broadcast input enabled](docs/screenshots/broadcast.png) **Split panes with broadcast input** — one command, every pane, each ringed in amber while the mode is on. | ![The remote files panel browsing a host over SFTP](docs/screenshots/files.png) **Remote files over SFTP** — browse, edit, upload and download, with permissions shown. |
+| ![Terminal settings showing font, scrollback and cursor options](docs/screenshots/settings-terminal.png) **Terminal settings** — bundled fonts, a font stack, scrollback as a memory budget, cursor and ligatures. | ![Appearance settings showing theme, opacity, window effect and text blending](docs/screenshots/settings-appearance.png) **Appearance** — themes with a duplicate-and-edit editor, iTerm2/VS Code import, opacity, Mica and linear text blending. |
+
+![The port forwarding panel](docs/screenshots/port-forwarding.png)
+
+*Port forwarding — local, remote and dynamic, managed per session.*
+
+## Status
+
+Version 0.2.0. It is used daily against real hosts, but it has not had a public
+release yet, and two things have to be settled before one:
+
+- **No code signing.** Unsigned installers hit a SmartScreen wall.
+- **No auto-update.** `tauri-plugin-updater` is not wired in.
+
+Known gaps, so you can tell whether it fits: no tmux control mode, no X11
+forwarding, no outbound HTTP/SOCKS proxy for reaching a host *through* a
+corporate proxy, no SCP fallback for hosts without an SFTP subsystem, no
+configurable keyboard shortcuts, no OS light/dark sync for the terminal theme,
+no portable mode, and no per-session cipher/kex configuration. Recursive
+directory upload and download are not built — single files only.
+
+Windows is the target. The Linux and macOS Tauri paths are not maintained, and
+several features (DirectWrite font enumeration, Windows Hello, PuTTY registry
+import, Mica) are Windows-only by nature.
+
+## Building
+
+Prerequisites: Node.js 22+ (24 is what it is developed on), Rust stable, and
+WebView2 — see the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
 npm install
 npm run tauri:dev     # run the desktop app, with devtools
 npm run tauri dev     # same, without devtools
-npm run dev           # frontend only, in a browser
+npm run tauri build   # NSIS + MSI installers
 ```
 
-Devtools are a cargo feature (`devtools`) rather than always-on, so release
-installers ship a webview that can't be inspected — the process holds
-decrypted vault secrets and renders untrusted remote output. `tauri:dev` is
-the everyday command; `tauri build` never enables it.
+Devtools are a cargo feature rather than always-on, so release installers ship a
+webview that cannot be inspected — the process holds decrypted vault secrets and
+renders untrusted remote output. `tauri build` never enables it.
 
-The development tooling is gated the same way, by Vite mode rather than cargo
-feature. A release build (`npm run build`, and so `npm run tauri build`)
-contains neither the benchmark harness nor the measurement instruments —
-their `import.meta.env` branches are dead, so no chunk is emitted for them at
-all, and `dist/` is three files. Both are on for `npm run dev` and
-`npm run tauri:dev`, and `npm run build:instrumented` gives you a real
-optimised build that still carries them, for taking figures that must not be
-distorted by an attached inspector.
+The benchmark harness and the measurement instruments are gated by Vite mode, so
+a release build contains neither — their `import.meta.env` branches are dead and
+no chunk is emitted. `npm run build:instrumented` gives you an optimised build
+that still carries them.
 
-### Workspace layout
-
-- `src/` — React + TypeScript frontend
-- `src-tauri/` — Tauri app shell (thin glue: commands, window/state wiring)
-- `crates/wr-core` — session model, protocol-agnostic `Connector`/`Session` traits
-- `crates/wr-ssh` — SSH transport (auth, kex, host keys, PTY, forwarding)
-- `crates/wr-telnet` — Telnet transport
-- `crates/wr-serial` — serial transport
-- `crates/wr-vault` — encrypted credential vault
-- `crates/wr-sftp` — SFTP/SCP (Phase 6)
-- `crates/wr-fs` — atomic file replacement, shared by every on-disk store
-
-### Security model notes
-
-The vault holds one random data key that encrypts every stored secret
-(XChaCha20-Poly1305), plus one *wrapper* per enabled unlock method, each
-holding its own encrypted copy of that data key. Secrets are decrypted only
-in the Rust process and never sent back to the webview. Enabling or removing
-an unlock method — or changing the master password — rewraps 32 bytes and
-re-encrypts no credentials.
-
-**Master password.** Argon2id. Always present and deliberately not
-removable: it is the fallback that makes every hardware-backed method safe
-to depend on. Cost parameters are stored per wrapper, so raising the
-defaults never strands an existing vault.
-
-**Windows Hello** (optional, Windows only). Enrols a key credential whose
-private key is held by the TPM and gated on a Hello gesture, then derives
-the wrapping key by signing a stored challenge:
-
-```text
-KEK = HKDF-SHA256(RequestSignAsync(challenge), salt, "wrustty vault kek v1")
-```
-
-Nothing recoverable sits at rest — obtaining the key needs a live gesture at
-the machine, and the TPM's anti-hammering bounds guessing. The challenge is
-stored in the clear and is not a secret. Two consequences worth knowing:
-
-- The credential is **machine-bound**. A vault copied elsewhere opens with
-  the master password, and Hello is enrolled again on that machine.
-- The scheme assumes signatures are **deterministic**. That holds for the
-  RSA PKCS#1 v1.5 signatures Windows produces today, but is not a documented
-  guarantee. If it ever stops holding, unlock says so explicitly instead of
-  sending you round a re-enrolment loop, and the master password is
-  unaffected.
-
-**Windows sign-in** (fallback where Hello is unavailable). Stores a random
-wrapping key in Credential Manager, protected by DPAPI. Any process running
-in your logged-in session can read it back with no prompt, and it is
-recoverable offline from a stolen disk given your account password — weaker
-than the master password alone. Hello is preferred automatically wherever
-the machine supports it, and the vault menu names which method is in use.
-
-**Unlock lifetime.** An unlock lasts until the Windows session locks (Win+L,
-or an RDP client disconnecting), the app exits, or you lock the vault
-yourself from the padlock menu. There is deliberately **no idle timeout**.
-
-That is a decision rather than an omission. The case an idle timer is
-usually bought for — walking away from the machine — is already covered by
-the session-lock hook. What it would add is protection at a console that is
-unlocked and unattended, and there a locked vault contains very little:
-sessions already connected stay authenticated and accept typing, the files
-panel keeps working, and anything reachable from the open window stays
-reachable. The vault protects credentials at rest, not sessions in flight.
-Set against that, a timer that fires mid-workflow and asks for a Hello
-gesture to reconnect a pane is the kind of friction that gets configured to
-its maximum, which protects less than not having it.
-
-If your threat model includes an unlocked, unattended console, lock the
-Windows session — that locks the vault too, and unlike a vault timeout it
-also covers the screen and the keyboard.
-
-One consequence worth stating plainly: `change_master_password` requires an
-unlocked vault, not the current password, on the reasoning that possession
-of an unlocked vault is normally proof enough. Combined with an unlock that
-persists until session lock, that means anyone at your unlocked console can
-change the master password. They can equally read every stored credential
-through the app, so this widens nothing that was otherwise narrow — but it
-is the same "unlocked console" boundary, and it is where that boundary sits.
-
-Vault files predating the wrapper format are upgraded in place on the next
-master-password unlock, onto a freshly generated data key. Any copy of the
-old key stops being useful at that moment — including the one that earlier
-versions of "Unlock with Windows sign-in" left sitting in Credential
-Manager.
-
-**Workspaces** save the whole arrangement — which sessions are open together
-and how the panes are split — under a name, and reopen it later. Opening one
-adds its tabs alongside whatever is already open rather than replacing them.
-Panes that can't be reconnected without a secret typed at connect time are
-skipped.
-
-**Saved sessions** cover SSH, telnet and serial. They share one list, grouped
-by whatever folders you create rather than by protocol — folders are the
-organisation you chose and mean something; the transport is an attribute of
-one entry, shown as a per-item icon. The same device reachable both ways ends
-up adjacent, which is where you want it.
-
-A saved serial session records the adapter's USB identity — vendor id, product
-id and serial number — rather than its COM number, and resolves a live port at
-connect time. A COM number is a property of the socket the adapter is plugged
-into, not of the adapter, so it stops meaning anything the moment the cable
-moves; the USB identity doesn't. "COM4" becomes "the FTDI cable with serial
-A50285BI", which survives a replug, a reboot and a different socket. Adapters
-that report no serial number (many CH340 and CP2102 clones) are matched on
-vendor and product id instead, and if several identical ones are attached the
-session says so rather than guessing — opening a console on the wrong switch
-is worse than an error. A non-USB port, such as a PCI serial card, is still
-matched by name, which is correct: it doesn't move.
-
-**Importing your sessions from elsewhere.** Two one-time imports, both in
-Settings → Import and offered nowhere else — a migration is a thing you do once,
-so it is a button you go and press rather than a prompt on the screen you use
-most. Each says how much it would bring across before you press it, and neither
-runs on its own.
-
-*From PuTTY:* `HKCU\Software\SimonTatham\PuTTY\Sessions`, read-only, PuTTY's own
-keys left untouched. SSH, telnet and serial sessions come across; `raw` and
-`rlogin` are skipped rather than silently imported as something they aren't.
-Passwords are not imported, because PuTTY doesn't store them — an SSH session
-with a key file comes across as key auth, and anything else as agent auth, which
-is what a PuTTY user running Pageant already has.
-
-*From `~/.ssh/config`:* every literal `Host` block becomes a session, with
-`HostName`, `Port`, `User`, `IdentityFile`, `ProxyJump` and
-`ServerAliveInterval` carried across; `Include` is followed, wildcards and all.
-A `ProxyJump` is linked to the session it names when that host is itself in the
-file (or already saved here). Wildcard blocks like `Host *` are settings rather
-than hosts, so they aren't imported as sessions — though their keywords still
-apply to the hosts that inherit them. Anything without an equivalent here
-(ciphers, `ControlMaster`, forwards) is left behind rather than half-translated.
-
-Both imports are additive: a session already saved here with the same name and
-host is left exactly as it is, so running one twice is harmless. Imported
-sessions land in an "Imported from PuTTY" or "Imported from SSH config" folder.
-
-**Broadcast input** sends what you type to every pane in a tab at once —
-SuperPuTTY's "send commands to all sessions", for when the same command has to
-go to a rack of switches. It is per-tab, toggled from the toolbar, and every
-pane in the group is ringed in amber while it is on: a mode that changes what
-a keystroke does needs to be visible without looking for it.
-
-### Compatibility notes
-
-**SSH agent.** Selecting "SSH agent" as a session's auth method delegates to
-whichever agent is running — the Windows OpenSSH agent service is tried
-first, then Pageant. The agent holds the key and produces the signature, so
-no key material enters this process; it is also the only way to use a key
-that cannot be exported at all, such as a FIDO2 security key or a PIV
-smartcard. Note that servers cap authentication attempts (OpenSSH's
-`MaxAuthTries` defaults to 6), so an agent loaded with many keys can be cut
-off before the right one is reached.
-
-**Interactive login ("Ask each time").** For a credential that should not be
-stored at all, and the only auth method that can answer a challenge the server
-invents — a one-time code, a Duo push, an expiry notice mid-login. The server's
-own prompts are shown verbatim, one dialog per round, for as many rounds as it
-asks; a field the server marks as secret is masked, one it does not is not.
-Nothing is written to the vault, so these sessions connect without unlocking it.
-
-A jumped connection authenticates twice and says which end is asking, since a
-bastion and its target routinely send word-for-word identical prompts.
-
-Two things happen automatically. A server with
-`KbdInteractiveAuthentication no` — the default on Debian and Ubuntu — refuses
-the method outright; it names a password as acceptable instead, so one is asked
-for and sent that way. And choosing password auth while leaving the field empty,
-with nothing stored to fall back on, prompts rather than sending a blank that
-could only be rejected. Cancelling any of these prompts abandons the connection
-rather than submitting an empty answer, which the server would count against
-`MaxAuthTries`.
-
-**Terminal type.** Set per session, and reaching the far end by different
-means per protocol: SSH sends it with the PTY request, telnet answers the
-RFC 1091 TERMINAL-TYPE subnegotiation with it. SSH defaults to
-`xterm-256color`; telnet defaults to `vt100`, since its remaining users are
-largely the network gear and legacy systems that want it. Serial has no
-equivalent — it is a raw byte stream with nothing to negotiate.
-
-**Backspace.** Per session: `^?` (DEL) by default, which is what modern Unix
-expects, or `^H` for network gear and older Unix. The symptom of the wrong
-one is backspace doing nothing or echoing `^?`. It is a per-connection choice
-rather than a global preference because one machine routinely has both kinds
-of host open in adjacent tabs.
-
-**24-bit colour.** The terminal renders it natively, and sessions request
-`COLORTERM=truecolor` so remote programs know to emit it. That request is
-advisory: sshd only forwards variables listed in `AcceptEnv`, which defaults
-to `LANG LC_*`, so it is frequently ignored. If colours look limited, either
-add `AcceptEnv COLORTERM` to the server's `sshd_config`, export it from the
-remote shell's rc, or set this session's terminal type to `xterm-direct`,
-which advertises direct colour through terminfo instead.
-
-`xterm-direct` is offered but is deliberately *not* the default. `TERM` is
-an assertion, not a negotiation — the server looks the value up in its own
-terminfo database, and there is no fallback if it is missing. `xterm-direct`
-needs ncurses 6.1+, so on older distributions, minimal container images, and
-most network gear it resolves to nothing and programs degrade to *dumb*
-rather than to 256 colours. `xterm-256color` is present essentially
-everywhere, which is why it remains the default.
-
-**Emoji are monochrome.** Colour emoji render as flat silhouettes in the
-current text colour, not in their own colours. The glyph atlas stores coverage
-only — one channel, tinted per cell by the foreground — and carrying colour
-would mean a second RGBA texture at four times the memory *per pane*, for
-characters that are rare on the kind of host this client is pointed at. That
-is a deliberate trade rather than an oversight. The characters themselves are
-correct: the right emoji appears, at the right width, and copies and pastes as
-itself.
-
-**Box drawing needs no font.** The box-drawing, block-element and Powerline
-ranges are drawn as geometry against the cell rather than taken from the font,
-so borders in `htop`, `nmtui`, `dialog` and vendor menu UIs tile without the
-hairline gaps a font's own glyphs leave at fractional cell heights — and they
-work on a machine where you cannot install a font. Nothing needs configuring.
-
-**Three fonts ship with the app.** JetBrains Mono, Fira Code and Monaspace Neon
-are in the installer, listed in Settings → Terminal → Font under *Bundled with
-wRusTTY*, and need nothing from the machine — no install step, no admin rights
-on a locked-down box, and the same terminal on every host you set it up on. All
-three have ligatures. Monaspace Neon is a variable font, so one ~500 KB file
-carries every weight and answers the *Variable axes* setting (`wdth`, `slnt`)
-as well; it keeps its ligatures in ten stylistic sets rather than in `liga`, so
-wRusTTY turns those on for it by default — typing anything into *OpenType
-features* replaces that outright.
-
-Only JetBrains Mono carries italic faces. Fira Code ships uprights only — its
-authors' decision, not a gap in what's bundled — and Monaspace reaches its
-italics through the `slnt` axis rather than through a separate file, which is
-configured for the whole terminal rather than per style. For either, name an
-italic family under *Faces* if you want real italics.
-
-All three are SIL OFL 1.1 and the license travels with them in
-`src/assets/fonts/<family>/OFL.txt`. Monaspace carries a Reserved Font Name, so
-its file ships byte-for-byte as published and must not be subset. Everything
-else in the font picker is whatever the machine has, enumerated natively
-through DirectWrite — Iosevka and the rest work that way, they just aren't in
-the installer.
-
-**Ligatures.** Off by default; turn them on in Settings → Terminal. They need
-a font that has them (all three bundled fonts do, as does Cascadia Code;
-Cascadia Mono and Consolas do not), and the cell under the cursor always shows
-the plain character rather than a slice of the ligature. Monaspace's texture
-healing — the spacing fix it applies to awkward letter pairs — reaches the face
-as a run of characters only when this is on, so it needs it too.
-
-**Serial break.** The `BRK` button in the status bar holds a break condition
-on the line, for Cisco password recovery, ROMMON entry, and bootloader
-interrupts. DTR and RTS toggles sit beside it.
-
-**Wake-on-LAN.** An SSH session can carry the host's MAC address. Connecting
-then checks whether the host is already up and only sends a magic packet if
-it isn't, so leaving a MAC saved costs one round trip and nothing else; while
-waiting, the pane shows *Waking* and the packet is re-sent every few seconds
-until the host answers or the wait (60s by default) runs out. Right-clicking a
-saved session also offers **Wake**, which sends the packet without connecting.
-
-Two things about the packet itself. It doesn't route: the default
-255.255.255.255 reaches this machine's own network segment only, so a host on
-another subnet needs that subnet's directed broadcast (`192.168.1.255`) in the
-*Broadcast to* field. On a machine with several active adapters — Wi-Fi,
-Ethernet, a VM switch — the default also leaves by whichever one the routing
-table picks, and naming a directed broadcast is how you choose. Not offered
-for a session with a jump host: the packet would go out on this segment for a
-machine that isn't on it, so waking is skipped rather than waited on.
-
-When a packet is sent and nothing happens, the cause is almost always on the
-target rather than here. On Windows 11, check all of:
-
-- **Device Manager → the adapter → Power Management**: *Allow this device to
-  wake the computer*, and *Only allow a magic packet to wake the computer*.
-- **The adapter's Advanced tab**: *Wake on Magic Packet* enabled.
-- **Fast Startup off** (Control Panel → Power Options → *Choose what the power
-  buttons do*) if you want to wake the machine from a full shutdown. With it
-  on, S5 is closer to hibernation and most NICs won't arm.
-- **`powercfg /a`**: a Modern Standby (S0) machine sleeps and wakes on
-  entirely different rules from an S3 one, and its Wi-Fi adapter in particular
-  may never listen for a packet.
-
-Wi-Fi wake (WoWLAN) is unreliable across vendors even when all of the above is
-set; Ethernet is what this works on consistently.
-
-The matching problem is a host that sleeps again *during* a session. The
-Windows idle timer is reset by user input and power requests only — not by
-network traffic — so an SSH session is invisible to it, and keepalives don't
-help. [`tools/keep-awake.ps1`](tools/keep-awake.ps1) runs on the remote host
-and holds it awake for as long as it runs.
+You do **not** need Zig or WSL to build or change anything here; the Ghostty core
+is committed at `src/lib/ghostty/vendor/ghostty-vt.wasm`. Rebuilding it is only
+needed to move to a different Ghostty commit — see
+[`docs/PORT_GHOSTTY_MAIN.md`](docs/PORT_GHOSTTY_MAIN.md).
 
 ### Checks
 
 ```sh
 npm run lint && npm run build   # frontend
-cargo fmt --all --check         # Rust formatting
+npx vitest run                  # frontend tests
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+### Layout
+
+- `src/` — React + TypeScript front end
+- `src-tauri/` — Tauri app shell (commands, window/state wiring)
+- `crates/wr-core` — session model, protocol-agnostic `Connector`/`Session` traits
+- `crates/wr-ssh` — SSH transport (auth, kex, host keys, PTY, forwarding)
+- `crates/wr-telnet` — Telnet transport
+- `crates/wr-serial` — serial transport
+- `crates/wr-vault` — encrypted credential vault
+- `crates/wr-sftp` — SFTP
+- `crates/wr-fs` — atomic file replacement, shared by every on-disk store
+
+Every transport implements the same `Connector`/`Session` pair, so the tab
+manager and front end are protocol-agnostic.
+
+## Notes worth knowing
+
+- **Terminal type** is per session. SSH defaults to `xterm-256color`; telnet
+  defaults to `vt100`, since its remaining users are largely network gear.
+- **Backspace** is per session: `^?` (DEL) by default, `^H` for network gear and
+  older Unix. Wrong one = backspace does nothing or echoes `^?`.
+- **24-bit colour** is requested with `COLORTERM=truecolor`, which sshd only
+  forwards if it is in `AcceptEnv`. If colours look limited, add it there or set
+  the session's terminal type to `xterm-direct`.
+- **Emoji render monochrome** — the right glyph at the right width, tinted by
+  the foreground rather than in its own colours. The atlas stores coverage only.
+- **Agent auth and `MaxAuthTries`**: an agent loaded with many keys can be cut
+  off (OpenSSH defaults to 6 attempts) before the right one is reached.
+- **Wake-on-LAN doesn't route.** The default 255.255.255.255 reaches this
+  machine's segment only; a host on another subnet needs its directed broadcast
+  (e.g. `192.168.1.255`) in *Broadcast to*. On the target, Wake-on-LAN needs the
+  adapter's *Wake on Magic Packet* and power-management options enabled, and
+  Fast Startup off to wake from a full shutdown. Wi-Fi wake is unreliable;
+  Ethernet is what this works on consistently.
+- **A host that sleeps mid-session**: Windows' idle timer ignores network
+  traffic, so keepalives don't help. [`tools/keep-awake.ps1`](tools/keep-awake.ps1)
+  runs on the remote host and holds it awake.
+
+## Further reading
+
+- [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) — architecture, the full feature
+  inventory with per-item status, and the phased build plan
+- [`docs/SHELL_INTEGRATION.md`](docs/SHELL_INTEGRATION.md) — OSC 133/633 setup
+- [`docs/AUTOCOMPLETE_PLAN.md`](docs/AUTOCOMPLETE_PLAN.md),
+  [`docs/AUTO_RECONNECT_PLAN.md`](docs/AUTO_RECONNECT_PLAN.md),
+  [`docs/URL_LINKS_PLAN.md`](docs/URL_LINKS_PLAN.md)
+- [`docs/PORT_GHOSTTY_MAIN.md`](docs/PORT_GHOSTTY_MAIN.md) — the Ghostty pin and
+  the port's record
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+The three bundled font families are SIL OFL 1.1, and each license travels with
+its font in `src/assets/fonts/<family>/OFL.txt`. Monaspace carries a Reserved
+Font Name, so it ships byte-for-byte as published and must not be subset.
