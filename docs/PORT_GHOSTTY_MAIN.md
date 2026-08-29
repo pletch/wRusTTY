@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 5851d98615187d85052e41042bcf66e0ccec11d4
+ghostty-org/ghostty @ 4540d499ae463ad7b90f28f6f852f64f844c160f
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,11 +34,71 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-**180 here** — so re-pin only with a reason and re-run the checks when you do.
-It keeps going *down*, and that is consolidation rather than a broken build: see
-the ABI breaks below.
+180, **181 here** — so re-pin only with a reason and re-run the checks when you
+do. The long run of it going *down* was consolidation rather than a broken
+build (see the ABI breaks below); the one back up is `ghostty_terminal_paste`,
+added at this pin and unused by the shim.
 
-### Moving from `d9ffbbf17` (2026-08-19) to this pin
+### Moving from `5851d986` (2026-08-22) to this pin
+
+131 commits over six days, a clean fast-forward, and **no ABI break**: nothing
+was removed and one export was added, `ghostty_terminal_paste` (`60a1ae2d`),
+which the shim ignores. `abi.manifest.test.ts` re-verified every struct layout
+against the new binary.
+
+Unlike the previous bump, this one was taken for **six** terminal-core fixes,
+all of them reachable from ordinary remote output:
+
+- **`eb722cb2`** — erasing a wrapped wide character at the start of a row (ECH
+  or DCH) also clears the spacer head at the end of the *previous* row, but only
+  the cursor row was marked dirty. With both rows visible an incremental render
+  kept the stale spacer head on screen. This is the one that matters most here,
+  because the renderer is driven off exactly those per-row dirty flags.
+- **`0f35043c`** — the ground-state UTF-8 fast paths classified only 0x00-0x0F
+  and ESC as C0, so 0x10-0x1A and 0x1C-0x1F were decoded as ordinary codepoints
+  and printed. Wrong grid, and bizarre font fallback with it (U+0014 finding CJK
+  fonts). Upstream #14021.
+- **`40a40f84`** — the same fast paths printed UTF-8-*decoded* C1 controls.
+  Now dropped, matching xterm; libvte executes them and there appears to be no
+  standard either way.
+- **`4e817e79`** — `dcs_passthrough` forwarded only 0x00-0x7E, so any DCS
+  payload carrying UTF-8 was corrupted: in "Ü" (0xC3 0x9C) the 0x9C acted as
+  8-bit ST and ended the string mid-character, and a payload byte of 0x9B moved
+  the parser to `csi_entry`, executing the remainder of the payload as control
+  sequences. Fixed in the parse table only, deliberately diverging from
+  vt100.net exactly as `osc_string` already does.
+- **`b31fbc84`** — scroll, line-insert and erase cleared cells but left row
+  metadata (wrap flags, semantic prompt state) behind, which the fast paths in
+  `grow` and resize then adopted. Upstream #13940; benchmarked as free.
+- **`9313d580`** — clearing the screen into scrollback across a page boundary
+  left the cursor holding style and hyperlink IDs belonging to its old page. A
+  debug build traps; a release build silently corrupts reference counts, which
+  is what we ship. Found by fuzzing in #13991.
+
+The three parser fixes were checked differentially against the previous binary
+before this was written: `A\x14\x15\x16B` printed the control codes, `A<U+0085>
+<U+009B>B` printed both C1s, and `ESC P q ; Ü ; tail ST X` printed `;tailX`
+instead of `X`. All three are correct on this pin.
+
+Inert here, as before: the large kitty clipboard / paste / drag-and-drop batch
+(`6959fd46`..`bc2f7d7d`, plus mode 5522) needs callbacks we do not register, and
+`94b6dae4` explicitly gates 5522 reports on a clipboard-read callback — which
+sits well with leaving `CLIPBOARD_READ = 38` unset. `dda8e6f3`'s secure-random
+override is a swappable pointer used only by clipboard grants. `ee8095d3` is
+snapshot-only and we call no snapshot API. `8c5bc3d2` SIMD-optimises OSC string
+reading, which is the path `oscScanner.ts` runs ahead of; both parse probes were
+re-run and are unchanged.
+
+That batch is most of the cost: the binary grew **71 kB** (1,049,099 ->
+1,120,073) for six fixes we wanted and a clipboard protocol we cannot reach.
+Which is the sharpest argument yet for `-Dvt-features` below.
+
+`scrollbackLimit.test.ts` drives this binary for both the footprint staircase
+and the retention band, and passes unchanged — so `SCROLLBACK_BYTES_PER_CELL`
+and the tier table still hold at 9.2 and their measured budgets despite the
+extra static data.
+
+### Moving from `d9ffbbf17` (2026-08-19) to `5851d986`
 
 131 commits, a clean fast-forward, and **no ABI break at all** — the export
 surface is byte-for-byte the same 180 names, and every struct layout `abi.ts`
@@ -122,7 +182,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 5851d98615187d85052e41042bcf66e0ccec11d4
+cd ghostty && git checkout 4540d499ae463ad7b90f28f6f852f64f844c160f
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm

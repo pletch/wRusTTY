@@ -11,17 +11,17 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ 5851d98615187d85052e41042bcf66e0ccec11d4
+ghostty-org/ghostty @ 4540d499ae463ad7b90f28f6f852f64f844c160f
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  a00956d81063f5be9fbc78b7051cb33186a26bb07b94b8312bda2ff50bf1f437
-Size     4,294,246 bytes
+SHA-256  8de258a63629df4483c868b96844e968a8a4dede631785183248fb249454761d
+Size     4,542,250 bytes
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-Exports  180 (178 functions) — the patch adds none
+Exports  181 (179 functions) — the patch adds none
 ```
 
 **This build is patched.** The unpatched one hashed
-`28a8fe64ab007ab8e605fb104493ffa995ba7ee55d665189a6cfd5126f9acb16` at 4,293,689
-bytes; the 557-byte difference is the added parser state. `abi.parity.test.ts`
+`b1d2b8361e796df34333fddb0d5cebe946649fe1ed05a02e2b10e4a7761e3dd3` at 4,541,679
+bytes; the 571-byte difference is the added parser state. `abi.parity.test.ts`
 asserts `ESC k` payloads are *swallowed*, which only holds with the patch — so
 the suite fails loudly if a rebuild skips it.
 
@@ -46,7 +46,7 @@ Rebuilding needs **Zig 0.16.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 5851d98615187d85052e41042bcf66e0ccec11d4
+git fetch -q --depth 1 origin 4540d499ae463ad7b90f28f6f852f64f844c160f
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch
