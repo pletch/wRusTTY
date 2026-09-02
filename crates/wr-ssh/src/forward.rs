@@ -380,7 +380,19 @@ async fn start_remote(
 
 /// Bidirectionally copies bytes between a local TCP stream and an SSH
 /// `direct-tcpip`/`forwarded-tcpip` channel until both sides are done.
+///
+/// Every forward kind converges here -- local, remote and SOCKS -- which is
+/// why the socket option below lives in this function rather than at each of
+/// the three places a stream is obtained.
 pub(crate) async fn pipe(stream: TcpStream, channel: russh::Channel<russh::client::Msg>) {
+    // Same reasoning as the SSH socket itself (see `connect_direct`): a
+    // forward carries whatever the client speaks, and for an interactive or
+    // request/response protocol Nagle adds a delayed-ACK stall to every small
+    // write. Best-effort, because a forward that works with Nagle left on is
+    // worth more than one refused over a socket option.
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::debug!(error = %e, "set_nodelay failed on a forwarded socket");
+    }
     pipe_streams(stream, channel.into_stream()).await;
 }
 

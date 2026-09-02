@@ -537,6 +537,19 @@ async fn connect_direct(
     let ssh_config = Arc::new(client::Config {
         keepalive_interval: config.keepalive_interval(),
         keepalive_max: crate::config::KEEPALIVE_MAX,
+        // Nagle's algorithm off. russh leaves it *on* by default; OpenSSH and
+        // PuTTY both turn it off for an interactive session, and this is one.
+        // A keystroke is a packet of a few bytes, and under Nagle it waits in
+        // the kernel until the previous segment is acknowledged -- against a
+        // peer doing delayed ACK, up to ~40ms added to every character on top
+        // of the round trip. The remote tty is what echoes what you type, so
+        // that delay lands squarely on the thing the connection exists for.
+        //
+        // Only meaningful here. russh applies this to a real socket, and
+        // `connect_via_stream`'s stream is a channel on a jump hop rather
+        // than one. The jump hop's own socket is opened by this function, so
+        // a jump connection is covered by the first hop setting it.
+        nodelay: true,
         ..Default::default()
     });
 
