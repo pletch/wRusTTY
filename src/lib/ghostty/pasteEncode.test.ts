@@ -103,6 +103,30 @@ describe('paste encoding', () => {
     })
   })
 
+  describe('a Windows clipboard', () => {
+    // `CF_UNICODETEXT` is CRLF-delimited and nothing between it and here
+    // rewrites it, so this is the shape every multi-line paste on Windows
+    // actually has. Sent as it arrives it is two line breaks per line: the
+    // shell runs a blank line between each, and a blank line after a `\`
+    // continuation makes the paste a different command than the one copied.
+    it('does not double the line breaks it delimits with', () => {
+      expect(enc('a\r\nb', true)).toBe(`${START}a\nb${END}`)
+      expect(enc('a\r\nb', false)).toBe('a\rb')
+    })
+
+    it('leaves a lone carriage return as upstream has it', () => {
+      // Not a line ending any clipboard on this machine produces, and
+      // `pasteIsSafe` has a pinned position on it just above.
+      expect(enc('a\rb', false)).toBe('a\rb')
+      expect(enc('a\rb', true)).toBe(`${START}a\rb${END}`)
+    })
+
+    it('is judged by its line count, not by its byte count', () => {
+      expect(pasteIsSafe(wasm, 'one\r\ntwo')).toBe(false)
+      expect(pasteIsSafe(wasm, 'git status')).toBe(true)
+    })
+  })
+
   describe('not bracketed', () => {
     it('sends the text as itself', () => {
       expect(enc('hello', false)).toBe('hello')
@@ -112,7 +136,6 @@ describe('paste encoding', () => {
       // What this replaced sent the newline raw. A PTY wants CR for Enter —
       // it is what the line discipline is waiting for.
       expect(enc('a\nb', false)).toBe('a\rb')
-      expect(enc('a\r\nb', false)).toBe('a\r\rb')
     })
 
     it('sends nothing for an empty paste', () => {

@@ -37,6 +37,27 @@ const BRACKET_OVERHEAD = 12
 
 const utf8 = new TextEncoder()
 
+/**
+ * CRLF collapsed to LF, because a Windows clipboard is the one the encoder
+ * never sees on the platforms upstream ships for.
+ *
+ * `CF_UNICODETEXT` is CRLF-delimited and arboard hands it over verbatim, so a
+ * multi-line paste arrives here with both bytes on every line. Neither branch
+ * below wants that: unbracketed, each of CR and LF becomes its own carriage
+ * return, so every line is submitted twice; bracketed, bash's own
+ * `bracketed-paste-begin` maps the CR to a newline and gets the same doubling.
+ * Either way the shell sees a blank line between every pasted line — which is
+ * merely ugly until one of them follows a `\` continuation, and then the
+ * command is a different command.
+ *
+ * A lone CR is deliberately left alone: it is a line ending no clipboard on
+ * this machine produces, and upstream has a considered position on it that
+ * `pasteIsSafe` pins.
+ */
+function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n/g, '\n')
+}
+
 function exportsOf(wasm: GhosttyWasm): abi.GhosttyMainExports {
   return wasm.instance.exports as unknown as abi.GhosttyMainExports
 }
@@ -57,7 +78,7 @@ export function hasPasteEncoder(wasm: GhosttyWasm): boolean {
  */
 export function pasteIsSafe(wasm: GhosttyWasm, text: string): boolean {
   const ex = exportsOf(wasm)
-  const bytes = utf8.encode(text)
+  const bytes = utf8.encode(normalizeNewlines(text))
   if (bytes.length === 0) return true
   const ptr = ex.ghostty_wasm_alloc(bytes.length)
   if (ptr === 0) return false
@@ -78,7 +99,7 @@ export function pasteIsSafe(wasm: GhosttyWasm, text: string): boolean {
  */
 export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean): Uint8Array {
   const ex = exportsOf(wasm)
-  const bytes = utf8.encode(text)
+  const bytes = utf8.encode(normalizeNewlines(text))
 
   // The input is modified in place, so the buffer has to be writable and has
   // to be refillable: a retry re-copies from `bytes` rather than reusing
