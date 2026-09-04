@@ -168,6 +168,33 @@ describe('native find-in-scrollback', () => {
     expect(t.last().index, 'back from the oldest wraps to the newest').toBe(count - 1)
   })
 
+  /**
+   * The current hit has to look different from the others, or stepping through
+   * them says nothing. The renderer draws `active` amber on dark text and the
+   * rest a dim brown, so this asserts the flag it keys off: exactly one, and it
+   * moves.
+   */
+  it('marks exactly one highlight as the current hit, and moves it', async () => {
+    const t = await engineWith(`a needle 0\r\nb needle 1\r\nc needle 2\r\nd needle 3\r\n`, 40, 8)
+    const activeRows = () => {
+      const byRow = t.highlights()
+      if (!byRow) return []
+      return [...byRow.entries()].filter(([, hl]) => hl.some((h) => h.active)).map(([row]) => row)
+    }
+
+    t.engine.search('needle')
+    expect(activeRows().length).toBe(1)
+    const first = activeRows()[0]
+
+    t.engine.search('needle')
+    expect(activeRows().length).toBe(1)
+    expect(activeRows()[0]).not.toBe(first)
+
+    // And a frame that changes nothing must not lose it.
+    t.frame()
+    expect(activeRows().length).toBe(1)
+  })
+
   /** An incremental keystroke re-runs the query without moving the selection,
    *  which is what stops the view jumping while someone is still typing. */
   it('holds its place on an incremental keystroke', async () => {
@@ -245,6 +272,44 @@ describe('native find-in-scrollback', () => {
     const j = await engineWith(lines(20000), 80, 24)
     j.engine.search('needle', { regex: true })
     expect(settled).toBe(j.last().count)
+  })
+
+  /**
+   * The one that shipped broken, and the reason this test exists: highlights
+   * have to be for the rows the *pane* is showing.
+   *
+   * `VIEWPORT_MATCHES` sounds like the field for this and is not — it is
+   * relative to the core's own viewport, which never moves, because the
+   * offset the renderer draws from is ours and the search is set to
+   * SEARCH_SCROLL_NONE so it does not fight us. The first version drew
+   * highlights pinned to the bottom of the buffer, so a pane scrolled back —
+   * which is where a search leaves you — showed none at all.
+   */
+  it('highlights the rows the pane is showing, not the ones the core thinks it is', async () => {
+    const t = await engineWith(lines(3000), 80, 24)
+    t.engine.search('needle')
+    // The first keystroke only gets one slice of a 3,000-row buffer, and the
+    // rows it has found are all near the bottom. Let it catch up before
+    // scrolling somewhere it has not looked yet.
+    for (let i = 0; i < 200; i++) t.frame()
+
+    const visible = () => {
+      const byRow = t.highlights()
+      if (!byRow) return 0
+      const top = t.engine.viewportY
+      return [...byRow.keys()].filter((r) => r >= top && r < top + 24).length
+    }
+    expect(visible(), 'at the bottom of the buffer').toBeGreaterThan(0)
+
+    t.engine.scrollLines(-1500)
+    t.frame()
+    expect(visible(), 'and 1,500 rows back, where the bug was').toBeGreaterThan(0)
+
+    // Every row it claims is one the screen can show; nothing is being drawn
+    // for a screen nobody is looking at.
+    const top = t.engine.viewportY
+    const rows = [...t.highlights()!.keys()]
+    expect(rows.every((r) => r >= top - 2 && r < top + 24 + 2)).toBe(true)
   })
 
   /* ---- the differentials: the terminal moves under an open find bar ---- */

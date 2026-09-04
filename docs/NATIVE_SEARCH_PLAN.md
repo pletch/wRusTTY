@@ -148,11 +148,21 @@ not a refactor. Do not make it silently as part of the port.
   slices from the render loop rather than calling `ghostty_search_run`, which
   blocks until caught up and on a full scrollback is exactly the stall the
   split is designed to avoid. Use `run` only in tests and probes.
-- **Highlights come from `VIEWPORT_MATCHES`**, which is page-granular and so can
-  include matches just outside the visible rows. Upstream's own renderer lives
-  with this; converting each match with `ghostty_terminal_point_from_grid_ref`
-  under `GHOSTTY_POINT_TAG_VIEWPORT` clips it — skip what fails to convert or
-  lands past the row count.
+- **Highlights do *not* come from `VIEWPORT_MATCHES`. [revised — this shipped
+  broken]** That field is relative to the **core's** viewport, and the core's
+  viewport never moves here: the offset the renderer draws from is ours, and
+  the search runs with `SEARCH_SCROLL_NONE` so that selecting a match does not
+  fight it. So the list describes the bottom of the buffer however far the pane
+  is scrolled back — which is exactly where a search leaves you, so in practice
+  it highlighted nothing whenever it mattered. Caught by looking at the running
+  app, not by the suite, which only ever searched with the viewport at the
+  bottom.
+
+  What works is `MATCHES`, the whole list, ordered newest to oldest and
+  therefore sorted descending by row: binary-search it for the visible window
+  and convert only the handful inside, since the conversion
+  (`point_from_grid_ref` per endpoint) is the cost. `nativeSearch.test.ts` now
+  scrolls 1,500 rows back and asserts the highlights follow.
 - **New ABI surface.** `abi.ts` declares `grid_ref` but no selection APIs at
   all: `GhosttySelection`, `GhosttySelectionBuffer`,
   `ghostty_terminal_point_from_grid_ref` and the search structs are all new to

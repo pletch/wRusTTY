@@ -467,10 +467,12 @@ And three facts about behaviour that cost as much to find as any layout:
   `TOTAL_MATCHES` reporting the old number while the status still says
   COMPLETE, which reads exactly like a correct answer. `nativesearch.mjs`
   demonstrates it on purpose.
-- **`VIEWPORT_MATCHES` is page-granular**, so on a small scrollback it returns
-  every match in the buffer. That is harmless here — the renderer draws by
-  absolute row and ignores what is off screen — and it is why the controller
-  does not bother converting to viewport coordinates to clip.
+- **`VIEWPORT_MATCHES` is the core's viewport, not ours.** We scroll by our own
+  offset and never move the core's, so that field describes the bottom of the
+  buffer no matter where the pane is looking. It shipped that way for an hour
+  and drew no highlights at all on a scrolled-back pane. The controller uses
+  `MATCHES` — the whole list, descending by row — and binary-searches it for
+  the visible window.
 
 ## Status
 

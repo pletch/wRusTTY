@@ -115,9 +115,8 @@ export class NativeSearchController {
    * A feed is bounded but not free — measured at 0.7 ms on a 10,000-row
    * scrollback, and it does not get cheaper with depth (`search.mjs`,
    * `native-feed`). Feeding on every frame regardless would spend that on a
-   * pane where nothing whatever has happened, so this gates it on the three
-   * things a feed exists to notice: new output, a scroll (the viewport match
-   * list is computed during feeds), and a resize.
+   * pane where nothing whatever has happened, so this gates it on the two
+   * things a feed exists to notice here: new output, and a resize.
    */
   private fedAt = ''
   /** The status the last tick reported. Anything but COMPLETE means the search
@@ -290,7 +289,10 @@ export class NativeSearchController {
     // switch — nothing else does. `search()` always forces one, because the
     // user has just asked a question and a stale answer is worse than the
     // work.
-    const state = `${this.host.bufferGen()}:${this.host.viewportY()}:${this.host.cols()}x${this.host.rows()}`
+    // Not the viewport: nothing read here depends on where the core thinks
+    // the screen is (see `buildHighlights`), so a scroll needs a redraw but
+    // not a feed. Only new output and a resize do.
+    const state = `${this.host.bufferGen()}:${this.host.cols()}x${this.host.rows()}`
     if (force || state !== this.fedAt || this.status !== abi.SEARCH_STATUS_COMPLETE) {
       this.fedAt = state
       if (ex.ghostty_search_feed(this.handle) !== abi.GHOSTTY_SUCCESS) return
@@ -389,36 +391,58 @@ export class NativeSearchController {
   }
 
   /**
-   * The highlights for the rows around the viewport.
+   * The highlights for the rows the pane is actually showing.
    *
-   * `VIEWPORT_MATCHES` is computed page at a time, so it hands back matches
-   * that merely *share a page* with the viewport — on a small scrollback that
-   * is every match there is. That costs nothing here: the renderer draws by
-   * absolute row and ignores rows it is not showing, so the page-granular list
-   * is simply a superset. Upstream's own renderer lives with the same thing.
+   * **Not `VIEWPORT_MATCHES`, and that is the whole point of this comment.**
+   * That field is relative to the *core's* viewport, and the core's viewport
+   * never moves here: the offset the renderer draws from is ours, and the
+   * search is set to `SEARCH_SCROLL_NONE` so that selecting a match does not
+   * fight it. The first version of this used `VIEWPORT_MATCHES` and drew
+   * nothing at all whenever the pane was scrolled back — which is precisely
+   * where a search leaves you, so in practice it drew nothing whenever it
+   * mattered. `nativeSearch.test.ts` pins the scrolled case now.
+   *
+   * `MATCHES` is the whole list and is ordered newest to oldest, so it is
+   * sorted descending by row. That makes the visible window a binary search
+   * plus a walk over the handful of matches inside it, rather than converting
+   * every match on the screen's behalf — the conversion is the cost here, one
+   * `point_from_grid_ref` per endpoint.
    */
   private buildHighlights(
     active: { startY: number; startX: number; endY: number; endX: number } | null,
   ): Map<number, SearchHighlight[]> | null {
-    const d = this.dv()
-    d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_PTR, 0, true)
-    d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_CAP, 0, true)
-    d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_LEN, 0, true)
-    // The capacity query answers with OUT_OF_SPACE rather than success, so this
-    // deliberately does not go through `expectOk`.
-    this.ex.ghostty_search_get(this.handle, abi.SEARCH_DATA_VIEWPORT_MATCHES, this.bufSlot)
-    const needed = this.dv().getUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_LEN, true)
-    if (needed === 0) return null
+    const total = this.queryCapacity(abi.SEARCH_DATA_MATCHES)
+    if (total === 0) return null
 
-    this.ensureMatchCapacity(needed)
-    const written = this.fillMatches(abi.SEARCH_DATA_VIEWPORT_MATCHES, this.matchCap)
+    this.ensureMatchCapacity(total)
+    const written = this.fillMatches(abi.SEARCH_DATA_MATCHES, this.matchCap)
     if (written === 0) return null
 
+    const top = this.host.viewportY()
+    const bottom = top + this.host.rows() - 1
     const cols = this.host.cols()
     const byRow = new Map<number, SearchHighlight[]>()
-    for (let i = 0; i < written; i++) {
+
+    // First entry whose row is at or above the bottom of the screen. Rows
+    // descend with the index, so this is a lower_bound on a reversed order.
+    let lo = 0
+    let hi = written
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      const y = this.startRowOf(mid)
+      if (y === null || y > bottom) lo = mid + 1
+      else hi = mid
+    }
+
+    // Then walk older until the matches drop off the top of the screen. The
+    // slack either side is for a match that wraps across the boundary: its
+    // head can sit outside the window while its tail is on screen.
+    const SLACK = 2
+    for (let i = Math.max(0, lo - SLACK); i < written; i++) {
       const span = this.spanOf(this.matchBuf + i * abi.SELECTION_SIZE)
       if (!span) continue
+      if (span.endY < top - SLACK) break
+      if (span.startY > bottom + SLACK) continue
       const isActive =
         active !== null &&
         span.startY === active.startY &&
@@ -437,6 +461,24 @@ export class NativeSearchController {
       }
     }
     return byRow.size === 0 ? null : byRow
+  }
+
+  /** The start row of match `i`, for the search above. One conversion, and
+   *  null for a match the screen can no longer express. */
+  private startRowOf(i: number): number | null {
+    return this.toScreen(this.matchBuf + i * abi.SELECTION_SIZE + abi.SELECTION_OFF_START)?.y ?? null
+  }
+
+  /** How many entries a buffer-valued read needs. The query answers
+   *  `GHOSTTY_OUT_OF_SPACE` rather than success, so it deliberately does not
+   *  go through `expectOk`. */
+  private queryCapacity(data: number): number {
+    const d = this.dv()
+    d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_PTR, 0, true)
+    d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_CAP, 0, true)
+    d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_LEN, 0, true)
+    this.ex.ghostty_search_get(this.handle, data, this.bufSlot)
+    return this.dv().getUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_LEN, true)
   }
 
   private ensureMatchCapacity(needed: number): void {
