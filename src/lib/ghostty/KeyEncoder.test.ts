@@ -129,6 +129,10 @@ describe('KeyEncoder', () => {
     it('prefixes Alt with ESC', () => {
       const { encode } = boot()
       expect(encode(key('KeyB', { key: 'b', alt: true }))).toBe('\x1bb')
+      // Non-ASCII gets its whole UTF-8 sequence after the Escape. Before the
+      // 492300ca pin (#14146) only the first byte went out, so an Alt-accented
+      // key sent a truncated character to the far end.
+      expect(encode(key('KeyE', { key: '\u00e9', alt: true }))).toBe('\x1b\u00e9')
     })
 
     it('encodes the arrows, and follows DECCKM when the far end sets it', () => {
@@ -145,9 +149,31 @@ describe('KeyEncoder', () => {
       const { encode } = boot()
       expect(encode(key('F1'))).toBe('\x1bOP')
       expect(encode(key('F5'))).toBe('\x1b[15~')
-      // F13 and up have no legacy encoding at all — upstream declines rather
-      // than inventing one. They become reportable under Kitty; see below.
-      expect(encode(key('F13'))).toBeNull()
+      // F13 through F25 gained xterm's editing-key codes upstream at the
+      // 492300ca pin (#14145). They encoded to null before it, so these lines
+      // are what catches a rebuild going backwards.
+      expect(encode(key('F13'))).toBe('\x1b[25~')
+      expect(encode(key('F25'))).toBe('\x1b[46~')
+      // Same PR: the two keys a Windows keyboard has and xterm numbers 28 and
+      // 29. Help shares 28 with F15, which is xterm's own overlap.
+      expect(encode(key('ContextMenu'))).toBe('\x1b[29~')
+      expect(encode(key('Help'))).toBe('\x1b[28~')
+    })
+
+    it("uses xterm's modifyOtherKeys 2 encoding once a program asks for it", () => {
+      const { encode, write } = boot()
+      expect(encode(key('KeyA', { key: 'a', ctrl: true }))).toBe('\x01')
+      write('\x1b[>4;2m')
+      // Ctrl+key stops being a C0 byte under MOK2. It did not before the
+      // 492300ca pin (#14144), where this was '\x01' in both modes — which is
+      // what every program that turns the mode on was being told.
+      expect(encode(key('KeyA', { key: 'a', ctrl: true }))).toBe('\x1b[27;5;97~')
+      // Alt+Escape gained a form of its own in the same batch (#14145); it was
+      // '\x1b\x1b' before, and still is with the mode off.
+      expect(encode(key('Escape', { alt: true }))).toBe('\x1b[27;3;27~')
+      // The numeric keypad keeps its digit rather than falling through to a
+      // generic MOK2 encoding.
+      expect(encode(key('Numpad1', { key: '1', numLock: true }))).toBe('1')
     })
 
     it('encodes the keypad either way Num Lock is set', () => {
@@ -294,8 +320,12 @@ describe('KeyEncoder', () => {
 
     it('reports keys legacy encoding has no form for', () => {
       const { encode, write } = boot()
-      expect(encode(key('F13'))).toBeNull()
+      // F13 used to be the example here and stopped being one at the 492300ca
+      // pin, which gave it a legacy form. PrintScreen still has none.
+      expect(encode(key('PrintScreen'))).toBeNull()
       write('\x1b[>1u')
+      expect(encode(key('PrintScreen'))).toBe('\x1b[57361u')
+      // F13 now encodes both ways, and the Kitty form is unchanged.
       expect(encode(key('F13'))).toBe('\x1b[57376u')
     })
 

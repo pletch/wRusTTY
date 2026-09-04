@@ -11,9 +11,9 @@ comparison oracle.
 ## The expected artifact
 
 ```text
-SHA-256  3a1e4a3a045ab4a6fc8a13b02b0d3dc8be3c227ae290557aeac88ea47a9d3108
-Size     1,120,073 bytes
-Source   ghostty-org/ghostty @ 4540d499ae463ad7b90f28f6f852f64f844c160f
+SHA-256  3457ccec7e220ce5253035e8c2db945bdc84747814b220fdd889ead9c0b3a939
+Size     1,127,956 bytes
+Source   ghostty-org/ghostty @ 492300cad104195411d12217dd22f1cd05f31376
          + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
@@ -51,7 +51,7 @@ unicode table generator. Build under `~`, not `/mnt/c`.
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 4540d499ae463ad7b90f28f6f852f64f844c160f
+git fetch -q --depth 1 origin 492300cad104195411d12217dd22f1cd05f31376
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
@@ -135,9 +135,10 @@ instance.
 
 ## The binary is stripped of DWARF, but keeps its name section
 
-As built, the module is 4,245 kB, of which **3,216 kB (75.7%) is `.debug_*`**.
+As built, the module is 4,545 kB, of which **3,444 kB (75.8%) is `.debug_*`**.
 `tools/strip-wasm-debug.mjs` removes the DWARF sections and keeps everything
-else, taking it to **1,030 kB** — down 22% from the previous pin's 1,319 kB,
+else, taking it to **1,101 kB** — down 22% from the 1,319 kB of the pin before
+the port,
 which is upstream's own size work (`492c26067`'s wasm memory pool, `51a4311ef`'s
 inlining cleanup) rather than anything we changed. Note this does **not** yet use
 `-Dvt-features` (upstream `1fdbb8c91`), which compiles out unused feature areas

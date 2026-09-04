@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 4540d499ae463ad7b90f28f6f852f64f844c160f
+ghostty-org/ghostty @ 492300cad104195411d12217dd22f1cd05f31376
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,12 +34,66 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, **181 here** — so re-pin only with a reason and re-run the checks when you
+180, 181, **189 here** — so re-pin only with a reason and re-run the checks when you
 do. The long run of it going *down* was consolidation rather than a broken
 build (see the ABI breaks below); the one back up is `ghostty_terminal_paste`,
 added at this pin and unused by the shim.
 
-### Moving from `5851d986` (2026-08-22) to this pin
+### Moving from `4540d499` (2026-08-28) to this pin
+
+148 commits over seven days, 27 of them in the vt library, a clean fast-forward
+and **no ABI break**: no header changed at all, so the shim needed nothing. The
+export count went 181 -> 189, all eight of them the new search API
+(`ghostty_search_{new,free,tick,feed,run,set,get,get_multi}`), plus
+`ghostty_terminal_point_from_grid_ref` which is not new but is now reachable
+work for us. None are wired up; see `NATIVE_SEARCH_PLAN.md`.
+
+Taken for the **key encoder**, which we drive live from `KeyEncoder.ts` on every
+keystroke. Upstream built a harness comparing every US-layout combination
+against xterm patch 411 and fixed what it found:
+
+- **`4406cea3`** (#14144) — Ctrl-modified characters were encoded as C0 bytes
+  under xterm's `modifyOtherKeys` 2. They are not: MOK2 wants the `CSI 27;...~`
+  form. Ctrl+A went from the byte 0x01 to `CSI 27;5;97~` here. Any program that
+  turns the mode on and leaves it on — emacs is the usual one — was
+  reading the wrong thing from us for every Ctrl+key.
+- **`e7bdda99`, `cc3fd8a7`, `37e3cdd2`, `636a2f35`** (#14145) — F13 through F25
+  gained xterm's editing-key codes (F13 `CSI 25~`, F25 `CSI 46~`), Help and
+  Context Menu became 28 and 29, Alt+Escape gained `CSI 27;3;27~` under MOK2,
+  and the numeric keypad stopped falling through to a generic MOK2 encoding in
+  normal mode. Context Menu is a physical key on most Windows keyboards, and
+  before this it encoded to nothing at all.
+- **`587e08f3`** (#14146) — legacy Alt-as-Escape prefixed only the first byte of
+  a non-ASCII character. Alt+é sent `ESC` plus half of a two-byte sequence; it
+  now sends the whole of it.
+
+All of that is pinned in `KeyEncoder.test.ts`, including a `modifyOtherKeys`
+case that did not exist before, and each new assertion was run against the
+previous binary and watched to fail — Alt+é, F13 and MOK2 Ctrl+A are the three
+that do.
+
+Also taken, and worth nothing to us on its own: **`c2906398`** (#14081), the
+`RefCountedSet.addWithId` over-count that over-provisions style memory.
+
+Inert here: **#14137**, the big "treat zero as empty so fresh mmap pages are
+never touched" work (48 KB -> 16 KB dirty per empty terminal upstream), reaches
+nothing on wasm — `PageList.zig` `@memset`s the page anyway on freestanding
+because "the WasmAllocator reuses freed slots without zeroing". **#14138** does
+apply, being plain heap: the 1 KiB kitty temp-dir buffer is allocated only when
+set (we never set it), `DynamicPalette` stops carrying a second 1 KiB copy of
+the default palette, and the pin pool preheats two pins instead of eight.
+
+The binary grew **7,883 bytes** (1,120,073 -> 1,127,956) — the search API is
+45,478 bytes of that, measured by building the same commit with
+`-Dvt-features=-search` (1,082,478 bytes), so everything else is a net saving.
+
+`SCROLLBACK_BYTES_PER_CELL` was re-measured across all four tiers at 80 and 200
+columns, old binary against new: 8.56-10.50 bytes per cell on both, differing by
+at most 0.08, with the heap landing on the same step every time. `d2ff6d77`
+cache-line-aligns the cell array and it costs nothing measurable. 9.2 and the
+tier table stand.
+
+### Moving from `5851d986` (2026-08-22) to `4540d499`
 
 131 commits over six days, a clean fast-forward, and **no ABI break**: nothing
 was removed and one export was added, `ghostty_terminal_paste` (`60a1ae2d`),
@@ -182,7 +236,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 4540d499ae463ad7b90f28f6f852f64f844c160f
+cd ghostty && git checkout 492300cad104195411d12217dd22f1cd05f31376
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm
