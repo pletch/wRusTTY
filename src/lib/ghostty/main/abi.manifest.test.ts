@@ -119,6 +119,9 @@ run('abi.ts against ghostty_type_json', () => {
       'GhosttyTerminalModeConfig',
       'GhosttyRenderStateCursor',
       'GhosttyRenderStateColors',
+      'GhosttySelection',
+      'GhosttySelectionBuffer',
+      'GhosttyString',
     ]) {
       expect(m[t], `manifest is missing ${t}`).toBeDefined()
     }
@@ -161,6 +164,41 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.GRID_REF_OFF_NODE).toBe(field('GhosttyGridRef', 'node').offset)
     expect(abi.GRID_REF_OFF_X).toBe(field('GhosttyGridRef', 'x').offset)
     expect(abi.GRID_REF_OFF_Y).toBe(field('GhosttyGridRef', 'y').offset)
+  })
+
+  /**
+   * The native search path's types. Every one of these is written by us and
+   * read by the core — the selection carries its own `size` field, and every
+   * element of a selection buffer carries one too — so a moved offset here is
+   * the core reading a match out of the wrong four bytes.
+   */
+  it('GhosttySelection and its buffer', () => {
+    expect(abi.SELECTION_SIZE).toBe(m.GhosttySelection.size)
+    expect(abi.SELECTION_OFF_SIZE).toBe(field('GhosttySelection', 'size').offset)
+    expect(abi.SELECTION_OFF_START).toBe(field('GhosttySelection', 'start').offset)
+    expect(abi.SELECTION_OFF_END).toBe(field('GhosttySelection', 'end').offset)
+    expect(abi.SELECTION_OFF_RECTANGLE).toBe(field('GhosttySelection', 'rectangle').offset)
+    // The endpoints are grid refs, which is what makes a match convertible with
+    // point_from_grid_ref rather than being coordinates in its own right.
+    expect(field('GhosttySelection', 'start').size).toBe(abi.GRID_REF_SIZE)
+
+    expect(abi.SELECTION_BUFFER_SIZE).toBe(m.GhosttySelectionBuffer.size)
+    expect(abi.SELECTION_BUFFER_OFF_PTR).toBe(field('GhosttySelectionBuffer', 'ptr').offset)
+    expect(abi.SELECTION_BUFFER_OFF_CAP).toBe(field('GhosttySelectionBuffer', 'cap').offset)
+    expect(abi.SELECTION_BUFFER_OFF_LEN).toBe(field('GhosttySelectionBuffer', 'len').offset)
+  })
+
+  /** The needle, and the out-parameter of `point_from_grid_ref` — which is a
+   *  `GhosttyPointCoordinate`, not the wider `GhosttyPoint` above. `y` sits at
+   *  +4 rather than +2, because a u32 after a u16 is aligned. */
+  it('GhosttyString and GhosttyPointCoordinate', () => {
+    expect(abi.STRING_SIZE).toBe(m.GhosttyString.size)
+    expect(abi.STRING_OFF_PTR).toBe(field('GhosttyString', 'ptr').offset)
+    expect(abi.STRING_OFF_LEN).toBe(field('GhosttyString', 'len').offset)
+
+    expect(abi.POINT_COORDINATE_SIZE).toBe(m.GhosttyPointCoordinate.size)
+    expect(abi.POINT_COORDINATE_OFF_X).toBe(field('GhosttyPointCoordinate', 'x').offset)
+    expect(abi.POINT_COORDINATE_OFF_Y).toBe(field('GhosttyPointCoordinate', 'y').offset)
   })
 
   it('GhosttyStyle — size, colours and the attribute bytes', () => {

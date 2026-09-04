@@ -44,7 +44,8 @@ worth reading.
 | `scan.mjs` | `scanOsc` in ms/MB per content shape |
 | `viewport.mjs` | cost of getting a frame's cells out, and the JS→WASM call floor |
 | `iter.mjs` | the same, driven through ghostty **main**'s row/cell iterator API, including the RAW packed-cell path and a dirty-rows-only frame |
-| `search.mjs` | the **scrollback search** path — today's row-at-a-time read against main's `grid_ref`. `check` mode gates it |
+| `search.mjs` | the **scrollback search** path — today's row-at-a-time read against main's `grid_ref`, the JS matcher on top of it (`gridref-match`), and the core's own search (`native`, `native-feed`). `check` mode gates it |
+| `nativesearch.mjs` | the `ghostty_search_*` **ABI**: selection layout, the selection-buffer capacity protocol, match coordinates against a needle written at known positions, and the stale-until-fed trap |
 | `gridrefdepth.mjs` | whether `grid_ref` resolution is O(scrollback depth) |
 | `names.mjs` | function names from the name section, filtered |
 | `secs.mjs` | section sizes |

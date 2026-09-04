@@ -51,6 +51,7 @@ import {
 } from './wasmBindings'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
 import { KeyEncoder } from './KeyEncoder'
+import { NativeSearchController } from './NativeSearchController'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
 // `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
@@ -260,6 +261,16 @@ export class GhosttyEngine implements TerminalEngine {
    * keystroke, so the two cannot outlive each other.
    */
   private keyEncoder: KeyEncoder | null = null
+  /**
+   * The core's own find-in-scrollback, when the loaded binary has it.
+   *
+   * Null on a v1.3.1 build, and unused for regex or case-sensitive queries,
+   * which it cannot express — see `NativeSearchController` and
+   * `docs/NATIVE_SEARCH_PLAN.md`. Both paths write to the same renderer
+   * highlights and the same `onSearchResult` handlers, so only one of them may
+   * hold the view at a time; `search` below is what enforces that.
+   */
+  private nativeSearch: NativeSearchController | null = null
 
   /**
    * Ghostty's own mouse encoder, on the same terms as the key one: made with
@@ -596,6 +607,23 @@ export class GhosttyEngine implements TerminalEngine {
       // (It reads that state per keystroke, so this is belt and braces — but
       // the ordering is free and the alternative is a rule to remember.)
       this.keyEncoder = KeyEncoder.create(this.wasm, this.termPtr)
+      // Cheap to make (it reads no terminal contents) and it registers with the
+      // terminal so the two can be freed in either order, so it is built once
+      // here rather than on the first keystroke in the find bar.
+      this.nativeSearch = NativeSearchController.create(this.wasm, this.termPtr, {
+        setHighlights: (byRow) => {
+          if (this.renderer) this.renderer.searchHighlights = byRow
+          this.needsRedraw = true
+        },
+        revealRow: (row) => this.revealRow(row),
+        emit: (result) => {
+          for (const h of this.onSearchResultHandlers) h(result)
+        },
+        viewportY: () => this.viewportY,
+        bufferGen: () => this.bufferGen,
+        cols: () => this._cols,
+        rows: () => this._rows,
+      })
       this.mouseEncoder = MouseEncoder.create(this.wasm, this.termPtr)
       // The renderer may already be up (mount runs before this when the module
       // is warm), in which case the geometry is knowable now; if it is not,
@@ -1325,6 +1353,12 @@ export class GhosttyEngine implements TerminalEngine {
       GhosttyEngine.contexts.noteVisibility(this, w > 0 && h > 0)
     }
 
+    // Feeding is how the core's search learns the terminal moved at all — an
+    // un-fed search reports stale counts while output keeps arriving — and it
+    // is also what refreshes the viewport match list after a scroll. A no-op
+    // while nothing is being searched for.
+    this.nativeSearch?.onFrame()
+
     // Which cells are links at all, for the dotted underline that makes them
     // discoverable without holding a modifier over them first.
     this.refreshLinkRanges()
@@ -1649,6 +1683,11 @@ export class GhosttyEngine implements TerminalEngine {
       this.mouseEncoder = null
       this.keyEncoder?.dispose()
       this.keyEncoder = null
+      // Frees the tracked state the search holds *inside* the terminal. The
+      // core detaches rather than dangling if this were left until after the
+      // terminal went, but doing it in order costs nothing.
+      this.nativeSearch?.dispose()
+      this.nativeSearch = null
       this.wasm.exports.ghostty_terminal_free(this.termPtr)
       this.termPtr = 0
     }
@@ -2307,6 +2346,20 @@ export class GhosttyEngine implements TerminalEngine {
    * way it is on screen.
    */
   search(query: string, options?: SearchOptions): void {
+    // The core's matcher is byte-exact except for ASCII case, so a regex or a
+    // case-sensitive query has to stay on the JS path. Everything else — which
+    // is nearly every real query — goes to the core, where the result survives
+    // resizes, screen switches and pruning that `SearchController` has no way
+    // to notice.
+    const native = this.nativeSearch
+    if (native && !options?.regex && !options?.caseSensitive) {
+      // Whichever path ran last owns the highlights, so hand them over rather
+      // than leaving two sets of decorations on the same rows.
+      this.searchController.clear()
+      native.search(query, options)
+      return
+    }
+    native?.clear()
     this.searchController.search(query, options)
   }
 
@@ -2504,6 +2557,7 @@ export class GhosttyEngine implements TerminalEngine {
 
   clearSearchDecorations(): void {
     this.searchController.clear()
+    this.nativeSearch?.clear()
   }
 
   onResize(handler: (size: { cols: number; rows: number }) => void): IDisposable {

@@ -16,6 +16,17 @@
  *                  accessor upstream actually documents
  *   gridref-naive  main: re-resolve grid_ref per CELL, which is what a direct
  *                  transliteration of readRows would do
+ *   gridref-match  main: the gridref walk PLUS building each row's text and
+ *                  running the query over it — what SearchController actually
+ *                  does, and the only fair thing to compare a search against
+ *   native         main: ghostty_search_*, one cold full-scrollback pass
+ *   native-feed    main: one feed on a search that has already caught up, which
+ *                  is the cost a live pane pays per frame
+ *
+ * The headline result, 200x60 with ~10k rows: native is 42.7 ms against 21.3 ms
+ * for gridref-match, so the core is ~2x SLOWER at the cold pass. It wins on
+ * everything after it — a feed is 0.69 ms and does not grow with depth, where
+ * the JS path re-reads and re-matches the whole buffer on every change.
  *
  * ABI facts established by layout.mjs / gridprobe.mjs, none of them guessable:
  *   GhosttyPoint  = { tag u32 @0; pad; x u16 @8; y u32 @12 }  (16 bytes)
@@ -224,7 +235,39 @@ function measureMain(mode) {
       return acc
     }
 
-    const fn = mode === 'gridref-cellget' ? rowWalkCellGet : mode === 'gridref-naive' ? naive : rowWalk
+    /**
+     * What `SearchController` actually does, rather than only the read it
+     * needs first: build the row's text and run the query over it. Without
+     * this the JS side is credited with a cell walk that never matches
+     * anything, and the native mode below is the only one being asked to
+     * search. Wrap-joining (`logicalLines`) is left out, so this is still a
+     * floor for the JS path rather than the whole of it.
+     */
+    const rowWalkMatch = () => {
+      const re = new RegExp('zzz-not-here', 'gi')
+      let hits = 0
+      for (let y = 0; y < sbLen; y++) {
+        setPoint(0, y)
+        if (ex.ghostty_terminal_grid_ref(term, ptPtr, refPtr) !== 0) continue
+        const d = dv()
+        let text = ''
+        for (let x = 0; x < cols; x++) {
+          d.setUint16(refPtr + 8, x, true)
+          if (ex.ghostty_grid_ref_cell(refPtr, cellPtr) !== 0) continue
+          const cp = (d.getUint32(cellPtr, true) >>> 2) & 0x1fffff
+          text += cp > 0 ? String.fromCodePoint(cp) : ' '
+        }
+        re.lastIndex = 0
+        while (re.exec(text) !== null) hits++
+      }
+      return hits
+    }
+
+    const fn =
+      mode === 'gridref-cellget' ? rowWalkCellGet
+      : mode === 'gridref-naive' ? naive
+      : mode === 'gridref-match' ? rowWalkMatch
+      : rowWalk
     const iters = mode === 'gridref-naive' ? 1 : 3
     out[`${cols}x${rows}`] = { us: bench(fn, iters) / 1000, rows: sbLen, cells: sbLen * cols }
     ex.ghostty_terminal_free(term)
@@ -232,9 +275,95 @@ function measureMain(mode) {
   return out
 }
 
+// ---- main: the core does the searching --------------------------------------
+
+/**
+ * What `NativeSearchController` actually costs: set the needle, then feed and
+ * tick until the whole scrollback has been searched.
+ *
+ * This is the only mode that measures a *search* rather than a read. The four
+ * above measure the read the JS matcher needs before it can start, which is
+ * the honest comparison — the JS path has to pull every row across the
+ * boundary and then match in JS, and this one never crosses it at all.
+ *
+ * `ghostty_search_run` is the blocking form, which is right here and wrong in
+ * the app: it is one uninterrupted pass, whereas the controller ticks in
+ * slices from the render loop so a deep scrollback does not cost a frame.
+ */
+function measureNative(mode) {
+  const { ex, mem, dv } = boot(WASM)
+  const ok = (r, w) => { if (r !== 0) throw new Error(`${w} -> ${r}`) }
+  const make = (fn, w) => { const s = ex.ghostty_wasm_alloc_opaque(); ok(fn(s), w); return dv().getUint32(s, true) }
+  const out = {}
+  for (const { cols, rows, sb } of CASES) {
+    const term = make((s) => ex.ghostty_terminal_new(0, s, cols, rows), 'terminal_new')
+    const vptr = ex.ghostty_wasm_alloc_usize()
+    dv().setUint32(vptr, 512 * 1024 * 1024, true)
+    ok(ex.ghostty_terminal_set(term, 27, vptr), 'set scrollback bytes')
+    dv().setUint32(vptr, sb + rows + 1000, true)
+    ok(ex.ghostty_terminal_set(term, 28, vptr), 'set scrollback lines')
+    const b = enc.encode(corpus(cols, sb))
+    const p = ex.ghostty_wasm_alloc_u8_array(b.length)
+    new Uint8Array(mem.buffer).set(b, p)
+    ex.ghostty_terminal_vt_write(term, p, b.length)
+    ex.ghostty_wasm_free_u8_array(p, b.length)
+
+    const outp = ex.ghostty_wasm_alloc_u8_array(16)
+    ok(ex.ghostty_terminal_get(term, 15, outp), 'get sb rows')
+    const sbLen = dv().getUint32(outp, true)
+
+    // The same needle the corpus never contains, so the search cannot finish
+    // early and the pass covers every row — exactly what the read modes do.
+    const nb = enc.encode('zzz-not-here')
+    const nbuf = ex.ghostty_wasm_alloc_u8_array(nb.length)
+    new Uint8Array(mem.buffer).set(nb, nbuf)
+    const strPtr = ex.ghostty_wasm_alloc_u8_array(8)
+
+    /**
+     * The steady-state cost, which is the one the app pays every frame: a
+     * search that has already caught up, fed once because the terminal moved.
+     * The JS path has no equivalent — its answer to "the buffer changed" is to
+     * read and match the whole scrollback again.
+     */
+    if (mode === 'native-feed') {
+      const search = make((s) => ex.ghostty_search_new(0, s, term), 'search_new')
+      const d0 = dv()
+      d0.setUint32(strPtr, nbuf, true)
+      d0.setUint32(strPtr + 4, nb.length, true)
+      ok(ex.ghostty_search_set(search, 0, strPtr), 'set needle')
+      ok(ex.ghostty_search_run(search), 'run')
+      const feed = () => {
+        ok(ex.ghostty_search_feed(search), 'feed')
+        ok(ex.ghostty_search_get(search, 2, outp), 'get total')
+        return dv().getUint32(outp, true)
+      }
+      out[`${cols}x${rows}`] = { us: bench(feed, 200) / 1000, rows: sbLen, cells: sbLen * cols }
+      ex.ghostty_search_free(search)
+      ex.ghostty_terminal_free(term)
+      continue
+    }
+
+    const pass = () => {
+      const search = make((s) => ex.ghostty_search_new(0, s, term), 'search_new')
+      const d = dv()
+      d.setUint32(strPtr, nbuf, true)
+      d.setUint32(strPtr + 4, nb.length, true)
+      ok(ex.ghostty_search_set(search, 0 /* OPT_NEEDLE */, strPtr), 'set needle')
+      ok(ex.ghostty_search_run(search), 'run')
+      ok(ex.ghostty_search_get(search, 2 /* DATA_TOTAL_MATCHES */, outp), 'get total')
+      const total = dv().getUint32(outp, true)
+      ex.ghostty_search_free(search)
+      return total
+    }
+    out[`${cols}x${rows}`] = { us: bench(pass, 3) / 1000, rows: sbLen, cells: sbLen * cols }
+    ex.ghostty_terminal_free(term)
+  }
+  return out
+}
+
 // ---- driver -----------------------------------------------------------------
 
-const MODES = ['today', 'gridref', 'gridref-cellget', 'gridref-naive']
+const MODES = ['today', 'gridref', 'gridref-match', 'gridref-cellget', 'gridref-naive', 'native', 'native-feed']
 
 /**
  * The gate that makes the rest of this file mean anything: both engines must
@@ -319,7 +448,10 @@ function check() {
 if (ONLY === 'check') {
   check()
 } else if (ONLY) {
-  const r = ONLY === 'today' ? measureToday() : measureMain(ONLY)
+  const r =
+    ONLY === 'today' ? measureToday()
+    : ONLY === 'native' || ONLY === 'native-feed' ? measureNative(ONLY)
+    : measureMain(ONLY)
   console.log(JSON.stringify(r))
 } else {
   const self = fileURLToPath(import.meta.url)

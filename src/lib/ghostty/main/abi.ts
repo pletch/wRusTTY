@@ -6,7 +6,7 @@
  * imports from there or is imported by it, so the two can coexist until the
  * read path moves over.
  *
- * Pinned to ghostty-org/ghostty @ 4540d499ae463ad7b90f28f6f852f64f844c160f.
+ * Pinned to ghostty-org/ghostty @ 492300cad104195411d12217dd22f1cd05f31376.
  * Every value below is transcribed from that commit's headers and exercised
  * against that commit's binary by `main/abi.parity.test.ts`, and the struct
  * layouts are checked against the binary itself by `main/abi.manifest.test.ts`.
@@ -105,6 +105,89 @@ export const GRID_REF_OFF_SIZE = 0
 export const GRID_REF_OFF_NODE = 4
 export const GRID_REF_OFF_X = 8
 export const GRID_REF_OFF_Y = 10
+
+/* -------------------------------------------------------------------------- */
+/* Selections and search                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `GhosttySelection` — a pair of grid refs and a rectangle flag, and the type
+ * every native search match comes back as.
+ *
+ * Sized struct: write `SELECTION_SIZE` into its first word before handing it to
+ * the core, including into **every element** of a `GhosttySelectionBuffer`,
+ * which the core reads element by element.
+ *
+ * The endpoints are inclusive and may be in either order. Both are *untracked*
+ * snapshots, so they follow grid-ref lifetime rules — valid only until the next
+ * terminal write. See `NativeSearchController`, which never keeps one.
+ */
+export const SELECTION_SIZE = 32
+export const SELECTION_OFF_SIZE = 0
+export const SELECTION_OFF_START = 4
+export const SELECTION_OFF_END = 16
+export const SELECTION_OFF_RECTANGLE = 28
+
+/**
+ * `GhosttySelectionBuffer` — `{ GhosttySelection *ptr; size_t cap; size_t len; }`.
+ *
+ * Two-call protocol, the same one `GhosttyBuffer` uses: pass `ptr = 0` with
+ * `cap = 0` to be told the required count in `len` (the call returns
+ * `GHOSTTY_OUT_OF_SPACE`, **not** success), then allocate and pass it again.
+ */
+export const SELECTION_BUFFER_SIZE = 12
+export const SELECTION_BUFFER_OFF_PTR = 0
+export const SELECTION_BUFFER_OFF_CAP = 4
+export const SELECTION_BUFFER_OFF_LEN = 8
+
+/** `GhosttyString` — a borrowed `{ const uint8_t *ptr; size_t len; }`. The
+ *  needle is copied by the callee, so the buffer need not outlive the call. */
+export const STRING_SIZE = 8
+export const STRING_OFF_PTR = 0
+export const STRING_OFF_LEN = 4
+
+/**
+ * `GhosttyPointCoordinate` — `{ uint16_t x; uint32_t y; }`, so `y` is at +4,
+ * not +2. This is the out-parameter of `point_from_grid_ref`, and it is a
+ * different (smaller, unwrapped) type from `GhosttyPoint` above.
+ */
+export const POINT_COORDINATE_SIZE = 8
+export const POINT_COORDINATE_OFF_X = 0
+export const POINT_COORDINATE_OFF_Y = 4
+
+/** `GhosttySearchStatus`. `COMPLETE` means caught up as of the last feed, never
+ *  finished forever — a later write needs another feed to be seen. */
+export const SEARCH_STATUS_RUNNING = 0
+export const SEARCH_STATUS_FEED_REQUIRED = 1
+export const SEARCH_STATUS_COMPLETE = 2
+
+/** `GhosttySearchOption`. The two select options take a NULL value. */
+export const SEARCH_OPT_NEEDLE = 0
+export const SEARCH_OPT_SELECT_NEXT = 1
+export const SEARCH_OPT_SELECT_PREV = 2
+export const SEARCH_OPT_SELECT_SCROLL = 3
+
+/**
+ * `GhosttySearchData`.
+ *
+ * `SELECTED_INDEX` indexes the **newest-to-oldest** ordering of `MATCHES`,
+ * where 0 is the newest. Our find bar has always counted the other way; the
+ * flip lives in `NativeSearchController`.
+ */
+export const SEARCH_DATA_STATUS = 0
+export const SEARCH_DATA_NEEDLE = 1
+export const SEARCH_DATA_TOTAL_MATCHES = 2
+export const SEARCH_DATA_SELECTED_INDEX = 3
+export const SEARCH_DATA_SELECTED_MATCH = 4
+export const SEARCH_DATA_MATCHES = 5
+export const SEARCH_DATA_VIEWPORT_MATCHES = 6
+export const SEARCH_DATA_SELECT_SCROLL = 7
+
+/** `GhosttySearchScroll` — whether selecting a match moves the core's own
+ *  viewport. We set `NONE`: the viewport offset is ours (`_viewportOffset`),
+ *  and a core-side scroll would leave the two disagreeing. */
+export const SEARCH_SCROLL_IF_NEEDED = 0
+export const SEARCH_SCROLL_NONE = 1
 
 /* -------------------------------------------------------------------------- */
 /* Cells                                                                       */
@@ -681,6 +764,43 @@ export interface GhosttyMainExports {
   /** Takes the packed cell **by value** — an i64 argument, so pass a BigInt. */
   ghostty_cell_get(cell: bigint, key: number, out: number): number
   ghostty_row_get(row: bigint, key: number, out: number): number
+
+  /**
+   * Converts a grid ref back into coordinates. `tag` is a `POINT_TAG_*`;
+   * `out` is a `GhosttyPointCoordinate`, not a `GhosttyPoint`.
+   *
+   * Returns `GHOSTTY_NO_VALUE` — an ordinary answer, not a failure — for a ref
+   * the requested system cannot express, which is how a scrollback match is
+   * told apart from a visible one.
+   */
+  ghostty_terminal_point_from_grid_ref(term: number, ref: number, tag: number, out: number): number
+
+  /* native find-in-scrollback — see `../NativeSearchController.ts`.
+   *
+   * Absent from the v1.3.1 build, and reached directly rather than through the
+   * shim for the same reason the key encoder is: there is nothing on that
+   * build to shim them to. `NativeSearchController.create` checks for them and
+   * the engine falls back to the JS `SearchController` when they are missing. */
+  ghostty_search_new(alloc: number, slot: number, term: number): number
+  ghostty_search_free(search: number): void
+  /** Bounded progress on data already copied; never touches the terminal.
+   *  `outStatus` may be 0. */
+  ghostty_search_tick(search: number, outStatus: number): number
+  /** Reads the terminal. The **only** way the search learns it changed, so an
+   *  un-fed search reports stale counts while output keeps arriving. */
+  ghostty_search_feed(search: number): number
+  /** Blocking feed-and-tick until complete. Kept for tests and probes: on a
+   *  full scrollback this is exactly the stall the tick/feed split avoids. */
+  ghostty_search_run(search: number): number
+  ghostty_search_set(search: number, option: number, value: number): number
+  ghostty_search_get(search: number, data: number, value: number): number
+  ghostty_search_get_multi(
+    search: number,
+    count: number,
+    keys: number,
+    values: number,
+    written: number,
+  ): number
 
   /* key encoding — see `keyAbi.ts` and `../KeyEncoder.ts`.
    *

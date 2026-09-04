@@ -428,6 +428,50 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
   carry, so the shim answers both with 0 and `restoreCursorAfterReset` never
   fires. Tracked in the status list — it is the port's one open behaviour gap.
 
+## Native search, and the four types it brought with it
+
+`NativeSearchController` is the second thing after `KeyEncoder` to reach past
+the shim and talk to `main` exports directly, for the same reason: the v1.3.1
+build has no `ghostty_search_*` at all, so there is nothing to shim them to.
+`create` returns null when they are missing and the engine keeps the JS
+`SearchController` — which it has to keep anyway, because the core's matcher is
+byte-exact except for ASCII case and cannot do regex or a case-sensitive query.
+`GhosttyEngine.search` routes on exactly that. `docs/NATIVE_SEARCH_PLAN.md` is
+the full record.
+
+The ABI facts, none of them guessable and all of them now asserted against
+`ghostty_type_json` in `abi.manifest.test.ts`:
+
+- **`GhosttySelection` is 32 bytes**: `size@0`, `start@4`, `end@16`,
+  `rectangle@28`, where the endpoints are 12-byte `GhosttyGridRef`s rather than
+  coordinates. It is a *sized* struct, so its first word must be written before
+  the core reads it — including into **every element** of a selection buffer,
+  which the core reads element by element rather than taking the first one's
+  word for it.
+- **`GhosttySelectionBuffer` is the two-call protocol**: `{ ptr, cap, len }`,
+  and asking for the required size (`ptr = 0, cap = 0`) answers
+  `GHOSTTY_OUT_OF_SPACE` with the count in `len` — **not** success. Code that
+  runs the query through `expectOk` throws on the normal path.
+- **`GhosttyPointCoordinate` is not `GhosttyPoint`.** It is the out-parameter of
+  `point_from_grid_ref`, it is 8 bytes, and `y` is at +4 (a u32 after a u16 is
+  aligned), against the 24-byte union-carrying `GhosttyPoint` above.
+- **`GhosttyString` is `{ ptr, len }`** and the needle's bytes are copied, so
+  the buffer they came from is free the moment the call returns.
+
+And three facts about behaviour that cost as much to find as any layout:
+
+- **A match is only valid until the next terminal write.** Every read here is
+  feed, read, convert to plain integers, done — nothing is cached across a
+  frame, which is the opposite of what `SearchController` does.
+- **Counts are stale until fed.** A write with no feed leaves
+  `TOTAL_MATCHES` reporting the old number while the status still says
+  COMPLETE, which reads exactly like a correct answer. `nativesearch.mjs`
+  demonstrates it on purpose.
+- **`VIEWPORT_MATCHES` is page-granular**, so on a small scrollback it returns
+  every match in the buffer. That is harmless here — the renderer draws by
+  absolute row and ignores what is off screen — and it is why the controller
+  does not bother converting to viewport coordinates to clip.
+
 ## Status
 
 - [x] Decision evidence gathered (`iter.mjs`, `search.mjs`, `gridrefdepth.mjs`)
