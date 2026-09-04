@@ -4,6 +4,102 @@ Open items with enough context to pick up cold. Design decisions and the
 gotchas already found live here so they don't have to be rediscovered — see
 PROJECT_PLAN.md for the phased plan this sits alongside.
 
+Most of this file is *settled* work kept for its reasoning — the struck-through
+headings and the "shipped" ones. What is genuinely left is the list below.
+
+## What is actually left — 2026-08-29, at `7b078de`
+
+Ordered by what it would cost someone to be without it, not by effort. Each
+line points at the section or plan document holding the reasoning.
+
+**Gates a public release** (nothing else does):
+
+1. **Code signing.** Unsigned installers hit a SmartScreen wall. Needs a cert
+   bought before anything ships publicly. PROJECT_PLAN §Windows 11 polish.
+2. **Auto-update.** `tauri-plugin-updater` is not a dependency. Pairs with the
+   signing key, so do the two together.
+
+**Needs a real host, not more code** (everything here is written and untested
+where it matters):
+
+3. **The elevated-edit paths that have never run** — the READY handshake under
+   a noisy login shell, `sudo -n` on a NOPASSWD host, the `sudo cat` read, BSD
+   `mktemp`. See "Elevated editing" below.
+4. **Auto-reconnect on telnet and serial**, and on a link that goes *silent*
+   rather than resetting. SSH is tested against a real drop; the other two are
+   separate judgements and serial is the easiest to test honestly.
+5. **Rekey under a long-lived session** — still the untested russh corner.
+
+**Features with a plan and no code:**
+
+6. **SCP fallback** for hosts with the SFTP subsystem disabled — appliances,
+   squarely this app's audience. Scope it first: SCP has no directory listing,
+   so it can serve transfers to known paths and cannot make the Files panel
+   work. PROJECT_PLAN Phase 6, item 5.
+7. **tmux control mode (`tmux -CC`)** — the one thing auto-reconnect cannot
+   buy, since remote processes survive the drop. The structural decision (a
+   tmux pane as a `Session` behind a virtual connector, or a new pane leaf) is
+   the whole cost. PROJECT_PLAN §terminal & UX.
+8. **X11 forwarding** — the `x11-req` half is ours; being an X server is not.
+   Detect VcXsrv/Xming/WSLg and forward to it. Must default to untrusted.
+9. **Configurable keyboard shortcuts** — every binding is hard-coded in
+   `Terminal.tsx` and `App.tsx`.
+10. **Outbound proxy support** (HTTP CONNECT / SOCKS5) for reaching a host
+    through a corporate proxy. Not the SOCKS5 server in `wr-ssh/src/socks.rs`,
+    which is the dynamic forward's own.
+11. **OS light/dark sync**, jump list, portable mode — Win11 polish, none
+    built.
+
+**Smaller, and each self-contained:**
+
+12. **Settings not yet exposed**: logging auto-start and a configurable path;
+    selection word separators, scroll sensitivity. See below.
+13. **The edit save still reads its local file whole** — the only unstreamed
+    leg left. PROJECT_PLAN Phase 6, item 2.
+14. **Symlinks cannot be copied**, only skipped-and-reported. Worth doing for
+    upload before download.
+15. **`chmod` is per-entry only** — no recursive apply, and no control over the
+    permissions a recursive upload lands with.
+16. **Files panel affordances**: multi-select, sort, filter, hidden-file
+    toggle, the optional dual-pane view.
+17. **Wake-on-LAN's two gaps**: automatic multi-NIC broadcast, and waking
+    through a jump host. See the section at the end of this file.
+18. **Host keys**: pinning, and import/export of OpenSSH `known_hosts`.
+19. **`FLUSH_INTERVAL` (B4)** — the one open performance question, and it needs
+    a measurement rather than an argument. See "Performance" below.
+
+**Decisions rather than tasks** — each of these is finished until someone
+picks differently: the four autocomplete preferences, the in-app Monaco
+editor (kill it or schedule it), and the committed performance baseline (B0),
+which gates nothing.
+
+## Elevated editing: shipped, and only partly met a real host
+
+Recorded because the gap is not in the design — it is in what has ever run.
+
+The feature and its reasoning are in PROJECT_PLAN Phase 6. What belongs here
+is the verification state, because it shipped against no sudoers policy at all
+and the first live contact found two failures no unit test could reach:
+
+- **A predicate written against a field the protocol never sends** (`178b2a4`).
+  `canWrite` compared owner and group *names* from the listing; SFTP v3 carries
+  none, and `russh_sftp` hardcodes both to `None` whatever the server sent. So
+  the prediction returned "no idea" for every file on every host, and neither
+  the routing nor the "Edit as root…" menu item ever appeared. The lesson is
+  narrower than "test against a host": a predicate over a decoded field wants
+  tracing to its decoder, not to its doc comment.
+- **A sudo refusal outside the allowlist** (`1a23159`). The reported symptom
+  was a toast reading "sudo: interactive authentication is required" and no
+  dialog — the one thing sudo was asking for fell through to the catch-all.
+  Fixed by *structure* rather than by adding the string: `sudo -v` executes
+  nothing, so authentication and policy are the only things it can fail on and
+  an unfamiliar message has no third category to belong to.
+
+**Still never run for real:** the READY handshake with a noisy login shell
+ahead of it, the `sudo -n` fast path on a NOPASSWD host, the `sudo cat` read,
+and the staged copy where `mktemp` is BSD's. Those are the four to try first,
+and a failure in them is first contact rather than a regression.
+
 ## ~~Rounded tab corners~~ — shipped, and the chrome went with them
 
 Kept because the shape it landed in is not the shape either option here
@@ -234,6 +330,18 @@ and someone reading the code will otherwise assume they were unavailable.
   substitution `GLYPH_CURSOR_OUTLINE` already made; the cache, slot packing and
   one-quad-per-cell are untouched. It also drops the font dependency for the
   glyphs covering the most screen on machines where fonts cannot be installed.
+
+- **Three families ship with the installer** (`lib/bundledFonts.ts`) — JetBrains
+  Mono in four faces, Fira Code in two (its authors ship no italic), and
+  Monaspace Neon as one variable file, ~1.1 MB in total. A bundled face needs
+  nothing from the system: an `@font-face` with a `url()` source lands in
+  `document.fonts`, which is the same set Canvas resolves its shorthand
+  against, so the atlas rasterizes from these unchanged. They are registered
+  from TypeScript rather than declared in `index.css`, because the feature
+  wrappers need the asset URL at runtime to build their own `src` — there is no
+  way to say "the family I just declared in CSS", so one table holds the URLs
+  for both. Monaspace's bold is instanced out of the variable file; measured,
+  and regular and bold advance identically, which is what the cell requires.
 
 **Two non-goals, both deliberate:**
 

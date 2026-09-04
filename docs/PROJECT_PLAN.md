@@ -9,8 +9,9 @@ are in the panel's context menu; a failed transfer can be retried and resumes
 where it stopped; and a save can no longer quietly overwrite a remote file that
 changed underneath it. A transfer now survives the *connection* going away too:
 it is set aside when the transport drops and resumed, from where it got to, onto
-the channel the reconnect brings back. What Phase 6 still holds is an SCP
-fallback for hosts with no SFTP subsystem.
+the channel the reconnect brings back. A root-owned file can be edited too, over
+a held sudo helper channel rather than a cached password. What Phase 6 still
+holds is an SCP fallback for hosts with no SFTP subsystem.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
@@ -22,11 +23,19 @@ fallback for hosts with no SFTP subsystem.
 **(shipped)** means it is in the app today, **(partial)** names what is missing,
 and an unmarked item is not built. Re-audit rather than trusting them if much
 time has passed — the previous set had drifted far enough that several shipped
-features were still marked as ideas. **Last audited 2026-08-20, at `8b32c84`.**
-What that pass added: session import from `~/.ssh/config`, recent-command
-autocomplete, the PowerShell shell-integration snippet and self-reporting
-programs, the Campbell palette, linear-light glyph blending, and the engine now
-running ghostty `main` at a pin. Nothing that was marked shipped had regressed.
+features were still marked as ideas. **Last audited 2026-08-29, at `7b078de`.**
+What that pass added: the font stack (four faces, OpenType features, variable
+axes, a codepoint range table, DirectWrite enumeration, three bundled families)
+and the ligature setting that pulled it in; the custom theme editor and the
+iTerm2/VS Code scheme importer; chrome that follows the terminal theme's own
+tone rather than literal whites; **elevated (sudo) remote editing**; paste
+pacing and trailing-newline trimming; and two engine re-pins. Nothing that was
+marked shipped had regressed.
+
+The previous pass (2026-08-20, `8b32c84`) added session import from
+`~/.ssh/config`, recent-command autocomplete, the PowerShell shell-integration
+snippet and self-reporting programs, the Campbell palette, linear-light glyph
+blending, and the move onto ghostty `main` at a pin.
 
 ---
 
@@ -36,7 +45,7 @@ running ghostty `main` at a pin. Nothing that was marked shipped had regressed.
 |---|---|---|
 | App shell | Tauri 2 | Small installer (<10 MB), native WebView2 on Win11, no Electron overhead |
 | Frontend | React + TypeScript + Vite + Tailwind | Matches r-shell; large ecosystem; fast iteration |
-| Terminal | **Vendored Ghostty VT core (WASM) + an in-house WebGL renderer** | Superseded the original xterm.js choice. xterm's addons (search, fit, links, unicode) all had to be reimplemented as a consequence — see `SearchController`, `fitGrid`, `LinkController`. xterm survives only as the benchmark harness's comparison engine (`src/bench/xtermEngine.ts`); `src/lib` no longer depends on it. **The vendored core is ghostty `main` at a pin, not the v1.3.1 release** — that port is finished, including keyboard, mouse and paste encoding, and `docs/PORT_GHOSTTY_MAIN.md` is its record. The v1.3.1 build stays in `vendor-131/` as the parity oracle, since without a second implementation the parity suites would compare `main` with itself and pass for nothing |
+| Terminal | **Vendored Ghostty VT core (WASM) + an in-house WebGL renderer** | Superseded the original xterm.js choice. xterm's addons (search, fit, links, unicode) all had to be reimplemented as a consequence — see `SearchController`, `fitGrid`, `LinkController`. Search has since moved onto the core's own `ghostty_search_*` API (`NativeSearchController`), with the JS one kept for the regex and case-sensitive toggles the core cannot express — `docs/NATIVE_SEARCH_PLAN.md`. xterm survives only as the benchmark harness's comparison engine (`src/bench/xtermEngine.ts`); `src/lib` no longer depends on it. **The vendored core is ghostty `main` at a pin, not the v1.3.1 release** — that port is finished, including keyboard, mouse and paste encoding, and `docs/PORT_GHOSTTY_MAIN.md` is its record and holds the current pin (`492300ca`, re-pinned three times since the port landed for upstream fixes reachable from ordinary remote output). The v1.3.1 build stays in `vendor-131/` as the parity oracle, since without a second implementation the parity suites would compare `main` with itself and pass for nothing |
 | SSH | `russh` + `russh-keys` | Pure Rust (memory-safe crypto surface), async, actively maintained, proven in r-shell |
 | SFTP | `russh-sftp` | Same ecosystem. In use: browsing, editing, and streaming transfer in both directions. Two subsystem channels per session — one for browsing, one for bulk transfers, so a long download doesn't freeze the panel showing its progress |
 | Serial | `serialport` crate | Cross-platform, COM enumeration, USB hotplug |
@@ -246,9 +255,25 @@ mosh, RDP) means adding a crate, not touching the UI.
   it wants testing against the tmux that ships on the appliances and LTS
   distributions this app's users actually reach, not just a current one.
 - True colour **(shipped)**, wide characters and grapheme clusters **(shipped —
-  the core's, exercised by `readRows.test.ts`)**, font family and size
-  **(shipped)**, cursor styles **(shipped — shape and blink, plus DECSCUSR)**.
-  Ligature configuration is **not built**.
+  the core's, exercised by `readRows.test.ts`)**, cursor styles **(shipped —
+  shape and blink, plus DECSCUSR)**.
+- **Font selection — a stack, not a family string (shipped).** `setFont` takes
+  a `FontSelection`: a family per style (regular/bold/italic/bold-italic) with
+  a flag saying the family *is already* that face, an OpenType feature string,
+  variable-axis settings, and a sorted codepoint range table consulted ahead of
+  all of them. Families are enumerated by **DirectWrite in the Rust process**
+  (`src-tauri/src/fonts.rs`), which answers the monospace question outright and
+  resolves against the same collection the webview will; Settings reports which
+  face in the stack actually resolved. Features and axes reach Canvas through a
+  generated `@font-face` (`lib/fontStack.ts`), since Canvas 2D has no API for
+  either. **Three families ship with the installer** — JetBrains Mono, Fira
+  Code and Monaspace Neon (`lib/bundledFonts.ts`, ~1.1 MB) — so a fresh Windows
+  box is not dependent on what happens to be installed. Font zoom is on the
+  usual Ctrl+`+`/`-`/`0` bindings.
+  **Ligatures ship and are off by default** (`ligatures` in `settings.ts`);
+  the atlas rasterizes runs of up to five same-styled cells as one string and
+  slices the raster at cell boundaries. See TODO.md for why the default is off
+  and where the cost lands.
 - URL detection — a dotted underline on every link, Ctrl+click to open, and a
   keyboard hint mode (Ctrl+Shift+U) for when a program has the mouse
   **(shipped — see `docs/URL_LINKS_PLAN.md`)**
@@ -369,6 +394,17 @@ mosh, RDP) means adding a crate, not touching the UI.
   old path also got wrong. The confirmation prompt now asks the core whether a
   paste is safe rather than counting lines, so it catches a **single-line**
   paste carrying that terminator.
+  Two things sit either side of the encoder. **One trailing line terminator is
+  stripped first** (`43cdf7c`), because a documentation site's copy button puts
+  one on the clipboard and it is a Return — the snippet ran instead of waiting
+  to be read, and a one-line paste tripped the multi-line guard as "2 lines".
+  Exactly one goes; a deliberately copied blank line is text. And **the wire
+  side is paced**: writer tasks in `wr-core` split a write into 1 KiB runs 2 ms
+  apart (`4561f2d`), because a remote line discipline holds a fixed 4096-byte
+  input buffer and *silently discards* the overflow — a paste arriving with a
+  hole in it and no error anywhere. Pacing lives in the writer tasks, so every
+  route to the wire (the three paste shortcuts, broadcast fan-out, a drop
+  upload) inherits it; typing never reaches the split.
 - Configurable keyboard shortcuts — **not built**; every binding is hard-coded
   in `Terminal.tsx` and `App.tsx`
 - Duplicate tab / reconnect / "restart session" actions **(shipped — the tab
@@ -690,6 +726,48 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   - **Backslash is not an escape** in the command. It is the path separator
     here, and treating `C:\Program Files\...` as escapes is how a setting that
     looks obviously correct fails mysteriously. Only double quotes group.
+- **Editing a root-owned file, by holding a process rather than a password**
+  (`crates/wr-ssh/src/sudo.rs`, `sftp_elevate_edit`). SFTP has no
+  privilege-escalation verb — the subsystem runs as whoever authenticated — so
+  `/etc/nginx/nginx.conf` was unreadable and unwritable however plainly the
+  user could `sudo` in the pane beside it. An open or a save the host refuses
+  on permission now offers to go through sudo, and the panel marks those
+  watches with an amber **root** chip that ends the elevation when clicked.
+  - **The privilege is a process, not a cached secret.** Caching the sudo
+    password for the life of an edit keeps the wrong thing — on most hosts it
+    is also the login password. Sudo's own 15-minute timestamp cannot stand in
+    for it either: sudo keys the ticket to the controlling tty and falls back
+    to the parent pid, and every exec channel is a separate process under a
+    separate sshd child, so a ticket primed on one is invisible to the next.
+    So one channel per elevated edit runs a helper that copies a staged file
+    over a destination and does nothing else; the password authenticates it
+    once and is dropped. What remains is visible, endable, and cannot outlive
+    the SSH session.
+  - **Two entry points, because the case that bites is the second one.** A file
+    under `/etc` is usually world-readable and root-writable, so the open works
+    and the *save* is refused minutes and several edits later.
+    `sftp_elevate_edit` handles that without touching the local copy, then the
+    panel calls `sftp_save_edit` so the mtime conflict check still runs — an
+    elevated write must not become a way past a warning that someone else
+    changed the file.
+  - **Ownership is judged from uid and gid, not names.** The first prediction
+    compared owner and group *names* from the listing, and SFTP v3 carries none
+    — `russh_sftp` hardcodes both to `None` whatever the server sent — so it
+    could never fire. uid, the gid list from one `id` per session, then the
+    other triad. Only a *definite* refusal routes an open straight to sudo;
+    everything uncertain still tries the ordinary way, because ACLs, immutable
+    bits, read-only mounts, SELinux and root-squash all refuse writes the mode
+    bits permit.
+  - **`sudo -v` is classified separately from a command.** It executes nothing,
+    so authentication and policy are the only things it can fail on — an
+    unfamiliar refusal means "wants a password", not failure. Chasing sudo's
+    phrasings would fix one host and not the next. A command's stderr keeps the
+    allowlist, since there a third category genuinely exists (no such file,
+    read-only filesystem, out of space).
+  - `cp` rather than `install` or a rename, so the destination inode's owner,
+    mode, ACLs, xattrs and SELinux context survive and a symlinked config is
+    followed. `sudo -n` is tried first, so a NOPASSWD host never sees a dialog;
+    the password goes on stdin, never the command line.
 - **The open path is hardened**, and that work should not be re-litigated when
   the rest of this phase lands: an inert-extension allowlist with a
   confirmation dialog for anything whose OS handler executes (`.hta`, `.lnk`,
@@ -805,6 +883,15 @@ progress UI to put on the other channel anyway.
   release. Nothing about signing or auto-update is set up.
 - **No integration test against a real sshd** — the SSH paths that matter most
   are the ones with no automated coverage at all. See Phase 1.
+- **The elevated-edit path is only partly exercised against a real host.** It
+  shipped unverified — there is no sshd with a sudoers policy in this
+  environment — and the first live contact immediately found two things a unit
+  test could not: a prediction written against a field the protocol never sends
+  (`178b2a4`) and a sudo refusal phrasing outside the allowlist (`1a23159`).
+  What has still never run for real is the READY handshake under a noisy login
+  shell, the `sudo -n` fast path on a NOPASSWD host, the `sudo cat` read, and
+  the staged copy on a BSD `mktemp`. Treat a failure here as first-contact
+  rather than as a regression.
 - **Auto-reconnect was one missing capability wearing three hats** — named here
   as one thing because the plan used to mention it in three separate places as
   though it were three. **Phase 1 is built** (`docs/AUTO_RECONNECT_PLAN.md`):
