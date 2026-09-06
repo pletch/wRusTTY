@@ -392,6 +392,11 @@ Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
   far end echoes it, and that echo re-offers the rest, which is what makes a
   second press take a second word.
 - **Ctrl+Space** — open the inline suggestion out into the list.
+- **Enter, inside the list only** — accept the highlighted row without
+  running it; a second Enter runs it. That is what fish's completion pager
+  and zsh's `menu-select` do, and it is safe only in the list, where the
+  user asked for a list and one row is highlighted. Inline, Enter is the
+  one key at a prompt that must never be swallowed.
 - **Up/Down** — the shell's, except inside the list, where they navigate.
 
   Three rules in succession, and the history is the argument. They were first

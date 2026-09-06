@@ -94,6 +94,14 @@ export type SuggestionMode = 'inline' | 'list'
  *     the same byte on some terminals — hence "only while a suggestion is
  *     showing", which is when the user has just typed and is not marking
  *     anything).
+ *   - **Enter, in the list only**, accepts the highlighted item without
+ *     running it — a second Enter runs it, the way fish's completion pager
+ *     and zsh's `menu-select` both behave. It is safe only in the list: the
+ *     list was summoned by name and has a highlighted row, so Enter has an
+ *     obvious referent. Inline there is no selection to speak of, and Enter
+ *     means what it has always meant at a prompt, which is *run this now* —
+ *     swallowing that to append a remembered command would be the worst key
+ *     in the feature.
  *   - **Escape** dismisses and sends nothing further. It is not forwarded,
  *     because the user is dismissing this, not talking to vim.
  *
@@ -134,6 +142,10 @@ export function suggestionKeyAction(
       return opts.mode === 'list' ? 'next' : 'ignore'
     case 'ArrowUp':
       return opts.mode === 'list' ? 'previous' : 'ignore'
+    // Confirms the highlighted row; it does not run it. Inline, where there is
+    // no highlighted row, Enter stays the shell's.
+    case 'Enter':
+      return opts.mode === 'list' ? 'accept' : 'ignore'
     case 'Escape':
       return 'dismiss'
     default:

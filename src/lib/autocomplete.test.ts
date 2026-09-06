@@ -93,6 +93,23 @@ describe('suggestionKeyAction', () => {
     expect(suggestionKeyAction(key('ArrowUp'), list)).toBe('previous')
   })
 
+  /**
+   * The convention for a list that was opened on purpose: fish's completion
+   * pager and zsh's `menu-select` both confirm the highlighted row on Enter
+   * and leave running it to a second press.
+   */
+  it('accepts the highlighted row on Enter, but only in the list', () => {
+    expect(suggestionKeyAction(key('Enter'), list)).toBe('accept')
+    // Inline there is no highlighted row, and Enter is the one key at a prompt
+    // that must never be swallowed: it runs the command.
+    expect(suggestionKeyAction(key('Enter'), open)).toBe('ignore')
+    const closed = { open: false, atLineEnd: true, mode: 'list' } as const
+    expect(suggestionKeyAction(key('Enter'), closed)).toBe('ignore')
+    for (const mod of ['ctrlKey', 'altKey', 'metaKey', 'shiftKey'] as const) {
+      expect(suggestionKeyAction(key('Enter', { [mod]: true }), list)).toBe('ignore')
+    }
+  })
+
   it('accepts Ctrl+arrows too, since Ctrl+Space is often still held', () => {
     expect(suggestionKeyAction(key('ArrowDown', { ctrlKey: true }), list)).toBe('next')
     expect(suggestionKeyAction(key('ArrowUp', { ctrlKey: true }), list)).toBe('previous')
@@ -354,6 +371,25 @@ describe('AutocompleteController', () => {
       controller.acceptWord()
       expect(sent).toEqual([])
     })
+  })
+
+  it('takes the highlighted row on Enter once the list is open', async () => {
+    const { controller, sent } = makeController(promptInput('git s'), ['git status', 'git stash'])
+    controller.refresh()
+    await vi.waitFor(() => expect(controller.current).not.toBeNull())
+
+    // Inline, Enter is the shell's — it runs what is on the line.
+    expect(controller.handleKey(key('Enter'))).toBe(false)
+    expect(sent).toEqual([])
+
+    expect(controller.handleKey(key(' ', { ctrlKey: true }))).toBe(true)
+    expect(controller.handleKey(key('ArrowDown'))).toBe(true)
+    expect(controller.handleKey(key('Enter'))).toBe(true)
+    // The selection, not the first row — and appended, not run: a second Enter
+    // does that, and by then nothing is showing to swallow it.
+    expect(sent).toEqual(['tash'])
+    expect(controller.current).toBeNull()
+    expect(controller.handleKey(key('Enter'))).toBe(false)
   })
 
   it('moves through the list and wraps', async () => {
