@@ -377,11 +377,15 @@ clipped.
 
 Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
 
-- **Right arrow at end of line**, or **Tab while a suggestion is showing** —
-  accept. Tab is contentious, being the remote's own completion key. The
-  resolution: Tab accepts only when a suggestion is displayed and highlighted,
-  and passes through untouched otherwise, so completing an unmatched prefix
-  behaves exactly as it does today.
+- **Right arrow at end of line** — accept, and the only key that does.
+  Tab was contentious from the start, being the remote's own completion key,
+  and it was tried both ways: first accepting whenever a suggestion was
+  displayed, now never. What settled it is that the two completions answer
+  different questions — the remote's Tab knows what directory you are in, this
+  only knows what you once ran — and a key cannot answer both. When a
+  suggestion happened to be showing, Tab took the remembered command instead
+  of the path being typed, which is not what anyone presses Tab for. So Tab
+  passes through in every state, and pressing it dismisses the offer.
 - **Ctrl+Space** — open the inline suggestion out into the list.
 - **Up/Down** — the shell's, except inside the list, where they navigate.
 
@@ -533,9 +537,6 @@ a host.
 
 - Vault-encrypted store versus a plain file — the unlock-before-suggestions
   tradeoff above.
-- Whether Tab-accept is on by default or opt-in. It is the most natural key
-  and the most likely to annoy someone whose muscle memory belongs to the
-  remote shell.
 - Whether the Tier 1 setting should be *discoverable in context* rather than
   only in Settings — an unobtrusive "import this host's shell history?" the
   first time autocomplete comes up empty on a host, which is the moment the

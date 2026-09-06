@@ -50,14 +50,18 @@ export type SuggestionMode = 'inline' | 'list'
  * Every rule here is chosen to collide with nothing the far end reasonably
  * wants at a prompt, and each one is a decision rather than a convention:
  *
- *   - **Tab** is the remote's own completion key, which makes it both the most
- *     natural key for this and the most dangerous to take. It is claimed only
- *     while a suggestion is actually on screen; with nothing showing it passes
- *     straight through, so completing an unmatched prefix behaves exactly as
- *     it always has.
- *   - **Right arrow** accepts only at the end of the line, where it would
- *     otherwise be a no-op. In the middle of a line it is a cursor move the
- *     user meant.
+ *   - **Tab is never taken.** It is the remote's own completion key, and that
+ *     is the whole job it keeps: a directory name, a flag, whatever the shell
+ *     would have offered. Claiming it while a suggestion happened to be on
+ *     screen made the two completions race for the same key, and the one that
+ *     won was the one the user had *not* asked for — a remembered command
+ *     instead of the path being typed. So Tab passes straight through in every
+ *     state, and pressing it disarms the offer (`noteInput` treats it as
+ *     non-printable), which leaves the line to whatever the far end completes.
+ *   - **Right arrow** is the accept key, and the only one. It accepts only at
+ *     the end of the line, where it would otherwise be a no-op; in the middle
+ *     of a line it is a cursor move the user meant. This is the fish/zsh
+ *     autosuggestion binding, so the finger already knows it.
  *   - **Up and Down belong to the shell**, except in the one state where the
  *     user has explicitly asked for something else. Walking history is the
  *     single most common thing done at a prompt, and an offer that appeared on
@@ -87,7 +91,7 @@ export type SuggestionMode = 'inline' | 'list'
  *   - **Escape** dismisses and sends nothing further. It is not forwarded,
  *     because the user is dismissing this, not talking to vim.
  *
- * Any modifier disqualifies everything: Ctrl+Tab, Alt+Up and friends are
+ * Any modifier disqualifies everything: Ctrl+Right, Alt+Up and friends are
  * bindings elsewhere or sequences the remote wants, and none of them mean
  * "take this suggestion".
  */
@@ -108,8 +112,8 @@ export function suggestionKeyAction(
   }
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return 'ignore'
   switch (e.key) {
-    case 'Tab':
-      return 'accept'
+    // Not a case at all — Tab belongs to the remote. Listed here only so the
+    // next reader does not add it back.
     case 'ArrowRight':
       return opts.atLineEnd ? 'accept' : 'ignore'
     // Only in the list, which only exists because it was asked for. In the
@@ -184,7 +188,7 @@ export function placeSuggestions(opts: {
 export interface SuggestionView {
   /** Best first. Never empty — no suggestions means no view at all. */
   items: string[]
-  /** Which one Tab would take. */
+  /** Which one Right-arrow would take. */
   index: number
   /** The text these complete, so a stale view can be recognised. */
   typed: string

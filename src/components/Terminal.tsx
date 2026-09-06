@@ -1911,8 +1911,9 @@ export function Terminal({
 
     const onKeyDown = (e: KeyboardEvent) => {
       // Autocomplete first, and only ever while a suggestion is actually on
-      // screen: `handleKey` returns false for everything else, so Tab, the
-      // arrows and Escape reach the far end untouched the rest of the time.
+      // screen: `handleKey` returns false for everything else, so the arrows
+      // and Escape reach the far end untouched the rest of the time. Tab is
+      // never claimed at all — it stays the remote's own completion key.
       // Consumed the same way as the chords below — `GhosttyInputHandler`
       // skips any event that has been `preventDefault`ed.
       if (autocompleteRef.current?.handleKey(e)) {

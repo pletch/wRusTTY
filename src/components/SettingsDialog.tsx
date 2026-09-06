@@ -1417,7 +1417,7 @@ export function SettingsDialog({
                         checked={settings.autocompleteEnabled}
                         onChange={(v) => onChange({ ...settings, autocompleteEnabled: v })}
                         label="Suggest recent commands"
-                        hint="As you type at a remote prompt, offer commands you have run on that host before. Turning this on means command lines are saved to this machine — off means none are kept, and none are suggested."
+                        hint="As you type at a remote prompt, offer commands you have run on that host before. Press the right arrow at the end of the line to take one — Tab stays the remote shell's own completion key. Turning this on means command lines are saved to this machine — off means none are kept, and none are suggested."
                       />
                       {/* Indented and disabled-when-off, because it is not a
                           second feature but a part of this one — and because

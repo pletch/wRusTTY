@@ -19,19 +19,32 @@ describe('suggestionKeyAction', () => {
   const list = { open: true, atLineEnd: true, mode: 'list' } as const
 
   it('claims nothing at all while no suggestion is showing', () => {
-    // The whole safety property of taking Tab and the arrows: with nothing on
-    // screen they belong entirely to the far end, so remote tab-completion and
-    // shell history recall behave exactly as they always did.
+    // The whole safety property of taking the arrows: with nothing on screen
+    // they belong entirely to the far end, so shell history recall behaves
+    // exactly as it always did.
     const closed = { open: false, atLineEnd: true, mode: 'inline' } as const
     for (const k of ['Tab', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Escape']) {
       expect(suggestionKeyAction(key(k), closed)).toBe('ignore')
     }
   })
 
-  it('takes Tab, Right and Escape while one is showing', () => {
-    expect(suggestionKeyAction(key('Tab'), open)).toBe('accept')
+  it('takes Right and Escape while one is showing', () => {
     expect(suggestionKeyAction(key('ArrowRight'), open)).toBe('accept')
     expect(suggestionKeyAction(key('Escape'), open)).toBe('dismiss')
+  })
+
+  /**
+   * Tab is the remote's completion key and stays the remote's in every state.
+   * Two completions cannot share one key: pressing it while a remembered
+   * command happened to be showing took the remembered command instead of the
+   * directory name being typed, which is never what Tab was pressed for.
+   */
+  it('never takes Tab, in any state', () => {
+    expect(suggestionKeyAction(key('Tab'), open)).toBe('ignore')
+    expect(suggestionKeyAction(key('Tab'), list)).toBe('ignore')
+    expect(
+      suggestionKeyAction(key('Tab'), { open: true, atLineEnd: false, mode: 'inline' } as const),
+    ).toBe('ignore')
   })
 
   /**
@@ -76,9 +89,8 @@ describe('suggestionKeyAction', () => {
     expect(suggestionKeyAction(key('ArrowRight'), { open: true, atLineEnd: false, mode: 'inline' } as const)).toBe('ignore')
   })
 
-  it('ignores every modified form of the accept keys', () => {
+  it('ignores every modified form of the accept key', () => {
     for (const mod of ['ctrlKey', 'altKey', 'metaKey', 'shiftKey'] as const) {
-      expect(suggestionKeyAction(key('Tab', { [mod]: true }), open)).toBe('ignore')
       expect(suggestionKeyAction(key('ArrowRight', { [mod]: true }), open)).toBe('ignore')
     }
     // Alt and Shift do not navigate either — only Ctrl does.
@@ -279,7 +291,7 @@ describe('AutocompleteController', () => {
     expect(controller.handleKey(key('ArrowDown', { ctrlKey: true }))).toBe(true)
     expect(controller.handleKey(key('Escape'))).toBe(true)
     expect(controller.current).toBeNull()
-    // Dismissed: Tab now belongs to the far end again.
+    // Tab belongs to the far end whether or not anything is showing.
     expect(controller.handleKey(key('Tab'))).toBe(false)
     expect(sent).toEqual([])
   })

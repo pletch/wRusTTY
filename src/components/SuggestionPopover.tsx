@@ -14,7 +14,7 @@ import { placeSuggestions, type SuggestionView } from '../lib/autocomplete'
  * put as characters are typed instead of sliding right with every keystroke.
  *
  * Only ever shown because it was asked for, with Ctrl+Space — which is what
- * earns it the arrow keys. Up/Down move through it, Tab or Right accepts,
+ * earns it the arrow keys. Up/Down move through it, Right accepts,
  * Escape dismisses and hands the arrows straight back to the shell. The
  * inline view, which appears on its own, claims none of them.
  */

@@ -359,8 +359,6 @@ All six phases in `docs/AUTOCOMPLETE_PLAN.md` shipped. Recorded here so the
 plan's "Open questions" section isn't mistaken for a backlog — each of these
 is a default to pick, and picking none of them leaves a working feature.
 
-- **Tab-accept on by default, or opt-in.** The most natural key and the most
-  likely to annoy someone whose muscle memory belongs to the remote shell.
 - **Asking in context rather than only in Settings.** An unobtrusive "import
   this host's shell history?" the first time autocomplete comes up empty on a
   host is the moment the user can actually judge the question — against being
