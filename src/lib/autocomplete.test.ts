@@ -4,6 +4,7 @@ import {
   placeSuggestions,
   suggestionKeyAction,
   suggestionSuffix,
+  firstWordOfSuffix,
   type SuggestionView,
 } from './autocomplete'
 import type { PromptInput, PromptInputTracker } from './promptInput'
@@ -31,6 +32,31 @@ describe('suggestionKeyAction', () => {
   it('takes Right and Escape while one is showing', () => {
     expect(suggestionKeyAction(key('ArrowRight'), open)).toBe('accept')
     expect(suggestionKeyAction(key('Escape'), open)).toBe('dismiss')
+  })
+
+  /**
+   * Alt is the word-wise modifier wherever a line is edited, and fish binds
+   * exactly this. Gated on the end of the line for the same reason plain Right
+   * is: anywhere else Alt+Right is `forward-word`, which the user meant.
+   */
+  it('takes one word with Alt+Right, at the end of the line', () => {
+    expect(suggestionKeyAction(key('ArrowRight', { altKey: true }), open)).toBe('accept-word')
+    expect(suggestionKeyAction(key('ArrowRight', { altKey: true }), list)).toBe('accept-word')
+    expect(
+      suggestionKeyAction(key('ArrowRight', { altKey: true }), {
+        open: true,
+        atLineEnd: false,
+        mode: 'inline',
+      } as const),
+    ).toBe('ignore')
+    const closed = { open: false, atLineEnd: true, mode: 'inline' } as const
+    expect(suggestionKeyAction(key('ArrowRight', { altKey: true }), closed)).toBe('ignore')
+  })
+
+  it('claims no other Alt key', () => {
+    for (const k of ['ArrowLeft', 'ArrowUp', 'ArrowDown', 'Tab', 'f', 'Escape']) {
+      expect(suggestionKeyAction(key(k, { altKey: true }), open)).toBe('ignore')
+    }
   })
 
   /**
@@ -90,9 +116,13 @@ describe('suggestionKeyAction', () => {
   })
 
   it('ignores every modified form of the accept key', () => {
-    for (const mod of ['ctrlKey', 'altKey', 'metaKey', 'shiftKey'] as const) {
+    // Alt is the exception, and means the word-wise take rather than nothing.
+    for (const mod of ['ctrlKey', 'metaKey', 'shiftKey'] as const) {
       expect(suggestionKeyAction(key('ArrowRight', { [mod]: true }), open)).toBe('ignore')
     }
+    expect(suggestionKeyAction(key('ArrowRight', { altKey: true, shiftKey: true }), open)).toBe(
+      'ignore',
+    )
     // Alt and Shift do not navigate either — only Ctrl does.
     expect(suggestionKeyAction(key('ArrowUp', { altKey: true }), list)).toBe('ignore')
     expect(suggestionKeyAction(key('ArrowUp', { shiftKey: true }), list)).toBe('ignore')
@@ -236,7 +266,7 @@ describe('AutocompleteController', () => {
 
   /**
    * The property that makes a wrong origin harmless. Between the list being
-   * drawn and Tab being pressed, output can arrive and redraw the line — so
+   * drawn and the key being pressed, output can arrive and redraw the line — so
    * acceptance re-reads rather than trusting what it offered a moment ago.
    */
   it('sends nothing when the line moved under the suggestion', async () => {
@@ -258,6 +288,72 @@ describe('AutocompleteController', () => {
     state.input = null
     controller.accept()
     expect(sent).toEqual([])
+  })
+
+  describe('taking one word at a time', () => {
+    it('sends the next word of the suffix and nothing after it', async () => {
+      const { controller, sent, accepted } = makeController(promptInput('git '), [
+        'git commit -m "wip"',
+      ])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+
+      controller.acceptWord()
+      expect(sent).toEqual(['commit'])
+      // A word is not an endorsement of the whole line, so nothing is ranked up.
+      expect(accepted).toEqual([])
+      expect(controller.current).toBeNull()
+    })
+
+    it('includes the space before the word, so words do not run together', async () => {
+      const { controller, sent } = makeController(promptInput('git commit'), [
+        'git commit -m "wip"',
+      ])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.acceptWord()
+      expect(sent).toEqual([' -m'])
+    })
+
+    /**
+     * The word only reaches the line when the far end echoes it. That echo is
+     * an ordinary refresh on a longer prefix, which re-offers the rest — and
+     * is what makes a second Alt+Right take a second word.
+     */
+    it('re-offers the rest once the echo lands', async () => {
+      const { controller, state, sent } = makeController(promptInput('git '), [
+        'git commit -m "wip"',
+      ])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.acceptWord()
+
+      state.input = promptInput('git commit')
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      expect(suggestionSuffix(controller.current!)).toBe(' -m "wip"')
+
+      controller.acceptWord()
+      expect(sent).toEqual(['commit', ' -m'])
+    })
+
+    it('is a full accept when one word is all that is left', async () => {
+      const { controller, sent, accepted } = makeController(promptInput('git s'), ['git status'])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.acceptWord()
+      expect(sent).toEqual(['tatus'])
+      expect(accepted).toEqual(['git status'])
+    })
+
+    it('sends nothing when the line moved under the suggestion', async () => {
+      const { controller, state, sent } = makeController(promptInput('git '), ['git commit -m x'])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      state.input = promptInput('sudo reboot')
+      controller.acceptWord()
+      expect(sent).toEqual([])
+    })
   })
 
   it('moves through the list and wraps', async () => {
@@ -476,6 +572,26 @@ describe('suggestionSuffix', () => {
   it('is empty when the candidate does not extend what was typed', () => {
     expect(suggestionSuffix(view(['sudo reboot'], 'git s'))).toBe('')
     expect(suggestionSuffix(view([], 'git s'))).toBe('')
+  })
+})
+
+describe('firstWordOfSuffix', () => {
+  it('takes the leading space with the word, so nothing runs together', () => {
+    expect(firstWordOfSuffix(' -m "wip"')).toBe(' -m')
+    expect(firstWordOfSuffix('commit -m "wip"')).toBe('commit')
+  })
+
+  it('crosses a path in one press rather than one segment at a time', () => {
+    // Not readline's `forward-word`: the unit someone changes their mind about
+    // on a command line is the argument, not the path segment.
+    expect(firstWordOfSuffix(' /etc/nginx/nginx.conf && reload')).toBe(' /etc/nginx/nginx.conf')
+  })
+
+  it('is the whole remainder when there is no boundary left in it', () => {
+    // Which is what makes the last word-accept of a line a full accept.
+    expect(firstWordOfSuffix('tatus')).toBe('tatus')
+    expect(firstWordOfSuffix('')).toBe('')
+    expect(firstWordOfSuffix('   ')).toBe('   ')
   })
 })
 

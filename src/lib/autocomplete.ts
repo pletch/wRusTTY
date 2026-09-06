@@ -21,6 +21,7 @@ import {
 /** What a key does while a suggestion is showing. */
 export type SuggestionKeyAction =
   | 'accept'
+  | 'accept-word'
   | 'next'
   | 'previous'
   | 'dismiss'
@@ -62,6 +63,11 @@ export type SuggestionMode = 'inline' | 'list'
  *     the end of the line, where it would otherwise be a no-op; in the middle
  *     of a line it is a cursor move the user meant. This is the fish/zsh
  *     autosuggestion binding, so the finger already knows it.
+ *   - **Alt+Right** takes one word of it, for the common case where a
+ *     remembered command is right for its first word or two and wrong after —
+ *     `git commit -m` from a suggestion whose message belongs to last week.
+ *     Also fish's binding, and gated on the end of the line for the same
+ *     reason as plain Right: `forward-word` there has nothing to move over.
  *   - **Up and Down belong to the shell**, except in the one state where the
  *     user has explicitly asked for something else. Walking history is the
  *     single most common thing done at a prompt, and an offer that appeared on
@@ -108,6 +114,12 @@ export function suggestionKeyAction(
     // arrows below, and for the same reason: only in list mode.
     if (opts.mode === 'list' && e.key === 'ArrowDown') return 'next'
     if (opts.mode === 'list' && e.key === 'ArrowUp') return 'previous'
+    return 'ignore'
+  }
+  // Alt is the word-wise modifier everywhere else a line is edited, and it is
+  // the only other one that means anything here.
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    if (e.key === 'ArrowRight') return opts.atLineEnd ? 'accept-word' : 'ignore'
     return 'ignore'
   }
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return 'ignore'
@@ -208,6 +220,28 @@ export interface SuggestionView {
 export function suggestionSuffix(view: SuggestionView): string {
   const command = view.items[view.index] ?? ''
   return command.startsWith(view.typed) ? command.slice(view.typed.length) : ''
+}
+
+/**
+ * The first word of a suffix — what Alt+Right takes.
+ *
+ * A word here is whitespace-delimited: any leading space, then the run of
+ * non-space that follows. So from `git ` + `commit -m "wip"` the first press
+ * takes `commit`, the second ` -m`, the third ` "wip"`.
+ *
+ * Splitting on punctuation too — readline's `forward-word`, which would stop
+ * at every `/` in a path — was the other option and is the wrong one for a
+ * *command* line. The unit a user changes their mind about is the argument,
+ * not the path segment, and a rule that needs three presses to cross
+ * `/etc/nginx/nginx.conf` is a rule that makes the whole-line accept look
+ * better than it is.
+ *
+ * Returns the entire suffix when it holds no word boundary, which makes a
+ * word-accept of a one-word remainder identical to accepting the lot.
+ */
+export function firstWordOfSuffix(suffix: string): string {
+  const match = /^\s*\S+/.exec(suffix)
+  return match ? match[0] : suffix
 }
 
 /** How many to offer. Five is enough to be worth looking at and few enough to
@@ -381,7 +415,7 @@ export class AutocompleteController {
   }
 
   /**
-   * Take the current suggestion.
+   * Take the current suggestion, whole.
    *
    * **Re-reads the grid first**, and this is what makes a wrong origin
    * harmless rather than destructive. Between the suggestion being drawn and
@@ -394,6 +428,28 @@ export class AutocompleteController {
    * that deletes what the user typed.
    */
   accept(): void {
+    this.take(false)
+  }
+
+  /**
+   * Take the first word of the current suggestion and no more.
+   *
+   * Nothing is remembered as "accepted" for a partial take — the user has
+   * said the first word was right, not that this command was the one they
+   * wanted, and ranking the whole line up on that is reading too much into a
+   * keystroke.
+   *
+   * The offer is dropped rather than trimmed in place, because the word is
+   * only on the line once the far end echoes it. The echo lands, `refresh`
+   * re-reads a longer prefix and asks the store again, and the rest of the
+   * command comes back as a fresh suggestion — which is also what makes a
+   * second Alt+Right take the second word.
+   */
+  acceptWord(): void {
+    this.take(true)
+  }
+
+  private take(wordOnly: boolean): void {
     const view = this.view
     if (!view) return
     const command = view.items[view.index]
@@ -403,7 +459,12 @@ export class AutocompleteController {
     if (!command.startsWith(input.text)) return
     const suffix = command.slice(input.text.length)
     if (suffix === '') return
-    this.deps.send(suffix)
+    const text = wordOnly ? firstWordOfSuffix(suffix) : suffix
+    this.deps.send(text)
+    // A word that turned out to be the whole remainder is a full accept, and
+    // is treated as one. Anything short of that leaves `lastQueried` null so
+    // the echo re-opens the offer on the longer prefix.
+    if (text !== suffix) return
     this.deps.noteAccepted(command)
     // The line now reads as the full command, so the next refresh has nothing
     // longer to offer. Saying so here avoids a flicker of the list re-opening
@@ -428,6 +489,9 @@ export class AutocompleteController {
     switch (action) {
       case 'accept':
         this.accept()
+        return true
+      case 'accept-word':
+        this.acceptWord()
         return true
       case 'next':
         this.move(1)

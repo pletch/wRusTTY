@@ -386,6 +386,11 @@ Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
   suggestion happened to be showing, Tab took the remembered command instead
   of the path being typed, which is not what anyone presses Tab for. So Tab
   passes through in every state, and pressing it dismisses the offer.
+- **Alt+Right at end of line** — take one word of it, whitespace-delimited.
+  For the case where a remembered command is right for its first word or two
+  and wrong after. Also fish's binding. The word only reaches the line when the
+  far end echoes it, and that echo re-offers the rest, which is what makes a
+  second press take a second word.
 - **Ctrl+Space** — open the inline suggestion out into the list.
 - **Up/Down** — the shell's, except inside the list, where they navigate.
 
