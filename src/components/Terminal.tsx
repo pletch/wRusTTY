@@ -262,6 +262,17 @@ export function Terminal({
    *  typing has to say so, and has to say how to get back out. */
   const [hintMode, setHintMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  /**
+   * A full-screen program has the terminal.
+   *
+   * Mirrored into React state solely so the find bar can say what it can see.
+   * The alternate screen has no scrollback -- it is exactly `rows` tall -- so
+   * a search there covers the visible screen and nothing else, and scrolling
+   * inside such a program is the program repainting rather than history
+   * accumulating. Silently returning two hits where the buffer holds hundreds
+   * reads as a broken search; saying so reads as a boundary.
+   */
+  const [altScreen, setAltScreen] = useState(false)
   // Result position for the "N/M" count, fed by the addon's onDidChangeResults
   // (set up in the connect effect). index is 0-based, -1 when there are none.
   const [searchResults, setSearchResults] = useState<{ index: number; count: number }>({
@@ -1468,6 +1479,7 @@ export function Terminal({
     // eventually reports can be recognized as "you quit an editor", not "a
     // batch job you were waiting on has landed".
     const bufferListener = term.onBufferChange((isAlternate) => {
+      setAltScreen(isAlternate)
       promptInput.setAltScreen(isAlternate)
       if (isAlternate) autocomplete.clear()
       tracker.setAltScreen(isAlternate)
@@ -2564,6 +2576,14 @@ export function Terminal({
                 ? 'None'
                 : ''}
           </span>
+          {altScreen && (
+            <span
+              className="mr-1 shrink-0 whitespace-nowrap rounded bg-amber-400/15 px-1.5 py-0.5 text-[0.65rem] font-medium text-amber-200/90"
+              title="A full-screen program has the terminal, and its screen has no scrollback. Only what is on screen right now can be searched -- scrolling inside the program repaints these rows rather than keeping the old ones. Use the program's own search (tmux copy-mode, or / in vim and less)."
+            >
+              screen only
+            </span>
+          )}
           <button
             onClick={() => setSearchCaseSensitive((v) => !v)}
             className={`flex items-center justify-center rounded p-1 transition-colors duration-fast ease-swift ${
