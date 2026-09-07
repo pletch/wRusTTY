@@ -312,6 +312,42 @@ describe('native find-in-scrollback', () => {
     expect(rows.every((r) => r >= top - 2 && r < top + 24 + 2)).toBe(true)
   })
 
+  /**
+   * A search typed while scrolled back starts from what is on screen.
+   *
+   * This one shipped wrong. A fresh query took the newest match — one
+   * `SELECT_NEXT` — which threw the viewport to the bottom of the buffer the
+   * moment the query was typed. Anything read out of history that also occurs
+   * near the prompt, which is most of what one searches for, therefore looked
+   * like it had only been found on the current screen.
+   *
+   * The frames matter as much as the assertion: the scan runs newest to
+   * oldest inside a per-frame budget, so on a 3,000-row buffer the right match
+   * is not in the list yet when `search()` returns, and the selection has to
+   * keep walking back over the following frames. Asserting only after the
+   * first frame passes against a build that settles for the oldest match it
+   * happened to find in 3 ms.
+   */
+  it('starts a fresh query from the viewport, not the bottom of the buffer', async () => {
+    const t = await engineWith(lines(3000), 80, 24)
+    t.engine.scrollLines(-1500)
+    for (let i = 0; i < 5; i++) t.frame()
+    const anchor = t.engine.viewportY
+    expect(anchor, 'scrolled well back').toBeLessThan(2000)
+
+    t.engine.search('needle')
+    for (let i = 0; i < 200; i++) t.frame()
+
+    expect(t.last().count, 'the whole buffer, however far the view is from it').toBe(1000)
+    // Where it landed, not merely that it did not stay put: the match it
+    // selects is the first one at or after the row the query was typed at.
+    const rows = [...t.highlights()!.keys()]
+    expect(Math.min(...rows), 'the selection is near where the user was reading').toBeGreaterThanOrEqual(
+      anchor - 24,
+    )
+    expect(Math.max(...rows)).toBeLessThan(anchor + 48)
+  })
+
   /* ---- the differentials: the terminal moves under an open find bar ---- */
 
   /**

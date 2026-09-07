@@ -119,6 +119,19 @@ export class NativeSearchController {
    * things a feed exists to notice here: new output, and a resize.
    */
   private fedAt = ''
+  /**
+   * Where the viewport was when the current query was typed, or -1 once the
+   * selection has settled there.
+   *
+   * A fresh query starts from what the user is looking at, but the search
+   * cannot answer where that is on the first frame: it scans newest to oldest
+   * within a frame budget, so the match list is a prefix of itself until the
+   * status goes COMPLETE, and a viewport deep in history is not in that prefix
+   * yet. Holding the row the query was typed at lets each frame step the
+   * selection further back as the list grows, converging on the right match
+   * instead of settling for the oldest one found so far.
+   */
+  private anchorTop = -1
   /** The status the last tick reported. Anything but COMPLETE means the search
    *  still has work it cannot do without another feed, so the gate has to let
    *  one through even on a terminal that has not moved — otherwise a search
@@ -207,13 +220,24 @@ export class NativeSearchController {
     this.pump(true)
 
     if (!this.selected) {
-      // Nothing selected yet, so this is a fresh query. `SELECT_NEXT` takes the
-      // newest match — the bottom of the screen, working up into history —
-      // which is the direction a search started at a prompt wants. The JS path
-      // instead takes the first match at or after the top of the viewport;
-      // this is the one deliberate behaviour difference between them.
-      this.selected = this.select(abi.SEARCH_OPT_SELECT_NEXT)
+      // Nothing selected yet, so this is a fresh query, and it starts from
+      // what the user is looking at.
+      //
+      // This used to take the newest match instead — one `SELECT_NEXT`, the
+      // bottom of the buffer — on the reasoning that a search begun at a
+      // prompt wants to work upward from there. That is true only when the
+      // pane is *at* the prompt. Scrolled back, it yanked the viewport to the
+      // bottom the instant the query was typed, and since a term read out of
+      // history usually also appears near the prompt, the result looked like
+      // the search could only see the current screen. The JS path never had
+      // this: it takes the first match at or after the top of the viewport,
+      // and that is now what both do.
+      this.anchorTop = this.host.viewportY()
+      this.selected = this.stepTowardAnchor()
     } else if (!options?.incremental) {
+      // The user has taken over. Whatever the anchor was still converging on,
+      // it is no longer what they asked for.
+      this.anchorTop = -1
       // Ours counts oldest-first, so "next" moves toward newer content, which
       // is the core's SELECT_PREV. Getting this pair the wrong way round makes
       // the find bar walk backwards, which is why they are named here rather
@@ -236,6 +260,14 @@ export class NativeSearchController {
   onFrame(): void {
     if (!this.query) return
     this.pump(false)
+    if (this.anchorTop >= 0) {
+      // Still converging on where the query was typed. Forced, because the
+      // signature `refresh` compares on cannot see a selection that moved
+      // without the count changing.
+      this.stepTowardAnchor()
+      this.refresh(true)
+      return
+    }
     this.refresh(false)
   }
 
@@ -248,6 +280,7 @@ export class NativeSearchController {
     }
     this.query = ''
     this.selected = false
+    this.anchorTop = -1
     this.signature = ''
     this.fedAt = ''
     this.status = abi.SEARCH_STATUS_COMPLETE
@@ -313,6 +346,64 @@ export class NativeSearchController {
    *  which is an ordinary answer for a query that matches nothing. */
   private select(option: number): boolean {
     return this.ex.ghostty_search_set(this.handle, option, 0) === abi.GHOSTTY_SUCCESS
+  }
+
+  /**
+   * Walks the selection back toward `anchorTop` — the oldest match at or after
+   * the top of the viewport, which is the topmost hit on screen, or the next
+   * one below it if the screen has none.
+   *
+   * The core has no "select this index": `SELECT_NEXT`/`SELECT_PREV` are the
+   * whole vocabulary, and from nothing selected the first `SELECT_NEXT` lands
+   * on the newest match. So the target is found in the match list — ordered
+   * newest to oldest, hence descending by row — and stepped to. Stepping is
+   * why this reads the list rather than walking and testing as it goes: one
+   * binary search plus N cheap `search_set` calls, against a
+   * `point_from_grid_ref` pair per step.
+   *
+   * Called again each frame while the anchor is live, because the list it
+   * searches only grows: the scan runs newest to oldest, so the target index
+   * moves monotonically away from the newest match and this only ever steps in
+   * one direction. `search()` alone would stop at the oldest match found
+   * inside its first frame budget, which on a deep scrollback is nowhere near
+   * where the user was reading.
+   */
+  private stepTowardAnchor(): boolean {
+    const total = this.queryCapacity(abi.SEARCH_DATA_MATCHES)
+    if (total === 0) return this.selected
+    this.ensureMatchCapacity(total)
+    const written = this.fillMatches(abi.SEARCH_DATA_MATCHES, this.matchCap)
+    if (written === 0) return this.selected
+
+    // First index whose row is above the anchor. Rows descend with the index,
+    // so everything before it is at or below the anchor and the one just
+    // before it is the oldest of those — the match wanted.
+    let lo = 0
+    let hi = written
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      const y = this.startRowOf(mid)
+      if (y === null || y >= this.anchorTop) lo = mid + 1
+      else hi = mid
+    }
+    // lo === 0 means every match found so far is above the anchor, with
+    // nothing at or below it to start from. The JS path falls back to the
+    // newest there, so this does too.
+    const target = lo === 0 ? 0 : lo - 1
+
+    // `written` is a prefix of the whole list until the status goes COMPLETE,
+    // so a target at its end is not yet known to be the real one: hold the
+    // anchor and come back next frame. Only a target with older matches beyond
+    // it, or a finished scan, is final.
+    if (this.status === abi.SEARCH_STATUS_COMPLETE || target < written - 1) this.anchorTop = -1
+
+    let ok = this.selected
+    const current = this.selected ? (this.readUsize(abi.SEARCH_DATA_SELECTED_INDEX) ?? 0) : -1
+    for (let i = current; i < target; i++) {
+      ok = this.select(abi.SEARCH_OPT_SELECT_NEXT)
+      if (!ok) break
+    }
+    return ok
   }
 
   private readUsize(data: number): number | null {
