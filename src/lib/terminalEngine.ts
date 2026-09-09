@@ -228,6 +228,13 @@ export interface TerminalEngine {
    */
   readRowText?(fromAbs: number, toAbs: number): RowText[]
 
+  /**
+   * Everything copy reads — rows, wrap flags and the resulting selection text
+   * — as a diagnostic dump. See `GhosttyEngine.dumpState`; optional because
+   * only the real engine has a grid to describe.
+   */
+  dumpState?(): string
+
   /** The URL under a pointer event, for a context menu. */
   linkAtPointer?(e: MouseEvent): string | null
   /** Open a URL that came back from `linkAtPointer`. Goes through the engine

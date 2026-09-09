@@ -39,6 +39,7 @@ import {
   parseCellInto,
   emptyCell,
   MODE_BRACKETED_PASTE,
+  MODE_ALT_SCREEN,
   MODE_FOCUS_REPORTING,
   MODE_MOUSE_SGR_PIXELS,
   allocBufferOrThrow,
@@ -2599,5 +2600,103 @@ export class GhosttyEngine implements TerminalEngine {
     if (!this.renderer || !this.wasm) return
     const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
     this.selection.selectAll(scrollbackCount + this._rows)
+  }
+
+  /**
+   * Everything copy reads, written out as text, for a fault nobody can
+   * reproduce on demand.
+   *
+   * Text pasted out of a pane has come back with runs missing, always on a row
+   * boundary. Copy is `readRows` (the cells) joined on `readWrapFlags` (which
+   * rows continue which), so a hole is one of exactly three things: the cells
+   * were already wrong, a wrap flag was wrong and welded two unrelated rows
+   * together, or `SelectionController.text` mis-sliced correct inputs. Those
+   * three call for completely different fixes and nothing after the fact can
+   * tell them apart — the clipboard holds only the answer, not the working.
+   *
+   * So this dumps the working: the same rows, the same flags and the same
+   * selection text, taken through the same readers in the same order copy
+   * takes them. Whoever reads it can re-run the join by hand and see which of
+   * the three it was.
+   *
+   * Rows are JSON-quoted because trailing spaces are load-bearing here — a row
+   * the next one continues keeps its tail, and a row that ends a line has it
+   * trimmed, so "where do the spaces stop" is half the evidence and an
+   * unquoted dump would throw it away.
+   *
+   * `snapshotScrollback` is reported beside the live count deliberately: they
+   * are read from different places (`readRows` splits on the snapshot,
+   * `readWrapFlags` on the live count) and a gap between them is the first
+   * thing worth ruling out.
+   */
+  dumpState(): string {
+    const lines: string[] = []
+    if (!this.wasm || !this.termPtr) return 'no core: the engine has no terminal to dump\n'
+    // Sampled before the sync below, because the gap worth reporting is the one
+    // a copy taken right now would have hit: `readRows` splits on whatever
+    // snapshot the last frame left behind, while `readWrapFlags` splits on the
+    // live count. Reading them afterwards would only ever prove they agree.
+    const liveBefore = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    const snapshotBefore = this.snapshotScrollback
+    // Rebuilt rather than inherited from whenever the last frame happened to
+    // draw, so the rows below describe the grid as it is at the keystroke.
+    this.syncReadState()
+
+    const total = this.scrollbackLength
+    const sel = this.renderer?.selection ?? null
+    lines.push(`wrustty pane dump ${new Date().toISOString()}`)
+    lines.push(`cols=${this._cols} rows=${this._rows}`)
+    lines.push(`scrollbackLength=${total} viewportY=${this.viewportY} viewportOffset=${this._viewportOffset}`)
+    lines.push(
+      // -1 is "no frame has drawn yet", which is the one case where the two
+      // are allowed to differ — there is no snapshot to be out of step with.
+      `scrollbackRows: live=${liveBefore} lastFrameSnapshot=` +
+        (snapshotBefore < 0 ? 'none yet' : String(snapshotBefore)) +
+        (snapshotBefore < 0 || liveBefore === snapshotBefore
+          ? ''
+          : '  <-- MISMATCH, output landed since the last frame'),
+    )
+    lines.push(`altScreen=${this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_ALT_SCREEN, 0) !== 0}`)
+    const cur = this.terminalCursorCell()
+    lines.push(`cursor=${cur.x},${cur.y}`)
+    lines.push(
+      sel
+        ? `selection=(${sel.start.x},${sel.start.y})..(${sel.end.x},${sel.end.y})` +
+            ` rectangular=${sel.rectangular === true}`
+        : 'selection=none',
+    )
+
+    // The selection plus a margin, rather than the whole buffer. A full
+    // scrollback here is tens of thousands of rows — megabytes of text, and
+    // seconds of a frozen window to produce it, for a keystroke whose whole
+    // point is to be cheap enough to hit the moment something looks wrong.
+    // The margin is what makes it more than the selection: a wrongly joined
+    // pair is only recognisable against the rows on either side of it.
+    const MARGIN = 20
+    const from = Math.max(0, (sel ? Math.min(sel.start.y, sel.end.y) : this.viewportY) - MARGIN)
+    const to = Math.min(
+      total - 1,
+      (sel ? Math.max(sel.start.y, sel.end.y) : this.viewportY + this._rows - 1) + MARGIN,
+    )
+    const rows = this.readRows(from, to)
+    // One past the end, exactly as `SelectionController.text` asks for it, so
+    // the flag on the row after the last is here too — that is the one that
+    // decides whether the selection's final row runs on.
+    const wrapped = this.readWrapFlags(from, to + 1)
+    lines.push('')
+    lines.push(
+      `rows ${from}..${to} of ${total}; "cont" marks a row the previous one runs into`,
+    )
+    for (let i = 0; i < rows.length; i++) {
+      const cont = wrapped[i] === true ? 'cont' : '    '
+      lines.push(`${String(from + i).padStart(6)} ${cont} ${JSON.stringify(rows[i].text)}`)
+    }
+    lines.push(`${String(to + 1).padStart(6)} ${wrapped[rows.length] === true ? 'cont' : '    '} (row after the last, flag only)`)
+
+    lines.push('')
+    lines.push('selection text, as copy would put it on the clipboard:')
+    lines.push(JSON.stringify(this.getSelection()))
+    lines.push('')
+    return lines.join('\n')
   }
 }

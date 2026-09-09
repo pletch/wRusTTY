@@ -145,6 +145,45 @@ fn timestamp() -> u64 {
         .unwrap_or(0)
 }
 
+/// Opens a file only its owner can read.
+///
+/// The mode goes on the open rather than on the created file: `create` then
+/// `set_permissions` leaves a window, however brief, in which the file exists
+/// at the default umask and another local user can open it. Once they hold the
+/// descriptor, tightening the mode afterwards doesn't take it back. No-op on
+/// Windows, where the per-user %APPDATA% ACL already covers this.
+fn create_private(path: &std::path::Path) -> Result<std::fs::File, String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path).map_err(|e| e.to_string())
+}
+
+/// Records a resize in the session log, if one is running.
+///
+/// A raw log is replayed to rebuild the grid it produced, and a replay needs
+/// the width: the same bytes wrapped at 80 columns and at 66 are different
+/// screens, so a log that never says which is not replayable at all. A resize
+/// is also a suspect in its own right -- it reflows every wrapped line in the
+/// buffer -- which makes when one landed worth as much as what it changed to.
+///
+/// Written as an APC string (ESC _ ... ESC \), the envelope terminals are
+/// required to ignore. That is what keeps the log replayable: feeding it back
+/// renders exactly what the session rendered, marker included, because the
+/// marker draws nothing. `LogFilter` treats APC as a string sequence, so
+/// plain-text logs drop it without knowing it exists.
+///
+/// Deliberately not `ESC _ G`: that prefix is the Kitty graphics protocol, and
+/// a terminal implementing it would try to decode this.
+pub(crate) fn note_resize(state: &LoggingState, session_id: &str, cols: u16, rows: u16) {
+    let marker = format!("\x1b_wrustty;resize;{cols}x{rows};{}\x1b\\", timestamp());
+    write(state, session_id, marker.as_bytes());
+}
+
 /// Starts logging for `session_id`, returning the path of the created file.
 #[tauri::command]
 pub async fn session_log_start(
@@ -166,16 +205,7 @@ pub async fn session_log_start(
     // transcript exists at the default umask and another local user can open
     // it. Once they hold the descriptor, tightening the mode afterwards
     // doesn't take it back.
-    let file = {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        opts.open(&path).map_err(|e| e.to_string())?
-    };
+    let file = create_private(&path)?;
     let sink = LogSink {
         file,
         filter: plain_text.then(LogFilter::default),
@@ -204,6 +234,33 @@ pub async fn session_log_stop(
 /// Opens the session-logs folder in the OS file manager. Creates it first so
 /// the action still works before anything has been logged this run (the dir
 /// is only otherwise created lazily on the first `session_log_start`).
+/// Writes a pane dump beside the session logs, returning its path.
+///
+/// The contents are built in the webview (`GhosttyEngine.dumpState`) because
+/// that is where the grid lives; this end owns only where such a file may go
+/// and who may read it, and that answer is the same as for a transcript --
+/// the logs directory, owner-only. A dump holds whatever was on screen, so it
+/// is exactly as sensitive as the log it sits beside.
+///
+/// Timestamped rather than overwritten. The fault this exists for is
+/// intermittent, so a second dump is a second sample and not a correction of
+/// the first; a fixed filename would quietly destroy the only copy of a state
+/// nobody can reproduce.
+#[tauri::command]
+pub async fn write_pane_dump(
+    app: AppHandle,
+    label: String,
+    contents: String,
+) -> Result<String, String> {
+    let dir = logs_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}-pane-{}.txt", sanitize(&label), timestamp()));
+    let mut file = create_private(&path)?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub async fn reveal_session_logs(app: AppHandle) -> Result<(), String> {
     let dir = logs_dir(&app)?;

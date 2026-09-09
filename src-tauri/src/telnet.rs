@@ -91,7 +91,10 @@ pub async fn telnet_resize(
     cols: u16,
     rows: u16,
     state: State<'_, TelnetState>,
+    logging: State<'_, crate::logging::LoggingState>,
 ) -> Result<(), String> {
+    // See `ssh_resize`: the marker goes down before the size it announces.
+    crate::logging::note_resize(&logging, &session_id, cols, rows);
     state.sessions.resize(&session_id, cols, rows).await
 }
 

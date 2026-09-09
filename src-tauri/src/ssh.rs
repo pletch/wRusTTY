@@ -747,7 +747,11 @@ pub async fn ssh_resize(
     cols: u16,
     rows: u16,
     state: State<'_, SshState>,
+    logging: State<'_, crate::logging::LoggingState>,
 ) -> Result<(), String> {
+    // Noted before the resize is applied, so the log reads as "from here on,
+    // this size" -- the output that follows is the size the marker names.
+    crate::logging::note_resize(&logging, &session_id, cols, rows);
     state.sessions.resize(&session_id, cols, rows).await
 }
 

@@ -146,6 +146,7 @@ pub fn run() {
             logging::session_log_start,
             logging::session_log_stop,
             logging::reveal_session_logs,
+            logging::write_pane_dump,
             window_effects::set_window_vibrancy,
             coalesce::delivery_stats,
             coalesce::reset_delivery_stats,

@@ -1985,6 +1985,26 @@ export function Terminal({
         e.preventDefault()
         e.stopPropagation()
         term.toggleMarkMode?.()
+      } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+        // Capturing a copy fault that nobody can reproduce on demand. Bound to
+        // a key rather than offered in a menu because the state worth having is
+        // the state at the moment it is noticed, and anything that takes a
+        // mouse and two clicks to reach has already let output scroll over it.
+        //
+        // Consumed like the bindings above: Ctrl+Shift+D encodes under the
+        // Kitty protocol, so leaving it unclaimed would send it on to whatever
+        // is running.
+        e.preventDefault()
+        e.stopPropagation()
+        const dump = term.dumpState?.()
+        if (!dump) {
+          toast.error('This pane has no engine to dump.')
+          return
+        }
+        sessionLog
+          .writePaneDump(labelRef.current, dump)
+          .then((path) => toast.success(`Pane dump written to ${path}`))
+          .catch((err) => toast.error(`Could not write the pane dump: ${String(err)}`))
       } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
         // Opening a link with the keyboard, beside mark mode's Ctrl+Shift+M so
         // the two read as a family. Consumed like the bindings above, and it

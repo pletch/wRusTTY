@@ -62,6 +62,10 @@ export const CURSOR_STYLE_BLOCK_HOLLOW = 3
  */
 export const MODE_APP_CURSOR_KEYS = 1 // DECCKM
 export const MODE_BRACKETED_PASTE = 2004
+/** Whether a full-screen program is on the alternate screen. Read only by the
+ *  pane dump, where "was this a TUI repainting in place" is the first question
+ *  asked of a grid that came out wrong. */
+export const MODE_ALT_SCREEN = 1049
 
 /**
  * Mouse reporting. `ghostty_terminal_has_mouse_tracking` answers "is anything
