@@ -429,6 +429,26 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private snapshotScrollback = -1
 
+  /**
+   * Absolute rows whose scrollback read failed during the last `readRows`.
+   *
+   * `ghostty_terminal_get_scrollback_line` can answer "no" — the shim returns 0
+   * when `grid_ref` will not resolve the row — and when it does it leaves the
+   * caller's buffer exactly as it found it. Discarding that answer, which this
+   * function did, turns the miss into a row of spaces on the first read and a
+   * duplicate of the previous row on every one after, and copy then reports
+   * either as the buffer's contents. That is the same fault the
+   * `allocBufferOrThrow` above refuses to commit for a failed allocation, and
+   * it was going unrecorded three lines below it.
+   *
+   * Kept rather than thrown because a blank row is still the right thing to
+   * hand back — absolute numbering has to survive, or every caller indexing
+   * `out` by offset reads the wrong row — but silently is the wrong way to hand
+   * it back. `dumpState` reports this, so a copy that came out short says so
+   * instead of leaving the reader to infer it from the shape of the damage.
+   */
+  private rowReadFailures: number[] = []
+
   constructor() {
     // Narrow by design: reads of buffer state, plus requests to move or
     // repaint the view. Searching is not allowed to do anything else.
@@ -939,6 +959,9 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private readRows(fromAbs: number, toAbs: number): RowText[] {
     const out: RowText[] = []
+    // Per call, not cumulative: the question a reader ever asks is "did the
+    // rows I am looking at right now come back whole".
+    this.rowReadFailures = []
     if (!this.wasm || !this.termPtr) return out
     const wasm = this.wasm
     const wasmCols = wasm.exports.ghostty_render_state_get_cols(this.termPtr)
@@ -1005,7 +1028,14 @@ export class GhosttyEngine implements TerminalEngine {
           out.push(blank())
           continue
         }
-        wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, abs, linePtr, wasmCols)
+        // Answered, not assumed: on a miss the buffer still holds the previous
+        // row, so trusting this would copy that row's text under this row's
+        // number. See `rowReadFailures`.
+        if (wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, abs, linePtr, wasmCols) === 0) {
+          this.rowReadFailures.push(abs)
+          out.push(blank())
+          continue
+        }
         isScrollback = true
       } else {
         activeRow = abs - scrollbackCount
@@ -1048,6 +1078,15 @@ export class GhosttyEngine implements TerminalEngine {
       out.push({ text, colStart })
     }
 
+    if (this.rowReadFailures.length > 0) {
+      // Loud, because this should not happen and every consumer of `readRows`
+      // — copy, search, links — quietly produces a wrong answer when it does.
+      console.error(
+        `Ghostty: ${this.rowReadFailures.length} scrollback row(s) could not be read` +
+          ` (${this.rowReadFailures.slice(0, 8).join(', ')}` +
+          `${this.rowReadFailures.length > 8 ? ', …' : ''}); they read as blank.`,
+      )
+    }
     if (gPtr !== 0) wasm.exports.ghostty_wasm_free_u8_array(gPtr, gCap * 4)
     if (linePtr !== 0) wasm.exports.ghostty_wasm_free_u8_array(linePtr, lineSize)
     wasm.exports.ghostty_wasm_free_u8_array(viewPtr, viewSize)
@@ -2692,6 +2731,14 @@ export class GhosttyEngine implements TerminalEngine {
       lines.push(`${String(from + i).padStart(6)} ${cont} ${JSON.stringify(rows[i].text)}`)
     }
     lines.push(`${String(to + 1).padStart(6)} ${wrapped[rows.length] === true ? 'cont' : '    '} (row after the last, flag only)`)
+
+    lines.push('')
+    lines.push(
+      this.rowReadFailures.length === 0
+        ? 'row reads: all rows above came back from the core'
+        : `row reads: ${this.rowReadFailures.length} FAILED and read as blank — ` +
+          this.rowReadFailures.join(', '),
+    )
 
     lines.push('')
     lines.push('selection text, as copy would put it on the clipboard:')
