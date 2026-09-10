@@ -211,3 +211,36 @@ baseline was measuring an empty loop: `get_scrollback_line` reads through
 first, every scrollback row reads back **blank** — no error, no zero return, just
 spaces. `search.mjs check` compares both engines' text row by row and is the only
 reason this was caught. Run it whenever the harness changes.
+
+## `compress.mjs` — scrollback compression, and why we cannot have it
+
+`ghostty_terminal_compress` and `ghostty_terminal_compression_activity` are
+exported by the binary we ship and are never called. On paper they are exactly
+what the byte-budget tiers want: compress cold history and the same budget holds
+more of it. Upstream `60b43068` even sharpened the freestanding path, cutting the
+scratch memset on the compression path down to the bytes actually written.
+
+**The answer is no, and it is structural.** The C API returns
+`GHOSTTY_TERMINAL_COMPRESSION_RESULT_UNSUPPORTED` on every call, at every tier:
+
+| tier / width | rows kept, off → on | wasm heap | result |
+|---|---|---|---|
+| 8 MB @ 80 cols | 2,765 → 2,765 | 5.1 → 5.1 MB | UNSUPPORTED |
+| 32 MB @ 80 cols | 17,864 → 17,864 | 16.4 → 16.4 MB | UNSUPPORTED |
+| 32 MB @ 200 cols | 7,160 → 7,160 | 14.3 → 14.3 MB | UNSUPPORTED |
+
+The gate is `terminal_mem.canReclaim`, and the disqualifying line is not the OS
+list — it is `builtin.target.ptrBitWidth() != 64`. **wasm32 is 32-bit**, so no
+amount of upstream work on Linux, Darwin or Windows reclamation reaches us.
+
+The reason it is a pointer-width test is the part worth keeping: compression
+retains each page's complete *mapping* for its lifetime and reclaims only the
+physical pages behind it. That trade is free where virtual address space is
+effectively unlimited, and meaningless in a wasm32 linear memory, where the
+address range **is** the memory. So this is not a feature awaiting a port; the
+mechanism has nothing to trade on our target.
+
+Re-run this probe after any re-pin that touches `src/terminal/mem.zig`. A
+`PENDING` or `COMPLETE` in the result column is the signal that something
+changed — and would also make `60b43068` a live win rather than a theoretical
+one. Nothing short of a wasm64 build changes the pointer-width gate.
