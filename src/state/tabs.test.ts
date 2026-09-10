@@ -181,6 +181,7 @@ describe('paneConnected / paneDisconnected / paneProfileApplied', () => {
       source: telnet('example.com', 23),
       backspaceSendsCtrlH: true,
       autoReconnect: null,
+      initialLabel: null,
     })
     expect((state.tabs[0].root as typeof l).source).toEqual(telnet('example.com', 23))
     expect(state.tabs[0].title).toBe('example.com:23')

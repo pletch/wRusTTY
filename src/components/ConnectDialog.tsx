@@ -80,7 +80,13 @@ interface Props {
   onConnect: (
     source: ConnectionSource,
     logSession: boolean,
-    paneOptions?: { backspaceSendsCtrlH: boolean | null; autoReconnect: boolean | null },
+    paneOptions?: {
+      backspaceSendsCtrlH: boolean | null
+      autoReconnect: boolean | null
+      /** The saved session's name, when this connect goes through a profile
+       * whose source carries only an id. */
+      label?: string | null
+    },
   ) => void
   /** Saved workspaces, listed above the sessions. Absent hides the section. */
   workspaces?: Workspace[]
@@ -451,9 +457,10 @@ export function ConnectDialog({
       // purely "remember this shell and how to start it".
       if (saveProfile && onSaveProfile) {
         const profileId = initial?.id ?? crypto.randomUUID()
+        const savedLabel = label.trim() || shellLabel(localConfig)
         await onSaveProfile({
           id: profileId,
-          label: label.trim() || shellLabel(localConfig),
+          label: savedLabel,
           folder: folder.trim() || null,
           // Unused for local; carries the executable so anything reading
           // `host` generically shows something meaningful rather than blank.
@@ -490,7 +497,13 @@ export function ConnectDialog({
         // shell the same way every later one will — the same reasoning serial
         // uses, and the case it catches is a shell id that no longer matches
         // anything installed, which is better found now than months from now.
-        onConnect({ protocol: 'localProfile', profileId, shellId: shellIdFor(localConfig) }, logSession, paneOptions)
+        onConnect(
+          { protocol: 'localProfile', profileId, shellId: shellIdFor(localConfig) },
+          logSession,
+          // The name goes with it: a `localProfile` source carries only an id,
+          // and without this the pane titles itself with a UUID.
+          { ...paneOptions, label: savedLabel },
+        )
         return
       }
       onConnect({ protocol: 'local', config: localConfig }, logSession, paneOptions)
@@ -564,7 +577,11 @@ export function ConnectDialog({
         // the adapter the same way every later one will — if the identity is
         // wrong, it fails now, while the user is still looking at the form,
         // rather than the next time they open the session.
-        onConnect({ protocol: 'serialProfile', profileId }, logSession, paneOptions)
+        // Same as the local branch: `serialProfile` carries only an id.
+        onConnect({ protocol: 'serialProfile', profileId }, logSession, {
+          ...paneOptions,
+          label: label.trim() || serialConfig.portName,
+        })
         return
       }
       onConnect({ protocol: 'serial', config: serialConfig }, logSession, paneOptions)
@@ -1080,7 +1097,17 @@ export function ConnectDialog({
                     <option value={NEW_FOLDER_SENTINEL}>+ New folder...</option>
                   </select>
                 )}
-                {onSaveCredential && storesSecret && (authType === 'Password' || keyStorage === 'path') && (
+                {/* SSH only. `storesSecret` asks which *auth type* has a
+                    secret worth vaulting, which is a question only SSH has —
+                    the other three protocols leave `authType` at its default
+                    and were being offered a vault entry for a credential they
+                    never collect. Same rule as the auto-reconnect opt-out
+                    above: a form must not offer a control the backend will
+                    ignore. */}
+                {protocol === 'ssh' &&
+                  onSaveCredential &&
+                  storesSecret &&
+                  (authType === 'Password' || keyStorage === 'path') && (
                   <label
                     className={`flex items-center gap-2 text-xs ${
                       vaultUnlocked ? 'text-chrome/70' : 'text-chrome/30'

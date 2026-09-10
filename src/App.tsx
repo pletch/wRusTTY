@@ -728,7 +728,11 @@ function App() {
     paneId: string,
     source: ConnectionSource,
     logSession = false,
-    paneOptions?: { backspaceSendsCtrlH: boolean | null; autoReconnect: boolean | null },
+    paneOptions?: {
+      backspaceSendsCtrlH: boolean | null
+      autoReconnect: boolean | null
+      label?: string | null
+    },
   ) {
     // Set logging state before the source, so the Terminal mounts with logging
     // already armed and captures output from the first byte (batched with the
@@ -742,6 +746,10 @@ function App() {
       source,
       backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
       autoReconnect: paneOptions?.autoReconnect ?? null,
+      // Only the connect dialog's save-and-connect path supplies this. The
+      // sidebar path goes through `applyProfileToPane`, which already carries
+      // the whole profile.
+      initialLabel: paneOptions?.label ?? null,
     })
   }
 

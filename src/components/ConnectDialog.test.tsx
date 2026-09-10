@@ -284,3 +284,41 @@ describe('the auto-reconnect opt-out', () => {
     expect(screen.queryByText(/stay down until you reconnect it by hand/i)).toBeNull()
   })
 })
+
+/**
+ * The vault-credential offer.
+ *
+ * `storesSecret` asks which *SSH auth type* holds a secret worth vaulting.
+ * The other protocols leave `authType` at its default, so the question is
+ * meaningless for them and the offer was being made for a credential they
+ * never collect.
+ */
+function credentialCheckbox() {
+  return screen.queryByLabelText(/save credential to vault/i)
+}
+
+describe('the save-credential-to-vault offer', () => {
+  it('is made for a password SSH session', async () => {
+    const user = userEvent.setup()
+    render(dialog({ onSaveProfile: noop, onSaveCredential: noop, vaultUnlocked: true }))
+    await user.click(screen.getByLabelText(/Save as session/i))
+    expect(credentialCheckbox()).toBeTruthy()
+  })
+
+  it('is not made for protocols that collect no credential', async () => {
+    for (const protocol of ['telnet', 'serial', 'local'] as const) {
+      const user = userEvent.setup()
+      render(
+        dialog({
+          initial: { protocol },
+          onSaveProfile: noop,
+          onSaveCredential: noop,
+          vaultUnlocked: true,
+        }),
+      )
+      await user.click(screen.getByLabelText(/Save as session/i))
+      expect(credentialCheckbox()).toBeNull()
+      cleanup()
+    }
+  })
+})

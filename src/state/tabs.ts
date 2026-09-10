@@ -29,6 +29,10 @@ export type TabsAction =
       source: ConnectionSource
       backspaceSendsCtrlH: boolean | null
       autoReconnect: boolean | null
+      /** The saved session's name, when connecting through one. A `*Profile`
+       * source carries only an id, so without this the pane titles itself with
+       * a UUID — see `leafTitle`. */
+      initialLabel: string | null
     }
   | { type: 'paneDisconnected'; tabId: string; paneId: string }
   | { type: 'paneFocused'; tabId: string; paneId: string }
@@ -135,6 +139,9 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
               source: action.source,
               backspaceSendsCtrlH: action.backspaceSendsCtrlH,
               autoReconnect: action.autoReconnect,
+              initial: action.initialLabel
+                ? { ...l.initial, label: action.initialLabel }
+                : l.initial,
             })),
           }),
         ),

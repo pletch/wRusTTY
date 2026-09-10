@@ -274,9 +274,21 @@ function PaneIndicator({
   )
 }
 
-function statusDotColor(status: string | undefined): string | null {
+/** The badge on the corner of a tab's protocol icon, or null for no badge.
+ *
+ * `isLocal` suppresses the connected state. Green means "the link is up", and
+ * a local shell has no link: the process is either running — in which case the
+ * pane exists at all — or gone, in which case the pane closes itself. A green
+ * dot there restates the tab's own existence, and the Laptop protocol icon it
+ * would be badged onto already says the session is local.
+ *
+ * The other states still earn a badge, and are the reason this is not simply
+ * "no dot for local": a shell that fails to start leaves its pane open with
+ * the reason on screen (see `isCleanDisconnect`), and a red corner is exactly
+ * how that should read from another tab. */
+function statusDotColor(status: string | undefined, isLocal = false): string | null {
   if (!status) return null
-  if (status === 'connected') return 'bg-emerald-400'
+  if (status === 'connected') return isLocal ? null : 'bg-emerald-400'
   // `lost` joins the red states rather than the amber in-flight ones: the
   // session is down. A reconnect following it goes amber like any other
   // not-connected-yet state, which is what it is.
@@ -451,7 +463,9 @@ export function TabBar({
           const rows = Math.min(trueRows, PANE_MAP_MAX_ROWS)
           const leaf = leaves.find((l) => l.id === tab.activePaneId)
           const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
-          const dotColor = leaf ? statusDotColor(statusByPane[leaf.id]) : null
+          const isLocal =
+            leaf?.source?.protocol === 'local' || leaf?.source?.protocol === 'localProfile'
+          const dotColor = leaf ? statusDotColor(statusByPane[leaf.id], isLocal) : null
           const runningPaneIds = new Set(
             leaves
               .filter((l) => activityByPane[l.id]?.state === 'running' || progressByPane[l.id])
