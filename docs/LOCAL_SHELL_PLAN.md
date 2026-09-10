@@ -3,10 +3,11 @@
 Implementation plan for a fourth transport: a shell process running on this
 machine, on a Windows pseudoconsole, in a wRusTTY pane.
 
-**Phases 1, 2 and 3 are built**, plus enough of Phase 4 to open a pane: the
-shells this machine has are detected and picked from a list, and `pwsh` runs.
-What is left is the rest of Phase 4 — saving a local session as a profile, and
-the two loose ends under "What the Phase 4 slice did".
+**All four phases are built.** The shells this machine has are detected and
+picked from a list, a local session opens, saves as a profile and restores from
+a snapshot, and its history follows the same per-shell rules a remote session's
+does. What is left is listed under "What is not done" at the end — none of it
+load-bearing.
 
 What changed on contact with a real pseudoconsole is recorded in the
 "actually did" sections at the end — three ConPTY behaviours, none of which
@@ -673,3 +674,46 @@ backend cannot act on.
   executable is checked for before the pseudoconsole is opened, which is both
   cheaper than recovering it from an `anyhow::Error` afterwards and the case a
   stale saved profile actually produces.
+
+---
+
+## What is not done
+
+The feature works end to end. What follows is what a second pass would cover,
+roughly in the order it is worth doing.
+
+**Nothing has verified saving in the app.** The re-resolution rule has six
+tests and the classification twenty-one, but no one has yet saved a local
+session, reopened it from the sidebar, and edited it. That is the first thing
+to do, and the case most worth trying by hand is a WSL distro — it exercises
+the id, the arguments and the label together.
+
+**A local profile cannot be edited into a different shell cleanly.** The form
+seeds its picker from the saved command, so re-picking works, but the `shellId`
+is recomputed from the command on save (`shellIdFor`) rather than carried from
+the picker. For every shell detection can find, the two agree. They diverge for
+a hand-typed path that happens to be named `pwsh.exe` somewhere unusual, which
+would be classified as PowerShell without being the detected `pwsh`. Harmless
+today; wrong in principle.
+
+**`cwd` has no picker.** It is a text field, where every other path in this app
+opens a directory dialog (`@tauri-apps/plugin-dialog`, as the key-path field
+uses).
+
+**The environment is unreachable from the UI.** `LocalConfig::env` exists,
+is plumbed, and is never populated — a profile cannot set a variable for its
+shell. Worth adding only when something asks for it.
+
+**Detection does not find a shell installed while the app is open.** It is a
+snapshot taken when the form opens, which is right for the common case and
+means a distro installed mid-session needs the dialog reopened.
+
+**No non-Windows local shells.** `portable-pty` would give bash on Linux and
+macOS nearly free, and `wr-local` compiles there already, but detection is
+Windows-only and nothing else in this app targets those platforms.
+
+**Elevated shells remain out of scope**, as recorded above: launching as
+administrator needs a UAC transition a ConPTY spawn cannot perform.
+
+Two things from the original scoping stay deliberately undone: a **local file
+browser** (decision 3) and a **"run on connect" field** (decision 4).
