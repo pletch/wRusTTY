@@ -3,7 +3,8 @@
 Implementation plan for a fourth transport: a shell process running on this
 machine, on a Windows pseudoconsole, in a wRusTTY pane.
 
-**Phase 1 is built** as `crates/wr-local`; Phases 2–4 are not. What changed on
+**Phases 1 and 2 are built** — `crates/wr-local` and its command layer; Phases
+3 and 4 are not, so nothing invokes a local shell yet. What changed on
 contact with a real pseudoconsole is recorded under "What Phase 1 actually did"
 at the end — three ConPTY behaviours, none of which this plan predicted.
 
@@ -330,9 +331,16 @@ Add `Local` to `Protocol` in `crates/wr-core/src/session.rs:19`.
 Reconnect wiring is the telnet shape: no credential to re-resolve, so the
 rebuild closure just clones the config. `NoPrepare` and `NoRestore` both apply.
 
-Rough size: ~150 lines. **Phase 1 plus Phase 2 is the spike** — it gets `pwsh`
-running in a pane against the real renderer, which is what proves the ConPTY
-loop before anything is spent on UI.
+Rough size: ~150 lines.
+
+**On the spike.** An earlier draft of this section claimed Phase 1 plus Phase 2
+"gets `pwsh` running in a pane". It does not, and the distinction matters now
+that both are built: these two phases make a local shell *reachable over IPC*,
+but a pane requires a caller, and nothing in the frontend invokes
+`local_connect` until Phase 4. Seeing it on screen needs a thin slice of Phase 4
+first — the `ConnectionSource` variant, the `invoke` arm and `transportOf` —
+which is worth taking early precisely because the DSR finding below can only be
+confirmed against the real engine.
 
 ## Phase 3 — detection
 
@@ -496,6 +504,30 @@ just decrements a refcount the other still holds. On Windows, EOF comes from
 conhost closing the pipe when the child exits. The drop stays — it is required
 on Unix and harmless here — but the comment saying why is now accurate rather
 than inherited from the raw Win32 pattern.
+
+## What Phase 2 actually did
+
+`src-tauri/src/local.rs`, 120 lines, the telnet shape throughout: a `LocalEvent`
+enum, a `LocalState` over `SessionRegistry::new("local")`, and four commands
+registered in `lib.rs`. `Protocol::Local` added to `wr-core`. Compiles, passes
+`clippy -D warnings` and the full workspace suite — but **nothing has exercised
+it at runtime**, because no caller exists yet.
+
+Two things worth recording:
+
+**`local_connect` takes `cols`/`rows`; telnet does not.** A pseudoconsole is
+given its size at creation and there is no deciding later, so passing the pane's
+size is what stops the shell drawing its first prompt at 80 columns and
+reflowing when the registry replays the real one. The reconnect factory carries
+the size for the same reason.
+
+**Auto-reconnect cannot currently fire for a local session, and that is
+decision 5 holding structurally rather than by policy.** The registry retries on
+`DisconnectKind::Lost`, and `wr-local` only ever reports `Closed` — a shell has
+either exited or it has not, so there is no state where the process is gone but
+the session should return by itself. The factory is still wired up, correct and
+unreachable, so that a future `Lost` (a pty read failing under a live child)
+relaunches properly rather than finding no way to.
 
 ### Smaller things settled in code
 

@@ -6,6 +6,7 @@ mod connection_status;
 mod fonts;
 #[cfg(target_os = "windows")]
 mod hello;
+mod local;
 mod logging;
 mod profiles;
 mod putty_import;
@@ -51,6 +52,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(ssh::SshState::default())
         .manage(telnet::TelnetState::default())
+        .manage(local::LocalState::default())
         .manage(serial::SerialState::default())
         .manage(profiles::ProfileState::default())
         .manage(command_history::HistoryState::default())
@@ -101,6 +103,10 @@ pub fn run() {
             telnet::telnet_write,
             telnet::telnet_resize,
             telnet::telnet_disconnect,
+            local::local_connect,
+            local::local_write,
+            local::local_resize,
+            local::local_disconnect,
             serial::serial_list_ports,
             serial::serial_connect,
             serial::serial_write,

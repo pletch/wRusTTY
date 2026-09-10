@@ -7281,6 +7281,7 @@ dependencies = [
  "windows-future 0.3.2",
  "wr-core",
  "wr-fs",
+ "wr-local",
  "wr-serial",
  "wr-sftp",
  "wr-ssh",

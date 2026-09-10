@@ -42,6 +42,7 @@ wr-sftp = { path = "../crates/wr-sftp" }
 wr-vault = { path = "../crates/wr-vault" }
 wr-telnet = { path = "../crates/wr-telnet" }
 wr-serial = { path = "../crates/wr-serial" }
+wr-local = { path = "../crates/wr-local" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"

@@ -20,4 +20,8 @@ pub enum Protocol {
     Ssh,
     Telnet,
     Serial,
+    /// A shell process on this machine, on a pseudoconsole. The only variant
+    /// with nothing on the other end of a network, which is why it is also the
+    /// only one with no host, port or credential to its name.
+    Local,
 }
