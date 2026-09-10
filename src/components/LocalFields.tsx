@@ -1,4 +1,5 @@
-import type { LocalConfig } from '../lib/local'
+import { useEffect, useState } from 'react'
+import { listShells, type LocalConfig, type ShellInfo } from '../lib/local'
 
 interface Props {
   config: LocalConfig
@@ -9,24 +10,72 @@ interface Props {
 /**
  * The connect form for a local shell.
  *
- * Deliberately spare, and temporary in one specific way: it asks for a path
- * because nothing can yet offer a list. Shell detection —
- * `local_shells_list`, enumerating installed PowerShell, CMD, Git Bash and WSL
- * distros — is Phase 3 of docs/LOCAL_SHELL_PLAN.md, and when it lands this
- * field becomes a picker with the typed path as the escape hatch rather than
- * the only route.
+ * A picker over the shells this machine actually has, with the path as an
+ * escape hatch rather than the only route. The list comes from
+ * `local_list_shells` — see src-tauri/src/local_shells.rs — and choosing an
+ * entry fills in both the command *and* its arguments, which is the point:
+ * `-d Ubuntu --cd ~` for a WSL distro and `-i -l` for Git Bash are not things
+ * a user should have to know, and a Git Bash without `-l` cannot find git.
  *
- * Arguments are split on whitespace here and sent as argv. That is a
- * simplification the picker will remove: a real profile's arguments come from
- * detection (`-d Ubuntu` for a WSL distro, `-i -l` for Git Bash) and never
- * need parsing at all. Splitting naively is fine for the one thing this form
- * is for — typing a path and pressing connect — and wrong for a path with a
- * space in it, which is exactly why the backend takes argv rather than a
- * command line and why this is the only place a string is ever split.
+ * The arguments field splits on whitespace. That is wrong for an argument
+ * containing a space and right for everything a person types by hand; it is
+ * also why detection supplies argv directly instead of a string for the cases
+ * that matter, and why the backend takes argv rather than a command line. A
+ * distro called "Ubuntu 22.04 LTS" survives being picked and would not survive
+ * being typed.
  */
 export function LocalFields({ config, onChange, inputClass }: Props) {
+  const [shells, setShells] = useState<ShellInfo[] | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void listShells().then((found) => {
+      if (cancelled) return
+      setShells(found)
+      // Only ever fills a blank form. Re-selecting on every open would
+      // overwrite a path the user typed, and editing a saved session would
+      // silently discard what it was saved with.
+      if (!config.command && found.length > 0) {
+        onChange({ ...config, command: found[0].command, args: found[0].args })
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+    // Once, on open: this is a snapshot of the machine, and `config` changing
+    // is the user editing the form rather than a reason to ask again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Matched on both halves, so two WSL distros — same executable, different
+  // arguments — are not mistaken for each other.
+  const selected = shells?.find(
+    (s) => s.command === config.command && s.args.join(' ') === config.args.join(' '),
+  )
+
   return (
     <>
+      {shells && shells.length > 0 && (
+        <select
+          className={`${inputClass} w-full`}
+          value={selected?.id ?? ''}
+          onChange={(e) => {
+            const shell = shells.find((s) => s.id === e.target.value)
+            if (shell) onChange({ ...config, command: shell.command, args: shell.args })
+          }}
+        >
+          {shells.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.label}
+            </option>
+          ))}
+          {/* Selected whenever the fields below no longer match any detected
+              shell, so a hand-edited path does not look like it is still the
+              entry it started from. */}
+          {!selected && <option value="">Custom</option>}
+        </select>
+      )}
+
       <input
         className={`${inputClass} w-full`}
         placeholder="path to shell"

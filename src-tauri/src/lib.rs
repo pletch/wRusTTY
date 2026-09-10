@@ -7,6 +7,7 @@ mod fonts;
 #[cfg(target_os = "windows")]
 mod hello;
 mod local;
+mod local_shells;
 mod logging;
 mod profiles;
 mod putty_import;
@@ -103,6 +104,7 @@ pub fn run() {
             telnet::telnet_write,
             telnet::telnet_resize,
             telnet::telnet_disconnect,
+            local_shells::local_list_shells,
             local::local_connect,
             local::local_write,
             local::local_resize,
