@@ -245,3 +245,42 @@ describe('the auto-reconnect opt-out', () => {
     expect(screen.getByText(/stay down until you reconnect it by hand/i)).toBeTruthy()
   })
 })
+
+/**
+ * The auto-reconnect opt-out.
+ *
+ * A conditional for the same reason the Wake-on-LAN field is: it must not
+ * offer a choice the backend cannot act on. Auto-reconnect fires on a
+ * transport that died under a live session, and a local shell has no such
+ * state — it has either exited or it has not — so the control would change
+ * nothing whichever way it were set. See decision 5 in
+ * docs/LOCAL_SHELL_PLAN.md.
+ */
+function reconnectCheckbox() {
+  return screen.queryByLabelText(/Reconnect automatically/i)
+}
+
+describe('the auto-reconnect opt-out', () => {
+  it('is offered for the remote protocols', () => {
+    render(dialog())
+    expect(reconnectCheckbox()).toBeTruthy()
+    cleanup()
+    render(dialog({ initial: { protocol: 'telnet' } }))
+    expect(reconnectCheckbox()).toBeTruthy()
+    cleanup()
+    render(dialog({ initial: { protocol: 'serial' } }))
+    expect(reconnectCheckbox()).toBeTruthy()
+  })
+
+  it('is not offered for a local shell, which cannot act on it', () => {
+    render(dialog({ initial: { protocol: 'local' } }))
+    expect(reconnectCheckbox()).toBeNull()
+  })
+
+  /** The explanatory note hangs off the unticked state, so hiding the box
+   *  must take the sentence with it rather than leave it stranded. */
+  it('takes its explanation with it', () => {
+    render(dialog({ initial: { protocol: 'local' } }))
+    expect(screen.queryByText(/stay down until you reconnect it by hand/i)).toBeNull()
+  })
+})

@@ -650,10 +650,14 @@ there is no credential to collect and nothing on the far end of a network, so
 it can always come back — re-resolving its shell on the way, exactly as a fresh
 connect does.
 
-Still open from the slice above: **the reconnect checkbox is still offered for
-a local session and still cannot act on it.** A saved profile now writes
-`autoReconnect: false` explicitly, so the stored value is at least honest, but
-the control should be hidden rather than merely ignored.
+**The reconnect opt-out is hidden for a local shell.** It was offering a
+choice that changes nothing whichever way it is set: auto-reconnect fires on a
+transport that died under a live session, and a local shell has no such state.
+The pane records `false` rather than `null` for the same reason — `null` reads
+as "follow the global setting", which is not true of a session no global
+setting can reach. Pinned by tests, beside the Wake-on-LAN field, which is a
+conditional for exactly the same reason: a form must not offer a control the
+backend cannot act on.
 
 ### Smaller things settled in code
 

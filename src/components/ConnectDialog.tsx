@@ -258,7 +258,11 @@ export function ConnectDialog({
     e.preventDefault()
     const paneOptions = {
       backspaceSendsCtrlH: backspace === 'ctrlh',
-      autoReconnect: savedAutoReconnect,
+      // `false` for a local shell whatever the (hidden) checkbox holds, so the
+      // pane records the same thing its saved profile does rather than `null`,
+      // which would read as "follow the global setting" for a session no
+      // global setting can reach.
+      autoReconnect: protocol === 'local' ? false : savedAutoReconnect,
       importRemoteHistory,
     }
 
@@ -939,24 +943,38 @@ export function ConnectDialog({
           </select>
         </label>
 
-        {/* Every protocol reconnects, so this sits with Backspace rather than
-            in the SSH block. Worded as an opt-out because that is all it is:
-            ticked stores nothing and follows Settings, and neither state can
-            make a session come back whose credential has to be typed in. */}
-        <label className="flex items-center gap-2 text-xs text-chrome/70">
-          <input
-            type="checkbox"
-            className="accent-sky-400"
-            checked={autoReconnect}
-            onChange={(e) => setAutoReconnect(e.target.checked)}
-          />
-          Reconnect automatically if the link drops
-        </label>
-        {!autoReconnect && (
-          <p className="text-xs text-chrome/40">
-            This session will stay down until you reconnect it by hand, whatever the global setting
-            says.
-          </p>
+        {/* Every *remote* protocol reconnects, so this sits with Backspace
+            rather than in the SSH block. Worded as an opt-out because that is
+            all it is: ticked stores nothing and follows Settings, and neither
+            state can make a session come back whose credential has to be typed
+            in.
+
+            Hidden for a local shell, which is the one transport it cannot
+            describe. Auto-reconnect fires on a transport that died under a
+            live session (`DisconnectKind::Lost`), and `wr-local` only ever
+            reports a clean close — a shell has either exited or it has not, so
+            there is no state where the process is gone but the session should
+            return by itself. Leaving the control visible would offer a choice
+            that changes nothing whichever way it is set. See decision 5 in
+            docs/LOCAL_SHELL_PLAN.md. */}
+        {protocol !== 'local' && (
+          <>
+            <label className="flex items-center gap-2 text-xs text-chrome/70">
+              <input
+                type="checkbox"
+                className="accent-sky-400"
+                checked={autoReconnect}
+                onChange={(e) => setAutoReconnect(e.target.checked)}
+              />
+              Reconnect automatically if the link drops
+            </label>
+            {!autoReconnect && (
+              <p className="text-xs text-chrome/40">
+                This session will stay down until you reconnect it by hand, whatever the global
+                setting says.
+              </p>
+            )}
+          </>
         )}
 
         {/* SSH only, because importing needs a second channel on the
