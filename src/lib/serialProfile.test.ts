@@ -84,6 +84,7 @@ describe('profileSubtitle for serial sessions', () => {
       keepaliveSeconds: null,
       wakeOnLan: null,
       serial: serialProfileFrom(config(), usb),
+      local: null,
     }
   }
 

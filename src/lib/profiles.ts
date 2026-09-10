@@ -10,7 +10,7 @@ export interface SessionProfile {
   /** Which transport this profile opens. A discriminator rather than a union
    * type: the two share everything that matters (label, folder, host, port,
    * terminal behaviour) and differ only in whether the auth fields apply. */
-  protocol: 'ssh' | 'telnet' | 'serial'
+  protocol: 'ssh' | 'telnet' | 'serial' | 'local'
   /** SSH only — empty string for telnet. */
   username: string
   /** SSH only — empty string for telnet. */
@@ -56,6 +56,9 @@ export interface SessionProfile {
   importRemoteHistory: boolean | null
   /** Serial only — null for SSH and telnet. */
   serial: SerialProfile | null
+  /** Local shells only — null for everything else, and for every profile saved
+   * before local sessions could be stored. */
+  local: LocalProfile | null
 }
 
 /** Whether connecting with this auth type needs a secret out of the vault.
@@ -111,6 +114,21 @@ export interface PortIdentity {
 /** A saved serial session: which adapter, and how to talk to it. There is no
  * `portName` here on purpose — the port is resolved from `identity` at connect
  * time, so storing one as well would let the two contradict each other. */
+/** A saved local shell: which shell, and how to start it.
+ *
+ * Mirrors `LocalProfile` in src-tauri/src/profiles.rs. It stores both an id
+ * and a path for the same reason `SerialProfile` stores a USB identity rather
+ * than a COM number: the path is only true until the shell is upgraded, and
+ * the id is what a connect re-resolves against. */
+export interface LocalProfile {
+  /** `pwsh`, `cmd`, `wsl:Ubuntu`. Empty for a hand-typed path, which has no
+   * detected identity and is therefore used exactly as written. */
+  shellId: string
+  command: string
+  args: string[]
+  cwd: string | null
+}
+
 export interface SerialProfile {
   identity: PortIdentity
   baudRate: number
@@ -129,6 +147,14 @@ export interface SerialProfile {
  * and the quick-connect palette so the two can't drift — and so adding a
  * third protocol later is one edit, not a hunt. */
 export function profileSubtitle(p: SessionProfile): string {
+  if (p.protocol === 'local') {
+    const args = (p.local?.args ?? []).join(' ')
+    const command = p.local?.command ?? ''
+    // The executable's name, not its full path: a sidebar row is narrow, and
+    // the full install path tells the user nothing the label above it did not.
+    const exe = command.split(/[\\/]/).pop()?.replace(/\.exe$/i, '') ?? 'shell'
+    return args ? `${exe} ${args}` : exe
+  }
   if (p.protocol === 'telnet') return `telnet ${p.host}:${p.port}`
   if (p.protocol === 'serial') {
     // Named by the adapter when we have one, because that is what the profile

@@ -71,6 +71,7 @@ const protocolIcons = {
   serial: Cable,
   serialProfile: Cable,
   local: Laptop,
+  localProfile: Laptop,
 }
 
 /** Separation between segments in the tab strip's pane map, in px. */

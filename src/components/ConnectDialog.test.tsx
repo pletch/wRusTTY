@@ -41,6 +41,7 @@ const jumpProfile: SessionProfile = {
   keepaliveSeconds: null,
   wakeOnLan: null,
   serial: null,
+  local: null,
 }
 
 function dialog(props: Partial<Parameters<typeof ConnectDialog>[0]> = {}) {

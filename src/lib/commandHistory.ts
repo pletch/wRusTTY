@@ -12,6 +12,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import type { ConnectionSource } from './connection'
+import { familyForShellId, recordsHistory, shellFamily, shellIdFor } from './local'
 
 /** Where an entry came from. Matches `HistorySource` in the Rust module. */
 export type HistorySource = 'harvest' | 'integration' | 'screen'
@@ -96,17 +97,30 @@ export function historyKeyForSource(source: ConnectionSource): string | null {
       return `profile://${source.profileId}`
     // Null means "this pane records nothing", which is decision 2 of
     // docs/LOCAL_SHELL_PLAN.md applied where the source is chosen rather than
-    // filtered afterwards: PowerShell and CMD are an autocomplete non-goal
-    // (docs/TODO.md:406) because their prompt and echo model defeats the
-    // screen-scraping path, and PSReadLine's own Predictive IntelliSense
-    // already does the job better from inside the shell.
+    // filtered afterwards.
     //
-    // It is null for *every* local shell only until shell detection lands.
-    // WSL and Git Bash are ordinary bash hosts and should record like any
-    // other; distinguishing them means classifying the command, which is
-    // Phase 3/4 work. Under-recording is the safe direction to be wrong in.
+    // The split is by **shell family, not by transport**. PowerShell and CMD
+    // are an autocomplete non-goal (docs/TODO.md:406) because their prompt and
+    // echo model defeats the screen-scraping path, and because PSReadLine's
+    // Predictive IntelliSense already does the job better from inside the
+    // shell. WSL and Git Bash are ordinary bash hosts and record like any
+    // other — the rule was never about where the shell runs.
     case 'local':
-      return null
+      return recordsHistory(shellFamily(source.config))
+        ? `local://${shellIdFor(source.config)}`
+        : null
+    // A saved local shell files under its profile id, like every other saved
+    // session, for the reason above: the profile is the thing the user means
+    // by "that shell", and it survives the path being re-resolved under it.
+    case 'localProfile': {
+      const family = familyForShellId(source.shellId)
+      // No id at all means a hand-typed path whose family cannot be known from
+      // here. Declining to record is the safe direction — the cost is a
+      // missing convenience, where the cost of guessing wrong is a history
+      // full of half-redrawn PowerShell edit buffers.
+      if (!family || !recordsHistory(family)) return null
+      return `profile://${source.profileId}`
+    }
   }
 }
 

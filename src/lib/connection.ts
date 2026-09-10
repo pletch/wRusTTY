@@ -19,6 +19,12 @@ export type ConnectionSource =
    * end of a network — no host, no port, no credential — which is why it
    * carries its whole configuration inline and has no profile form yet. */
   | { protocol: 'local'; config: LocalConfig }
+  /** A saved local shell. Carries the detected `shellId` alongside the id of
+   * the profile because the two answer different questions: the profile is
+   * what the backend re-resolves the command from, and the shell id is what
+   * says whether this is a shell whose history is worth recording — a question
+   * asked in the webview, on every keystroke, and not worth a round trip. */
+  | { protocol: 'localProfile'; profileId: string; shellId: string }
 
 export type ConnEvent =
   | { type: 'status'; status: string }
@@ -161,6 +167,18 @@ export function connect(
         dataChannel,
         reconnect,
       })
+    case 'localProfile':
+      // No config sent: the backend re-resolves the shell id against what is
+      // installed right now, which is the entire reason a local session can be
+      // saved without its path going stale when the shell is upgraded.
+      return invoke<string>('local_connect_profile', {
+        profileId: source.profileId,
+        channel,
+        dataChannel,
+        cols,
+        rows,
+        reconnect,
+      })
     case 'local':
       // Sends the size, which telnet and serial do not. A pseudoconsole is
       // given its dimensions when it is created and there is no deciding
@@ -190,6 +208,7 @@ export function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'seria
     case 'telnet':
       return 'telnet'
     case 'local':
+    case 'localProfile':
       return 'local'
     case 'serial':
     case 'serialProfile':
@@ -329,6 +348,11 @@ export function sourceLabel(source: ConnectionSource): string {
       return source.config.portName
     case 'local':
       return shellLabel(source.config)
+    // The path lives in the saved profile, so the id is all this has — the
+    // same position `sshProfile` and `serialProfile` are in, and the status
+    // bar resolves it to the profile's own label the same way.
+    case 'localProfile':
+      return source.profileId
     // The port isn't known here — it's resolved backend-side at connect
     // time — so the id is all this has. App's status bar resolves it to the
     // profile's own label, the same way it does for sshProfile.

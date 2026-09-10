@@ -34,6 +34,7 @@ function profile(overrides: Partial<SessionProfile> = {}): SessionProfile {
     authType: 'agent',
     keyPath: null,
     serial: null,
+    local: null,
     keepaliveSeconds: null,
     wakeOnLan: null,
     hasCredential: false,

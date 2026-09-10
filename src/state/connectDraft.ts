@@ -197,9 +197,17 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     // the adapter was last seen on — informational, since the actual port is
     // resolved from the USB identity at connect time.
     serialConfig: initial?.serial ? serialConfigFrom(initial.serial) : defaultSerialConfig(),
-    // No saved form yet — a local session cannot be stored as a profile
-    // until Phase 4, so this always starts from the default.
-    localConfig: defaultLocalConfig(),
+    // Seeded from the profile being edited, so re-saving without touching the
+    // shell picker keeps the detected id rather than downgrading the profile
+    // to a bare path.
+    localConfig: initial?.local
+      ? {
+          ...defaultLocalConfig(),
+          command: initial.local.command,
+          args: initial.local.args,
+          cwd: initial.local.cwd,
+        }
+      : defaultLocalConfig(),
     // Ad-hoc "log this whole session from the start" — an alternative to the
     // toolbar toggle (which can only arm logging after a session is already
     // connected, so it can't catch the login banner/MOTD).

@@ -108,6 +108,100 @@ pub async fn local_connect(
     Ok(session_id)
 }
 
+/// Turn a saved profile into something runnable, re-resolving the shell.
+///
+/// The stored path is a fallback, not the answer. A `shell_id` that detection
+/// still recognises wins, because that is what survives the shell being
+/// upgraded out from under the profile — PowerShell 7 and 8 install side by
+/// side under different directories, so the path saved last year names a
+/// binary that may be gone.
+///
+/// An id detection no longer knows falls back to the stored path rather than
+/// failing. That covers a hand-typed shell (which has no id at all), an
+/// install that moved somewhere unusual, and a WSL distro that is temporarily
+/// unregistered — in each case the honest attempt is to run what was saved and
+/// let `LocalError::NotFound` say so if it is gone, rather than to refuse
+/// before trying.
+fn config_from_profile(profile: &crate::profiles::SessionProfile) -> Result<LocalConfig, String> {
+    let local = profile
+        .local
+        .as_ref()
+        .ok_or_else(|| format!("session '{}' is not a local shell", profile.label))?;
+    let installed = crate::local_shells::detect(&crate::local_shells::SystemMachine);
+    Ok(resolve_against(local, &installed))
+}
+
+/// The re-resolution rule on its own, so it can be tested without a machine.
+fn resolve_against(
+    local: &crate::profiles::LocalProfile,
+    installed: &[crate::local_shells::ShellInfo],
+) -> LocalConfig {
+    let resolved = (!local.shell_id.is_empty())
+        .then(|| installed.iter().find(|s| s.id == local.shell_id))
+        .flatten();
+
+    match resolved {
+        // The arguments come from detection too, not from the profile. They
+        // belong to the shell rather than to the user's choice — `-d Ubuntu
+        // --cd ~`, `-i -l` — so a profile saved before one of them was added
+        // picks it up instead of being stuck with what it was saved against.
+        Some(shell) => LocalConfig {
+            command: shell.command.clone(),
+            args: shell.args.clone(),
+            cwd: local.cwd.clone(),
+            ..Default::default()
+        },
+        None => LocalConfig {
+            command: local.command.clone(),
+            args: local.args.clone(),
+            cwd: local.cwd.clone(),
+            ..Default::default()
+        },
+    }
+}
+
+// Same reason `local_connect` allows it: the argument list is the IPC contract.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn local_connect_profile(
+    app: AppHandle,
+    profile_id: String,
+    channel: Channel<LocalEvent>,
+    data_channel: Channel<tauri::ipc::InvokeResponseBody>,
+    cols: u16,
+    rows: u16,
+    reconnect: Option<ReconnectPolicy>,
+    state: State<'_, LocalState>,
+) -> Result<String, String> {
+    let profile = crate::profiles::get_profile(&app, &profile_id)?;
+    let config = config_from_profile(&profile)?;
+
+    let policy = reconnect.unwrap_or_default().sanitized();
+    let session_id = state.sessions.next_session_id();
+    let reconnect_config = config.clone();
+    state
+        .sessions
+        .spawn_connect(
+            app,
+            session_id.clone(),
+            LocalConnector::new(config).with_size(cols, rows),
+            channel,
+            data_channel,
+            |status| LocalEvent::Status {
+                status: status_label(status),
+            },
+            None::<NoPrepare>,
+            Some(move || {
+                let config = reconnect_config.clone();
+                async move { Ok(LocalConnector::new(config).with_size(cols, rows)) }
+            }),
+            None::<NoRestore>,
+            policy,
+        )
+        .await;
+    Ok(session_id)
+}
+
 #[tauri::command]
 pub async fn local_write(
     session_id: String,
@@ -136,4 +230,131 @@ pub async fn local_disconnect(
     state: State<'_, LocalState>,
 ) -> Result<(), String> {
     state.sessions.disconnect(&session_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_shells::ShellInfo;
+    use crate::profiles::LocalProfile;
+
+    fn shell(id: &str, command: &str, args: &[&str]) -> ShellInfo {
+        ShellInfo {
+            id: id.into(),
+            label: id.into(),
+            command: command.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+        }
+    }
+
+    fn saved(shell_id: &str, command: &str) -> LocalProfile {
+        LocalProfile {
+            shell_id: shell_id.into(),
+            command: command.into(),
+            args: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    /// The whole reason a profile stores an id as well as a path. PowerShell 7
+    /// and 8 install side by side under different directories, so a profile
+    /// saved last year names a binary that may be gone.
+    #[test]
+    fn an_upgraded_shell_is_found_at_its_new_path() {
+        let installed = [shell(
+            "pwsh",
+            r"C:\Program Files\PowerShell\8\pwsh.exe",
+            &[],
+        )];
+        let profile = saved("pwsh", r"C:\Program Files\PowerShell\7\pwsh.exe");
+
+        let config = resolve_against(&profile, &installed);
+        assert_eq!(config.command, r"C:\Program Files\PowerShell\8\pwsh.exe");
+    }
+
+    /// An id detection no longer knows falls back rather than failing: the
+    /// honest attempt is to run what was saved and let `NotFound` say so.
+    #[test]
+    fn an_unknown_id_falls_back_to_the_stored_path() {
+        let installed = [shell("cmd", r"C:\Windows\System32\cmd.exe", &[])];
+        let profile = saved("wsl:Ubuntu", r"C:\Windows\System32\wsl.exe");
+
+        assert_eq!(
+            resolve_against(&profile, &installed).command,
+            r"C:\Windows\System32\wsl.exe"
+        );
+    }
+
+    /// A hand-typed shell has no identity to re-resolve against and must be
+    /// used exactly as written — never silently swapped for a detected one.
+    #[test]
+    fn a_profile_without_an_id_is_used_verbatim() {
+        let installed = [shell(
+            "pwsh",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            &[],
+        )];
+        let mut profile = saved("", r"D:\portable\my-shell.exe");
+        profile.args = vec!["--weird".into()];
+
+        let config = resolve_against(&profile, &installed);
+        assert_eq!(config.command, r"D:\portable\my-shell.exe");
+        assert_eq!(config.args, vec!["--weird".to_string()]);
+    }
+
+    /// Arguments belong to the shell, not to the saved session, so a profile
+    /// written before `--cd ~` existed picks it up on the next connect.
+    #[test]
+    fn arguments_come_from_detection_rather_than_the_profile() {
+        let installed = [shell(
+            "wsl:Ubuntu",
+            r"C:\Windows\System32\wsl.exe",
+            &["-d", "Ubuntu", "--cd", "~"],
+        )];
+        let mut profile = saved("wsl:Ubuntu", r"C:\Windows\System32\wsl.exe");
+        profile.args = vec!["-d".into(), "Ubuntu".into()];
+
+        assert_eq!(
+            resolve_against(&profile, &installed).args,
+            vec!["-d", "Ubuntu", "--cd", "~"]
+        );
+    }
+
+    /// The working directory is the user's choice, not the shell's, so it
+    /// survives re-resolution either way.
+    #[test]
+    fn the_saved_working_directory_is_kept() {
+        let installed = [shell("cmd", r"C:\Windows\System32\cmd.exe", &[])];
+        let mut profile = saved("cmd", r"C:\Windows\System32\cmd.exe");
+        profile.cwd = Some(r"D:\work".into());
+
+        assert_eq!(
+            resolve_against(&profile, &installed).cwd.as_deref(),
+            Some(r"D:\work")
+        );
+    }
+
+    /// Two distros share a launcher and nothing else; matching on the command
+    /// rather than the id would collapse them into one.
+    #[test]
+    fn two_wsl_distros_resolve_to_their_own_entries() {
+        let installed = [
+            shell(
+                "wsl:Ubuntu",
+                r"C:\Windows\System32\wsl.exe",
+                &["-d", "Ubuntu"],
+            ),
+            shell(
+                "wsl:Debian",
+                r"C:\Windows\System32\wsl.exe",
+                &["-d", "Debian"],
+            ),
+        ];
+        let debian = saved("wsl:Debian", r"C:\Windows\System32\wsl.exe");
+
+        assert_eq!(
+            resolve_against(&debian, &installed).args,
+            vec!["-d", "Debian"]
+        );
+    }
 }

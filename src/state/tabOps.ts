@@ -53,6 +53,10 @@ export function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
     // without touching the port dropdown must not silently downgrade the
     // profile to name-only matching.
     serial: profile.serial,
+    // Same reason as `serial` above: editing a saved local session must open
+    // on the shell it was saved with, and re-saving must not lose the detected
+    // id that keeps its path re-resolvable.
+    local: profile.local,
   }
 }
 

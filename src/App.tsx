@@ -899,6 +899,23 @@ function App() {
       }
     }
 
+    // A local shell has no credential and needs a round trip for the same
+    // shape of reason serial does: the stored path is only true until the
+    // shell is upgraded, and the backend re-resolves the saved `shellId`
+    // against what is installed now. The id travels alongside so the webview
+    // can tell whether this is a shell whose history it should record without
+    // asking — see `historyKeyForSource`.
+    if (profile.protocol === 'local') {
+      return {
+        source: {
+          protocol: 'localProfile' as const,
+          profileId: profile.id,
+          shellId: profile.local?.shellId ?? '',
+        },
+        initial: profileToInitial(profile),
+      }
+    }
+
     const canConnectDirect =
       !profiles.authNeedsVault(profile.authType) ||
       (vaultStatus === 'unlocked' &&
@@ -1167,6 +1184,13 @@ function App() {
         const args = src.config.args.join(' ')
         const label = sourceLabel(src)
         return { protocol: 'LOCAL', target: args ? `${label} ${args}` : label }
+      }
+      // The command lives in the saved profile, so this shows the profile's
+      // own label — the same thing sshProfile and serialProfile do, and for
+      // the same reason: the id on its own says nothing to a human.
+      case 'localProfile': {
+        const p = sessions.find((s) => s.id === src.profileId)
+        return { protocol: 'LOCAL', target: p?.label ?? src.profileId }
       }
     }
   })()

@@ -2,7 +2,7 @@ import { useReducer, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen, Laptop } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
-import type { SessionProfile, SerialProfile, WakeOnLan } from '../lib/profiles'
+import type { SessionProfile, SerialProfile, LocalProfile, WakeOnLan } from '../lib/profiles'
 import { serialProfileFrom } from '../lib/profiles'
 import type { PortInfo } from '../lib/serial'
 import type { Workspace } from '../lib/workspaces'
@@ -10,6 +10,7 @@ import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
 import { SerialFields } from './SerialFields'
 import { LocalFields } from './LocalFields'
+import { shellIdFor, shellLabel } from '../lib/local'
 import { SessionBrowser } from './SessionBrowser'
 import {
   connectDraftReducer,
@@ -55,6 +56,8 @@ export interface ConnectDialogInitial {
   wakeOnLan?: WakeOnLan | null
   /** Serial only — the stored line settings and adapter identity. */
   serial?: SerialProfile | null
+  /** Local only — the stored shell and its arguments. */
+  local?: LocalProfile | null
 }
 
 // Deliberately excludes `w-full` — some usages need `flex-1`/a fixed width
@@ -400,6 +403,7 @@ export function ConnectDialog({
           // the moment it's deselected.
           wakeOnLan: jumpProfileId ? (initial?.wakeOnLan ?? null) : wakeOnLanFrom(draft),
           serial: null,
+          local: null,
         })
 
         if (willSaveCredential && onSaveCredential) {
@@ -439,10 +443,52 @@ export function ConnectDialog({
         )
       }
     } else if (protocol === 'local') {
-      // No profile half yet: a local session cannot be saved until Phase 4 of
-      // docs/LOCAL_SHELL_PLAN.md adds the `local` field to SessionProfile, so
-      // the save checkbox is hidden for this protocol rather than quietly
-      // ignored. Connecting is the whole of what this form does.
+      // No credential half: a local shell has no auth at all, so saving is
+      // purely "remember this shell and how to start it".
+      if (saveProfile && onSaveProfile) {
+        const profileId = initial?.id ?? crypto.randomUUID()
+        await onSaveProfile({
+          id: profileId,
+          label: label.trim() || shellLabel(localConfig),
+          folder: folder.trim() || null,
+          // Unused for local; carries the executable so anything reading
+          // `host` generically shows something meaningful rather than blank.
+          host: shellLabel(localConfig),
+          port: 0,
+          protocol: 'local',
+          username: '',
+          authType: '',
+          keyPath: null,
+          hasCredential: false,
+          jumpProfileId: null,
+          termType: null,
+          backspaceSendsCtrlH: backspace === 'ctrlh',
+          // Opt out by default. Nothing here can act on it today — the
+          // registry retries on a lost transport and a local shell only ever
+          // reports a clean close — but a saved `true` would be a promise the
+          // app does not keep. Decision 5 of docs/LOCAL_SHELL_PLAN.md.
+          autoReconnect: false,
+          importRemoteHistory,
+          // Nothing to keep alive and nothing to wake: the shell is here.
+          keepaliveSeconds: null,
+          wakeOnLan: null,
+          serial: null,
+          local: {
+            // Empty for a hand-typed path, which has no detected identity to
+            // re-resolve against and is used exactly as written.
+            shellId: shellIdFor(localConfig),
+            command: localConfig.command,
+            args: localConfig.args,
+            cwd: localConfig.cwd,
+          },
+        })
+        // Connect through the profile so this first connection resolves the
+        // shell the same way every later one will — the same reasoning serial
+        // uses, and the case it catches is a shell id that no longer matches
+        // anything installed, which is better found now than months from now.
+        onConnect({ protocol: 'localProfile', profileId, shellId: shellIdFor(localConfig) }, logSession, paneOptions)
+        return
+      }
       onConnect({ protocol: 'local', config: localConfig }, logSession, paneOptions)
     } else if (protocol === 'telnet') {
       // No credential half to any of this: telnet has no auth of its own, so
@@ -470,6 +516,7 @@ export function ConnectDialog({
           // Waking is wired into the SSH connect path only, so far.
           wakeOnLan: null,
           serial: null,
+          local: null,
         })
       }
       onConnect(
@@ -507,6 +554,7 @@ export function ConnectDialog({
           keepaliveSeconds: null,
           wakeOnLan: null,
           serial: serialProfileFrom(serialConfig, serialUsb),
+          local: null,
         })
         // Connect through the profile so this very first connection resolves
         // the adapter the same way every later one will — if the identity is
@@ -950,7 +998,7 @@ export function ConnectDialog({
             meaning anything once the adapter moves socket — but the profile
             records the adapter's USB VID/PID/serial instead, and resolves a
             live COM number at connect time. */}
-        {onSaveProfile && protocol !== 'local' && (
+        {onSaveProfile && (
           <div className="space-y-2 border-t border-chrome/10 pt-2.5">
             <label className="flex items-center gap-2 text-xs text-chrome/70">
               <input

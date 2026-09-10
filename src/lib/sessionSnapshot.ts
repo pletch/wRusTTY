@@ -30,6 +30,10 @@ function restorableSource(
 ): ConnectionSource | null {
   if (!source) return null
   if (source.protocol === 'sshProfile' || source.protocol === 'telnet') return source
+  // A saved local shell needs no credential and nothing is on the other end of
+  // a network, so restoring one can always succeed. It re-resolves its shell id
+  // on the way back, exactly as a fresh connect does.
+  if (source.protocol === 'localProfile') return source
   if (source.protocol === 'serial' && opts.allowSerial) return source
   return null
 }

@@ -609,6 +609,52 @@ anything.** Harmless today, since auto-reconnect fires only on `Lost` and
 no effect. Phase 4 proper should hide it, alongside defaulting a saved local
 profile's `autoReconnect` to `false`.
 
+## What saving a local session did
+
+A local shell can now be saved, and decision 2 is finished rather than
+approximated.
+
+**A saved profile stores an id as well as a path**, for the same reason
+`SerialProfile` stores a USB identity rather than a COM number. A path is only
+true until the shell is upgraded — PowerShell 7 and 8 install side by side
+under different directories — so `local_connect_profile` re-resolves the saved
+`shellId` against what is installed now, and falls back to the stored path when
+detection no longer knows the id. That fallback covers a hand-typed shell
+(which has no id at all), an install that moved somewhere unusual, and a distro
+that is temporarily unregistered; in each case the honest attempt is to run
+what was saved and let `NotFound` say so, rather than refusing before trying.
+
+**Arguments are re-resolved too, not just the command.** They belong to the
+shell rather than to the user's choice — `-d Ubuntu --cd ~`, `-i -l` — so a
+profile written before one of them existed picks it up on the next connect
+instead of being stuck with what it was saved against. The working directory is
+the opposite: that *is* the user's choice, so it survives untouched.
+
+**The history gate now splits by shell family, as decision 2 always said it
+should.** `historyKeyForSource` was returning `null` for every local shell,
+which was the safe placeholder and the wrong answer for half of them. Now:
+
+- PowerShell and CMD record nothing, local or saved.
+- Git Bash and WSL record like the bash hosts they are — `local://bash`,
+  `local://wsl:Ubuntu`, or `profile://<id>` once saved.
+- A saved shell with no id records nothing, because a hand-typed path cannot
+  be classified from the frontend and guessing is the expensive direction.
+
+The classification is deliberately asymmetric: `pwsh`, `powershell` and `cmd`
+are matched explicitly and everything else falls through to posix. A PowerShell
+misread as posix would file fragments of half-redrawn PSReadLine buffers as
+commands; a posix shell misread as PowerShell merely goes without autocomplete.
+
+**A saved local session restores from a snapshot**, unlike an ad-hoc one:
+there is no credential to collect and nothing on the far end of a network, so
+it can always come back — re-resolving its shell on the way, exactly as a fresh
+connect does.
+
+Still open from the slice above: **the reconnect checkbox is still offered for
+a local session and still cannot act on it.** A saved profile now writes
+`autoReconnect: false` explicitly, so the stored value is at least honest, but
+the control should be hidden rather than merely ignored.
+
 ### Smaller things settled in code
 
 - **The exit code goes into the output stream**, not the status.

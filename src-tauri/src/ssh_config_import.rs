@@ -307,6 +307,7 @@ fn to_profile(entry: &HostEntry, id: String) -> SessionProfile {
         // read; that is the user's call, made per host or globally.
         import_remote_history: None,
         serial: None,
+        local: None,
     }
 }
 
@@ -708,6 +709,7 @@ mod tests {
             // read; that is the user's call, made per host or globally.
             import_remote_history: None,
             serial: None,
+            local: None,
         }];
         let profiles = to_profiles(&parse_config("Host prod\n  ProxyJump bastion\n"), &existing);
         assert_eq!(profiles[0].jump_profile_id.as_deref(), Some("mine"));

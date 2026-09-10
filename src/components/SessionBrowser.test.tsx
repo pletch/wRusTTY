@@ -43,6 +43,7 @@ function profile(id: string, label: string): SessionProfile {
     keepaliveSeconds: null,
     wakeOnLan: null,
     serial: null,
+    local: null,
   }
 }
 

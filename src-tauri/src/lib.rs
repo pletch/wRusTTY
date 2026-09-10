@@ -106,6 +106,7 @@ pub fn run() {
             telnet::telnet_disconnect,
             local_shells::local_list_shells,
             local::local_connect,
+            local::local_connect_profile,
             local::local_write,
             local::local_resize,
             local::local_disconnect,

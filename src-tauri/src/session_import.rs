@@ -113,6 +113,7 @@ mod tests {
             auto_reconnect: None,
             import_remote_history: None,
             serial: None,
+            local: None,
         }
     }
 

@@ -217,6 +217,7 @@ pub fn to_profile(session: &PuttySession, id: String) -> Option<SessionProfile> 
         // read; that is the user's call, made per host or globally.
         import_remote_history: None,
         serial: None,
+        local: None,
     })
 }
 
@@ -314,6 +315,7 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
             line_ending: wr_serial::LineEnding::Cr,
             input_mode: None,
         }),
+        local: None,
     })
 }
 

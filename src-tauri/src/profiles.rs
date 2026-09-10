@@ -105,6 +105,35 @@ pub struct SessionProfile {
     /// "COM4", which doesn't.
     #[serde(default)]
     pub serial: Option<SerialProfile>,
+    /// Local shells only. `None` for every other protocol, and for every
+    /// profile written before local sessions could be saved.
+    #[serde(default)]
+    pub local: Option<LocalProfile>,
+}
+
+/// A saved local shell: which shell, and how to start it.
+///
+/// Carries both an id and a path for the same reason `SerialProfile` carries a
+/// USB identity rather than a COM number. An absolute path is only true until
+/// the shell is upgraded — PowerShell 7 and 8 install side by side under
+/// different directories, so a profile saved against
+/// a `PowerShell/7/pwsh.exe` path names a binary that may not be there next
+/// year. The `shell_id` is stable across that, so it is what a connect
+/// re-resolves against, and the stored path is the fallback for a shell that
+/// detection no longer finds — a hand-typed one, or an install that moved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalProfile {
+    /// `pwsh`, `cmd`, `wsl:Ubuntu` — see `local_shells::ShellInfo`. Empty for
+    /// a hand-typed path, which has no detected identity to re-resolve
+    /// against and is therefore used exactly as written.
+    #[serde(default)]
+    pub shell_id: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 /// A saved serial session: which adapter, and how to talk to it.
