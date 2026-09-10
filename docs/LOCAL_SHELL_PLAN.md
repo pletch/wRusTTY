@@ -3,10 +3,14 @@
 Implementation plan for a fourth transport: a shell process running on this
 machine, on a Windows pseudoconsole, in a wRusTTY pane.
 
-**Phases 1 and 2 are built**, plus a slice of Phase 4 that opens a pane —
-`pwsh` runs. Phase 3 and the rest of Phase 4 are not. What changed on
-contact with a real pseudoconsole is recorded under "What Phase 1 actually did"
-at the end — three ConPTY behaviours, none of which this plan predicted.
+**Phases 1, 2 and 3 are built**, plus enough of Phase 4 to open a pane: the
+shells this machine has are detected and picked from a list, and `pwsh` runs.
+What is left is the rest of Phase 4 — saving a local session as a profile, and
+the two loose ends under "What the Phase 4 slice did".
+
+What changed on contact with a real pseudoconsole is recorded in the
+"actually did" sections at the end — three ConPTY behaviours, none of which
+this plan predicted.
 
 This document was written against the code as it stood at `7e86358` on
 2026-09-10, and every file and line reference below was checked against it
@@ -528,6 +532,34 @@ either exited or it has not, so there is no state where the process is gone but
 the session should return by itself. The factory is still wired up, correct and
 unreachable, so that a future `Lost` (a pty read failing under a live child)
 relaunches properly rather than finding no way to.
+
+## What Phase 3 actually did
+
+Built as `src-tauri/src/local_shells.rs` rather than in `wr-local`, because it
+needs the registry and the app already carries the `windows` crate with
+`Win32_System_Registry` for `putty_import.rs`. Every environmental question
+sits behind a `Machine` trait, which is what makes "a box with Git but no WSL"
+a test case instead of a different machine.
+
+Verified against this machine — `pwsh`, `powershell`, `cmd`, `git-bash` and
+`wsl:Debian`, all five naming files that exist — and the picker confirmed on
+screen.
+
+Nothing here contradicted the plan. Three details are worth having written
+down anyway, because each is a way of being wrong that looks right:
+
+- **The id never carries a version.** `pwsh` covers 7 and 6 and whatever comes
+  next, so an upgrade cannot orphan a saved profile or fork its history.
+- **A distro is not offered when `wsl.exe` is absent.** The `Lxss` key outlives
+  the feature being removed, so trusting it alone produces a pane that fails at
+  connect.
+- **The `WindowsApps` aliases are probed last.** They are zero-byte reparse
+  stubs that launch the real binary, so an existence check succeeds on one and
+  yields a launcher rather than the install.
+
+The real-machine test is the only one that can catch a miscalculated buffer or
+a `DistributionName` decoded with its terminator still attached, and it asserts
+only what is true of any Windows box so it stays honest on someone else's.
 
 ## What the Phase 4 slice did
 
