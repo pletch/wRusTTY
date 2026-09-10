@@ -65,6 +65,8 @@ describe('the pane dump', () => {
 
     expect(dump).toContain(`cols=${COLS} rows=${ROWS}`)
     expect(dump).toContain('altScreen=false')
+    // Says whether a local drag could have made the selection at all.
+    expect(dump).toContain('mouseTracking=false')
     expect(dump).toContain('selection=(0,0)..(39,2) rectangular=false')
 
     // Row 0 is the head of the wrapped line and row 1 continues it, so exactly

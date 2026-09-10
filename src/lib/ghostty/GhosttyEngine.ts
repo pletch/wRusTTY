@@ -2749,6 +2749,14 @@ export class GhosttyEngine implements TerminalEngine {
           : '  <-- MISMATCH, output landed since the last frame'),
     )
     lines.push(`altScreen=${this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_ALT_SCREEN, 0) !== 0}`)
+    // Whether a plain drag can even reach this pane. A program holding the
+    // mouse takes the drag for its own UI, so the only local selection is a
+    // shift-drag — and a copy made any other way while this is on did not come
+    // through `readRows` at all. It came off the far end through OSC 52, which
+    // is a different program's idea of what was selected and a different code
+    // path end to end. Worth a line, because every field below describes a
+    // reader that was never consulted in that case.
+    lines.push(`mouseTracking=${this.mouseTracking()} (a plain drag goes to the program, not this pane)`)
     const cur = this.terminalCursorCell()
     lines.push(`cursor=${cur.x},${cur.y}`)
     lines.push(
