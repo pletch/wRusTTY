@@ -1,0 +1,28 @@
+[package]
+name = "wr-local"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wr-core = { path = "../wr-core" }
+async-trait = "0.1"
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# ConPTY, and the parts of it that are easy to get wrong: the proc-thread
+# attribute list whose lifetime must outlive the spawn, handle-inheritance
+# discipline, ResizePseudoConsole, and closing our own copy of the write
+# handle so the pseudoconsole can actually report the child's exit. See
+# docs/LOCAL_SHELL_PLAN.md, "Phase 1", for why this is a dependency rather
+# than unsafe Win32 written here against the `windows` crate.
+portable-pty = "0.9"
+
+[dev-dependencies]
+# LocalConfig reaches this crate as JSON from the frontend, including from
+# saved session snapshots written by older builds, so its serde shape is a
+# compatibility surface worth pinning here. Same reason wr-telnet does it.
+serde_json.workspace = true

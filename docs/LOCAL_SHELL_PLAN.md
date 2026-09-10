@@ -3,9 +3,13 @@
 Implementation plan for a fourth transport: a shell process running on this
 machine, on a Windows pseudoconsole, in a wRusTTY pane.
 
-**Nothing here is built.** This document was written against the code as it
-stood at `7e86358` on 2026-09-10, and every file and line reference below was
-checked against it rather than remembered. Line numbers will move.
+**Phase 1 is built** as `crates/wr-local`; Phases 2–4 are not. What changed on
+contact with a real pseudoconsole is recorded under "What Phase 1 actually did"
+at the end — three ConPTY behaviours, none of which this plan predicted.
+
+This document was written against the code as it stood at `7e86358` on
+2026-09-10, and every file and line reference below was checked against it
+rather than remembered. Line numbers will move.
 
 The prompt for it was Tabby, which ships out-of-the-box profiles for Windows
 PowerShell, PowerShell Core, CMD, Git Bash and every installed WSL distro. That
@@ -418,6 +422,10 @@ presentation-only field belongs.
   local or remote. That gate belongs where the source is chosen, keyed on the
   shell family, not filtered afterwards and not keyed on the transport: a local
   bash pane must keep harvesting exactly as a remote one does.
+- **The engine keeps answering `ESC [ 6 n`.** A local pane's shell does not
+  start until it does — see "What Phase 1 actually did". Nothing should route a
+  local session's output around the engine, or filter query replies out of the
+  path back to `local_write`.
 - **The dialog's other protocols are untouched.** Adding a fourth tab must not
   change SSH's port default, term-type default, or which fields the form shows
   for the existing three — `ConnectDialog.test.tsx` covers this.
@@ -435,3 +443,71 @@ presentation-only field belongs.
   product call better made once the dialog exists.
 - **Elevated shells.** Launching as administrator needs a UAC transition that a
   ConPTY spawn cannot perform, so it would take a different mechanism entirely.
+
+---
+
+## What Phase 1 actually did
+
+Built as `crates/wr-local`, on `portable-pty` 0.9 as planned, with ten tests —
+five on the config's serde shape and five that spawn real processes. Three
+things about ConPTY were found by writing those tests the obvious way and
+watching them fail, and all three outlive Phase 1.
+
+### ConPTY blocks until the terminal answers a cursor query
+
+A pseudoconsole opens by writing `ESC [ 6 n` — "where is the cursor?" — and
+**emits nothing further until it gets an answer**. The first version of the
+output test hung for its full 20-second deadline having received exactly six
+bytes.
+
+This is not something `wr-local` should fix. Answering is the emulator's job,
+and in the app Ghostty's VT core does it: the reply travels back out through
+the same channel as keystrokes, which `GhosttyEngine.ts:1702` already documents
+("the merged output channel also carries mouse reports and query replies").
+Answering it in the transport instead would mean replying to queries a real
+terminal answers differently, and racing the engine to do it.
+
+But it makes the engine's reply path **load-bearing for local sessions in a way
+it never was for remote ones**. Over SSH, a terminal that failed to answer DSR
+would break a few full-screen programs; here it means the shell never starts.
+That belongs in the Phase 2 smoke test: if a local pane opens and stays blank,
+this is the first thing to check.
+
+### ConPTY is a renderer, so very short-lived output can be lost
+
+ConPTY emits a rendered view of the console screen buffer, not the child's byte
+stream, and it paints on its own schedule. `cmd /c echo marker` produced only
+ConPTY's init sequences — the text never appeared. The same command followed by
+a one-second wait produced it.
+
+Every Windows terminal has this, and it cannot reach an interactive shell, which
+lives for minutes and is painted continuously. It reaches the *tests*, which is
+why `linger()` exists there. Worth knowing before someone reports "output is
+missing" against a profile that runs a command and exits.
+
+### Dropping the slave is a Unix requirement, not a Windows one
+
+The plan called out the classic ConPTY trap — hold an extra handle and the
+pseudoconsole never reports the child's exit. `session.rs` drops the slave for
+it, but the reasoning only applies on Unix: `portable-pty` gives
+`ConPtyMasterPty` and `ConPtySlavePty` the same `Arc<Mutex<Inner>>`, and `Inner`
+owns the `PsuedoCon` whose `Drop` closes the pseudoconsole, so dropping one half
+just decrements a refcount the other still holds. On Windows, EOF comes from
+conhost closing the pipe when the child exits. The drop stays — it is required
+on Unix and harmless here — but the comment saying why is now accurate rather
+than inherited from the raw Win32 pattern.
+
+### Smaller things settled in code
+
+- **The exit code goes into the output stream**, not the status.
+  `ConnectionStatus::Disconnected` has no field for it, and adding one would
+  touch every transport's match arms to serve a case only this one has. A dim
+  `[process exited with code N]` line is what Windows Terminal, WezTerm and
+  kitty all print, and it puts the code in the scrollback that explains it.
+- **The wait thread is the only source of a terminal status.** The reader says
+  nothing at EOF, so the status carrying the exit code can never be raced by one
+  that does not.
+- **`retryable` is false for `NotFound` and `Spawn`**, true for `Pty`. A missing
+  executable is checked for before the pseudoconsole is opened, which is both
+  cheaper than recovering it from an `anyhow::Error` afterwards and the case a
+  stale saved profile actually produces.
