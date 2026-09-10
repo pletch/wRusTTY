@@ -131,7 +131,48 @@ describe('a scrollback row the core will not hand back', () => {
 
     const dump = e.dumpState()
     expect(dump).toContain('row reads: 1 FAILED and read as blank')
-    expect(dump).toMatch(/row reads: 1 FAILED and read as blank — 1$/m)
+    // Named, because a blank from a refused read and a blank from a row the
+    // snapshot cannot answer for call for different fixes.
+    expect(dump).toContain('refused by the core: 1 (rows 1)')
+  })
+
+  /**
+   * The other way a blank is invented, and one nothing had to stub: output
+   * landing after the last drawn frame. `readRows` maps absolute rows through
+   * the snapshot's scrollback depth, so once the live buffer has grown past it
+   * the rows at the bottom of the selection fall outside the snapshot's screen
+   * and come back blank. Copy between frames is exactly when this happens.
+   *
+   * Asserted through `getSelection` rather than the dump on purpose: the dump
+   * re-syncs before it reads, so it can never see this through its own rows.
+   * What it reports instead is the live/snapshot gap on its header line, which
+   * it samples before syncing -- see `dumpState`.
+   */
+  it('refreshes for copy, and names the lost rows for anyone who does not', async () => {
+    const { e, inner } = await pane()
+    e.write(new TextEncoder().encode('line one\r\ntwo\r\nthree\r\n' + FILLER))
+    inner.wasm!.exports.ghostty_render_state_update(inner.termPtr)
+    ;(e as unknown as { syncReadState(): void }).syncReadState()
+    // A frame drew; now more output arrives before anyone copies.
+    e.write(new TextEncoder().encode('late\r\n'.repeat(4)))
+
+    const total = inner.scrollbackLength
+    inner.renderer.selection = { start: { x: 0, y: 0 }, end: { x: COLS - 1, y: total - 1 } }
+    const failuresOf = (e as unknown as { rowReadFailures: { row: number; why: string }[] })
+
+    // A caller that reads without refreshing first loses the tail, and now
+    // says which rows and why instead of returning spaces.
+    ;(e as unknown as { readRowText(a: number, b: number): unknown }).readRowText(0, total - 1)
+    expect(failuresOf.rowReadFailures.length).toBeGreaterThan(0)
+    expect(failuresOf.rowReadFailures.every((f) => f.why === 'past the snapshot screen')).toBe(true)
+    expect(Math.max(...failuresOf.rowReadFailures.map((f) => f.row))).toBe(total - 1)
+
+    // Copy refreshes, so it keeps its tail: the last thing written is in it,
+    // and nothing was invented along the way.
+    const got = e.getSelection()
+    expect(failuresOf.rowReadFailures).toEqual([])
+    expect(got).toContain('late')
+    expect(got.split('\n').filter((l) => l.trim() === 'late')).toHaveLength(4)
   })
 
   it('says every row came back when none refused', async () => {

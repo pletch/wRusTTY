@@ -446,8 +446,18 @@ export class GhosttyEngine implements TerminalEngine {
    * `out` by offset reads the wrong row — but silently is the wrong way to hand
    * it back. `dumpState` reports this, so a copy that came out short says so
    * instead of leaving the reader to infer it from the shape of the damage.
+   *
+   * Every blank this function invents is recorded, not just the refused read,
+   * and each says which of the three it was. Recording only one of them would
+   * be worse than recording none: a dump that says "all rows came back" while
+   * holding blanks from a path that does not report is a dead end dressed up
+   * as an answer, and the next reader would rule out the wrong thing.
+   *
+   * `abs < 0` is deliberately not here. That is a caller asking about a row
+   * above the buffer — mark mode walking off the top does it routinely — and
+   * a blank is the honest answer rather than a failure to report.
    */
-  private rowReadFailures: number[] = []
+  private rowReadFailures: { row: number; why: string }[] = []
 
   constructor() {
     // Narrow by design: reads of buffer state, plus requests to move or
@@ -590,6 +600,28 @@ export class GhosttyEngine implements TerminalEngine {
       }
     }
     return best
+  }
+
+  /**
+   * Row-read failures as one line: a count and a sample of rows per reason.
+   *
+   * Shared by the console warning and the dump so the two never drift into
+   * describing the same event differently, which is the sort of thing that
+   * costs an afternoon when the two are being read side by side.
+   */
+  private static summariseRowFailures(failures: { row: number; why: string }[]): string {
+    const byReason = new Map<string, number[]>()
+    for (const f of failures) {
+      const rows = byReason.get(f.why)
+      if (rows) rows.push(f.row)
+      else byReason.set(f.why, [f.row])
+    }
+    return [...byReason]
+      .map(([why, rows]) => {
+        const shown = rows.slice(0, 8).join(', ')
+        return `${why}: ${rows.length} (rows ${shown}${rows.length > 8 ? ', …' : ''})`
+      })
+      .join('; ')
   }
 
   static formatDiagnostics(): string {
@@ -1025,6 +1057,7 @@ export class GhosttyEngine implements TerminalEngine {
       let activeRow = 0
       if (abs < scrollbackCount) {
         if (!lineV) {
+          this.rowReadFailures.push({ row: abs, why: 'no line buffer' })
           out.push(blank())
           continue
         }
@@ -1032,7 +1065,7 @@ export class GhosttyEngine implements TerminalEngine {
         // row, so trusting this would copy that row's text under this row's
         // number. See `rowReadFailures`.
         if (wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, abs, linePtr, wasmCols) === 0) {
-          this.rowReadFailures.push(abs)
+          this.rowReadFailures.push({ row: abs, why: 'refused by the core' })
           out.push(blank())
           continue
         }
@@ -1040,6 +1073,12 @@ export class GhosttyEngine implements TerminalEngine {
       } else {
         activeRow = abs - scrollbackCount
         if (activeRow >= wasmRows) {
+          // The snapshot's screen is `wasmRows` tall and starts at
+          // `scrollbackCount`; a row past that is one this snapshot cannot
+          // answer for, which happens when output has landed since the frame
+          // the snapshot was taken at. Silent, it looks exactly like a refused
+          // read — hence the separate reason.
+          this.rowReadFailures.push({ row: abs, why: 'past the snapshot screen' })
           out.push(blank())
           continue
         }
@@ -1082,9 +1121,8 @@ export class GhosttyEngine implements TerminalEngine {
       // Loud, because this should not happen and every consumer of `readRows`
       // — copy, search, links — quietly produces a wrong answer when it does.
       console.error(
-        `Ghostty: ${this.rowReadFailures.length} scrollback row(s) could not be read` +
-          ` (${this.rowReadFailures.slice(0, 8).join(', ')}` +
-          `${this.rowReadFailures.length > 8 ? ', …' : ''}); they read as blank.`,
+        `Ghostty: ${this.rowReadFailures.length} row(s) could not be read and are blank — ` +
+          GhosttyEngine.summariseRowFailures(this.rowReadFailures),
       )
     }
     if (gPtr !== 0) wasm.exports.ghostty_wasm_free_u8_array(gPtr, gCap * 4)
@@ -2632,6 +2670,21 @@ export class GhosttyEngine implements TerminalEngine {
   }
   getSelection(): string {
     if (!this.renderer || !this.renderer.selection || !this.wasm) return ''
+    // Copy does not ride on a drawn frame. `readRows` maps absolute rows
+    // through the snapshot's scrollback depth, so once output has landed since
+    // the last frame the rows at the bottom of the selection fall past the
+    // snapshot's screen and read back blank — a copy quietly missing its own
+    // tail. `syncReadState` exists for exactly this caller; see its note.
+    //
+    // Conditional because copy-on-select calls this on every drag update, and
+    // rebuilding the snapshot per mouse event would put a frame's work on a
+    // path that currently does none. Asking the depth is one call.
+    if (
+      this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) !==
+      this.snapshotScrollback
+    ) {
+      this.syncReadState()
+    }
     return this.selection.text()
   }
 
@@ -2737,7 +2790,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.rowReadFailures.length === 0
         ? 'row reads: all rows above came back from the core'
         : `row reads: ${this.rowReadFailures.length} FAILED and read as blank — ` +
-          this.rowReadFailures.join(', '),
+          GhosttyEngine.summariseRowFailures(this.rowReadFailures),
     )
 
     lines.push('')
