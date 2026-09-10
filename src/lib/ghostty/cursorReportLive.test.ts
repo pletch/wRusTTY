@@ -64,7 +64,14 @@ describe('cursor position report from the shipped core', () => {
 
     // The assertion that matters is simply that *something* comes back. An
     // empty string here means every local pane opens blank.
-    expect(drain(wasm, term)).toMatch(/^\x1b\[\d+;\d+R$/)
+    //
+    // Taken apart rather than matched with a single regex: an ESC inside a
+    // pattern is a control character the linter rejects however it is
+    // spelled, and this reads no worse.
+    const reply = drain(wasm, term)
+    expect(reply.startsWith('\x1b[')).toBe(true)
+    expect(reply.endsWith('R')).toBe(true)
+    expect(reply.slice(2, -1)).toMatch(/^\d+;\d+$/)
   })
 
   it('reports where the cursor actually is, not a fixed position', async () => {

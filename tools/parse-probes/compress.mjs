@@ -35,7 +35,11 @@ const OPT_SCROLLBACK_MAX_BYTES = 27
 const OPT_SCROLLBACK_MAX_LINES = 28
 const DATA_SCROLLBACK_ROWS = 15
 const COMPRESS_INCREMENTAL = 0
-const COMPRESS_FULL = 1
+// The other half of the same enum. Kept so the pair reads as the ABI it was
+// transcribed from rather than as a lone magic zero, and underscored because
+// this probe only ever exercises the incremental mode — a full compression is
+// a different question from the one it was written to cost out.
+const _COMPRESS_FULL = 1
 const CRESULT = ['UNSUPPORTED', 'PENDING', 'COMPLETE']
 // search.h
 const OPT_NEEDLE = 0

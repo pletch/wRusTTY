@@ -552,14 +552,24 @@ source-generic, so a local session gets it for free.
 through `wasmBindings`, one layer above `main/effects.test.ts`, and says in its
 own comment why a local pane in particular depends on it.
 
-**A local pane auto-closes on exit, and takes the exit notice with it.**
-`closeOnDisconnect` defaults to `true` (`src/lib/settings.ts:500`), and a shell
-exiting is a clean `disconnected`, so the pane is gone before
-`[process exited with code N]` can be read. For an ordinary `exit` that is
-right and matches SSH. For a shell that *failed* — a bad profile, a crash — it
-throws away the only explanation, which is the same instinct as the
-"a dead local pane keeps its scrollback" rule above. **Undecided:** whether a
-local pane should stay open on a non-zero exit regardless of the setting.
+**A local pane auto-closes on exit, and takes the exit notice with it — and
+that is correct.** `closeOnDisconnect` defaults to `true`
+(`src/lib/settings.ts:500`), and a shell exiting is a clean `disconnected`, so
+the pane is gone before `[process exited with code N]` can be read. That was
+raised as a possible defect and resolved as **matching the native console
+deliberately**: `pwsh.exe` launched from Explorer closes its window on `exit`
+whatever the code, and a terminal that kept a dead pane around after `exit`
+would surprise anyone coming from the thing it is replacing.
+
+The exit notice therefore serves the case where the setting is off, which is
+what that setting is for. **No code change** — the behaviour already matched.
+
+Where a local pane deliberately does *not* match the native console is a shell
+that fails to start: `isCleanDisconnect` (`src/lib/connection.ts:291`) counts
+only `disconnected`, so a `failed:` status leaves the pane open on its overlay
+with the reason visible. Native `pwsh` flashes the window shut and loses it.
+Better is the right call there, and it is the reason `LocalError::NotFound` is
+told apart from a spawn failure at all.
 
 **The reconnect checkbox is offered for local sessions and cannot do
 anything.** Harmless today, since auto-reconnect fires only on `Lost` and
