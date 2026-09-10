@@ -94,6 +94,33 @@ describe('a scrollback row the core will not hand back', () => {
     expect(got.split('\n')[1]).toBe('tail line')
   })
 
+  /**
+   * The other shape the same fault takes, and the one that explains the long
+   * runs of spaces in a real report. When the row that *starts* a wrapped line
+   * misses, the flag still says the next row continues it -- so the blank is
+   * kept untrimmed, on purpose, as mid-line content. A pane's width of spaces
+   * is spliced into the middle of the text where the words used to be.
+   */
+  it('splices a pane-width run of spaces in when the first row misses', async () => {
+    const { e, inner } = await pane()
+    e.write(new TextEncoder().encode(`before\r\n${logical}\r\ntail line\r\n${FILLER}`))
+    inner.wasm!.exports.ghostty_render_state_update(inner.termPtr)
+    ;(e as unknown as { syncReadState(): void }).syncReadState()
+
+    // Row 0 is "before", row 1 starts the wrapped line, row 2 continues it.
+    refuse(inner, [1])
+    inner.renderer.selection = { start: { x: 0, y: 0 }, end: { x: COLS - 1, y: 3 } }
+    const got = e.getSelection()
+
+    const out = got.split('\n')
+    expect(out[0]).toBe('before')
+    // The lost row is not omitted -- it is kept as its full width in spaces,
+    // because the wrap flag still says it runs into the row after it.
+    expect(out[1]).toBe(' '.repeat(COLS) + logical.slice(COLS))
+    // And the words that were on it are gone without a mark.
+    expect(got).not.toContain(logical.slice(0, COLS))
+  })
+
   it('reports the refused rows in the dump instead of passing them off as blank', async () => {
     const { e, inner } = await pane()
     e.write(new TextEncoder().encode(`${logical}\r\ntail line\r\n${FILLER}`))
