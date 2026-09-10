@@ -1638,6 +1638,20 @@ export function SettingsDialog({
                           </span>
                         </span>
                       </button>
+                      {/* Attribution, and a licence condition rather than a
+                          courtesy: the Git logo is CC BY 3.0, which requires
+                          the credit to travel with the mark wherever it is
+                          distributed — including into a shipped installer,
+                          where a file in the repo would never reach anyone.
+                          THIRD-PARTY-NOTICES.md carries the long form. */}
+                      <div className="mt-2 border-t border-chrome/10 px-2 py-2">
+                        <p className="leading-relaxed text-chrome/40">
+                          Shell icons identify the products they launch. The Git logo is by Jason
+                          Long, licensed CC BY 3.0. PowerShell is a trademark of Microsoft
+                          Corporation and Linux of Linus Torvalds, used here referentially; neither
+                          sponsors nor endorses wRusTTY.
+                        </p>
+                      </div>
                     </>
                   )}
                 </div>

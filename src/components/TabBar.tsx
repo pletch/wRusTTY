@@ -11,6 +11,7 @@ import {
   CircleDashed,
   Laptop,
 } from 'lucide-react'
+import { iconForShell, iconForShellId } from './shellIconFor'
 import type { PaneNode, Tab } from '../types'
 import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
@@ -462,9 +463,19 @@ export function TabBar({
           const trueRows = verticalRows(tab.root)
           const rows = Math.min(trueRows, PANE_MAP_MAX_ROWS)
           const leaf = leaves.find((l) => l.id === tab.activePaneId)
-          const ProtocolIcon = leaf?.source ? protocolIcons[leaf.source.protocol] : null
-          const isLocal =
-            leaf?.source?.protocol === 'local' || leaf?.source?.protocol === 'localProfile'
+          // A local pane is named by its *shell*, not by its transport. Five
+          // local sessions all showing the same laptop is the case this
+          // exists for; the generic icon stays as the fallback for a shell
+          // nothing recognises.
+          const src = leaf?.source
+          const shellIcon =
+            src?.protocol === 'local'
+              ? iconForShell(src.config)
+              : src?.protocol === 'localProfile'
+                ? iconForShellId(src.shellId)
+                : null
+          const ProtocolIcon = shellIcon ?? (src ? protocolIcons[src.protocol] : null)
+          const isLocal = src?.protocol === 'local' || src?.protocol === 'localProfile'
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id], isLocal) : null
           const runningPaneIds = new Set(
             leaves
