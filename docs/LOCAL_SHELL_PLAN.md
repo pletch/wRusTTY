@@ -3,8 +3,8 @@
 Implementation plan for a fourth transport: a shell process running on this
 machine, on a Windows pseudoconsole, in a wRusTTY pane.
 
-**Phases 1 and 2 are built** — `crates/wr-local` and its command layer; Phases
-3 and 4 are not, so nothing invokes a local shell yet. What changed on
+**Phases 1 and 2 are built**, plus a slice of Phase 4 that opens a pane —
+`pwsh` runs. Phase 3 and the rest of Phase 4 are not. What changed on
 contact with a real pseudoconsole is recorded under "What Phase 1 actually did"
 at the end — three ConPTY behaviours, none of which this plan predicted.
 
@@ -528,6 +528,44 @@ either exited or it has not, so there is no state where the process is gone but
 the session should return by itself. The factory is still wired up, correct and
 unreachable, so that a future `Lost` (a pty read failing under a live child)
 relaunches properly rather than finding no way to.
+
+## What the Phase 4 slice did
+
+Enough of Phase 4 to open a pane, taken early because the DSR finding could
+only be confirmed against the real engine: a `local` variant on
+`ConnectionSource` with its `invoke` arm and `transportOf` case, `lib/local.ts`,
+a `LocalFields` form, a fourth tab in the connect dialog, and the display cases
+in `TabBar`, `App`'s status bar and `sourceLabel`.
+
+**It works.** `pwsh` 7.6.5 runs in a pane, in the user's home rather than the
+app's working directory, with input, output, PSReadLine's syntax highlighting
+and its inline prediction all behaving. The status bar reads
+`LOCAL pwsh Connected`.
+
+Three things came out of it.
+
+**The DSR dependency is confirmed satisfied, and now has a test.** The shipped
+core answers `ESC [ 6 n` with the true cursor position, drained by
+`GhosttyEngine.drainResponses` and routed back through `conn.write` — which is
+source-generic, so a local session gets it for free.
+`src/lib/ghostty/cursorReportLive.test.ts` pins it against the *shipped* binary
+through `wasmBindings`, one layer above `main/effects.test.ts`, and says in its
+own comment why a local pane in particular depends on it.
+
+**A local pane auto-closes on exit, and takes the exit notice with it.**
+`closeOnDisconnect` defaults to `true` (`src/lib/settings.ts:500`), and a shell
+exiting is a clean `disconnected`, so the pane is gone before
+`[process exited with code N]` can be read. For an ordinary `exit` that is
+right and matches SSH. For a shell that *failed* — a bad profile, a crash — it
+throws away the only explanation, which is the same instinct as the
+"a dead local pane keeps its scrollback" rule above. **Undecided:** whether a
+local pane should stay open on a non-zero exit regardless of the setting.
+
+**The reconnect checkbox is offered for local sessions and cannot do
+anything.** Harmless today, since auto-reconnect fires only on `Lost` and
+`wr-local` never reports one, but the form should not offer a control that has
+no effect. Phase 4 proper should hide it, alongside defaulting a saved local
+profile's `autoReconnect` to `false`.
 
 ### Smaller things settled in code
 

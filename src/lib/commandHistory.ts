@@ -70,7 +70,7 @@ export function historyKey(opts: {
  * one, and it is far better to under-share a history than to offer one host's
  * commands at another's prompt.
  */
-export function historyKeyForSource(source: ConnectionSource): string {
+export function historyKeyForSource(source: ConnectionSource): string | null {
   switch (source.protocol) {
     case 'ssh':
       return historyKey({
@@ -94,6 +94,19 @@ export function historyKeyForSource(source: ConnectionSource): string {
       return `profile://${source.profileId}`
     case 'serialProfile':
       return `profile://${source.profileId}`
+    // Null means "this pane records nothing", which is decision 2 of
+    // docs/LOCAL_SHELL_PLAN.md applied where the source is chosen rather than
+    // filtered afterwards: PowerShell and CMD are an autocomplete non-goal
+    // (docs/TODO.md:406) because their prompt and echo model defeats the
+    // screen-scraping path, and PSReadLine's own Predictive IntelliSense
+    // already does the job better from inside the shell.
+    //
+    // It is null for *every* local shell only until shell detection lands.
+    // WSL and Git Bash are ordinary bash hosts and should record like any
+    // other; distinguishing them means classifying the command, which is
+    // Phase 3/4 work. Under-recording is the safe direction to be wrong in.
+    case 'local':
+      return null
   }
 }
 

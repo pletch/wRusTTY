@@ -1211,8 +1211,11 @@ export function Terminal({
         // a command that failed is still one you may want to recall and fix,
         // and under a partial integration the code is often null anyway.
         if (!settingsRef.current.autocompleteEnabled || !result.command) return
+        // Null for a pane that records nothing — see `historyKeyForSource`.
+        const historyKey = historyKeyForSource(source)
+        if (!historyKey) return
         void recordCommand({
-          host: historyKeyForSource(source),
+          host: historyKey,
           command: result.command,
           cwd: remoteCwdRef.current,
           source: 'integration',
@@ -1252,19 +1255,24 @@ export function Terminal({
     const promptInput = new PromptInputTracker(term)
     const autocomplete = new AutocompleteController({
       tracker: promptInput,
-      suggest: (typed, limit) =>
-        suggestCommands({
-          host: historyKeyForSource(source),
+      suggest: (typed, limit) => {
+        const historyKey = historyKeyForSource(source)
+        if (!historyKey) return Promise.resolve([])
+        return suggestCommands({
+          host: historyKey,
           typed,
           cwd: remoteCwdRef.current,
           limit,
-        }),
+        })
+      },
       send: (text) => {
         const id = sessionIdRef.current
         if (id) conn.write(source, id, new TextEncoder().encode(text)).catch(() => {})
       },
       noteAccepted: (command) => {
-        void recordAccepted(historyKeyForSource(source), command).catch(() => {})
+        const historyKey = historyKeyForSource(source)
+        if (!historyKey) return
+        void recordAccepted(historyKey, command).catch(() => {})
       },
       enabled: () => settingsRef.current.autocompleteEnabled,
       onChange: (view) => {
@@ -1300,10 +1308,12 @@ export function Terminal({
       // setting and the saved session's override of it are resolved backend
       // side, before any channel is opened. See `harvestRemoteHistory`.
       if (!settingsRef.current.autocompleteEnabled) return
+      const historyKey = historyKeyForSource(source)
+      if (!historyKey) return
       harvestAttempted = true
       void harvestRemoteHistory({
         sessionId: id,
-        host: historyKeyForSource(source),
+        host: historyKey,
         importGlobally: settingsRef.current.autocompleteImportRemoteHistory,
         profileId: source.protocol === 'sshProfile' ? source.profileId : null,
       }).catch(() => {
@@ -1349,8 +1359,13 @@ export function Terminal({
       // `tooShortToInfer`.
       if (!promptInput.exact && tooShortToInfer(input.text)) return
       if (input.text.length < promptInput.typedCount) return
+      // The gate decision 2 turns on: a PowerShell or CMD pane never reaches
+      // the screen-harvest path at all, rather than having its results
+      // filtered after the fact.
+      const historyKey = historyKeyForSource(source)
+      if (!historyKey) return
       void recordCommand({
-        host: historyKeyForSource(source),
+        host: historyKey,
         command: input.text,
         cwd: remoteCwdRef.current,
         source: 'screen',

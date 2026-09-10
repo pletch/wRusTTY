@@ -1159,6 +1159,15 @@ function App() {
         const adapter = p.identity.usb?.serialNumber ?? p.identity.portName
         return { protocol: 'SERIAL', target: `${adapter} · ${p.baudRate} ${framing}` }
       }
+      // The shell's name plus its arguments, which is the whole of what
+      // identifies a local session — there is no endpoint to resolve. A WSL
+      // profile reads as `wsl -d Ubuntu`, which is what makes two of them
+      // distinguishable in the status bar.
+      case 'local': {
+        const args = src.config.args.join(' ')
+        const label = sourceLabel(src)
+        return { protocol: 'LOCAL', target: args ? `${label} ${args}` : label }
+      }
     }
   })()
   const activePaneIndex = activePaneId

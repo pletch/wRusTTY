@@ -9,6 +9,7 @@ import {
   Cable,
   TerminalSquare,
   CircleDashed,
+  Laptop,
 } from 'lucide-react'
 import type { PaneNode, Tab } from '../types'
 import type { AppProgress } from '../lib/appProgress'
@@ -69,6 +70,7 @@ const protocolIcons = {
   telnet: Radio,
   serial: Cable,
   serialProfile: Cable,
+  local: Laptop,
 }
 
 /** Separation between segments in the tab strip's pane map, in px. */

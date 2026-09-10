@@ -1,6 +1,6 @@
 import { useReducer, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen } from 'lucide-react'
+import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen, Laptop } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile, SerialProfile, WakeOnLan } from '../lib/profiles'
 import { serialProfileFrom } from '../lib/profiles'
@@ -9,6 +9,7 @@ import type { Workspace } from '../lib/workspaces'
 import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
 import { SerialFields } from './SerialFields'
+import { LocalFields } from './LocalFields'
 import { SessionBrowser } from './SessionBrowser'
 import {
   connectDraftReducer,
@@ -29,7 +30,7 @@ export interface ConnectDialogInitial {
   /** Opens the form on this protocol's tab — a saved telnet session must not
    * land on the SSH form with its host prefilled and its port wrong, and a
    * saved serial one must not land on either. */
-  protocol?: 'ssh' | 'telnet' | 'serial'
+  protocol?: 'ssh' | 'telnet' | 'serial' | 'local'
   label?: string
   host?: string
   port?: number
@@ -67,6 +68,7 @@ const protocolIcons: Record<Protocol, typeof TerminalIcon> = {
   ssh: TerminalIcon,
   telnet: Radio,
   serial: Cable,
+  local: Laptop,
 }
 
 interface Props {
@@ -176,6 +178,7 @@ export function ConnectDialog({
     wakeBroadcast,
     wakeWait,
     serialConfig,
+    localConfig,
     logSession,
     saveProfile,
     saveCredential,
@@ -221,6 +224,7 @@ export function ConnectDialog({
     dispatch({ type: 'fieldSet', field: 'wakeBroadcast', value: v })
   const setWakeWait = (v: string) => dispatch({ type: 'fieldSet', field: 'wakeWait', value: v })
   const setSerialConfig = (v: typeof serialConfig) => dispatch({ type: 'fieldSet', field: 'serialConfig', value: v })
+  const setLocalConfig = (v: typeof localConfig) => dispatch({ type: 'fieldSet', field: 'localConfig', value: v })
   const setLogSession = (v: boolean) => dispatch({ type: 'fieldSet', field: 'logSession', value: v })
   const setSaveProfile = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveProfile', value: v })
   const setSaveCredential = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveCredential', value: v })
@@ -434,6 +438,12 @@ export function ConnectDialog({
           paneOptions,
         )
       }
+    } else if (protocol === 'local') {
+      // No profile half yet: a local session cannot be saved until Phase 4 of
+      // docs/LOCAL_SHELL_PLAN.md adds the `local` field to SessionProfile, so
+      // the save checkbox is hidden for this protocol rather than quietly
+      // ignored. Connecting is the whole of what this form does.
+      onConnect({ protocol: 'local', config: localConfig }, logSession, paneOptions)
     } else if (protocol === 'telnet') {
       // No credential half to any of this: telnet has no auth of its own, so
       // saving is purely "remember this endpoint and how to drive its
@@ -533,7 +543,7 @@ export function ConnectDialog({
           overflow-hidden with no way to reach the rest of it. */}
       <form onSubmit={submit} className="w-80 space-y-3 overflow-y-auto p-5">
         <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
-          {(['ssh', 'telnet', 'serial'] as const).map((p) => {
+          {(['ssh', 'telnet', 'serial', 'local'] as const).map((p) => {
             const Icon = protocolIcons[p]
             return (
               <button
@@ -553,7 +563,9 @@ export function ConnectDialog({
           })}
         </div>
 
-        {protocol === 'serial' ? (
+        {protocol === 'local' ? (
+          <LocalFields config={localConfig} onChange={setLocalConfig} inputClass={inputClass} />
+        ) : protocol === 'serial' ? (
           <SerialFields
             config={serialConfig}
             onChange={setSerialConfig}
@@ -938,7 +950,7 @@ export function ConnectDialog({
             meaning anything once the adapter moves socket — but the profile
             records the adapter's USB VID/PID/serial instead, and resolves a
             live COM number at connect time. */}
-        {onSaveProfile && (
+        {onSaveProfile && protocol !== 'local' && (
           <div className="space-y-2 border-t border-chrome/10 pt-2.5">
             <label className="flex items-center gap-2 text-xs text-chrome/70">
               <input

@@ -2,6 +2,7 @@ import { invoke, Channel } from '@tauri-apps/api/core'
 import type { SshConfig } from './ssh'
 import type { TelnetConfig } from './telnet'
 import type { SerialConfig } from './serial'
+import { shellLabel, type LocalConfig } from './local'
 import type { WakeOnLan } from './profiles'
 
 export type ConnectionSource =
@@ -14,6 +15,10 @@ export type ConnectionSource =
    * port name — the one stored when the session was saved may well belong to
    * a different device now. */
   | { protocol: 'serialProfile'; profileId: string }
+  /** A shell process on this machine. The only source with nothing on the far
+   * end of a network — no host, no port, no credential — which is why it
+   * carries its whole configuration inline and has no profile form yet. */
+  | { protocol: 'local'; config: LocalConfig }
 
 export type ConnEvent =
   | { type: 'status'; status: string }
@@ -156,6 +161,19 @@ export function connect(
         dataChannel,
         reconnect,
       })
+    case 'local':
+      // Sends the size, which telnet and serial do not. A pseudoconsole is
+      // given its dimensions when it is created and there is no deciding
+      // later, so without this the shell draws its first prompt at 80 columns
+      // and reflows the moment the real size arrives.
+      return invoke<string>('local_connect', {
+        config: source.config,
+        channel,
+        dataChannel,
+        cols,
+        rows,
+        reconnect,
+      })
   }
 }
 
@@ -167,10 +185,12 @@ export function connect(
  * ternaries defaulting to `ssh_*`, which meant every new source variant
  * silently routed its writes and disconnects to the SSH commands until someone
  * noticed. */
-export function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'serial' {
+export function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'serial' | 'local' {
   switch (source.protocol) {
     case 'telnet':
       return 'telnet'
+    case 'local':
+      return 'local'
     case 'serial':
     case 'serialProfile':
       return 'serial'
@@ -307,6 +327,8 @@ export function sourceLabel(source: ConnectionSource): string {
       return `${source.config.host}:${source.config.port}`
     case 'serial':
       return source.config.portName
+    case 'local':
+      return shellLabel(source.config)
     // The port isn't known here — it's resolved backend-side at connect
     // time — so the id is all this has. App's status bar resolves it to the
     // profile's own label, the same way it does for sshProfile.

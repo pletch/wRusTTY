@@ -1,10 +1,11 @@
 import { defaultSerialConfig } from '../lib/serial'
 import { serialConfigFrom } from '../lib/profiles'
 import type { SerialConfig } from '../lib/serial'
+import { defaultLocalConfig, type LocalConfig } from '../lib/local'
 import type { WakeOnLan } from '../lib/profiles'
 import type { ConnectDialogInitial } from '../components/ConnectDialog'
 
-export type Protocol = 'ssh' | 'telnet' | 'serial'
+export type Protocol = 'ssh' | 'telnet' | 'serial' | 'local'
 
 /** Terminal types offered in the session form, most useful first. Blank means
  * "send the default", so it heads the list rather than being a separate
@@ -153,6 +154,7 @@ export interface ConnectDraft {
   isNewFolder: boolean
   jumpProfileId: string
   serialConfig: SerialConfig
+  localConfig: LocalConfig
   logSession: boolean
   saveProfile: boolean
   saveCredential: boolean
@@ -195,6 +197,9 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     // the adapter was last seen on — informational, since the actual port is
     // resolved from the USB identity at connect time.
     serialConfig: initial?.serial ? serialConfigFrom(initial.serial) : defaultSerialConfig(),
+    // No saved form yet — a local session cannot be stored as a profile
+    // until Phase 4, so this always starts from the default.
+    localConfig: defaultLocalConfig(),
     // Ad-hoc "log this whole session from the start" — an alternative to the
     // toolbar toggle (which can only arm logging after a session is already
     // connected, so it can't catch the login banner/MOTD).
