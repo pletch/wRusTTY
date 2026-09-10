@@ -2757,6 +2757,26 @@ export class GhosttyEngine implements TerminalEngine {
             ` rectangular=${sel.rectangular === true}`
         : 'selection=none',
     )
+    if (!sel) {
+      // The single most useful thing a dump carries is the selection beside the
+      // rows it was taken from — that pair is what says whether copy read the
+      // grid correctly. Without it the dump proves only that the grid is fine
+      // *now*, which is never the question being asked. Said here, loudly,
+      // because the natural way to take one is to copy, notice the damage, look
+      // away, and only then reach for the keystroke — by which time the
+      // selection is gone and the dump cannot answer.
+      lines.push(
+        '  !! No selection was active, so this dump cannot show what copy produced.',
+      )
+      lines.push(
+        '  !! Take one with the bad selection still made, before resizing the pane:',
+      )
+      lines.push('  !! copy, see the damage, then Ctrl+Shift+D without clicking again.')
+    }
+    // Stated whether or not it looks relevant: a pane resized between the copy
+    // and the dump reflows every wrapped line, so the rows below can be a
+    // different shape from the ones copy actually read.
+    lines.push(`geometry note: rows below are as they are at ${this._cols} columns`)
 
     // The selection plus a margin, rather than the whole buffer. A full
     // scrollback here is tens of thousands of rows — megabytes of text, and

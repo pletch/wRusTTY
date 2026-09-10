@@ -108,9 +108,19 @@ describe('the pane dump', () => {
     expect(rowLines[0].trim().startsWith('280')).toBe(true)
   })
 
-  it('says so rather than throwing when there is no selection', async () => {
+  it('says so, and says why it matters, when there is no selection', async () => {
     const { e } = await paneWith(payload)
-    expect(e.dumpState()).toContain('selection=none')
+    const dump = e.dumpState()
+    expect(dump).toContain('selection=none')
+    // A dump with no selection proves only that the grid is fine now, which is
+    // never the question. It has to say so rather than read as a clean bill.
+    expect(dump).toContain('cannot show what copy produced')
+    expect(dump).toContain('before resizing the pane')
+  })
+
+  it('records the width the rows were read at', async () => {
+    const { e } = await paneWith(payload)
+    expect(e.dumpState()).toContain(`rows below are as they are at ${COLS} columns`)
   })
 
   it('flags a snapshot that has fallen behind the live scrollback', async () => {
