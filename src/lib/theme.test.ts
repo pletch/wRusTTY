@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import {
+  stripColor,
   PRESET_THEMES,
   THEME_COLOR_KEYS,
   PALETTE_ROWS,
@@ -425,5 +426,25 @@ describe('themeColorScheme', () => {
     for (const theme of PRESET_THEMES) {
       expect(themeColorScheme(theme)).toBe(looksLight(theme) ? 'light' : 'dark')
     }
+  })
+})
+
+describe('stripColor', () => {
+  const luma = (hex: string) => {
+    const [r, g, b] = hexToRgb(hex)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+
+  // The unfocused window's colour: lighter than a dark background, darker
+  // than a light one — towards the strip either way, never towards black.
+  it('moves a dark theme lighter and a light theme darker', () => {
+    const dark = findTheme('Tokyo Night')
+    expect(luma(stripColor(dark))).toBeGreaterThan(luma(dark.background))
+    const light = PRESET_THEMES.find((t) => luma(t.background) > 128)!
+    expect(luma(stripColor(light))).toBeLessThan(luma(light.background))
+  })
+
+  it('is a plain six-digit hex, so an alpha can be appended to it', () => {
+    expect(stripColor(findTheme('Tokyo Night'))).toMatch(/^#[0-9a-f]{6}$/)
   })
 })

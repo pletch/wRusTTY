@@ -320,6 +320,7 @@ export class GhosttyEngine implements TerminalEngine {
   private _ligatures = false
   private _themeName: string | null = null
   private _opacity = 1
+  private _background: string | null = null
   private _viewportOffset = 0
   private onScrollHandlers = new Set<(newPos: number) => void>()
   private onWriteParsedHandlers = new Set<() => void>()
@@ -2254,9 +2255,10 @@ export class GhosttyEngine implements TerminalEngine {
   // default onto the current theme (see updateStaticGrid). Text explicitly
   // painted from the ANSI palette keeps the palette this pane was opened with
   // until it scrolls away; new panes pick the theme up in full.
-  setTheme(themeName: string, opacity: number): void {
+  setTheme(themeName: string, opacity: number, background?: string | null): void {
     this._themeName = themeName
     this._opacity = opacity
+    this._background = background ?? null
 
     if (this.renderer) {
       this.applyThemeToRenderer(themeName)
@@ -2274,7 +2276,10 @@ export class GhosttyEngine implements TerminalEngine {
     if (!this.renderer) return
     const theme = findTheme(themeName)
     const [fr, fg, fb] = hexToRgb(theme.foreground)
-    const [br, bg, bb] = hexToRgb(theme.background)
+    // Only the renderer's backdrop takes the override. The core keeps the
+    // theme's real background, which is what an application asking for it
+    // (OSC 11) should be told whether or not the window has focus.
+    const [br, bg, bb] = hexToRgb(this._background ?? theme.background)
     this.renderer.setTheme(fr, fg, fb, br, bg, bb, this._opacity)
     const [cr, cg, cb] = hexToRgb(theme.cursor)
     this.renderer.setCursorColor(cr, cg, cb)

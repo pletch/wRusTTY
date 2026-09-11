@@ -280,6 +280,10 @@ export interface TerminalSettings {
    * that might be more opaque than what they started from. See
    * `effectiveBackgroundOpacity`, which also stops it fading to nothing. */
   unfocusedDimPercent: number
+  /** Runtime only, never saved: the colour a pane paints its background in
+   * instead of the theme's own, while the window is unfocused. Set by App on
+   * the settings it hands the panes, from `stripColor`. */
+  backgroundOverride?: string | null
   /** 'off' skips the native call entirely. 'acrylic' is live blur-behind
    * (the classic Windows Terminal look) but has a documented Microsoft
    * resize/drag perf bug on Win10 1903+/Win11 22000+. 'mica' and 'tabbed'

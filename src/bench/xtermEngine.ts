@@ -203,7 +203,8 @@ export class XtermEngine implements TerminalEngine {
     this.term.scrollToLine(line)
   }
 
-  setTheme(themeName: string, opacity: number) {
+  // The unfocused tint is an app concern; the bench compares engines focused.
+  setTheme(themeName: string, opacity: number, _background?: string | null) {
     this.term.options.theme = themeWithOpacity(themeName, opacity)
   }
 

@@ -49,6 +49,7 @@ import {
   backgroundWithOpacity,
   backgroundTint,
   findTheme,
+  stripColor,
   stripOverlay,
   tabHoverWash,
   chromeRgb,
@@ -1265,11 +1266,22 @@ function App() {
   // change: `setTheme` updates a uniform and flags the frame dirty, rather than
   // anything being composited with CSS opacity on every frame.
   const backgroundLayers = effectiveBackgroundLayers(terminalSettings, windowFocused)
+  const configuredTheme = findTheme(terminalSettings.themeName)
+  // Unfocused, every surface also changes colour, to the tab strip's: the
+  // lighter tone the inactive tabs already sit in. Thinning the background
+  // alone only reveals what is behind the window, and under Mica that is a
+  // flat grey Windows picks — about as dark as Tokyo Night itself — so the
+  // fade was invisible there and the strip, losing its wash, went darker.
+  // The colour change reads the same over any wallpaper and any backdrop.
+  const faded = !windowFocused && terminalSettings.unfocusedDimPercent > 0
+  const backgroundOverride = faded ? stripColor(configuredTheme) : null
   const paneSettings =
-    backgroundLayers.terminal === terminalSettings.backgroundOpacity
+    backgroundLayers.terminal === terminalSettings.backgroundOpacity && !backgroundOverride
       ? terminalSettings
-      : { ...terminalSettings, backgroundOpacity: backgroundLayers.terminal }
-  const backgroundTheme = findTheme(terminalSettings.themeName)
+      : { ...terminalSettings, backgroundOpacity: backgroundLayers.terminal, backgroundOverride }
+  const backgroundTheme = backgroundOverride
+    ? { ...configuredTheme, background: backgroundOverride }
+    : configuredTheme
   const rootBackground = backgroundWithOpacity(backgroundTheme, backgroundLayers.root)
   const paneBackground = backgroundWithOpacity(backgroundTheme, backgroundLayers.overRoot)
 

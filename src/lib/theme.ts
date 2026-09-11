@@ -502,6 +502,19 @@ export function tabHoverWash(theme: TerminalTheme): string {
   return `linear-gradient(${half}, ${half})`
 }
 
+/** The tab strip's own colour, as a solid hex: the theme's background with
+ * the strip's wash already laid over it. What an unfocused window's surfaces
+ * are painted in — see `effectiveBackgroundLayers` in settings.ts — so that
+ * clicking away moves the window towards the lighter strip and inactive tabs
+ * rather than towards whatever happens to be behind it. */
+export function stripColor(theme: TerminalTheme): string {
+  const tone = backgroundIsDark(theme) ? 255 : 0
+  const mix = (c: number) => Math.round(c + (tone - c) * STRIP_OVERLAY_ALPHA)
+  return `#${hexToRgb(theme.background)
+    .map((c) => mix(c).toString(16).padStart(2, '0'))
+    .join('')}`
+}
+
 /** A translucent black or white, whichever this theme's background is
  * further from, at the given alpha. */
 function wash(theme: TerminalTheme, alpha: number): string {

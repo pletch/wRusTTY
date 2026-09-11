@@ -84,6 +84,15 @@ const ACK_THRESHOLD_BYTES = 1024 * 1024
  * Tauri backend to invoke, and a failed report about a failure should never
  * become an unhandled rejection on top of the failure itself.
  */
+/** The theme this pane paints its surroundings from: the configured one, with
+ * the unfocused window's background colour in place of its own when App has
+ * set one. Shared by every surface the engine does not paint, so they cannot
+ * drift from the grid. */
+function paneTheme(settings: TerminalSettings) {
+  const theme = findTheme(settings.themeName)
+  return settings.backgroundOverride ? { ...theme, background: settings.backgroundOverride } : theme
+}
+
 function reportEngineFailure(message: string) {
   void logError(`terminal engine failed to start: ${message}`).catch(() => {})
 }
@@ -587,10 +596,14 @@ export function Terminal({
   // tearing down and reconnecting the session.
   useEffect(() => {
     if (termRef.current) {
-      termRef.current.setTheme(settings.themeName, settings.backgroundOpacity)
+      termRef.current.setTheme(
+        settings.themeName,
+        settings.backgroundOpacity,
+        settings.backgroundOverride,
+      )
     }
     updateScrollbarColorsRef.current?.()
-  }, [settings.themeName, settings.backgroundOpacity])
+  }, [settings.themeName, settings.backgroundOpacity, settings.backgroundOverride])
 
   // Font and scrollback likewise apply to the live terminal rather than
   // recreating it, which would drop the connection and the scrollback along
@@ -909,7 +922,11 @@ export function Terminal({
     // every existing one. That is exactly how the cursor preference shipped
     // wrong — new panes came up as the engine's own default block instead of
     // the configured shape.
-    term.setTheme(settingsRef.current.themeName, settingsRef.current.backgroundOpacity)
+    term.setTheme(
+      settingsRef.current.themeName,
+      settingsRef.current.backgroundOpacity,
+      settingsRef.current.backgroundOverride,
+    )
     term.setFont(buildFontSelection(settingsRef.current), settingsRef.current.fontSize)
     term.setScrollbackBudget(settingsRef.current.scrollbackBudgetMB)
     term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
@@ -2279,7 +2296,7 @@ export function Terminal({
       // never drift out of sync with whatever the terminal itself paints,
       // which a previous attempt at this (matching color one level up, in
       // App.tsx) did the moment a non-default theme was actually tested.
-      style={{ background: backgroundWithOpacity(findTheme(settings.themeName), settings.backgroundOpacity) }}
+      style={{ background: backgroundWithOpacity(paneTheme(settings), settings.backgroundOpacity) }}
       // A file dragged in from Explorer, as a DOM event rather than Tauri's
       // own drag-drop — that is switched off because it intercepts OS drags on
       // WebView2 and breaks the HTML5 events tab-to-pane dragging needs. The
@@ -2361,7 +2378,7 @@ export function Terminal({
           borderStyle: 'solid',
           borderWidth: 0,
           borderColor: backgroundWithOpacity(
-            findTheme(settings.themeName),
+            paneTheme(settings),
             settings.backgroundOpacity,
           ),
         }}

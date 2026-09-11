@@ -113,7 +113,9 @@ export interface TerminalEngine {
   scrollLines(amount: number): void
   scrollToLine(line: number): void
 
-  setTheme(themeName: string, opacity: number): void
+  /** `background` replaces the theme's own background colour when given —
+   *  the unfocused window's tint, see `TerminalSettings.backgroundOverride`. */
+  setTheme(themeName: string, opacity: number, background?: string | null): void
   setFont(fonts: FontSelection, fontSize: number): void
   /** Per-pane scrollback memory tier in MB (8/16/32/64), as chosen in
    *  Settings. Depth in rows falls out of this and the pane's width rather than
