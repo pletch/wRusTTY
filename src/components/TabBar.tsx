@@ -11,7 +11,8 @@ import {
   CircleDashed,
   Laptop,
 } from 'lucide-react'
-import { iconForShell, iconForShellId } from './shellIconFor'
+import { glyphForShell, glyphForShellId } from './shellIconFor'
+import { LocalShellIcon } from './LocalShellIcon'
 import type { PaneNode, Tab } from '../types'
 import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
@@ -468,13 +469,13 @@ export function TabBar({
           // exists for; the generic icon stays as the fallback for a shell
           // nothing recognises.
           const src = leaf?.source
-          const shellIcon =
+          const shellGlyph =
             src?.protocol === 'local'
-              ? iconForShell(src.config)
+              ? glyphForShell(src.config)
               : src?.protocol === 'localProfile'
-                ? iconForShellId(src.shellId)
+                ? glyphForShellId(src.shellId)
                 : null
-          const ProtocolIcon = shellIcon ?? (src ? protocolIcons[src.protocol] : null)
+          const ProtocolIcon = src ? protocolIcons[src.protocol] : null
           const isLocal = src?.protocol === 'local' || src?.protocol === 'localProfile'
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id], isLocal) : null
           const runningPaneIds = new Set(
@@ -699,9 +700,15 @@ export function TabBar({
                   content-driven between its min and max, so 12px of icon plus
                   its gap moved the whole thing. */}
               <span
-                className={`relative shrink-0 ${ProtocolIcon ? 'text-chrome/40' : 'text-chrome/20'}`}
+                className={`relative shrink-0 ${ProtocolIcon || shellGlyph ? 'text-chrome/40' : 'text-chrome/20'}`}
               >
-                {ProtocolIcon ? <ProtocolIcon size={12} /> : <CircleDashed size={12} />}
+                {shellGlyph ? (
+                  <LocalShellIcon glyph={shellGlyph} size={12} />
+                ) : ProtocolIcon ? (
+                  <ProtocolIcon size={12} />
+                ) : (
+                  <CircleDashed size={12} />
+                )}
                 {dotColor && (
                   <span
                     className={`absolute -bottom-0.5 -right-0.5 h-1.5 w-1.5 rounded-full ring-1 ring-[#1a1b22] transition-colors duration-300 ${dotColor}`}

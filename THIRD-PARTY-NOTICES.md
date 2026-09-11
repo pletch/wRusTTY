@@ -7,47 +7,49 @@ therefore has nowhere else to declare itself.
 
 ## Shell icons
 
-`src/components/ShellIcons.tsx` embeds four glyphs used to identify which shell
-a local session opens. They appear only next to a session that launches that
-product — they identify it, and are never used as branding for wRusTTY, which
-has its own icon.
+Local session tabs show an icon for the shell they launch. Where those icons
+come from depends on whether the mark may be redistributed.
 
-### Git logo — attribution required
+### Git logo — bundled, attribution required
 
 The Git logo is by **Jason Long** and is licensed under the
 [Creative Commons Attribution 3.0 Unported License][cc-by-3].
 
 This is a licence condition rather than a courtesy: CC BY requires the credit
-above to travel with any distribution of the mark, including this one.
+above to travel with any distribution of the mark, including this one. It is
+repeated in the application's About panel for that reason.
 
-### PowerShell
-
-The PowerShell logo is a trademark of **Microsoft Corporation**. It is used
-here referentially, to identify Microsoft's PowerShell where wRusTTY launches
-it. Microsoft neither sponsors nor endorses this project.
-
-PowerShell itself is open source under the MIT licence, but that licence covers
-the software; the mark is not licensed by it.
-
-### Linux (Tux)
+### Linux (Tux) — bundled
 
 The Linux penguin identifies a WSL distribution. "Linux" is a registered
 trademark of **Linus Torvalds**, and the penguin derives from Larry Ewing's
-original. Used referentially, as above.
+original. Used referentially, next to the product it identifies.
 
-### Command prompt
+### PowerShell and Command Prompt — not distributed
 
-The `>_` glyph is original to this project. `cmd.exe` has no mark of its own,
-and this is drawn rather than borrowed.
+wRusTTY ships **no** PowerShell or Command Prompt artwork. Microsoft's
+trademark terms prohibit using its logos without permission — the reason
+Simple Icons removed every Microsoft brand in 2024 ([simple-icons#10019][si-ms]).
+
+Instead, the icon a tab shows for these shells is read at runtime from the
+shell's own executable (`pwsh.exe`, `powershell.exe`, `cmd.exe`) on the
+machine it is installed on — the same icon Windows itself shows for that file.
+Nothing is copied into the application. Where that read is not possible, a
+neutral `>_` glyph original to this project is shown instead.
+
+PowerShell and Windows are trademarks of **Microsoft Corporation**, which
+neither sponsors nor endorses this project.
 
 ### Rendering source
 
-The PowerShell, Git and Linux path data are taken from [Simple Icons][si],
-which releases its renderings under [CC0 1.0][cc0]. CC0 waives copyright in the
-drawing; it does not affect the trademarks above, which remain with their
-owners. Simple Icons' own guidance says the same: brand icons should be used
-only to represent the company or product they refer to.
+The Git and Linux path data, and their brand colours, are taken from
+[Simple Icons][si], which releases its renderings under [CC0 1.0][cc0]. CC0
+waives copyright in the drawing; it does not affect the trademarks above,
+which remain with their owners. Simple Icons' own guidance says the same:
+brand icons should be used only to represent the company or product they
+refer to.
 
 [cc-by-3]: https://creativecommons.org/licenses/by/3.0/
 [si]: https://simpleicons.org
+[si-ms]: https://github.com/simple-icons/simple-icons/pull/10019
 [cc0]: https://creativecommons.org/publicdomain/zero/1.0/

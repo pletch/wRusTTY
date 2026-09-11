@@ -68,6 +68,9 @@ tauri-plugin-window-state = "2.4.1"
 # though only the Windows path is wired up here.
 window-vibrancy = "0.6"
 tauri-plugin-notification = "2.3.3"
+# Encoding a shell's icon for the webview (shell_icon.rs). Already in the graph
+# via tauri, so naming it here reuses that copy rather than adding one.
+png = "0.18"
 
 [dev-dependencies]
 # `test-util` for the paused clock, which is what lets wake.rs test a
@@ -112,6 +115,9 @@ windows = { version = "=0.62.2", features = [
   # fonts.rs. The same system font collection the webview resolves against,
   # asked from the process that can ask it without a permission prompt.
   "Win32_Graphics_DirectWrite",
+  # Reading a shell's own icon out of its executable, in shell_icon.rs: GDI is
+  # what turns the HICON that SHDefExtractIconW hands back into pixels.
+  "Win32_Graphics_Gdi",
 ] }
 # IUserConsentVerifierInterop::RequestVerificationForWindowAsync's generic
 # return type is `T: windows_core::Interface`, which we satisfy with

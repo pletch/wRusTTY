@@ -16,6 +16,7 @@ mod session_import;
 mod session_lock;
 mod session_registry;
 mod sftp;
+mod shell_icon;
 mod ssh;
 mod ssh_config_import;
 mod telnet;
@@ -105,6 +106,7 @@ pub fn run() {
             telnet::telnet_resize,
             telnet::telnet_disconnect,
             local_shells::local_list_shells,
+            shell_icon::local_shell_icon,
             local::local_connect,
             local::local_connect_profile,
             local::local_write,

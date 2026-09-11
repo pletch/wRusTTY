@@ -7262,6 +7262,7 @@ dependencies = [
  "keyring",
  "log",
  "notify-debouncer-full",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "tauri",

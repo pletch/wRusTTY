@@ -1674,9 +1674,11 @@ export function SettingsDialog({
                       <div className="mt-2 border-t border-chrome/10 px-2 py-2">
                         <p className="leading-relaxed text-chrome/40">
                           Shell icons identify the products they launch. The Git logo is by Jason
-                          Long, licensed CC BY 3.0. PowerShell is a trademark of Microsoft
-                          Corporation and Linux of Linus Torvalds, used here referentially; neither
-                          sponsors nor endorses wRusTTY.
+                          Long, licensed CC BY 3.0. Linux is a trademark of Linus Torvalds, used
+                          here referentially. PowerShell and Command Prompt icons are not included
+                          with wRusTTY: they are read from the programs installed on this computer.
+                          PowerShell and Windows are trademarks of Microsoft Corporation, which
+                          does not sponsor or endorse wRusTTY.
                         </p>
                       </div>
                     </>

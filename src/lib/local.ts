@@ -59,6 +59,41 @@ export async function listShells(): Promise<ShellInfo[]> {
   }
 }
 
+const iconRequests = new Map<string, Promise<string | null>>()
+const iconAnswers = new Map<string, string | null>()
+
+/** A detected shell's own icon, as a PNG data URL, or null when it has none.
+ *
+ * Read from the shell's executable on this machine by the backend — see
+ * src-tauri/src/shell_icon.rs for why the Microsoft shells' icons are never
+ * bundled. Asked for by shell id rather than by path, so the webview never
+ * chooses which file gets read.
+ *
+ * Cached for the life of the page, and de-duplicated while in flight: every
+ * tab of the same shell asks for the same icon, and an installed executable's
+ * icon does not change under a running app. Null is cached too, so a shell
+ * with no icon is not asked about again on every render. */
+export function shellIconUrl(shellId: string): Promise<string | null> {
+  let request = iconRequests.get(shellId)
+  if (!request) {
+    request = invoke<string | null>('local_shell_icon', { shellId })
+      .catch(() => null)
+      .then((url) => {
+        iconAnswers.set(shellId, url)
+        return url
+      })
+    iconRequests.set(shellId, request)
+  }
+  return request
+}
+
+/** The icon if it has already been fetched: undefined means "not yet asked",
+ *  which is different from null's "asked, and there is none". Lets a tab paint
+ *  the real icon on its first render once any other tab has fetched it. */
+export function cachedShellIconUrl(shellId: string): string | null | undefined {
+  return iconAnswers.get(shellId)
+}
+
 /** Blank, and filled in by the form once detection answers.
  *
  * Deliberately not a guessed path any more. A hardcoded
