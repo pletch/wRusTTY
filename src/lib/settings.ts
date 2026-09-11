@@ -3,7 +3,7 @@ import { resolveRangeOverlaps } from './fontStack'
 import { sanitizeCustomThemes, setCustomThemes, type TerminalTheme } from './theme'
 
 /** What Ctrl+0 restores, and what a settings blob without a size gets. */
-export const DEFAULT_FONT_SIZE = 14
+export const DEFAULT_FONT_SIZE = 13
 
 export type CursorStyleSetting = 'block' | 'bar' | 'underline'
 
@@ -587,7 +587,6 @@ const defaults: TerminalSettings = {
  */
 const firstRunAppearance: Partial<TerminalSettings> = {
   fontFamily: curatedStack('JetBrains Mono'),
-  fontSize: 13,
   fontWeight: 200,
   fontWeightBold: 500,
   ligatures: true,
