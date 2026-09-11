@@ -3,11 +3,11 @@
 Implementation plan for a local shell running as administrator, in a tab of
 an ordinary, unelevated wRusTTY window.
 
-**Phases 1 and 2 are built** — the pipe protocol, the elevated host, the tab's
-connector and the UAC launcher — and tested over a real pipe. Phases 3 and 4
-are not: `wrustty.exe` has no host mode yet and the frontend has no way to ask
-for an elevated tab. What changed on contact is under "What Phase 1 actually
-did" and "What Phase 2 actually did" at the end.
+**Phases 1–3 are built, and the whole path has been through a real UAC
+prompt**: an unelevated wRusTTY opened an administrator `cmd` through the
+elevated host and pipe. Phase 4 — the UI — is not built, so nothing in the
+app asks for an elevated tab yet. What changed on contact is in the "actually
+did" sections at the end.
 
 Written against the code at `e7216ed` on 2026-09-10; every file and line
 reference was checked against it rather than remembered. It builds on
@@ -376,5 +376,36 @@ UAC prompt, because `wrustty.exe --elevated-host` does nothing yet — that is
 Phase 3. So the question left open at the end of Phase 1 is still open: whether
 an unelevated tab can reach an elevated host through the pipe's descriptor.
 Phase 3 is small, and the first real prompt answers it.
+
+## What Phase 3 actually did
+
+`main` asks `elevation::elevated_entry_point` before anything else, so
+`wrustty.exe --elevated-host …` serves one shell and exits without Tauri, a
+window or the single-instance plugin ever starting. Its command line is parsed
+strictly — exactly the three options the launcher writes, in that order — and
+the shell id is resolved by the elevated process's own detection, allowlist
+first. Debug builds also have `--elevated-smoke`; release builds do not.
+
+**The real-elevation check, done on 2026-09-10.** `wrustty.exe --elevated-smoke`
+from an ordinary terminal, UAC prompt approved:
+
+- the shell's `whoami /groups` showed `Mandatory Label\High Mandatory Level`
+  (`S-1-16-12288`) and `BUILTIN\Administrators` as an *enabled* group, owner —
+  a genuinely elevated token, not the filtered one;
+- its title became `Administrator: C:\WINDOWS\system32\cmd.exe`;
+- `exit` went through, the pane received `[process exited with code 0]`, and
+  the run ended with exit code 0;
+- afterwards no elevated `wrustty.exe`, `cmd.exe` or console host was left
+  running.
+
+That closes the question left open since Phase 1: the pipe's descriptor
+(current user, medium label, no-write-up) does let an unelevated tab reach an
+elevated host. It also exercised host mode's parsing, detection running
+elevated, and the prompt itself, which showed the expected yellow
+unknown-publisher banner for an unsigned build.
+
+Not yet tried for real: answering **No**. The mapping from `ERROR_CANCELLED` to
+"elevation was declined" is covered by a test with a stand-in launcher, not by
+a real declined prompt.
 
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general
