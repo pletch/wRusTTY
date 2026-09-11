@@ -4,9 +4,11 @@ interface Props {
   host: string
   port: number
   fingerprint: string
-  status: 'unknown' | 'changed'
+  status: 'unknown' | 'changed' | 'newKeyType'
   /** For 'changed' only: the fingerprint previously on record. */
   storedFingerprint: string | null
+  /** For 'newKeyType' only: each key on record, as `algorithm fingerprint`. */
+  knownKeys?: string[]
   onAnswer: (accept: boolean) => void
 }
 
@@ -16,9 +18,18 @@ export function HostKeyPrompt({
   fingerprint,
   status,
   storedFingerprint,
+  knownKeys = [],
   onAnswer,
 }: Props) {
   const isChanged = status === 'changed'
+  const isNewKeyType = status === 'newKeyType'
+  // A new key type on a known host gets the alarm treatment too, not the
+  // first-connection one. It is what a man in the middle without the host's key
+  // produces — offer a type nothing is pinned for, and hope for the routine
+  // prompt. And it is rare from an honest server: negotiation asks for the
+  // pinned types first, so arriving here means the server no longer offers any
+  // of them.
+  const isAlarm = isChanged || isNewKeyType
 
   return (
     <div className="animate-in fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
@@ -31,18 +42,22 @@ export function HostKeyPrompt({
           // read. As a colour plus a one-stop gradient, not one shorthand —
           // Chrome keeps the gradient and drops the colour if they are
           // written together (see tabHoverWash).
-          isChanged
+          isAlarm
             ? 'border-red-500/50 bg-surface bg-gradient-to-b from-red-500/20 to-red-500/20'
             : 'border-chrome/10 bg-surface'
         }`}
       >
         <h1 className="flex items-center gap-2 text-sm font-semibold text-chrome">
-          {isChanged ? (
+          {isAlarm ? (
             <ShieldAlert size={16} className="text-red-400" />
           ) : (
             <ShieldQuestion size={16} className="text-amber-400" />
           )}
-          {isChanged ? 'Host key has changed' : 'Unknown host'}
+          {isChanged
+            ? 'Host key has changed'
+            : isNewKeyType
+              ? 'Unfamiliar key from a known host'
+              : 'Unknown host'}
         </h1>
 
         <p className="text-xs text-chrome/80">
@@ -50,7 +65,12 @@ export function HostKeyPrompt({
           <span className="font-mono text-chrome">
             {host}:{port}
           </span>{' '}
-          {isChanged ? 'does not match the key on record' : "can't be established"}.
+          {isChanged
+            ? 'does not match the key on record'
+            : isNewKeyType
+              ? 'was established before, but it is now offering a type of key it has never shown you'
+              : "can't be established"}
+          .
         </p>
 
         {isChanged && storedFingerprint && (
@@ -62,6 +82,23 @@ export function HostKeyPrompt({
                 {storedFingerprint}
               </span>
             </p>
+            <p className="text-[11px] uppercase tracking-wide text-chrome/40">Offered now</p>
+          </div>
+        )}
+        {isNewKeyType && knownKeys.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[11px] uppercase tracking-wide text-chrome/40">
+              {knownKeys.length === 1 ? 'Key on record' : 'Keys on record'}
+            </p>
+            {knownKeys.map((known) => (
+              <p
+                key={known}
+                className="flex items-center gap-2 rounded bg-black/30 p-2 font-mono text-xs text-chrome/60"
+              >
+                <KeyRound size={12} className="shrink-0 text-chrome/40" />
+                <span className="break-all">{known}</span>
+              </p>
+            ))}
             <p className="text-[11px] uppercase tracking-wide text-chrome/40">Offered now</p>
           </div>
         )}
@@ -77,13 +114,21 @@ export function HostKeyPrompt({
             this fingerprint through another channel.
           </p>
         )}
+        {isNewKeyType && (
+          <p className="text-xs leading-relaxed text-red-300">
+            The server did not offer the key you trusted before. That can follow
+            a reconfiguration, but it is also what someone intercepting your
+            connection would do. Do not accept unless you can verify this
+            fingerprint through another channel.
+          </p>
+        )}
 
-        {/* On `changed`, the emphasis is inverted against every other dialog
-            in the app: Reject takes the filled primary slot, and accepting
-            becomes the ghost. A red-filled Accept reads as "this is the
-            important button" at least as much as it reads "danger", and this
-            is the one dialog where the button muscle memory lands on has to
-            be the safe one. Danger still gets said — in red text on the
+        {/* On the alarm states, the emphasis is inverted against every other
+            dialog in the app: Reject takes the filled primary slot, and
+            accepting becomes the ghost. A red-filled Accept reads as "this is
+            the important button" at least as much as it reads "danger", and
+            this is the one dialog where the button muscle memory lands on has
+            to be the safe one. Danger still gets said — in red text on the
             action that carries it — it just stops being said with emphasis.
 
             `unknown` deliberately keeps the ordinary arrangement. A
@@ -91,7 +136,7 @@ export function HostKeyPrompt({
             answer; adding friction there is how people get trained to click
             straight through the one above. */}
         <div className="flex justify-end gap-2 pt-1">
-          {isChanged ? (
+          {isAlarm ? (
             <>
               <button
                 className="rounded px-3 py-1.5 text-xs text-red-300/90 transition-colors duration-100 hover:bg-red-500/15"

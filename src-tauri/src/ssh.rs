@@ -43,12 +43,17 @@ pub enum SshEvent {
         host: String,
         port: u16,
         fingerprint: String,
-        /// "unknown" (first connection) or "changed" (possible MITM or
-        /// host reprovision) — the frontend must word these very differently.
+        /// "unknown" (first connection), "changed" (possible MITM or host
+        /// reprovision), or "newKeyType" (a known host offering a key of a
+        /// type we hold no pin for — see `HostKeyStatus::NewKeyType`). The
+        /// frontend must word these very differently.
         status: String,
         /// For "changed" only: the fingerprint previously on record, so the
         /// user can compare old vs. new instead of judging the new key blind.
         stored_fingerprint: Option<String>,
+        /// For "newKeyType" only: every key on record for this host, as
+        /// `algorithm fingerprint`. Empty otherwise.
+        known_keys: Vec<String>,
     },
     /// One round of keyboard-interactive auth: the server's own questions,
     /// relayed for a human to answer. Answered by `ssh_respond_auth_prompt`.
@@ -238,10 +243,14 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
             .await
             .insert(request_id.clone(), (self.session_id.clone(), tx));
 
-        let (status, stored_fingerprint) = match prompt.status {
-            HostKeyStatus::Unknown => ("unknown", None),
-            HostKeyStatus::Changed { stored_fingerprint } => ("changed", Some(stored_fingerprint)),
-            HostKeyStatus::Trusted => ("unknown", None), // verify() is never called when already trusted
+        let (status, stored_fingerprint, known_keys) = match prompt.status {
+            HostKeyStatus::Unknown => ("unknown", None, Vec::new()),
+            HostKeyStatus::Changed { stored_fingerprint } => {
+                ("changed", Some(stored_fingerprint), Vec::new())
+            }
+            HostKeyStatus::NewKeyType { known } => ("newKeyType", None, known),
+            // verify() is never called when already trusted
+            HostKeyStatus::Trusted => ("unknown", None, Vec::new()),
         };
 
         if self
@@ -253,6 +262,7 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
                 fingerprint: prompt.fingerprint,
                 status: status.to_string(),
                 stored_fingerprint,
+                known_keys,
             })
             .is_err()
         {

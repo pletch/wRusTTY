@@ -191,8 +191,9 @@ interface PendingHostKey {
   host: string
   port: number
   fingerprint: string
-  status: 'unknown' | 'changed'
+  status: 'unknown' | 'changed' | 'newKeyType'
   storedFingerprint: string | null
+  knownKeys: string[]
 }
 
 interface PendingAuthPrompt {
@@ -1600,6 +1601,7 @@ export function Terminal({
             fingerprint: event.fingerprint,
             status: event.status,
             storedFingerprint: event.storedFingerprint,
+            knownKeys: event.knownKeys,
           })
           break
         case 'authPrompt':
@@ -2736,6 +2738,7 @@ export function Terminal({
           fingerprint={hostKeyPrompt.fingerprint}
           status={hostKeyPrompt.status}
           storedFingerprint={hostKeyPrompt.storedFingerprint}
+          knownKeys={hostKeyPrompt.knownKeys}
           onAnswer={(accept) => {
             conn.respondHostKey(hostKeyPrompt.requestId, accept)
             setHostKeyPrompt(null)

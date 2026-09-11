@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use russh::keys::ssh_key::HashAlg;
+use russh::keys::ssh_key::{Algorithm, HashAlg};
 use russh::keys::PublicKey;
 
 /// Temp-file-plus-rename write, owner-only on Unix. A crash or power loss
@@ -26,6 +26,17 @@ pub enum HostKeyStatus {
     /// Entry exists but the offered key is different. Never auto-accept
     /// this: it's either a reprovisioned host or an active MITM.
     Changed { stored_fingerprint: String },
+    /// Keys are on record for this host, but none of the offered key's type.
+    /// Nothing is contradicted outright, which is why this is not `Changed` —
+    /// but it is not a first connection either, and must not be worded as one.
+    /// It is exactly what a man in the middle *without* the host's key would
+    /// produce: offer a type we hold no pin for, and hope for the routine
+    /// prompt. [`KnownHostsStore::host_key_preference`] makes an honest server
+    /// that still has a pinned key present that one, so arriving here means
+    /// the server no longer offers any key type we trusted.
+    ///
+    /// `known` is each key on record, as `algorithm fingerprint`.
+    NewKeyType { known: Vec<String> },
 }
 
 /// One stored host key, as the management UI needs to show it.
@@ -99,9 +110,10 @@ impl KnownHostsStore {
 
     /// `Changed` means "we hold a key of this algorithm for this host and the
     /// offered one differs" — not "we hold some key and it differs". Holding
-    /// an Ed25519 key and being offered an RSA one is `Unknown`: nothing is
-    /// contradicted, there is simply no prior trust for that algorithm, and
-    /// the prompt the user sees should say so.
+    /// an Ed25519 key and being offered an RSA one is `NewKeyType`: nothing is
+    /// contradicted, so it is not the changed-key alarm, but there is prior
+    /// trust in this host that the offered key does not share, and the prompt
+    /// has to say so rather than pass it off as a first connection.
     pub fn check(&self, host: &str, port: u16, key: &PublicKey) -> HostKeyStatus {
         let id = host_id(host, port);
         let Some(stored) = self.entries.get(&id) else {
@@ -110,6 +122,7 @@ impl KnownHostsStore {
 
         let mut same_algorithm: Option<PublicKey> = None;
         let mut saw_unparseable = false;
+        let mut other_algorithms = Vec::new();
 
         for text in stored {
             match PublicKey::from_openssh(text) {
@@ -117,7 +130,11 @@ impl KnownHostsStore {
                 Ok(stored_key) if stored_key.algorithm() == key.algorithm() => {
                     same_algorithm = Some(stored_key)
                 }
-                Ok(_) => {}
+                Ok(stored_key) => other_algorithms.push(format!(
+                    "{} {}",
+                    stored_key.algorithm(),
+                    fingerprint(&stored_key)
+                )),
                 Err(_) => saw_unparseable = true,
             }
         }
@@ -132,7 +149,47 @@ impl KnownHostsStore {
             None if saw_unparseable => HostKeyStatus::Changed {
                 stored_fingerprint: "<unparseable stored entry>".to_string(),
             },
+            None if !other_algorithms.is_empty() => HostKeyStatus::NewKeyType {
+                known: other_algorithms,
+            },
             None => HostKeyStatus::Unknown,
+        }
+    }
+
+    /// russh's default host-key algorithm order, with every type we already
+    /// hold a key for this host moved to the front.
+    ///
+    /// What OpenSSH does, and for the same reason: the server picks the first
+    /// algorithm on *our* list that it supports, so without this a host we
+    /// pinned under Ed25519 can be negotiated onto some other type on any
+    /// connection — by a version bump reordering the defaults, or on purpose,
+    /// by a man in the middle who has no Ed25519 key to offer. With it, an
+    /// honest server always presents the key we can check, and only one that
+    /// genuinely lacks every pinned type reaches [`HostKeyStatus::NewKeyType`].
+    ///
+    /// Only reorders; nothing is added or removed, and the default order is
+    /// kept within each half. RSA's hash variants count as one type, as they
+    /// do to russh: the stored key is `ssh-rsa` whichever signature was used.
+    pub fn host_key_preference(&self, host: &str, port: u16) -> russh::Preferred {
+        let known: Vec<Algorithm> = self
+            .entries
+            .get(&host_id(host, port))
+            .into_iter()
+            .flatten()
+            .filter_map(|text| PublicKey::from_openssh(text).ok())
+            .map(|key| key.algorithm())
+            .collect();
+        let defaults = russh::Preferred::default();
+        let (mut order, rest): (Vec<Algorithm>, Vec<Algorithm>) =
+            defaults.key.iter().cloned().partition(|offered| {
+                known
+                    .iter()
+                    .any(|k| k == offered || (is_rsa(k) && is_rsa(offered)))
+            });
+        order.extend(rest);
+        russh::Preferred {
+            key: order.into(),
+            ..defaults
         }
     }
 
@@ -298,6 +355,11 @@ fn split_host_id(id: &str) -> (String, u16) {
     }
 }
 
+/// `Algorithm::is_rsa` takes `self`, and these are borrowed out of a list.
+fn is_rsa(algorithm: &Algorithm) -> bool {
+    matches!(algorithm, Algorithm::Rsa { .. })
+}
+
 pub fn fingerprint(key: &PublicKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
 }
@@ -430,10 +492,12 @@ mod tests {
         );
     }
 
-    /// The false-positive this exists to remove: an algorithm we hold no key
-    /// for is `Unknown`, not "the key changed, you may be under attack".
+    /// An algorithm we hold no key for contradicts nothing, so it is not
+    /// `Changed` — but the host is known, so it is not `Unknown` either. That
+    /// was the gap: a man in the middle offering an unpinned type got the
+    /// routine first-connection prompt. It now names what is on record.
     #[test]
-    fn unseen_algorithm_is_unknown_not_changed() {
+    fn unseen_algorithm_on_a_known_host_is_a_new_key_type() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         let mut store = KnownHostsStore::load(&path).unwrap();
@@ -441,8 +505,75 @@ mod tests {
         store.learn("example.com", 22, &key(KEY_A)).unwrap();
         assert_eq!(
             store.check("example.com", 22, &key(KEY_ECDSA)),
-            HostKeyStatus::Unknown
+            HostKeyStatus::NewKeyType {
+                known: vec![format!("ssh-ed25519 {}", fingerprint(&key(KEY_A)))]
+            }
         );
+    }
+
+    /// Accepting a new key type adds it beside the old one, as before.
+    #[test]
+    fn accepting_a_new_key_type_trusts_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KnownHostsStore::load(dir.path().join("known_hosts")).unwrap();
+        store.learn("example.com", 22, &key(KEY_A)).unwrap();
+        store.learn("example.com", 22, &key(KEY_ECDSA)).unwrap();
+        for k in [KEY_A, KEY_ECDSA] {
+            assert_eq!(
+                store.check("example.com", 22, &key(k)),
+                HostKeyStatus::Trusted
+            );
+        }
+    }
+
+    /// A pinned type goes first, so an honest server presents the key we can
+    /// check; everything else keeps russh's own order behind it.
+    #[test]
+    fn negotiation_prefers_the_key_types_on_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KnownHostsStore::load(dir.path().join("known_hosts")).unwrap();
+        store.learn("example.com", 22, &key(KEY_ECDSA)).unwrap();
+
+        let defaults = russh::Preferred::default();
+        let ordered = store.host_key_preference("example.com", 22);
+        assert_eq!(ordered.key[0], key(KEY_ECDSA).algorithm());
+        // A reordering only: the same algorithms, and the rest in default order.
+        let mut a = ordered.key.to_vec();
+        let mut b = defaults.key.to_vec();
+        assert_eq!(a.len(), b.len());
+        let rest: Vec<_> = a[1..].to_vec();
+        let default_rest: Vec<_> = b
+            .iter()
+            .filter(|x| **x != key(KEY_ECDSA).algorithm())
+            .cloned()
+            .collect();
+        assert_eq!(rest, default_rest);
+        a.sort_by_key(|x| x.to_string());
+        b.sort_by_key(|x| x.to_string());
+        assert_eq!(a, b);
+
+        // A host with nothing on record gets the defaults untouched.
+        assert_eq!(
+            store.host_key_preference("other.example", 22).key,
+            defaults.key
+        );
+    }
+
+    /// RSA is one key type across its signature hashes, so a pinned `ssh-rsa`
+    /// key brings every RSA variant forward, in the default's own order.
+    #[test]
+    fn a_pinned_rsa_key_brings_every_rsa_variant_forward() {
+        // Throwaway, like the others; 1024-bit because only its type matters.
+        const KEY_RSA: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQDxp3u5yaChgiQhn/yorBW+XaPt4/KiOUYjzaIBWvkAK0UEzSJDgcUeIW4u33LB5IoaXS/BLe3ijXwwt/N00IeER/dF+jNxl7DhvF7FP8dkApYfcKl04dopQ29Gg12SqsW+v02UTdh1Bd6lMOTMmXf5ISSH3UiZc2jTRCRpyPx0NQ==";
+        let rsa = key(KEY_RSA);
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = KnownHostsStore::load(dir.path().join("known_hosts")).unwrap();
+        store.learn("example.com", 22, &rsa).unwrap();
+
+        let ordered = store.host_key_preference("example.com", 22);
+        let rsa_count = ordered.key.iter().filter(|a| is_rsa(a)).count();
+        assert!(rsa_count > 0);
+        assert!(ordered.key[..rsa_count].iter().all(is_rsa));
     }
 
     /// ...but a differing key of an algorithm we *do* hold is still the loud
@@ -565,10 +696,12 @@ mod tests {
             reloaded.check("example.com", 22, &key(KEY_ECDSA)),
             HostKeyStatus::Trusted
         );
-        assert_eq!(
+        // The forgotten type is no longer trusted. The host still is, under
+        // ECDSA, so this is a new key type rather than a first connection.
+        assert!(matches!(
             reloaded.check("example.com", 22, &key(KEY_A)),
-            HostKeyStatus::Unknown
-        );
+            HostKeyStatus::NewKeyType { .. }
+        ));
     }
 
     #[test]

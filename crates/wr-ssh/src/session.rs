@@ -534,9 +534,16 @@ async fn connect_direct(
     is_jump: bool,
     remote_forwards: forward::RemoteForwardRegistry,
 ) -> Result<client::Handle<ClientHandler>, SshError> {
+    // Key types already pinned for this host go first — see
+    // `KnownHostsStore::host_key_preference`.
+    let preferred = known_hosts
+        .lock()
+        .await
+        .host_key_preference(&config.host, config.port);
     let ssh_config = Arc::new(client::Config {
         keepalive_interval: config.keepalive_interval(),
         keepalive_max: crate::config::KEEPALIVE_MAX,
+        preferred,
         // Nagle's algorithm off. russh leaves it *on* by default; OpenSSH and
         // PuTTY both turn it off for an interactive session, and this is one.
         // A keystroke is a packet of a few bytes, and under Nagle it waits in
@@ -584,9 +591,15 @@ async fn connect_via_stream<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // The final hop is checked against its own pins, same as a direct one.
+    let preferred = known_hosts
+        .lock()
+        .await
+        .host_key_preference(&config.host, config.port);
     let ssh_config = Arc::new(client::Config {
         keepalive_interval: config.keepalive_interval(),
         keepalive_max: crate::config::KEEPALIVE_MAX,
+        preferred,
         ..Default::default()
     });
 

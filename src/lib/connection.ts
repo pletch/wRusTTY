@@ -40,9 +40,11 @@ export type ConnEvent =
       host: string
       port: number
       fingerprint: string
-      status: 'unknown' | 'changed'
+      status: 'unknown' | 'changed' | 'newKeyType'
       /** For 'changed' only: the fingerprint previously on record. */
       storedFingerprint: string | null
+      /** For 'newKeyType' only: each key on record, as `algorithm fingerprint`. */
+      knownKeys: string[]
     }
   | {
       type: 'authPrompt'
