@@ -2346,12 +2346,17 @@ export function Terminal({
           fades. A border-only box rather than four strips because borders meet
           mitred, so the corners are not painted twice.
 
-          Below the scrollbar controls (z-20) and clear of the grid, so it
-          neither hides the controls nor sits over text. */}
+          Clear of the grid, so it never sits over text, and *under* the
+          container below: that container is its own stacking context at
+          z-index 0, so the scrollbar's z-20 only ranks inside it. A frame at
+          z-10 here painted the gutter's colour straight over the thumb and
+          arrows, leaving them all but invisible. At z-0 and earlier in the
+          DOM, the container — transparent wherever it has no controls — paints
+          after it. */}
       <div
         ref={frameRef}
         aria-hidden
-        className="pointer-events-none absolute inset-0 z-10"
+        className="pointer-events-none absolute inset-0 z-0"
         style={{
           borderStyle: 'solid',
           borderWidth: 0,

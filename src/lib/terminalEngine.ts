@@ -24,7 +24,7 @@ export interface IDisposable {
  * reserve that gutter (see `fitGrid`). While only the overlay knew the
  * number, the Ghostty grid ran underneath it and lost its last column.
  */
-export const SCROLLBAR_GUTTER_PX = 8
+export const SCROLLBAR_GUTTER_PX = 10
 
 export interface SearchOptions {
   caseSensitive?: boolean

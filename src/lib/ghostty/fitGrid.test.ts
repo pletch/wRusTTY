@@ -9,7 +9,7 @@ import { SCROLLBAR_GUTTER_PX } from '../terminalEngine'
  * The bug this pins: the grid was derived from the full container width, so
  * the canvas ran under an overlay that is painted on top of it, and the last
  * column was clipped whenever `width % cellWidth` came out under the
- * scrollbar's 8px. That is most widths at a typical cell size, but not all of
+ * scrollbar's SCROLLBAR_GUTTER_PX. That is most widths at a typical cell size, but not all of
  * them — which is why it read as the last character vanishing "sometimes"
  * rather than as a grid that was simply one column too wide.
  *
