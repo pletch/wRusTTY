@@ -1,6 +1,7 @@
 # wRusTTY — Project Plan
 
-A lightweight, security-focused SSH / Telnet / Serial client for Windows 11 with a
+A lightweight, security-focused SSH / Telnet / Serial client for Windows 11 — and,
+since September, a local terminal too (§Local shells) — with a
 modern GUI, tabbed session management, an encrypted credential vault, and
 GPU-accelerated terminal rendering. Remote file browsing, editing and transfer
 over SFTP have since landed — files and whole folders move in both directions,
@@ -23,14 +24,20 @@ holds is an SCP fallback for hosts with no SFTP subsystem.
 **(shipped)** means it is in the app today, **(partial)** names what is missing,
 and an unmarked item is not built. Re-audit rather than trusting them if much
 time has passed — the previous set had drifted far enough that several shipped
-features were still marked as ideas. **Last audited 2026-08-29, at `7b078de`.**
-What that pass added: the font stack (four faces, OpenType features, variable
+features were still marked as ideas. **Last audited 2026-09-11, at `a46cdaa`.**
+What that pass added: **local shells** as a fourth transport (`wr-local`) and
+**administrator tabs** on top of them; restore-on-launch and the unfocused
+window fade; OSC 52; and two corrections to §3, which still called Windows
+Hello future work and described an idle-timeout lock — Hello ships
+(`src-tauri/src/hello.rs`) and the vault locks with the Windows session. Nothing
+that was marked shipped had regressed.
+
+The pass before (2026-08-29, `7b078de`) added the font stack (four faces, OpenType features, variable
 axes, a codepoint range table, DirectWrite enumeration, three bundled families)
 and the ligature setting that pulled it in; the custom theme editor and the
 iTerm2/VS Code scheme importer; chrome that follows the terminal theme's own
 tone rather than literal whites; **elevated (sudo) remote editing**; paste
-pacing and trailing-newline trimming; and two engine re-pins. Nothing that was
-marked shipped had regressed.
+pacing and trailing-newline trimming; and two engine re-pins.
 
 The previous pass (2026-08-20, `8b32c84`) added session import from
 `~/.ssh/config`, recent-command autocomplete, the PowerShell shell-integration
@@ -49,6 +56,7 @@ blending, and the move onto ghostty `main` at a pin.
 | SSH | `russh` + `russh-keys` | Pure Rust (memory-safe crypto surface), async, actively maintained, proven in r-shell |
 | SFTP | `russh-sftp` | Same ecosystem. In use: browsing, editing, and streaming transfer in both directions. Two subsystem channels per session — one for browsing, one for bulk transfers, so a long download doesn't freeze the panel showing its progress |
 | Serial | `serialport` crate | Cross-platform, COM enumeration, USB hotplug |
+| Local shell | `portable-pty` over ConPTY | One pseudoconsole per pane; the elevated case runs through a UAC-launched host relaying over a named pipe, since a ConPTY spawn cannot cross the integrity boundary |
 | Telnet | Hand-rolled over `tokio` TCP (option negotiation is small) or `libtelnet-rs` | Protocol is tiny; keep dependency surface low |
 | Vault crypto | `argon2` (KDF) + `chacha20poly1305` (AEAD) + `zeroize` | Modern, misuse-resistant; master password → key |
 | OS key storage | `keyring` crate (Windows Credential Manager / DPAPI) | Optional "unlock with Windows" convenience mode |
@@ -65,6 +73,7 @@ wrustty/
 │   ├── wr-ssh/           # SSH transport: auth, kex, host keys, channels, keepalive
 │   ├── wr-telnet/        # Telnet transport + option negotiation
 │   ├── wr-serial/        # Serial transport + port enumeration
+│   ├── wr-local/         # Local shells on ConPTY, plus the elevated host's pipe protocol
 │   ├── wr-vault/         # Encrypted vault: KDF, AEAD, import/export, zeroize
 │   ├── wr-sftp/          # SFTP operations (browse, write, streaming upload + download)
 │   └── wr-fs/            # Atomic file writes, shared by every on-disk store
@@ -77,7 +86,9 @@ wrustty/
 Every transport implements the `Connector`/`Session` pair in `wr-core`
 (connect / read stream / write / resize / disconnect / status events), so the
 frontend and tab manager are protocol-agnostic. Adding a protocol later (e.g.
-mosh, RDP) means adding a crate, not touching the UI.
+mosh, RDP) means adding a crate, not touching the UI — which `wr-local` has
+since tested: the registry, reconnect, logging and coalescing took it
+unchanged.
 
 ---
 
@@ -423,7 +434,33 @@ mosh, RDP) means adding a crate, not touching the UI.
   independent input/output newline modes, hex-dump output mode, live
   baud-rate change) as lower-value or awkward fits and left them out for now.
 
+### Local shells — **shipped**
+- **A shell on this machine, in a pane** (`docs/LOCAL_SHELL_PLAN.md`, all four
+  phases). PowerShell 7, Windows PowerShell, CMD, Git Bash and each installed
+  WSL distro are detected (`src-tauri/src/local_shells.rs`) and picked from a
+  list; a local session saves as a profile, restores from the launch snapshot,
+  and follows the same per-shell history rules as a remote one. No Files panel
+  on a local session, and auto-reconnect is off for it, both by decision.
+  What a second pass would add is at the end of that plan: a directory picker
+  for `cwd`, environment variables from the UI, re-detecting mid-session.
+- **Administrator tabs** (`docs/ELEVATED_TABS_PLAN.md`, all four phases). An
+  elevated PowerShell, CMD or Git Bash in a tab of an ordinary window, via a
+  host `wrustty.exe` launched through UAC and relaying over a named pipe that
+  accepts only the process that launched it. Never restored connected (it comes
+  back as a reopen-or-close card), no command history, a shield and `ADMIN`
+  always on show. Checked on a real machine for all three exits — close, `exit`,
+  and killing the app — leaving no elevated process behind. Unsigned builds get
+  UAC's yellow "unknown publisher" prompt, one more reason code signing matters.
+
 ### Recommended additions — Windows 11 polish
+- **Restore on launch** (`restoreSessionsOnLaunch`, off by default) **(shipped)**
+  — the tabs and splits reopen. Only sources that can reconnect with no typed
+  secret come back connected; the rest return as blank panes, and the prompt
+  counts them first.
+- **Unfocused window treatment** — while another app has focus the window
+  either fades towards the tab strip's colour (1–10%) or turns see-through
+  (`unfocusedStyle`, `unfocusedDimPercent`, `unfocusedOpacityPercent`)
+  **(shipped)**
 - Mica/acrylic window material **(shipped — `window_effects.rs`, chosen per the
   `vibrancyMode` setting)**; rounded corners and snap layouts come from the OS
 - Single-instance **(shipped — `tauri-plugin-single-instance`)**; window
@@ -456,21 +493,20 @@ mosh, RDP) means adding a crate, not touching the UI.
 - Single encrypted file `vault.wrv`: Argon2id-derived key from master password →
   XChaCha20-Poly1305 AEAD over a serialized session+credential store; random salt
   and nonce per save; format-versioned header for future migration.
-- Unlock once per app launch; auto-lock after configurable idle timeout.
-- Optional convenience unlock: wrap the vault key with DPAPI via Windows
-  Credential Manager (`keyring` crate) so the OS login unlocks it. **Shipped**,
-  but it's silent (tied to the existing Windows logon session, not a fresh
-  challenge) — no Windows Hello prompt appears on unlock.
-- **Future**: full WebAuthn/FIDO2 Windows Hello support (the `hmac-secret`/PRF
-  extension, deriving a key from a real per-use biometric/PIN challenge)
-  for a case where a genuine fresh prompt is wanted, not just DPAPI's
-  silent gate. Scoped out for now — a related idea (`UserConsentVerifier`,
-  a simpler WinRT consent-prompt gate in front of the existing DPAPI key)
-  was also considered and deferred after finding a documented unresolved
-  compatibility issue for non-UWP desktop apps like this one
-  (microsoft/windows-rs#1565). Both routes need real Windows Hello
-  hardware to validate — untestable from the Linux dev machine this
-  project is built on.
+- An unlock lasts until the **Windows session locks** (Win+L, or an RDP
+  disconnect — `src-tauri/src/session_lock.rs`), the app exits, or the user
+  locks it from the padlock menu. There is no idle timeout; this line used to
+  promise one.
+- **Windows Hello unlock — shipped** (`src-tauri/src/hello.rs`), and not by
+  either route this section used to defer. A TPM-held `KeyCredentialManager`
+  credential signs a stored challenge behind a Hello gesture, and the key that
+  unwraps the vault is derived from that signature (HKDF), so nothing that
+  could recover it sits on disk. That is a real per-use challenge, which is
+  what the deferred WebAuthn `hmac-secret` idea was for, without WebAuthn or
+  the `UserConsentVerifier` gate and its windows-rs#1565 problem.
+- **Windows sign-in** (DPAPI via Credential Manager, the `keyring` crate)
+  stays as a silent fallback where Hello isn't available. The master password
+  is always one of the wrappers and cannot be removed.
 - **Future**: OIDC-gated vault unlock against a self-hosted IdP (Authelia,
   Authentik, PocketID, etc.) — a distinct feature from WebAuthn/Windows
   Hello above, not a variant of it. OIDC is a federated auth protocol (full
@@ -481,7 +517,7 @@ mosh, RDP) means adding a crate, not touching the UI.
   OIDC token can't itself be used as vault key material (it proves
   identity to a relying party, it isn't a secret) — it could only ever gate
   access to a key already stored some other way, the same architectural
-  role `UserConsentVerifier` would have played.
+  role the Hello wrapper plays now.
 - Import/export = an encrypted `.wrb` bundle **(shipped — `vault_export` /
   `vault_import`)**. The plaintext JSON/CSV export behind an "I understand"
   warning is **not built**.

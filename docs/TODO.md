@@ -7,7 +7,7 @@ PROJECT_PLAN.md for the phased plan this sits alongside.
 Most of this file is *settled* work kept for its reasoning — the struck-through
 headings and the "shipped" ones. What is genuinely left is the list below.
 
-## What is actually left — 2026-08-29, at `7b078de`
+## What is actually left — 2026-09-11, at `a46cdaa`
 
 Ordered by what it would cost someone to be without it, not by effort. Each
 line points at the section or plan document holding the reasoning.
@@ -16,6 +16,8 @@ line points at the section or plan document holding the reasoning.
 
 1. **Code signing.** Unsigned installers hit a SmartScreen wall. Needs a cert
    bought before anything ships publicly. PROJECT_PLAN §Windows 11 polish.
+   It also decides what an administrator tab's UAC prompt says: unsigned, it
+   is the yellow "unknown publisher" one.
 2. **Auto-update.** `tauri-plugin-updater` is not a dependency. Pairs with the
    signing key, so do the two together.
 
@@ -67,6 +69,10 @@ where it matters):
 18. **Host keys**: pinning, and import/export of OpenSSH `known_hosts`.
 19. **`FLUSH_INTERVAL` (B4)** — the one open performance question, and it needs
     a measurement rather than an argument. See "Performance" below.
+20. **Local shells' second pass**: a directory picker for `cwd`, environment
+    variables settable from the form, re-detecting shells installed while the
+    app is open, and `shellId` carried from the picker rather than recomputed.
+    None load-bearing. LOCAL_SHELL_PLAN "What is not done".
 
 **Decisions rather than tasks** — each of these is finished until someone
 picks differently: the four autocomplete preferences, the in-app Monaco

@@ -3,11 +3,11 @@
 Implementation plan for a local shell running as administrator, in a tab of
 an ordinary, unelevated wRusTTY window.
 
-**Phases 1–3 are built, and the whole path has been through a real UAC
-prompt**: an unelevated wRusTTY opened an administrator `cmd` through the
-elevated host and pipe. Phase 4 — the UI — is not built, so nothing in the
-app asks for an elevated tab yet. What changed on contact is in the "actually
-did" sections at the end.
+**All four phases are built and checked in the running app**: "Run as
+administrator" on the connect form opens an elevated shell through a real UAC
+prompt, and none of the three ways a tab can end leaves an administrator
+process behind. What changed on contact is in the "actually did" sections at
+the end.
 
 Written against the code at `e7216ed` on 2026-09-10; every file and line
 reference was checked against it rather than remembered. It builds on

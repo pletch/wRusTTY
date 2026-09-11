@@ -1,8 +1,8 @@
 # wRusTTY
 
-A fast, native terminal client for Windows — SSH, Telnet and Serial in one
-tabbed window, with an encrypted credential vault, split panes, SFTP file
-browsing and a GPU-accelerated terminal built on
+A fast, native terminal client for Windows — SSH, Telnet, Serial and local
+shells in one tabbed window, with an encrypted credential vault, split panes,
+SFTP file browsing and a GPU-accelerated terminal built on
 [Ghostty](https://github.com/ghostty-org/ghostty)'s VT core.
 
 Rust + [Tauri 2](https://v2.tauri.app/) under a React front end. The installer
@@ -38,6 +38,13 @@ curly underlines just work.
   toggles, break signalling for Cisco password recovery and ROMMON, local echo
   and CR/LF/CRLF line-ending control, plus Normal / Local echo / Readline /
   Readline-hex input modes
+- **Local shells** — PowerShell 7, Windows PowerShell, CMD, Git Bash and every
+  installed WSL distro, detected and offered from a list, on a Windows
+  pseudoconsole. Saveable like any other session
+- **Administrator tabs** — a PowerShell, CMD or Git Bash tab running elevated
+  inside an ordinary, unelevated window, through one UAC prompt per tab. Marked
+  with a shield and `ADMIN`, never reopened without asking, and no command
+  history is kept
 
 **Keys and auth**
 - OpenSSH and PuTTY `.ppk` private keys (v2 and v3, encrypted or not) read
@@ -75,6 +82,7 @@ curly underlines just work.
   paste, bracketed paste with a confirmation the *core* decides on
 - URL detection with Ctrl+click, plus a keyboard hint mode for when a program
   has the mouse
+- Remote programs can set the clipboard over OSC 52 (switchable in Settings)
 - Session logging to file, per session
 
 **Window and workflow**
@@ -82,6 +90,10 @@ curly underlines just work.
   pane in the tab, with every pane ringed in amber while it is on
 - **Workspaces** — save which sessions are open and how the panes are split, and
   reopen the arrangement later
+- **Restore on launch** (optional) — the tabs and splits that were open come
+  back on restart. A session whose password was typed rather than stored comes
+  back as a blank pane, and an administrator tab comes back as a card asking
+  whether to reopen it
 - Saved sessions in folders you create, shared across all three protocols, with
   the transport as a per-item icon
 - A saved serial session records the adapter's **USB identity** (vendor, product
@@ -90,7 +102,7 @@ curly underlines just work.
 - Quick-connect palette, duplicate/reconnect/restart from the tab menu
 - Mica/acrylic window material, per-pane background opacity, eleven built-in
   themes, a custom theme editor, and an importer for iTerm2 `.itermcolors` and
-  VS Code colour themes
+  VS Code colour themes; an unfocused window can fade or turn see-through
 - Shell integration (OSC 133/633) for per-command status and a notification when
   a long command finishes in the background — snippets for bash, zsh, fish and
   PowerShell
@@ -195,6 +207,7 @@ cargo test --workspace
 - `crates/wr-ssh` — SSH transport (auth, kex, host keys, PTY, forwarding)
 - `crates/wr-telnet` — Telnet transport
 - `crates/wr-serial` — serial transport
+- `crates/wr-local` — local shells on a pseudoconsole, and the elevated host
 - `crates/wr-vault` — encrypted credential vault
 - `crates/wr-sftp` — SFTP
 - `crates/wr-fs` — atomic file replacement, shared by every on-disk store
@@ -211,8 +224,8 @@ manager and front end are protocol-agnostic.
 - **24-bit colour** is requested with `COLORTERM=truecolor`, which sshd only
   forwards if it is in `AcceptEnv`. If colours look limited, add it there or set
   the session's terminal type to `xterm-direct`.
-- **Emoji render monochrome** — the right glyph at the right width, tinted by
-  the foreground rather than in its own colours. The atlas stores coverage only.
+- **Emoji render in colour** where the font has colour glyphs (Segoe UI Emoji
+  does), from a second texture kept apart from the text atlas.
 - **Agent auth and `MaxAuthTries`**: an agent loaded with many keys can be cut
   off (OpenSSH defaults to 6 attempts) before the right one is reached.
 - **Wake-on-LAN doesn't route.** The default 255.255.255.255 reaches this
@@ -232,7 +245,10 @@ manager and front end are protocol-agnostic.
 - [`docs/SHELL_INTEGRATION.md`](docs/SHELL_INTEGRATION.md) — OSC 133/633 setup
 - [`docs/AUTOCOMPLETE_PLAN.md`](docs/AUTOCOMPLETE_PLAN.md),
   [`docs/AUTO_RECONNECT_PLAN.md`](docs/AUTO_RECONNECT_PLAN.md),
-  [`docs/URL_LINKS_PLAN.md`](docs/URL_LINKS_PLAN.md)
+  [`docs/URL_LINKS_PLAN.md`](docs/URL_LINKS_PLAN.md),
+  [`docs/LOCAL_SHELL_PLAN.md`](docs/LOCAL_SHELL_PLAN.md),
+  [`docs/ELEVATED_TABS_PLAN.md`](docs/ELEVATED_TABS_PLAN.md),
+  [`docs/NATIVE_SEARCH_PLAN.md`](docs/NATIVE_SEARCH_PLAN.md)
 - [`docs/PORT_GHOSTTY_MAIN.md`](docs/PORT_GHOSTTY_MAIN.md) — the Ghostty pin and
   the port's record
 
