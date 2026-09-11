@@ -2055,7 +2055,17 @@ fn absorb_listing(
         // The whole job is refused rather than the entry skipped, matching the
         // local walk: a server sending `..` is not one whose remaining entries
         // are worth trusting.
-        if !is_usable_remote_name(&entry.name) {
+        //
+        // `is_usable_remote_name` alone is not enough here, because it is the
+        // POSIX-shaped check and these names land on *Windows*. It lets a colon
+        // through, and `local_root.join("C:evil.dll")` is `C:evil.dll` — a
+        // drive-relative path that discards the base and resolves against the
+        // process's working directory (for another drive, against its root,
+        // so `D:Users/…` is `D:\Users\…`). The basename check in
+        // `part_path_for` cannot see it either, since `file_name()` of that
+        // path is just `evil.dll`. The Windows-name rules reject the colon and
+        // every other name that cannot be written as itself.
+        if !is_usable_remote_name(&entry.name) || is_unsafe_windows_filename(&entry.name) {
             return Err(format!(
                 "{dir} contains a name this cannot copy: {}",
                 entry.name
@@ -2207,6 +2217,30 @@ impl AsyncRead for ChunkReader {
         self.pos += n;
         Poll::Ready(Ok(()))
     }
+}
+
+/// `root` joined with a plan's `/`-separated relative path — refused unless
+/// every component of that path is a plain name.
+///
+/// The name checks at planning time are what should keep a bad path out of a
+/// plan; this is the backstop at the point of use, where a miss would decide
+/// what gets written to local disk. `PathBuf::join` replaces the base outright
+/// for anything carrying a root or a drive prefix (`C:x` included, which has a
+/// prefix but no root), and keeps `..` as given — so a relative path made of
+/// anything other than `Normal` components is not one that stays under `root`.
+fn local_target(root: &std::path::Path, relative: &str) -> Result<PathBuf, String> {
+    let relative = std::path::Path::new(relative);
+    let plain = relative
+        .components()
+        .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain || relative.as_os_str().is_empty() {
+        return Err(format!(
+            "refusing a path that would land outside {}: {}",
+            root.display(),
+            relative.display()
+        ));
+    }
+    Ok(root.join(relative))
 }
 
 /// Whether a name can be joined onto a remote directory.
@@ -3120,7 +3154,7 @@ async fn run_download_tree(
             .await
             .map_err(|e| format!("could not create {}: {e}", local_root.display()))?;
         for dir in &plan.dirs {
-            let path = local_root.join(dir.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let path = local_target(&local_root, dir)?;
             tokio::fs::create_dir_all(&path)
                 .await
                 .map_err(|e| format!("could not create {}: {e}", path.display()))?;
@@ -3132,7 +3166,7 @@ async fn run_download_tree(
                 return Ok(wr_sftp::Transferred::Cancelled);
             }
             let remote = format!("{remote_root}/{}", file.relative);
-            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let local = local_target(&local_root, &file.relative)?;
 
             if resume {
                 let dst = tokio::fs::metadata(&local).await.ok().map(|m| FileFacts {
@@ -3266,7 +3300,7 @@ async fn run_upload_tree(
             if cancel.load(Ordering::Relaxed) {
                 return Ok(wr_sftp::Transferred::Cancelled);
             }
-            let local = local_root.join(file.relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let local = local_target(&local_root, &file.relative)?;
             let remote = format!("{remote_root}/{}", file.relative);
 
             if resume {
@@ -3539,8 +3573,8 @@ pub(crate) async fn forget_interrupted_transfers(
 mod tests {
     use super::{
         absorb_listing, is_already_there, is_inert_to_open, is_unsafe_windows_filename,
-        is_usable_remote_name, parse_editor_command, part_path_for, rename_target, ChunkReader,
-        SftpEvent, TreePlan,
+        is_usable_remote_name, local_target, parse_editor_command, part_path_for, rename_target,
+        ChunkReader, SftpEvent, TreePlan,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
@@ -3764,6 +3798,16 @@ mod tests {
             "/etc/cron.d/evil",
             "nul\0.txt",
             "",
+            // Drive-relative: no separator anywhere, yet `join` drops the base
+            // for these and resolves them against the working directory, or
+            // against another drive's root.
+            "C:evil.dll",
+            "D:Users",
+            "c:",
+            // Names Windows will not write as themselves.
+            "notes.txt:payload",
+            "NUL",
+            "trailing.",
         ] {
             let mut plan = TreePlan::default();
             let mut pending = Vec::new();
@@ -3796,6 +3840,32 @@ mod tests {
         .is_err());
         assert!(plan.dirs.is_empty());
         assert!(pending.is_empty());
+    }
+
+    /// The backstop at the point of use: whatever reached a plan, a relative
+    /// path that is not all plain names never becomes a local path.
+    #[test]
+    fn a_plan_path_that_would_leave_the_root_is_refused_where_it_is_joined() {
+        let root = PathBuf::from("dest");
+        for rel in [
+            "",
+            "..",
+            "a/../..",
+            "/etc/passwd",
+            "C:evil.dll",
+            "D:Users/x",
+        ] {
+            // `C:x` is only a prefix on Windows; elsewhere it is an ordinary
+            // name and joining it is harmless.
+            if cfg!(not(windows)) && rel.contains(':') {
+                continue;
+            }
+            assert!(local_target(&root, rel).is_err(), "{rel:?}");
+        }
+        assert_eq!(
+            local_target(&root, "logs/nginx.log").unwrap(),
+            root.join("logs").join("nginx.log")
+        );
     }
 
     /// The guard has to stay narrow: an ordinary listing must still walk, and
