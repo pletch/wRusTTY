@@ -50,6 +50,8 @@ import { PromptInputTracker, tooShortToInfer } from '../lib/promptInput'
 import { AutocompleteController, type SuggestionView } from '../lib/autocomplete'
 import { SuggestionPopover } from './SuggestionPopover'
 import { InlineSuggestion } from './InlineSuggestion'
+import { HistoryRepeatWatcher } from '../lib/historyRepeat'
+import { HistoryFlicker, spansFor } from '../lib/historyFlicker'
 import type { CommandActivity, CommandResult } from '../lib/shellIntegration'
 import { parseOsc9, parseOsc777, ProgressTracker } from '../lib/appProgress'
 import { parseWindowTitle, parseCwd, parseCwdProperty, guessCwdFromTitle } from '../lib/remoteIdentity'
@@ -1226,6 +1228,9 @@ export function Terminal({
       // line now says, which is how a suggestion goes away when the far end
       // redraws underneath it.
       promptInput.noteParsed()
+      // The far end is answering: brings the comparison forward, and is where
+      // the round trip this session is measured at comes from.
+      historyRepeats.noteParsed()
       autocomplete.refresh()
       harvestOnce()
     })
@@ -1307,6 +1312,25 @@ export function Terminal({
     // than modelled from keystrokes — see lib/promptInput.ts for why that is
     // the only version of this that works.
     const promptInput = new PromptInputTracker(term)
+    // Feedback for walking the shell's history: an Up that lands on the
+    // command already showing blinks it, so a stretch of duplicates stops
+    // looking like a key that never arrived. Reads the same line the tracker
+    // above does. Independent of autocomplete and of its setting — this is
+    // about whether a keypress did anything, which is not a completion
+    // feature.
+    //
+    // Straight to the renderer rather than through React state: these arrive
+    // as fast as someone can hold Up, and each one is a field write and a
+    // repaint rather than a re-render of the pane.
+    const historyFlicker = new HistoryFlicker((spans) => {
+      if (!disposed) term.setHiddenSpans?.(spans)
+    })
+    const historyRepeats = new HistoryRepeatWatcher({
+      read: () => promptInput.read(),
+      emit: (repeat) => {
+        if (!disposed) historyFlicker.flash(spansFor(repeat.origin, repeat.cursor))
+      },
+    })
     const autocomplete = new AutocompleteController({
       tracker: promptInput,
       suggest: (typed, limit) => {
@@ -1875,8 +1899,14 @@ export function Terminal({
           // of line for tracking purposes but never something to remember.
           promptInput.reset()
           autocomplete.reset()
+          historyRepeats.reset()
+          historyFlicker.stop()
         } else {
           promptInput.noteInput(data)
+          // After `noteInput`, never before: at an idle prompt with no shell
+          // integration the origin does not exist until that call infers it,
+          // and a read taken a line earlier would have nothing to compare.
+          historyRepeats.noteInput(data)
           // Arms the offer on printable input and disarms it on anything else,
           // so a list never opens because the far end redrew the line — see
           // `AutocompleteController.noteInput`.
@@ -2217,6 +2247,10 @@ export function Terminal({
       autocompleteRef.current = null
       autocomplete.reset()
       promptInput.resetAll()
+      // Both hold a timer, which would otherwise fire against a disposed
+      // engine and read a freed core.
+      historyRepeats.reset()
+      historyFlicker.stop()
       for (const listener of oscListeners) listener.dispose()
       // Reported directly rather than through the tracker (whose own reset
       // is a no-op when nothing was running) so a pane torn down mid-command
@@ -2279,12 +2313,12 @@ export function Terminal({
     </div>
   )
 
-  // Geometry for the suggestion list, read at render time rather than carried
-  // in the controller's state: cell size and scroll position change for
-  // reasons that have nothing to do with what is being suggested (a resize, a
-  // font change, scrolling back through history), and a copy taken when the
-  // list opened would be stale for all three.
-  const suggestionAnchor = (() => {
+  // Geometry for the suggestion overlays, read at render time rather than
+  // carried in the controller's state: cell size and scroll position change
+  // for reasons that have nothing to do with what is being suggested (a
+  // resize, a font change, scrolling back through history), and a copy taken
+  // when the list opened would be stale for all three.
+  const gridAnchor = (() => {
     if (!suggestion) return null
     const term = termRef.current
     const cell = term?.cellSize?.()
@@ -2408,24 +2442,24 @@ export function Terminal({
             and braces on purpose: a suggestion list drawn over the app's own
             chrome looks like a rendering fault, and one bad number should not
             be able to produce it. */}
-        {suggestion && suggestionAnchor && (
+        {suggestion && gridAnchor && (
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
             {suggestion.mode === 'inline' ? (
               <InlineSuggestion
                 view={suggestion}
-                cell={suggestionAnchor.cell}
-                viewportY={suggestionAnchor.viewportY}
-                rows={suggestionAnchor.rows}
-                cols={suggestionAnchor.cols}
+                cell={gridAnchor.cell}
+                viewportY={gridAnchor.viewportY}
+                rows={gridAnchor.rows}
+                cols={gridAnchor.cols}
                 fontFamily={settings.fontFamily}
                 fontSize={settings.fontSize}
               />
             ) : (
               <SuggestionPopover
                 view={suggestion}
-                cell={suggestionAnchor.cell}
-                viewportY={suggestionAnchor.viewportY}
-                rows={suggestionAnchor.rows}
+                cell={gridAnchor.cell}
+                viewportY={gridAnchor.viewportY}
+                rows={gridAnchor.rows}
                 onPick={(index) => {
                   const controller = autocompleteRef.current
                   if (!controller?.current) return

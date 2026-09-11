@@ -176,6 +176,16 @@ export interface TerminalEngine {
    * absence as "no keyboard selection here", not as "not selecting right now".
    */
   toggleMarkMode?(): void
+  /**
+   * Hide these spans' glyphs, painting them in their own background colour, or
+   * pass null to show them again. The history flicker's whole rendering — see
+   * lib/historyFlicker.ts.
+   *
+   * Optional, like the grid reads: an engine that cannot do it simply never
+   * flickers, rather than the feature having to know which engine it is
+   * talking to.
+   */
+  setHiddenSpans?(spans: { row: number; from: number; to: number }[] | null): void
   isMarkMode?(): boolean
   onMarkModeChange?(cb: (active: boolean) => void): IDisposable
   /**

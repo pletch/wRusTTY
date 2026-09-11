@@ -412,6 +412,25 @@ export class WebGLRenderer {
    */
   hintLabels: { row: number; col: number; text: string }[] | null = null
 
+  /**
+   * Spans whose glyphs are painted in their own background colour, i.e. made
+   * to vanish without anything being drawn over them.
+   *
+   * What makes the history flicker possible (see lib/historyRepeat.ts). The
+   * obvious implementation of "flicker the recalled command" is a DOM band
+   * over the canvas in the background colour, and it is wrong here for a
+   * reason that only shows up on a translucent pane: the cell's background is
+   * itself partly transparent, so a second copy of it stacked on top
+   * composites to something *more* opaque than its surroundings — a visible
+   * dark patch rather than a hole. Suppressing the foreground instead draws
+   * the cell exactly as it would have been drawn anyway, minus the glyph, at
+   * any background opacity.
+   *
+   * Absolute rows, like every other overlay here, so a span stays on its text
+   * if output scrolls underneath it. Rows off screen simply never match.
+   */
+  hiddenSpans: { row: number; from: number; to: number }[] | null = null
+
   private cursorR = 255
   private cursorG = 255
   private cursorB = 255
@@ -932,6 +951,7 @@ export class WebGLRenderer {
       const rowLink = this.linkHighlight?.find((s) => s.row === absRow) ?? null
       const rowLinks = this.linkRanges?.filter((s) => s.row === absRow) ?? null
       const rowHints = this.hintLabels?.filter((h) => h.row === absRow) ?? null
+      const rowHidden = this.hiddenSpans?.filter((s) => s.row === absRow) ?? null
 
       // Ligature runs for this row. The two scratch rows are filled first
       // because `computeRuns` reads them: `rowBreak` for the cells whose
@@ -1207,6 +1227,18 @@ export class WebGLRenderer {
           finalBgG = (finalBgG * 0.7 + 255 * 0.3) | 0
           finalBgB = (finalBgB * 0.7 + 255 * 0.3) | 0
           bgIsDefault = false
+        }
+
+        // Last of the colour rules, so a flickering line still goes dark under
+        // a selection or a search hit: those recolour the background, and this
+        // is about the glyph on top of whatever that ended up being.
+        if (rowHidden !== null) {
+          for (let i = 0; i < rowHidden.length; i++) {
+            const span = rowHidden[i]
+            if (c < span.from || c >= span.to) continue
+            finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
+            break
+          }
         }
 
         // The cursor is the cell's own background rather than a second draw

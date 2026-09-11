@@ -1304,6 +1304,23 @@ export class GhosttyEngine implements TerminalEngine {
     if (this.canvas) this.canvas.style.cursor = link ? 'pointer' : ''
   }
 
+  /**
+   * Hide these spans' glyphs, or pass null to show them again.
+   *
+   * The whole of the history flicker's rendering: the caller toggles this a
+   * few times and the recalled command blinks in place, with nothing drawn
+   * over it and no colour introduced that the theme did not already have. See
+   * `WebGLRenderer.hiddenSpans`.
+   */
+  setHiddenSpans(spans: { row: number; from: number; to: number }[] | null): void {
+    if (!this.renderer) return
+    // Cheap, but it runs on a timer per pane and the common case is going from
+    // nothing to nothing while a flicker finishes elsewhere.
+    if (this.renderer.hiddenSpans === null && spans === null) return
+    this.renderer.hiddenSpans = spans
+    this.needsRedraw = true
+  }
+
   /** Pointer gone, or focus gone: the underline and the pointer cursor must go
    *  with it, or a pane the mouse has left keeps claiming to have a link
    *  under it. */
