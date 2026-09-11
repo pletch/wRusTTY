@@ -465,8 +465,10 @@ app → host `wrustty.exe` → `pwsh.exe` + `conhost.exe`, the three unreadable
 from a medium-integrity process. Closing the tab ended all three. Restarting
 brought the tab back as the ticked form, with no prompt until asked.
 
-**Still to check by hand:** the shell exiting on its own (`exit`), and
-wRusTTY killed outright with an administrator tab open — the host must see
-its pipe close and take the shell with it.
+The other two orphan cases, checked the same evening: `exit` in an
+administrator tab closed it and left no host, shell or console host running;
+and killing `wrustty.exe` from Task Manager with an administrator `pwsh` tab
+open left nothing either — the host saw its pipe close and took the shell with
+it. All three exits in *What must not regress* hold on a real machine.
 
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general
