@@ -7,7 +7,7 @@ PROJECT_PLAN.md for the phased plan this sits alongside.
 Most of this file is *settled* work kept for its reasoning — the struck-through
 headings and the "shipped" ones. What is genuinely left is the list below.
 
-## What is actually left — 2026-09-11, at `a46cdaa`
+## What is actually left — 2026-09-11, at `8521390`
 
 Ordered by what it would cost someone to be without it, not by effort. Each
 line points at the section or plan document holding the reasoning.

@@ -24,8 +24,13 @@ holds is an SCP fallback for hosts with no SFTP subsystem.
 **(shipped)** means it is in the app today, **(partial)** names what is missing,
 and an unmarked item is not built. Re-audit rather than trusting them if much
 time has passed — the previous set had drifted far enough that several shipped
-features were still marked as ideas. **Last audited 2026-09-11, at `a46cdaa`.**
-What that pass added: **local shells** as a fourth transport (`wr-local`) and
+features were still marked as ideas. **Last audited 2026-09-11, at `8521390`.**
+Since the audit at `a46cdaa` the same day: configurable keyboard shortcuts,
+the outbound SSH proxy (HTTP CONNECT / SOCKS5), and logging's automatic start
+and chosen folder — all three marked shipped below, none yet exercised in the
+running app or against a real proxy.
+
+What the `a46cdaa` pass added: **local shells** as a fourth transport (`wr-local`) and
 **administrator tabs** on top of them; restore-on-launch and the unfocused
 window fade; OSC 52; and two corrections to §3, which still called Windows
 Hello future work and described an idle-timeout lock — Hello ships
