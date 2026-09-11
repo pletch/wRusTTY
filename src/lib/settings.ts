@@ -575,6 +575,33 @@ const defaults: TerminalSettings = {
 }
 
 /**
+ * The look a first launch starts with, laid over `defaults` only when nothing
+ * has been stored at all.
+ *
+ * Separate from `defaults` rather than written into it because `defaults` has
+ * a second job: it fills in any field an existing blob is missing. Several of
+ * these — the blend mode, the unfocused fade, the window effect — are
+ * documented as opt-in precisely so an update never restyles a configured
+ * install, and moving them into `defaults` would do exactly that to anyone
+ * whose blob predates the field.
+ */
+const firstRunAppearance: Partial<TerminalSettings> = {
+  fontFamily: curatedStack('JetBrains Mono'),
+  fontSize: 13,
+  fontWeight: 200,
+  fontWeightBold: 500,
+  ligatures: true,
+  textBlending: 'linear-corrected',
+  cursorStyle: 'bar',
+  themeName: 'Campbell',
+  backgroundOpacity: 0.9,
+  vibrancyMode: 'tabbed',
+  unfocusedDimPercent: 6,
+  unfocusedStyle: 'glass',
+  unfocusedOpacityPercent: 55,
+}
+
+/**
  * Per-pane scrollback memory tiers offered in Settings, ascending, in MB of
  * total pane footprint.
  *
@@ -794,7 +821,7 @@ export function effectiveBackgroundLayers(
 export function loadSettings(): TerminalSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
-    if (!raw) return defaults
+    if (!raw) return { ...defaults, ...firstRunAppearance }
     const parsed = JSON.parse(raw)
     const merged = { ...defaults, ...parsed }
     // A settings blob written before tiers existed carries `scrollback` (rows)
@@ -886,8 +913,10 @@ export function loadSettings(): TerminalSettings {
     setCustomThemes(merged.customThemes)
     return merged
   } catch {
+    // A blob that cannot be read is no configuration at all, so it starts
+    // where a first launch does.
     setCustomThemes(defaults.customThemes)
-    return defaults
+    return { ...defaults, ...firstRunAppearance }
   }
 }
 

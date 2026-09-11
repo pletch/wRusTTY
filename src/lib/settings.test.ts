@@ -29,10 +29,13 @@ beforeEach(() => {
 })
 
 describe('loadSettings', () => {
-  it('returns the defaults when nothing is stored', () => {
+  it('starts a first launch on the first-run appearance', () => {
     const settings = loadSettings()
-    expect(settings.fontSize).toBe(14)
-    expect(settings.themeName).toBe('wRusTTY Dark')
+    expect(settings.fontFamily).toBe(FONT_STACKS.find((f) => f.label === 'JetBrains Mono')?.value)
+    expect(settings.fontSize).toBe(13)
+    expect(settings.themeName).toBe('Campbell')
+    expect(settings.vibrancyMode).toBe('tabbed')
+    expect(settings.unfocusedStyle).toBe('glass')
   })
 
   it('merges a stored payload onto the defaults, keeping unspecified fields default', () => {
@@ -326,6 +329,7 @@ describe('the font measurements a stored blob can carry', () => {
   })
 
   it('default to the weights and metrics that render as the app always did', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 14 }))
     const s = loadSettings()
     expect(s.fontWeight).toBe(400)
     expect(s.fontWeightBold).toBe(700)
@@ -593,7 +597,8 @@ describe('effectiveBackgroundLayers', () => {
 describe('unfocusedDimPercent', () => {
   beforeEach(() => localStorage.clear())
 
-  it('defaults to off', () => {
+  it('defaults to off for a blob predating the setting', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ fontSize: 14 }))
     expect(loadSettings().unfocusedDimPercent).toBe(0)
   })
 
