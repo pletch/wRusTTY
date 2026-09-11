@@ -1194,7 +1194,7 @@ export function SettingsDialog({
                         <RangeInput
                           min={UNFOCUSED_DIM_RANGE.min}
                           max={UNFOCUSED_DIM_RANGE.max}
-                          step={5}
+                          step={1}
                           className="mt-1.5 w-full"
                           value={settings.unfocusedDimPercent}
                           aria-label="Fade when unfocused"
@@ -1203,9 +1203,9 @@ export function SettingsDialog({
                           }
                         />
                         <p className="mt-1 text-chrome/40">
-                          Makes the background more see-through while another app is active, so
-                          it is obvious this window is not the one you are typing into. Text is
-                          unaffected.
+                          While another app is active, shifts the background towards the tab
+                          bar's colour and makes it more see-through, so it is obvious this window
+                          is not the one you are typing into. Text is unaffected.
                         </p>
                       </div>
                       <div>

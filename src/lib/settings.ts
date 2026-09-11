@@ -625,7 +625,9 @@ export function scrollbackTierForRows(rows: number): number {
 export const FONT_SIZE_RANGE = { min: 8, max: 24 } as const
 /** Capped well short of 100: past about two thirds the pane stops reading as a
  *  window and starts reading as a rendering glitch. */
-export const UNFOCUSED_DIM_RANGE = { min: 0, max: 60 } as const
+// 20 rather than 60: past about 20 the fade reads as too strong, and the
+// narrower range gives the slider whole-percent steps worth having.
+export const UNFOCUSED_DIM_RANGE = { min: 0, max: 20 } as const
 export const FONT_WEIGHT_RANGE = { min: 100, max: 900 } as const
 /** 100 is a cell exactly as tall as the font size — anything less clips the
  *  descenders of the face itself, not just of the odd glyph. */
