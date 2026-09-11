@@ -186,7 +186,9 @@ export function StatusBar({
   // and for the same reason it stops at `connected`: a shell that failed to
   // start keeps its red dot and its "Failed", since that pane stays open
   // precisely so the reason can be read.
-  const quietLocal = protocol === 'LOCAL' && status === 'connected'
+  //
+  // An administrator shell is a local shell too, and gets the same quiet.
+  const quietLocal = (protocol === 'LOCAL' || protocol === 'ADMIN') && status === 'connected'
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-2 border-t border-chrome/10 bg-black/20 px-3 text-xs text-chrome/45">
@@ -196,7 +198,16 @@ export function StatusBar({
         />
       )}
       {protocol && (
-        <span className="shrink-0 font-medium tracking-wide text-chrome/55">{protocol}</span>
+        // Amber for an administrator shell — decision 5 of
+        // docs/ELEVATED_TABS_PLAN.md: the one pane that can do damage is
+        // named, and noticeably, wherever the eye lands.
+        <span
+          className={`shrink-0 font-medium tracking-wide ${
+            protocol === 'ADMIN' ? 'text-amber-400' : 'text-chrome/55'
+          }`}
+        >
+          {protocol}
+        </span>
       )}
       {target && (
         <span className="min-w-0 truncate text-chrome/70" title={target}>

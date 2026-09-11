@@ -14,7 +14,7 @@
 /** Everything about a drop that decides whether it can be accepted. */
 export interface DropState {
   /** SSH is the only transport with a file channel at all. */
-  transport: 'ssh' | 'telnet' | 'serial' | 'local'
+  transport: 'ssh' | 'telnet' | 'serial' | 'local' | 'elevated'
   /** A live session id — a pane whose connection has dropped cannot send. */
   connected: boolean
   /** An upload is already running in this pane. */

@@ -134,6 +134,12 @@ pub struct LocalProfile {
     pub args: Vec<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Open this shell as administrator, through the elevated host — see
+    /// docs/ELEVATED_TABS_PLAN.md. Only honoured for the shells
+    /// `elevation::ELEVATABLE_SHELLS` allows; `default` so every profile saved
+    /// before this existed opens exactly as it did.
+    #[serde(default)]
+    pub elevated: bool,
 }
 
 /// A saved serial session: which adapter, and how to talk to it.

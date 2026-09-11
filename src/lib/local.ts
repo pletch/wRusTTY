@@ -171,6 +171,19 @@ export function shellIdFor(config: LocalConfig): string {
   return exe
 }
 
+/** The shells that may be opened as administrator. Must match
+ * `ELEVATABLE_SHELLS` in src-tauri/src/elevation.rs, which is the check that
+ * actually counts — this one only decides whether the form offers the box.
+ *
+ * Detected shells only, and not WSL: elevating `wsl.exe` makes nobody root
+ * inside Linux, it only elevates what WSL runs back on the Windows side. See
+ * decision 2 of docs/ELEVATED_TABS_PLAN.md. */
+export const ELEVATABLE_SHELL_IDS: readonly string[] = ['pwsh', 'powershell', 'cmd', 'git-bash']
+
+export function canElevate(shellId: string): boolean {
+  return ELEVATABLE_SHELL_IDS.includes(shellId)
+}
+
 /** Whether wRusTTY's own recent-command autocomplete records for this shell.
  *
  * False for PowerShell and CMD — see [`ShellFamily`]. PSReadLine's Predictive

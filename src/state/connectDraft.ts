@@ -155,6 +155,8 @@ export interface ConnectDraft {
   jumpProfileId: string
   serialConfig: SerialConfig
   localConfig: LocalConfig
+  /** Open the local shell as administrator. See docs/ELEVATED_TABS_PLAN.md. */
+  localElevated: boolean
   logSession: boolean
   saveProfile: boolean
   saveCredential: boolean
@@ -208,6 +210,10 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
           cwd: initial.local.cwd,
         }
       : defaultLocalConfig(),
+    // Seeded from the profile being edited — and from a restored administrator
+    // tab, whose blank pane keeps this so reopening it is one click, but a
+    // deliberate one (decision 4).
+    localElevated: initial?.local?.elevated ?? false,
     // Ad-hoc "log this whole session from the start" — an alternative to the
     // toolbar toggle (which can only arm logging after a session is already
     // connected, so it can't catch the login banner/MOTD).

@@ -38,6 +38,9 @@ pub struct RunasLauncher {
     /// of it rather than wherever the shell decides. See `session_lock.rs` for
     /// why an HWND crosses crate boundaries as an `isize`.
     owner: Option<isize>,
+    /// Where to hand keyboard focus back once the prompt closes. `None` in the
+    /// smoke test, which has no window.
+    app: Option<AppHandle>,
 }
 
 impl Launcher for RunasLauncher {
@@ -46,15 +49,42 @@ impl Launcher for RunasLauncher {
         request: LaunchRequest,
     ) -> Pin<Box<dyn Future<Output = Result<LaunchedHost, LaunchError>> + Send>> {
         let owner = self.owner;
+        let app = self.app.clone();
         Box::pin(async move {
             // ShellExecuteEx blocks until the UAC prompt is answered, which
             // can take as long as the user likes.
-            tokio::task::spawn_blocking(move || runas(owner, &request))
+            let launched = tokio::task::spawn_blocking(move || runas(owner, &request))
                 .await
-                .map_err(|e| LaunchError::Failed(format!("the launch thread failed: {e}")))?
+                .map_err(|e| LaunchError::Failed(format!("the launch thread failed: {e}")))?;
+            // Whatever the answer — a declined prompt strands focus just as
+            // thoroughly as an approved one.
+            restore_focus(app.as_ref(), owner);
+            launched
         })
     }
 }
+
+/// Gives the window its keyboard focus back after the UAC prompt.
+///
+/// The prompt runs on the secure desktop in a higher-integrity process, and
+/// when it closes focus does not come back to us on its own — the same problem
+/// the Windows Hello and vault consent prompts have, which is what
+/// `win_focus::restore_after_broker_prompt` exists to solve. Without it the
+/// user approves the prompt and then types into nothing.
+#[cfg(windows)]
+fn restore_focus(app: Option<&AppHandle>, owner: Option<isize>) {
+    let (Some(app), Some(owner)) = (app, owner) else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let hwnd = windows::Win32::Foundation::HWND(owner as *mut std::ffi::c_void);
+    crate::win_focus::restore_after_broker_prompt(&window, hwnd);
+}
+
+#[cfg(not(windows))]
+fn restore_focus(_app: Option<&AppHandle>, _owner: Option<isize>) {}
 
 /// The host's command line. Nothing in it needs quoting, and that is checked
 /// rather than assumed: the shell id comes from [`ELEVATABLE_SHELLS`] and the
@@ -203,14 +233,18 @@ pub async fn elevated_connect(
         .and_then(|w| w.hwnd().ok())
         .map(|h| h.0 as isize);
 
+    let launcher = Arc::new(RunasLauncher {
+        owner,
+        app: Some(app.clone()),
+    });
+
     let session_id = state.sessions.next_session_id();
     state
         .sessions
         .spawn_connect(
             app,
             session_id.clone(),
-            ElevatedConnector::new(Arc::new(RunasLauncher { owner }), shell_id)
-                .with_size(cols, rows),
+            ElevatedConnector::new(launcher, shell_id).with_size(cols, rows),
             channel,
             data_channel,
             |status| LocalEvent::Status {
@@ -391,7 +425,10 @@ mod smoke {
     async fn run(shell: String) -> i32 {
         println!("opening an elevated {shell} — approve the UAC prompt to continue");
         let (tx, mut events) = mpsc::channel(256);
-        let launcher = Arc::new(RunasLauncher { owner: None });
+        let launcher = Arc::new(RunasLauncher {
+            owner: None,
+            app: None,
+        });
         let mut session = match ElevatedConnector::new(launcher, shell)
             .with_size(120, 30)
             .connect(tx)

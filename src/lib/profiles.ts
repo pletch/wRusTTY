@@ -127,6 +127,9 @@ export interface LocalProfile {
   command: string
   args: string[]
   cwd: string | null
+  /** Opens as administrator, through the elevated host. Optional because every
+   * profile saved before elevated tabs existed lacks it, and means no. */
+  elevated?: boolean
 }
 
 export interface SerialProfile {
@@ -153,7 +156,10 @@ export function profileSubtitle(p: SessionProfile): string {
     // The executable's name, not its full path: a sidebar row is narrow, and
     // the full install path tells the user nothing the label above it did not.
     const exe = command.split(/[\\/]/).pop()?.replace(/\.exe$/i, '') ?? 'shell'
-    return args ? `${exe} ${args}` : exe
+    const line = args ? `${exe} ${args}` : exe
+    // Said in the sidebar, not only once the tab is open: choosing a saved
+    // session is the moment to know it will raise a UAC prompt.
+    return p.local?.elevated ? `${line} · Administrator` : line
   }
   if (p.protocol === 'telnet') return `telnet ${p.host}:${p.port}`
   if (p.protocol === 'serial') {

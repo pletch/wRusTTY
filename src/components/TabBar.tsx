@@ -10,6 +10,7 @@ import {
   TerminalSquare,
   CircleDashed,
   Laptop,
+  ShieldCheck,
 } from 'lucide-react'
 import { glyphForShell, glyphForShellId } from './shellIconFor'
 import { LocalShellIcon } from './LocalShellIcon'
@@ -74,6 +75,7 @@ const protocolIcons = {
   serialProfile: Cable,
   local: Laptop,
   localProfile: Laptop,
+  elevated: Laptop,
 }
 
 /** Separation between segments in the tab strip's pane map, in px. */
@@ -472,11 +474,13 @@ export function TabBar({
           const shellGlyph =
             src?.protocol === 'local'
               ? glyphForShell(src.config)
-              : src?.protocol === 'localProfile'
+              : src?.protocol === 'localProfile' || src?.protocol === 'elevated'
                 ? glyphForShellId(src.shellId)
                 : null
           const ProtocolIcon = src ? protocolIcons[src.protocol] : null
-          const isLocal = src?.protocol === 'local' || src?.protocol === 'localProfile'
+          const elevated = src?.protocol === 'elevated'
+          const isLocal =
+            src?.protocol === 'local' || src?.protocol === 'localProfile' || elevated
           const dotColor = leaf ? statusDotColor(statusByPane[leaf.id], isLocal) : null
           const runningPaneIds = new Set(
             leaves
@@ -715,6 +719,16 @@ export function TabBar({
                   />
                 )}
               </span>
+              {/* Decision 5 of docs/ELEVATED_TABS_PLAN.md: the tab running
+                  as administrator is never in doubt. Beside the shell's own
+                  icon rather than instead of it, and in amber rather than the
+                  quiet chrome grey, because it is the one tab worth noticing
+                  from across the strip. */}
+              {elevated && (
+                <span title="Administrator" className="-ml-0.5 shrink-0 text-amber-400">
+                  <ShieldCheck size={12} aria-label="Administrator" />
+                </span>
+              )}
               <span className="truncate">{tab.title}</span>
               {/* Always visible on the active tab, hover-revealed on the rest.
                *

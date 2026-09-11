@@ -1,4 +1,4 @@
-import { useReducer, useState } from 'react'
+import { useCallback, useReducer, useState } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen, Laptop } from 'lucide-react'
 import type { AuthMethod } from '../lib/ssh'
@@ -10,7 +10,7 @@ import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
 import { SerialFields } from './SerialFields'
 import { LocalFields } from './LocalFields'
-import { shellIdFor, shellLabel } from '../lib/local'
+import { canElevate, shellIdFor, shellLabel } from '../lib/local'
 import { SessionBrowser } from './SessionBrowser'
 import {
   connectDraftReducer,
@@ -86,6 +86,9 @@ interface Props {
       /** The saved session's name, when this connect goes through a profile
        * whose source carries only an id. */
       label?: string | null
+      /** The form a blank version of this pane reopens with — see the local
+       * branch of `submit`. */
+      form?: ConnectDialogInitial | null
     },
   ) => void
   /** Saved workspaces, listed above the sessions. Absent hides the section. */
@@ -188,6 +191,7 @@ export function ConnectDialog({
     wakeWait,
     serialConfig,
     localConfig,
+    localElevated,
     logSession,
     saveProfile,
     saveCredential,
@@ -234,6 +238,11 @@ export function ConnectDialog({
   const setWakeWait = (v: string) => dispatch({ type: 'fieldSet', field: 'wakeWait', value: v })
   const setSerialConfig = (v: typeof serialConfig) => dispatch({ type: 'fieldSet', field: 'serialConfig', value: v })
   const setLocalConfig = (v: typeof localConfig) => dispatch({ type: 'fieldSet', field: 'localConfig', value: v })
+  // Stable, because LocalFields runs an effect keyed on it.
+  const setLocalElevated = useCallback(
+    (v: boolean) => dispatch({ type: 'fieldSet', field: 'localElevated', value: v }),
+    [],
+  )
   const setLogSession = (v: boolean) => dispatch({ type: 'fieldSet', field: 'logSession', value: v })
   const setSaveProfile = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveProfile', value: v })
   const setSaveCredential = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveCredential', value: v })
@@ -453,6 +462,27 @@ export function ConnectDialog({
         )
       }
     } else if (protocol === 'local') {
+      const shellId = shellIdFor(localConfig)
+      // Checked again here, not only by the box being enabled: an elevated tab
+      // is opened by shell id, and only the ids the host will accept count.
+      const asAdmin = localElevated && canElevate(shellId)
+      // What a blank version of this pane reopens with. An administrator tab is
+      // never restored connected — a prompt nobody asked for trains people to
+      // click Yes (decision 4 of docs/ELEVATED_TABS_PLAN.md) — so it comes back
+      // as this form, on the same shell with the box ticked: one click, but a
+      // deliberate one.
+      const restoreForm = (id?: string): ConnectDialogInitial => ({
+        ...(id ? { id } : {}),
+        protocol: 'local',
+        local: {
+          shellId,
+          command: localConfig.command,
+          args: localConfig.args,
+          cwd: localConfig.cwd,
+          elevated: true,
+        },
+      })
+
       // No credential half: a local shell has no auth at all, so saving is
       // purely "remember this shell and how to start it".
       if (saveProfile && onSaveProfile) {
@@ -487,23 +517,40 @@ export function ConnectDialog({
           local: {
             // Empty for a hand-typed path, which has no detected identity to
             // re-resolve against and is used exactly as written.
-            shellId: shellIdFor(localConfig),
+            shellId,
             command: localConfig.command,
             args: localConfig.args,
             cwd: localConfig.cwd,
+            elevated: asAdmin,
           },
         })
+        if (asAdmin) {
+          onConnect({ protocol: 'elevated', shellId, profileId }, logSession, {
+            ...paneOptions,
+            label: savedLabel,
+            form: { ...restoreForm(profileId), label: savedLabel },
+          })
+          return
+        }
         // Connect through the profile so this first connection resolves the
         // shell the same way every later one will — the same reasoning serial
         // uses, and the case it catches is a shell id that no longer matches
         // anything installed, which is better found now than months from now.
         onConnect(
-          { protocol: 'localProfile', profileId, shellId: shellIdFor(localConfig) },
+          { protocol: 'localProfile', profileId, shellId },
           logSession,
           // The name goes with it: a `localProfile` source carries only an id,
           // and without this the pane titles itself with a UUID.
           { ...paneOptions, label: savedLabel },
         )
+        return
+      }
+      if (asAdmin) {
+        onConnect({ protocol: 'elevated', shellId, profileId: null }, logSession, {
+          ...paneOptions,
+          label: shellLabel(localConfig),
+          form: restoreForm(),
+        })
         return
       }
       onConnect({ protocol: 'local', config: localConfig }, logSession, paneOptions)
@@ -633,7 +680,13 @@ export function ConnectDialog({
         </div>
 
         {protocol === 'local' ? (
-          <LocalFields config={localConfig} onChange={setLocalConfig} inputClass={inputClass} />
+          <LocalFields
+            config={localConfig}
+            onChange={setLocalConfig}
+            inputClass={inputClass}
+            elevated={localElevated}
+            onElevatedChange={setLocalElevated}
+          />
         ) : protocol === 'serial' ? (
           <SerialFields
             config={serialConfig}

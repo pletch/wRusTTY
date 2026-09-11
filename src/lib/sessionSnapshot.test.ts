@@ -188,3 +188,17 @@ describe('save / load / clear snapshot', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()
   })
 })
+
+describe('administrator panes', () => {
+  const elevated: ConnectionSource = { protocol: 'elevated', shellId: 'pwsh', profileId: null }
+
+  it('come back blank, never connected — but keep their tab', () => {
+    const result = sanitizeTabs([tabWith(elevated)], { allowSerial: true })
+    expect(result.length).toBe(1)
+    expect(collectSources(result)).toEqual([null])
+  })
+
+  it('are not counted as lost, since their form survives', () => {
+    expect(countUnsaveable([tabWith(elevated, rawSshSource)], { allowSerial: true })).toBe(1)
+  })
+})

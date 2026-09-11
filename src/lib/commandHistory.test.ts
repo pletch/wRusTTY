@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { historyKey } from './commandHistory'
+import { historyKey, historyKeyForSource } from './commandHistory'
 
 /**
  * The key is the only logic on this side of the boundary — everything else
@@ -43,5 +43,14 @@ describe('historyKey', () => {
     expect(historyKey({ protocol: 'serial', host: 'COM4', port: null, username: null })).toBe(
       'serial://COM4',
     )
+  })
+})
+
+describe('historyKeyForSource', () => {
+  // An administrator shell records nothing — decision 6 of
+  // docs/ELEVATED_TABS_PLAN.md. What is typed there should not come back as a
+  // suggestion at an ordinary prompt.
+  it('keeps no history for an administrator shell', () => {
+    expect(historyKeyForSource({ protocol: 'elevated', shellId: 'pwsh', profileId: null })).toBeNull()
   })
 })

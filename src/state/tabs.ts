@@ -33,6 +33,10 @@ export type TabsAction =
        * source carries only an id, so without this the pane titles itself with
        * a UUID — see `leafTitle`. */
       initialLabel: string | null
+      /** The form a blank version of this pane reopens with — an elevated tab
+       * sets it, because it is never restored connected (decision 4 of
+       * docs/ELEVATED_TABS_PLAN.md) and comes back as this form instead. */
+      initialForm?: PaneLeaf['initial'] | null
     }
   | { type: 'paneDisconnected'; tabId: string; paneId: string }
   | { type: 'paneFocused'; tabId: string; paneId: string }
@@ -139,9 +143,14 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
               source: action.source,
               backspaceSendsCtrlH: action.backspaceSendsCtrlH,
               autoReconnect: action.autoReconnect,
-              initial: action.initialLabel
-                ? { ...l.initial, label: action.initialLabel }
-                : l.initial,
+              initial:
+                action.initialLabel || action.initialForm
+                  ? {
+                      ...l.initial,
+                      ...(action.initialForm ?? {}),
+                      ...(action.initialLabel ? { label: action.initialLabel } : {}),
+                    }
+                  : l.initial,
             })),
           }),
         ),

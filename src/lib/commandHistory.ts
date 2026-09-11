@@ -112,6 +112,10 @@ export function historyKeyForSource(source: ConnectionSource): string | null {
     // A saved local shell files under its profile id, like every other saved
     // session, for the reason above: the profile is the thing the user means
     // by "that shell", and it survives the path being re-resolved under it.
+    // Decision 6 of docs/ELEVATED_TABS_PLAN.md: what an administrator typed
+    // must not come back as a suggestion in an ordinary tab.
+    case 'elevated':
+      return null
     case 'localProfile': {
       const family = familyForShellId(source.shellId)
       // No id at all means a hand-typed path whose family cannot be known from

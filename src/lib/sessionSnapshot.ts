@@ -35,7 +35,17 @@ function restorableSource(
   // on the way back, exactly as a fresh connect does.
   if (source.protocol === 'localProfile') return source
   if (source.protocol === 'serial' && opts.allowSerial) return source
+  // An administrator shell is never restored connected (decision 4 of
+  // docs/ELEVATED_TABS_PLAN.md): that would be a UAC prompt nobody asked for.
+  // It comes back as its pane's pre-filled form instead — see `keepsBlank`.
   return null
+}
+
+/** A pane restored without its connection but still worth its tab: an
+ * administrator shell reopens as a form with the box already ticked, one
+ * deliberate click from where it was, rather than vanishing. */
+function keepsBlank(source: ConnectionSource | null): boolean {
+  return source?.protocol === 'elevated'
 }
 
 function sanitizeNode(node: PaneNode, opts: SanitizeOptions): PaneNode {
@@ -53,8 +63,10 @@ function sanitizeNode(node: PaneNode, opts: SanitizeOptions): PaneNode {
  * counts as safe to persist. */
 export function sanitizeTabs(tabs: Tab[], opts: SanitizeOptions): Tab[] {
   return tabs
+    .filter((t) =>
+      allLeaves(t.root).some((l) => keepsBlank(l.source) || restorableSource(l.source, opts)),
+    )
     .map((t) => ({ ...t, root: sanitizeNode(t.root, opts) }))
-    .filter((t) => allLeaves(t.root).some((l) => l.source))
 }
 
 /** How many panes `sanitizeTabs` would drop — lets the save flow say so up
@@ -63,7 +75,9 @@ export function countUnsaveable(tabs: Tab[], opts: SanitizeOptions): number {
   return tabs.reduce(
     (n, t) =>
       n +
-      allLeaves(t.root).filter((l) => l.source && !restorableSource(l.source, opts)).length,
+      allLeaves(t.root).filter(
+        (l) => l.source && !keepsBlank(l.source) && !restorableSource(l.source, opts),
+      ).length,
     0,
   )
 }

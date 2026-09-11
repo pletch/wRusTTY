@@ -410,4 +410,55 @@ was declined` and exited at once, with no retry and no host or shell started.
 So `ERROR_CANCELLED` maps to the declined error in practice, not only against
 the stand-in launcher the tests use.
 
+## What Phase 4 actually did
+
+**A new connection source, not a flag on `local`.** `{ protocol: 'elevated',
+shellId, profileId }` goes to `elevated_connect` and carries a shell id only —
+never a command line — so the frontend has no way to ask the host for anything
+decision 2 did not allow. Everything keyed on the transport treats it as its
+own case: `historyKeyForSource` returns null (decision 6), `sessionSnapshot`
+never restores it connected, and drag-and-drop upload knows it as `elevated`.
+
+**The checkbox.** "Run as administrator" sits under the local fields, with a
+shield. It is enabled only when the picker has identified the shell *and*
+`canElevate` accepts its id (`ELEVATABLE_SHELL_IDS` in `src/lib/local.ts`,
+mirroring `ELEVATABLE_SHELLS`), so a hand-typed path or a WSL distro shows it
+disabled with a tooltip saying why. It clears itself when the shell stops
+qualifying — but not while detection is still answering, or editing a saved
+administrator session would lose its tick in the instant before the list
+arrives. Ticking it shows the risk from decision 1 in one sentence, where it is
+chosen. `submit` checks `canElevate` again rather than trusting the box.
+
+**Saved sessions.** `LocalProfile.elevated` (Rust `#[serde(default)]`, so older
+profiles read as `false`). Opening a saved administrator session builds an
+elevated source directly, with a UAC prompt, because opening it *is* the
+deliberate click; its subtitle in the list ends in "· Administrator".
+
+**Restore (decision 4).** `paneConnected` takes an optional `initialForm`,
+merged into the pane's `initial`. An elevated connect passes the pane's own
+form — same shell, box ticked, the saved id when there is one. The snapshot
+drops the source as it does for every unrestorable one, but `sanitizeTabs` now
+keeps a tab whose only pane was elevated, and `countUnsaveable` does not count
+it as lost, since what comes back is that form rather than nothing.
+
+**Marking it (decision 5).** An amber shield before the tab title, the shell's
+own icon as the tab glyph, and `ADMIN` in amber in the status bar with
+"<shell> · Administrator" as the target. Like an ordinary local tab it shows no
+"Connected" dot once running.
+
+**Focus after the prompt.** `RunasLauncher` calls
+`win_focus::restore_after_broker_prompt` once `ShellExecuteExW` returns,
+whichever way the prompt was answered.
+
+**Tests.** `ConnectDialog.elevated.test.tsx` pins the box: enabled for a picked
+PowerShell, disabled and cleared for WSL, not re-ticked on switching back,
+disabled for a typed path, the warning only when ticked, and the source sent
+each way. `sessionSnapshot.test.ts` and `commandHistory.test.ts` cover restore
+and history.
+
+**Not yet checked in the running app.** The in-app flow — tick, prompt, shield,
+restart, restore as a form — and the Task Manager check for orphaned
+administrator processes (see *What must not regress*) both need a rebuilt
+`wrustty.exe` and a person at the prompt.
+
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general

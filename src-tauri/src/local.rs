@@ -253,6 +253,7 @@ mod tests {
             command: command.into(),
             args: Vec::new(),
             cwd: None,
+            elevated: false,
         }
     }
 

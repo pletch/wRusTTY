@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react'
-import { listShells, type LocalConfig, type ShellInfo } from '../lib/local'
+import { ShieldCheck } from 'lucide-react'
+import { canElevate, listShells, type LocalConfig, type ShellInfo } from '../lib/local'
 
 interface Props {
   config: LocalConfig
   onChange: (config: LocalConfig) => void
   inputClass: string
+  /** Run as administrator — see docs/ELEVATED_TABS_PLAN.md. */
+  elevated: boolean
+  onElevatedChange: (elevated: boolean) => void
 }
 
 /**
@@ -24,7 +28,7 @@ interface Props {
  * distro called "Ubuntu 22.04 LTS" survives being picked and would not survive
  * being typed.
  */
-export function LocalFields({ config, onChange, inputClass }: Props) {
+export function LocalFields({ config, onChange, inputClass, elevated, onElevatedChange }: Props) {
   const [shells, setShells] = useState<ShellInfo[] | null>(null)
 
   useEffect(() => {
@@ -52,6 +56,19 @@ export function LocalFields({ config, onChange, inputClass }: Props) {
   const selected = shells?.find(
     (s) => s.command === config.command && s.args.join(' ') === config.args.join(' '),
   )
+
+  // Offered only for a shell the picker identified — decision 2: the elevated
+  // host resolves the shell by its detected id, so a hand-typed path could
+  // not be what ran as administrator even if the box were ticked.
+  const elevatable = !!selected && canElevate(selected.id)
+
+  // Cleared the moment it stops applying — a different shell picked, a path
+  // typed — so it cannot sit ticked and ignored. Not while detection is still
+  // answering: editing a saved administrator session must not lose the tick
+  // in the instant before the list arrives.
+  useEffect(() => {
+    if (elevated && shells !== null && !elevatable) onElevatedChange(false)
+  }, [elevated, elevatable, shells, onElevatedChange])
 
   return (
     <>
@@ -100,6 +117,33 @@ export function LocalFields({ config, onChange, inputClass }: Props) {
         onChange={(e) => onChange({ ...config, cwd: e.target.value.trim() || null })}
         spellCheck={false}
       />
+      <label
+        className={`flex items-center gap-2 text-xs ${elevatable ? 'text-chrome/70' : 'text-chrome/30'}`}
+        title={
+          elevatable
+            ? undefined
+            : 'Only PowerShell, Windows PowerShell, Command Prompt and Git Bash, picked from the list, can run as administrator.'
+        }
+      >
+        <input
+          type="checkbox"
+          className="accent-amber-400"
+          checked={elevated && elevatable}
+          disabled={!elevatable}
+          onChange={(e) => onElevatedChange(e.target.checked)}
+        />
+        <ShieldCheck size={12} className={elevatable ? 'text-amber-400/80' : ''} />
+        Run as administrator
+      </label>
+      {elevated && elevatable && (
+        // Decision 1, said where it is chosen rather than only in a plan: the
+        // prompt is the only gate, and once it is passed the tab is a keyboard
+        // into an administrator shell for as long as it stays open.
+        <p className="text-xs text-chrome/40">
+          Opens after a Windows UAC prompt. While it is open, anyone at this computer — and any
+          program running as you — can type administrator commands into it.
+        </p>
+      )}
     </>
   )
 }

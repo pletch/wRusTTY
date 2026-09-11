@@ -25,6 +25,12 @@ export type ConnectionSource =
    * says whether this is a shell whose history is worth recording — a question
    * asked in the webview, on every keystroke, and not worth a round trip. */
   | { protocol: 'localProfile'; profileId: string; shellId: string }
+  /** A local shell run as administrator, through the elevated host (see
+   * docs/ELEVATED_TABS_PLAN.md). Carries a shell *id*, never a path: the
+   * elevated host resolves the id itself, so nothing here can choose what runs
+   * as administrator. `profileId` is the saved session it was opened from, if
+   * any — for labelling only. */
+  | { protocol: 'elevated'; shellId: string; profileId: string | null }
 
 export type ConnEvent =
   | { type: 'status'; status: string }
@@ -167,6 +173,17 @@ export function connect(
         dataChannel,
         reconnect,
       })
+    case 'elevated':
+      // No reconnect policy: an elevated tab is never rebuilt unattended,
+      // because every rebuild would be a UAC prompt nobody asked for. The
+      // command has no parameter for one.
+      return invoke<string>('elevated_connect', {
+        shellId: source.shellId,
+        channel,
+        dataChannel,
+        cols,
+        rows,
+      })
     case 'localProfile':
       // No config sent: the backend re-resolves the shell id against what is
       // installed right now, which is the entire reason a local session can be
@@ -203,8 +220,14 @@ export function connect(
  * ternaries defaulting to `ssh_*`, which meant every new source variant
  * silently routed its writes and disconnects to the SSH commands until someone
  * noticed. */
-export function transportOf(source: ConnectionSource): 'ssh' | 'telnet' | 'serial' | 'local' {
+export function transportOf(
+  source: ConnectionSource,
+): 'ssh' | 'telnet' | 'serial' | 'local' | 'elevated' {
   switch (source.protocol) {
+    // Its own command family: an elevated session lives in a separate session
+    // registry, so `local_write` would never find it.
+    case 'elevated':
+      return 'elevated'
     case 'telnet':
       return 'telnet'
     case 'local':
@@ -353,6 +376,8 @@ export function sourceLabel(source: ConnectionSource): string {
     // bar resolves it to the profile's own label the same way.
     case 'localProfile':
       return source.profileId
+    case 'elevated':
+      return source.shellId
     // The port isn't known here — it's resolved backend-side at connect
     // time — so the id is all this has. App's status bar resolves it to the
     // profile's own label, the same way it does for sshProfile.

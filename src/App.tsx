@@ -42,6 +42,7 @@ import {
   DEFAULT_FONT_SIZE,
   FONT_SIZE_RANGE,
 } from './lib/settings'
+import { canElevate } from './lib/local'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
 import {
@@ -755,6 +756,7 @@ function App() {
       backspaceSendsCtrlH: boolean | null
       autoReconnect: boolean | null
       label?: string | null
+      form?: PaneLeaf['initial'] | null
     },
   ) {
     // Set logging state before the source, so the Terminal mounts with logging
@@ -773,6 +775,7 @@ function App() {
       // sidebar path goes through `applyProfileToPane`, which already carries
       // the whole profile.
       initialLabel: paneOptions?.label ?? null,
+      initialForm: paneOptions?.form ?? null,
     })
   }
 
@@ -937,6 +940,19 @@ function App() {
     // can tell whether this is a shell whose history it should record without
     // asking — see `historyKeyForSource`.
     if (profile.protocol === 'local') {
+      // A saved administrator session goes through the elevated host, and is
+      // opened by its detected shell id only — which is all the host will
+      // accept. One that has lost its id (a hand-typed shell) cannot be
+      // elevated, and opens the form instead of quietly running unelevated.
+      if (profile.local?.elevated) {
+        const shellId = profile.local.shellId
+        return {
+          source: canElevate(shellId)
+            ? { protocol: 'elevated' as const, shellId, profileId: profile.id }
+            : null,
+          initial: profileToInitial(profile),
+        }
+      }
       return {
         source: {
           protocol: 'localProfile' as const,
@@ -1222,6 +1238,13 @@ function App() {
       case 'localProfile': {
         const p = sessions.find((s) => s.id === src.profileId)
         return { protocol: 'LOCAL', target: p?.label ?? src.profileId }
+      }
+      // Decision 5: "Administrator" in the bar, always, so the one tab that
+      // can do damage is named wherever the eye lands. The tag is ADMIN rather
+      // than LOCAL for the same reason.
+      case 'elevated': {
+        const p = src.profileId ? sessions.find((s) => s.id === src.profileId) : undefined
+        return { protocol: 'ADMIN', target: `${p?.label ?? src.shellId} · Administrator` }
       }
     }
   })()
