@@ -112,6 +112,8 @@ mod tests {
             wake_on_lan: None,
             auto_reconnect: None,
             import_remote_history: None,
+            use_proxy: None,
+            log_session: None,
             serial: None,
             local: None,
         }

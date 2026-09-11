@@ -63,6 +63,9 @@ curly underlines just work.
   forwards and its in-flight file transfers
 - **Wake-on-LAN** — a per-session MAC, probed first so an awake host is never
   sent a packet, with a *Wake* action on any saved session
+- **Outbound proxy** — reach SSH hosts (or their jump host) through an HTTP
+  CONNECT or SOCKS5 proxy, set once in Settings; the proxy resolves the name,
+  and any saved session can opt out
 
 **Terminal**
 - Ghostty VT core + WebGL renderer: 24-bit colour, wide characters and grapheme
@@ -83,7 +86,8 @@ curly underlines just work.
 - URL detection with Ctrl+click, plus a keyboard hint mode for when a program
   has the mouse
 - Remote programs can set the clipboard over OSC 52 (switchable in Settings)
-- Session logging to file, per session
+- Session logging to file — per session, remembered by a saved session, or for
+  every session automatically — into a folder you choose
 
 **Window and workflow**
 - Tabs and **split panes**, with **broadcast input** — type once, send to every
@@ -100,6 +104,8 @@ curly underlines just work.
   and serial number), not its COM number, so it survives a replug, a reboot and
   a different socket
 - Quick-connect palette, duplicate/reconnect/restart from the tab menu
+- **Configurable keyboard shortcuts** in Settings → Keyboard, with conflicts
+  flagged and a guard against binding a key that is ordinary typing
 - Mica/acrylic window material, per-pane background opacity, eleven built-in
   themes, a custom theme editor, and an importer for iTerm2 `.itermcolors` and
   VS Code colour themes; an unfocused window can fade or turn see-through

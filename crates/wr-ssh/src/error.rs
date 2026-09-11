@@ -20,6 +20,16 @@ pub enum SshError {
         source: russh::Error,
     },
 
+    /// The outbound proxy would not, or could not, open the tunnel. Its own
+    /// variant because the fix is on a different machine: nothing about the
+    /// SSH server has been tried yet.
+    #[error("proxy {proxy} {source}")]
+    Proxy {
+        proxy: String,
+        #[source]
+        source: crate::proxy::ProxyError,
+    },
+
     #[error("host key for {host}:{port} was rejected")]
     HostKeyRejected { host: String, port: u16 },
 

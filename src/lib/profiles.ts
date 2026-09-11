@@ -54,6 +54,13 @@ export interface SessionProfile {
    * about the host — importing from the homelab box and never from the
    * customer's bastion is the normal shape of the answer. */
   importRemoteHistory: boolean | null
+  /** SSH only — `false` connects directly even when Settings names a proxy;
+   * null/absent follows the global setting. Optional because every profile
+   * saved before proxies existed lacks it. */
+  useProxy?: boolean | null
+  /** Start a transcript as this session connects. null/absent leaves it to
+   * the global "log every session" switch. */
+  logSession?: boolean | null
   /** Serial only — null for SSH and telnet. */
   serial: SerialProfile | null
   /** Local shells only — null for everything else, and for every profile saved

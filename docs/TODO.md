@@ -44,18 +44,20 @@ where it matters):
    the whole cost. PROJECT_PLAN §terminal & UX.
 8. **X11 forwarding** — the `x11-req` half is ours; being an X server is not.
    Detect VcXsrv/Xming/WSLg and forward to it. Must default to untrusted.
-9. **Configurable keyboard shortcuts** — every binding is hard-coded in
-   `Terminal.tsx` and `App.tsx`.
-10. **Outbound proxy support** (HTTP CONNECT / SOCKS5) for reaching a host
-    through a corporate proxy. Not the SOCKS5 server in `wr-ssh/src/socks.rs`,
-    which is the dynamic forward's own.
+9. ~~**Configurable keyboard shortcuts**~~ — **built** (Settings → Keyboard,
+   `lib/keybindings.ts`). PROJECT_PLAN §terminal & UX.
+10. ~~**Outbound proxy support**~~ — **built** for SSH, HTTP CONNECT and
+    SOCKS5, with no proxy login. What is left: a login (NTLM/Kerberos is what
+    corporate proxies actually want), and telnet through it. Neither has been
+    tried against a real corporate proxy — the handshakes are tested against
+    scripted ones only.
 11. **OS light/dark sync**, jump list, portable mode — Win11 polish, none
     built.
 
 **Smaller, and each self-contained:**
 
-12. **Settings not yet exposed**: logging auto-start and a configurable path;
-    selection word separators, scroll sensitivity. See below.
+12. **Settings not yet exposed**: selection word separators, scroll
+    sensitivity. (Logging auto-start and a chosen folder are built.) See below.
 13. **The edit save still reads its local file whole** — the only unstreamed
     leg left. PROJECT_PLAN Phase 6, item 2.
 14. **Symlinks cannot be copied**, only skipped-and-reported. Worth doing for
@@ -218,9 +220,12 @@ Three things followed that nothing above anticipated:
 
 Raised while reorganising settings into a dialog.
 
-- **Logging: auto-start per session, and a configurable path.** Logging is
-  manual and writes to a fixed location.
-- Lower still: selection word separators, scroll sensitivity, rebindable keys.
+- ~~**Logging: auto-start per session, and a configurable path.**~~ Built: a
+  saved session remembers its log box, Settings can log every session, and
+  transcripts go to a chosen folder. A file-name template is the obvious next
+  step and nothing has asked for it.
+- ~~Rebindable keys~~ — built, Settings → Keyboard.
+- Lower still: selection word separators, scroll sensitivity.
 
 ## Ligatures: shipped, off by default
 

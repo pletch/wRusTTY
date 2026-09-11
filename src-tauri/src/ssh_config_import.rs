@@ -306,6 +306,8 @@ fn to_profile(entry: &HostEntry, id: String) -> SessionProfile {
         // An import says nothing about whether this host's shell history may be
         // read; that is the user's call, made per host or globally.
         import_remote_history: None,
+        use_proxy: None,
+        log_session: None,
         serial: None,
         local: None,
     }
@@ -708,6 +710,8 @@ mod tests {
             // An import says nothing about whether this host's shell history may be
             // read; that is the user's call, made per host or globally.
             import_remote_history: None,
+            use_proxy: None,
+            log_session: None,
             serial: None,
             local: None,
         }];

@@ -1,12 +1,21 @@
 import { invoke, Channel } from '@tauri-apps/api/core'
-import type { SshConfig } from './ssh'
+import type { ProxyConfig, SshConfig } from './ssh'
 import type { TelnetConfig } from './telnet'
 import type { SerialConfig } from './serial'
 import { localTitle, shellDisplayName, type LocalConfig } from './local'
 import type { WakeOnLan } from './profiles'
 
 export type ConnectionSource =
-  | { protocol: 'ssh'; config: SshConfig; jumpProfileId?: string | null; wake?: WakeOnLan | null }
+  | {
+      protocol: 'ssh'
+      config: SshConfig
+      jumpProfileId?: string | null
+      wake?: WakeOnLan | null
+      /** `false` connects directly even when Settings names a proxy. A saved
+       * session's own opt-out is applied backend-side instead, where the
+       * profile is. */
+      useProxy?: boolean
+    }
   | { protocol: 'sshProfile'; profileId: string }
   | { protocol: 'telnet'; config: TelnetConfig }
   | { protocol: 'serial'; config: SerialConfig }
@@ -112,6 +121,8 @@ export function connect(
   cols: number,
   rows: number,
   reconnect: ReconnectPolicy,
+  /** The global proxy from Settings (`proxyConfigFrom`), or null. SSH only. */
+  proxy: ProxyConfig | null = null,
 ) {
   const channel = new Channel<ConnEvent>()
   channel.onmessage = onEvent
@@ -134,6 +145,7 @@ export function connect(
         // IPC layer's treatment of a missing key rather than on this file
         // saying what it means.
         wake: source.wake ?? null,
+        proxy: source.useProxy === false ? null : proxy,
         channel,
         dataChannel,
         cols,
@@ -143,6 +155,7 @@ export function connect(
     case 'sshProfile':
       return invoke<string>('ssh_connect_profile', {
         profileId: source.profileId,
+        proxy,
         channel,
         dataChannel,
         cols,

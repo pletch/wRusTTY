@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
 
+use crate::proxy::ProxyConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
@@ -35,6 +37,12 @@ pub struct SshConfig {
     /// worth having, since a few devices respond badly to them.
     #[serde(default)]
     pub keepalive_seconds: Option<u64>,
+    /// Open the first socket through an outbound proxy (HTTP `CONNECT` or
+    /// SOCKS5) rather than directly. With a jump host it is the jump host the
+    /// proxy reaches, and the target is then reached from the jump host's side
+    /// of the network. `None` connects directly.
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
 }
 
 /// What we claim to be when no session overrides it. 256-colour xterm is what
@@ -228,6 +236,7 @@ impl Default for SshConfig {
             jump: None,
             term_type: None,
             keepalive_seconds: None,
+            proxy: None,
         }
     }
 }

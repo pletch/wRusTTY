@@ -54,6 +54,10 @@ export interface ConnectDialogInitial {
   keepaliveSeconds?: number | null
   /** How to wake this host before connecting — null/absent means don't. */
   wakeOnLan?: WakeOnLan | null
+  /** `false` connects directly past the Settings proxy; null/absent uses it. */
+  useProxy?: boolean | null
+  /** Log this session from connect. */
+  logSession?: boolean | null
   /** Serial only — the stored line settings and adapter identity. */
   serial?: SerialProfile | null
   /** Local only — the stored shell and its arguments. */
@@ -107,6 +111,9 @@ interface Props {
    * session back to a plain on-disk path, so the old key doesn't linger. */
   onDeleteCredential?: (profileId: string) => void
   vaultUnlocked?: boolean
+  /** Whether Settings names an outbound proxy. Only then is there anything
+   * for an SSH session to opt out of. */
+  proxyAvailable?: boolean
   initial?: ConnectDialogInitial
   error?: string | null
   /** Saved sessions shown in a sidebar alongside the manual connect form —
@@ -144,6 +151,7 @@ export function ConnectDialog({
   onImportKeyToVault,
   onDeleteCredential,
   vaultUnlocked,
+  proxyAvailable,
   initial,
   error,
   sessions,
@@ -193,6 +201,7 @@ export function ConnectDialog({
     localConfig,
     localElevated,
     logSession,
+    useProxy,
     saveProfile,
     saveCredential,
   } = draft
@@ -244,6 +253,10 @@ export function ConnectDialog({
     [],
   )
   const setLogSession = (v: boolean) => dispatch({ type: 'fieldSet', field: 'logSession', value: v })
+  const setUseProxy = (v: boolean) => dispatch({ type: 'fieldSet', field: 'useProxy', value: v })
+  // Opt-out only, like auto-reconnect: ticked follows the global setting, so
+  // a session saved while no proxy is configured picks one up the day it is.
+  const savedUseProxy = useProxy ? null : false
   const setSaveProfile = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveProfile', value: v })
   const setSaveCredential = (v: boolean) => dispatch({ type: 'fieldSet', field: 'saveCredential', value: v })
 
@@ -402,6 +415,8 @@ export function ConnectDialog({
           backspaceSendsCtrlH: backspace === 'ctrlh',
           autoReconnect: savedAutoReconnect,
           importRemoteHistory,
+          useProxy: savedUseProxy,
+          logSession,
           // Otherwise preserves a prior credential's flag across an unrelated
           // edit — there's no "forget stored credential" affordance yet, so
           // saving shouldn't silently lose track of one that already exists.
@@ -456,6 +471,7 @@ export function ConnectDialog({
             // the host being asleep is a fact about the host, and having to
             // save a profile first to get past it would be a strange gate.
             wake: wakeOnLanFrom(draft),
+            useProxy,
           },
           logSession,
           paneOptions,
@@ -510,6 +526,8 @@ export function ConnectDialog({
           // app does not keep. Decision 5 of docs/LOCAL_SHELL_PLAN.md.
           autoReconnect: false,
           importRemoteHistory,
+          useProxy: null,
+          logSession,
           // Nothing to keep alive and nothing to wake: the shell is here.
           keepaliveSeconds: null,
           wakeOnLan: null,
@@ -575,6 +593,9 @@ export function ConnectDialog({
           backspaceSendsCtrlH: backspace === 'ctrlh',
           autoReconnect: savedAutoReconnect,
           importRemoteHistory,
+          // The proxy is SSH-only, so far.
+          useProxy: null,
+          logSession,
           // Telnet has no keepalive of its own.
           keepaliveSeconds: null,
           // Waking is wired into the SSH connect path only, so far.
@@ -614,6 +635,8 @@ export function ConnectDialog({
           backspaceSendsCtrlH: backspace === 'ctrlh',
           autoReconnect: savedAutoReconnect,
           importRemoteHistory,
+          useProxy: null,
+          logSession,
           // No idle timeout on a wire, and nothing to wake at the end of one.
           keepaliveSeconds: null,
           wakeOnLan: null,
@@ -837,6 +860,20 @@ export function ConnectDialog({
                     "Jump via" ended up repeated on every row, restating the
                     field on each option and eating the width the session
                     names needed. Hoisting it to a caption says it once. */}
+                {proxyAvailable && (
+                  <label
+                    className="flex cursor-pointer items-center gap-2 text-xs text-chrome/70"
+                    title="Unticked, this session connects directly even though Settings names a proxy — for a host on the local network, which the proxy cannot reach or should not see."
+                  >
+                    <input
+                      type="checkbox"
+                      className="accent-sky-400"
+                      checked={useProxy}
+                      onChange={(e) => setUseProxy(e.target.checked)}
+                    />
+                    Connect through the proxy in Settings
+                  </label>
+                )}
                 {sessions && sessions.filter((s) => s.id !== initial?.id).length > 0 && (
                   <label className="block space-y-1">
                     <span className="text-xs text-chrome/40">Jump host</span>

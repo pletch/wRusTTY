@@ -1,6 +1,14 @@
 import type { VibrancyMode } from './windowEffects'
 import { resolveRangeOverlaps } from './fontStack'
 import { sanitizeCustomThemes, setCustomThemes, type TerminalTheme } from './theme'
+import { sanitizeKeybindings, type Keybindings } from './keybindings'
+import type { ProxyConfig } from './ssh'
+
+export type ProxyKindSetting = 'none' | 'http' | 'socks5'
+export const PROXY_KINDS: readonly ProxyKindSetting[] = ['none', 'http', 'socks5']
+
+/** The port a proxy kind usually listens on, used when `proxyPort` is 0. */
+export const DEFAULT_PROXY_PORT: Record<'http' | 'socks5', number> = { http: 3128, socks5: 1080 }
 
 /** What Ctrl+0 restores, and what a settings blob without a size gets. */
 export const DEFAULT_FONT_SIZE = 13
@@ -71,6 +79,24 @@ export interface TerminalSettings {
    * stream verbatim (PuTTY "all session output" style) for exact fidelity /
    * replay. Applies to the next log started, not one already running. */
   logPlainText: boolean
+  /** Start a transcript for every session as it connects, rather than only
+   * those whose connect form or saved profile asks for one. */
+  autoLogSessions: boolean
+  /** Folder transcripts are written to; '' for the default under the app's own
+   * log directory. A full path — the backend refuses anything else rather
+   * than resolve it against a working directory nobody chose. */
+  logDirectory: string
+  /** Outbound proxy for SSH connections: `none`, HTTP `CONNECT`, or SOCKS5.
+   * Global rather than per session because it describes this machine's way
+   * out of its network, not any one host; a saved session can opt out of it
+   * (`SessionProfile.useProxy`). No login — see wr-ssh's proxy.rs for why. */
+  proxyKind: ProxyKindSetting
+  proxyHost: string
+  /** 0 for the kind's usual port (`DEFAULT_PROXY_PORT`). */
+  proxyPort: number
+  /** Shortcut overrides by action — see lib/keybindings.ts. Only what differs
+   * from the defaults is stored. */
+  keybindings: Keybindings
   /** Toast when a long-running command finishes in a tab you aren't looking
    * at, using the remote shell's own OSC 133 reports (see
    * lib/shellIntegration.ts). Never fires for the tab currently on screen in
@@ -530,6 +556,12 @@ const defaults: TerminalSettings = {
   reconnectMaxAttempts: 12,
   reconnectMaxSeconds: 300,
   logPlainText: true,
+  autoLogSessions: false,
+  logDirectory: '',
+  proxyKind: 'none',
+  proxyHost: '',
+  proxyPort: 0,
+  keybindings: {},
   notifyOnCommandComplete: true,
   bellMarksTab: true,
   bellSound: false,
@@ -887,6 +919,14 @@ export function loadSettings(): TerminalSettings {
     if (!TEXT_BLENDINGS.includes(merged.textBlending)) {
       merged.textBlending = defaults.textBlending
     }
+    merged.keybindings = sanitizeKeybindings(merged.keybindings)
+    if (!PROXY_KINDS.includes(merged.proxyKind)) merged.proxyKind = defaults.proxyKind
+    if (typeof merged.proxyHost !== 'string') merged.proxyHost = defaults.proxyHost
+    if (!Number.isInteger(merged.proxyPort) || merged.proxyPort < 0 || merged.proxyPort > 65535) {
+      merged.proxyPort = defaults.proxyPort
+    }
+    if (typeof merged.logDirectory !== 'string') merged.logDirectory = defaults.logDirectory
+    if (typeof merged.autoLogSessions !== 'boolean') merged.autoLogSessions = defaults.autoLogSessions
     const migrated = FONT_STACK_MIGRATIONS[merged.fontFamily]
     if (migrated !== undefined) merged.fontFamily = migrated
     if (typeof merged.ligatures !== 'boolean') merged.ligatures = defaults.ligatures
@@ -916,6 +956,21 @@ export function loadSettings(): TerminalSettings {
     // where a first launch does.
     setCustomThemes(defaults.customThemes)
     return { ...defaults, ...firstRunAppearance }
+  }
+}
+
+/** The proxy an SSH connection should go through, or null for none. A kind
+ * with no host is none: sending it would fail every connection on a setting
+ * that was only half filled in. */
+export function proxyConfigFrom(
+  settings: Pick<TerminalSettings, 'proxyKind' | 'proxyHost' | 'proxyPort'>,
+): ProxyConfig | null {
+  const host = settings.proxyHost.trim()
+  if (settings.proxyKind === 'none' || !host) return null
+  return {
+    kind: settings.proxyKind,
+    host,
+    port: settings.proxyPort || DEFAULT_PROXY_PORT[settings.proxyKind],
   }
 }
 

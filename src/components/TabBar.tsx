@@ -62,6 +62,8 @@ interface Props {
   onSelect: (id: string) => void
   onClose: (id: string) => void
   onNew: () => void
+  /** The new-tab button's tooltip, naming its shortcut as currently bound. */
+  newTabTitle?: string
   onDuplicate: (id: string) => void
   onReconnect: (id: string) => void
   onReorder: (draggedId: string, targetId: string) => void
@@ -316,6 +318,7 @@ export function TabBar({
   onSelect,
   onClose,
   onNew,
+  newTabTitle = 'New connection',
   onDuplicate,
   onReconnect,
   onReorder,
@@ -790,7 +793,7 @@ export function TabBar({
       <button
         onClick={onNew}
         className="flex shrink-0 items-center justify-center px-3 py-2 text-chrome/45 transition-colors duration-150 hover:bg-chrome/[0.06] hover:text-chrome"
-        title="New connection (Ctrl+Shift+T)"
+        title={newTabTitle}
       >
         <Plus size={16} strokeWidth={2} />
       </button>

@@ -14,11 +14,21 @@ import {
   Download,
   ShieldCheck,
   Info,
+  Keyboard,
   X,
 } from 'lucide-react'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
-import type { TerminalSettings, CursorStyleSetting, FontRange } from '../lib/settings'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import type {
+  TerminalSettings,
+  CursorStyleSetting,
+  FontRange,
+  ProxyKindSetting,
+} from '../lib/settings'
+import { bindingsFor } from '../lib/keybindings'
+import { KeybindingsEditor } from './KeybindingsEditor'
 import {
+  DEFAULT_PROXY_PORT,
   SCROLLBACK_FOOTPRINT_TIERS_MB,
   FONT_STACKS,
   FONT_SIZE_RANGE,
@@ -81,6 +91,7 @@ interface Props {
 
 const SECTIONS = [
   { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
+  { id: 'keyboard', label: 'Keyboard', icon: Keyboard },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'session', label: 'Session', icon: Plug },
   { id: 'files', label: 'Remote files', icon: FolderOpen },
@@ -1146,7 +1157,12 @@ export function SettingsDialog({
                         checked={settings.copyOnSelect}
                         onChange={(v) => onChange({ ...settings, copyOnSelect: v })}
                         label="Copy on select"
-                        hint="Selecting text in the terminal copies it automatically. Ctrl+Shift+C copies the selection either way, and Ctrl+Shift+M selects with the keyboard."
+                        hint={`Selecting text in the terminal copies it automatically. ${
+                          bindingsFor(settings.keybindings, 'copy')[0] ?? 'The copy shortcut'
+                        } copies the selection either way, and ${
+                          bindingsFor(settings.keybindings, 'markMode')[0] ??
+                          'the mark-mode shortcut'
+                        } selects with the keyboard.`}
                       />
                       <Toggle
                         checked={settings.rightClickPaste}
@@ -1419,7 +1435,70 @@ export function SettingsDialog({
                         label="Restore sessions on launch"
                         hint="Offers to reopen open tabs next time you start wRusTTY."
                       />
+                      <div className="space-y-2 px-2 py-2">
+                        <label className="flex items-center justify-between gap-3 text-chrome/85">
+                          <span>Outbound proxy for SSH</span>
+                          <select
+                            className={selectClass}
+                            value={settings.proxyKind}
+                            onChange={(e) =>
+                              onChange({
+                                ...settings,
+                                proxyKind: e.target.value as ProxyKindSetting,
+                              })
+                            }
+                          >
+                            <option value="none">None — connect directly</option>
+                            <option value="http">HTTP (CONNECT)</option>
+                            <option value="socks5">SOCKS5</option>
+                          </select>
+                        </label>
+                        {settings.proxyKind !== 'none' && (
+                          <div className="flex gap-2 pl-8">
+                            <input
+                              type="text"
+                              spellCheck={false}
+                              aria-label="Proxy host"
+                              placeholder="proxy.example.com"
+                              className="min-w-0 flex-1 rounded border border-chrome/10 bg-black/20 px-2 py-1 font-mono text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+                              value={settings.proxyHost}
+                              onChange={(e) => onChange({ ...settings, proxyHost: e.target.value })}
+                            />
+                            <input
+                              type="number"
+                              min={1}
+                              max={65535}
+                              aria-label="Proxy port"
+                              placeholder={String(DEFAULT_PROXY_PORT[settings.proxyKind])}
+                              className="w-20 rounded border border-chrome/10 bg-black/20 px-2 py-1 font-mono text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50"
+                              value={settings.proxyPort || ''}
+                              onChange={(e) => {
+                                const port = Number(e.target.value)
+                                onChange({
+                                  ...settings,
+                                  proxyPort:
+                                    Number.isInteger(port) && port >= 0 && port <= 65535 ? port : 0,
+                                })
+                              }}
+                            />
+                          </div>
+                        )}
+                        <p className="leading-relaxed text-chrome/40">
+                          SSH sessions reach their host — or their jump host — through this
+                          proxy, which resolves the name itself. Telnet and serial are
+                          unaffected, and Wake-on-LAN is skipped behind a proxy. A proxy that
+                          asks for a login is reported as such; logins are not supported. A
+                          saved session can opt out on its connect form.
+                        </p>
+                      </div>
                     </>
+                  )}
+
+                  {section === 'keyboard' && (
+                    <KeybindingsEditor
+                      value={settings.keybindings}
+                      onChange={(keybindings) => onChange({ ...settings, keybindings })}
+                    />
                   )}
 
                   {section === 'files' && (
@@ -1568,10 +1647,58 @@ export function SettingsDialog({
                         label="Plain-text session logs"
                         hint="Strip color/escape codes so logs read as text. Off keeps the raw stream. Applies to the next log started, not one already running."
                       />
+                      <Toggle
+                        checked={settings.autoLogSessions}
+                        onChange={(v) => onChange({ ...settings, autoLogSessions: v })}
+                        label="Log every session"
+                        hint="Starts a transcript for every connection as it opens, login banner included. Without this, a session is logged when its connect form or saved session asks for it, or from the toolbar once it is open."
+                      />
+                      <div className="space-y-1.5 px-2 py-2">
+                        <span className="text-chrome/85">Log folder</span>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="min-w-0 flex-1 truncate font-mono text-chrome/60"
+                            title={settings.logDirectory || undefined}
+                          >
+                            {settings.logDirectory || 'Default — inside the app’s own log folder'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const picked = await openDialog({
+                                directory: true,
+                                multiple: false,
+                                defaultPath: settings.logDirectory || undefined,
+                              })
+                              if (typeof picked === 'string') {
+                                onChange({ ...settings, logDirectory: picked })
+                              }
+                            }}
+                            className="shrink-0 rounded border border-chrome/10 px-2 py-0.5 text-chrome/80 transition-colors duration-100 hover:bg-chrome/10"
+                          >
+                            Choose…
+                          </button>
+                          {settings.logDirectory && (
+                            <button
+                              type="button"
+                              onClick={() => onChange({ ...settings, logDirectory: '' })}
+                              className="shrink-0 rounded border border-chrome/10 px-2 py-0.5 text-chrome/80 transition-colors duration-100 hover:bg-chrome/10"
+                            >
+                              Use default
+                            </button>
+                          )}
+                        </div>
+                        <p className="leading-relaxed text-chrome/40">
+                          Applies to the next log started. A folder that has gone missing is
+                          created again, and one that cannot be is reported when a log starts.
+                        </p>
+                      </div>
                       <button
                         type="button"
                         onClick={() =>
-                          revealLogs().catch((e) => toast.error(`Couldn't open logs folder: ${e}`))
+                          revealLogs(settings.logDirectory).catch((e) =>
+                            toast.error(`Couldn't open logs folder: ${e}`),
+                          )
                         }
                         className="flex w-full items-start gap-2.5 rounded-md px-2 py-2 text-left transition-colors duration-fast ease-swift hover:bg-chrome/5"
                       >

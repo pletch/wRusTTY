@@ -125,6 +125,40 @@ fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The folder the user chose in Settings, or `None` for the default.
+///
+/// Only an absolute path is taken. A relative one would resolve against
+/// whatever the process's working directory happens to be — for an app
+/// started from the Start menu, usually `System32` — and a transcript landing
+/// somewhere nobody would look is worse than being told the setting is wrong.
+fn chosen_dir(directory: Option<&str>) -> Result<Option<PathBuf>, String> {
+    match directory.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(dir) => {
+            let path = PathBuf::from(dir);
+            if path.is_absolute() {
+                Ok(Some(path))
+            } else {
+                Err(format!(
+                    "the log folder \"{dir}\" is not a full path — choose it again in Settings → Logging"
+                ))
+            }
+        }
+    }
+}
+
+/// Where transcripts go: the chosen folder, else the default under the app's
+/// log directory. Created if missing, so a folder on a drive that was
+/// reconnected, or one deleted since it was picked, still works.
+fn transcript_dir(app: &AppHandle, directory: Option<&str>) -> Result<PathBuf, String> {
+    let dir = match chosen_dir(directory)? {
+        Some(dir) => dir,
+        None => logs_dir(app)?,
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
 fn sanitize(label: &str) -> String {
     label
         .chars()
@@ -191,10 +225,11 @@ pub async fn session_log_start(
     session_id: String,
     label: String,
     plain_text: bool,
+    // Settings → Logging's folder; `None` or empty for the default.
+    directory: Option<String>,
     state: State<'_, LoggingState>,
 ) -> Result<String, String> {
-    let dir = logs_dir(&app)?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = transcript_dir(&app, directory.as_deref())?;
     let path = dir.join(format!("{}-{}.log", sanitize(&label), timestamp()));
     // Session logs can contain anything typed or displayed in the terminal —
     // restrict to the owner, same as the vault and known_hosts files. No-op
@@ -262,9 +297,8 @@ pub async fn write_pane_dump(
 }
 
 #[tauri::command]
-pub async fn reveal_session_logs(app: AppHandle) -> Result<(), String> {
-    let dir = logs_dir(&app)?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+pub async fn reveal_session_logs(app: AppHandle, directory: Option<String>) -> Result<(), String> {
+    let dir = transcript_dir(&app, directory.as_deref())?;
     app.opener()
         .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|e| e.to_string())
@@ -313,6 +347,29 @@ mod tests {
     #[test]
     fn drops_control_bytes_but_keeps_tab_newline() {
         assert_eq!(filtered(&[b"a\x07\x08b\tc\n"]), "ab\tc\n");
+    }
+
+    #[test]
+    fn an_unset_or_blank_folder_means_the_default() {
+        assert_eq!(chosen_dir(None).unwrap(), None);
+        assert_eq!(chosen_dir(Some("")).unwrap(), None);
+        assert_eq!(chosen_dir(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_chosen_folder_must_be_a_full_path() {
+        assert!(chosen_dir(Some("logs")).is_err());
+        assert!(chosen_dir(Some(r"..\elsewhere")).is_err());
+        #[cfg(windows)]
+        assert_eq!(
+            chosen_dir(Some(r" D:\Transcripts ")).unwrap(),
+            Some(PathBuf::from(r"D:\Transcripts"))
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            chosen_dir(Some("/var/log/wrustty")).unwrap(),
+            Some(PathBuf::from("/var/log/wrustty"))
+        );
     }
 
     #[test]

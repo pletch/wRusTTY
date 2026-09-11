@@ -158,6 +158,9 @@ export interface ConnectDraft {
   /** Open the local shell as administrator. See docs/ELEVATED_TABS_PLAN.md. */
   localElevated: boolean
   logSession: boolean
+  /** Whether an SSH session goes through the proxy in Settings. Stored only as
+   * the opt-out, like `autoReconnect`. */
+  useProxy: boolean
   saveProfile: boolean
   saveCredential: boolean
 }
@@ -214,10 +217,12 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     // tab, whose blank pane keeps this so reopening it is one click, but a
     // deliberate one (decision 4).
     localElevated: initial?.local?.elevated ?? false,
-    // Ad-hoc "log this whole session from the start" — an alternative to the
-    // toolbar toggle (which can only arm logging after a session is already
-    // connected, so it can't catch the login banner/MOTD).
-    logSession: false,
+    // "Log this whole session from the start" — an alternative to the toolbar
+    // toggle (which can only arm logging after a session is already connected,
+    // so it can't catch the login banner/MOTD). Seeded from a saved session,
+    // which remembers it.
+    logSession: initial?.logSession === true,
+    useProxy: initial?.useProxy !== false,
     // Defaults on whenever we're prefilled from a known profile (picked from
     // the sidebar, or via Edit) — connecting then naturally writes any
     // tweaks back to that same profile instead of leaving them stranded in

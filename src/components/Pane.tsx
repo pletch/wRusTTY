@@ -42,6 +42,9 @@ interface Props {
   titleByPane: Record<string, string | null>
   /** The `externalEditor` setting, for the Files panel's edit route. */
   editorCommand: string
+  /** Whether Settings names an outbound proxy — the connect form offers a
+   * way past it only when there is one. */
+  proxyAvailable: boolean
   /** The colour a connected terminal paints itself, ready to use as a CSS
    * background. A pane still waiting for a connection paints it too, so the
    * pane doesn't change tone the moment a session opens — and so that it
@@ -124,6 +127,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     cwdByPane,
     titleByPane,
     editorCommand,
+    proxyAvailable,
     paneBackground,
     sessionIdByPane,
     sessions,
@@ -293,6 +297,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             key={node.initial?.id ?? 'blank'}
             initial={node.initial}
             vaultUnlocked={vaultUnlocked}
+            proxyAvailable={proxyAvailable}
             sessions={sessions}
             workspaces={workspaces}
             onOpenWorkspace={onOpenWorkspace}

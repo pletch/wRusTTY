@@ -338,6 +338,7 @@ impl SshConnector {
             None => {
                 connect_direct(
                     &self.config,
+                    self.config.proxy.as_ref(),
                     self.known_hosts.clone(),
                     self.verifier.clone(),
                     self.prompter.clone(),
@@ -356,8 +357,13 @@ impl SshConnector {
                 // can say which hop is asking. Both hops can run their own
                 // interactive exchange, and "Password:" with no host beside
                 // it is how a target's password gets typed into a bastion.
+                //
+                // The proxy, if there is one, carries this first socket — the
+                // only one that leaves this machine. The target is reached from
+                // the jump host's side, where the proxy is no longer involved.
                 let jump_handle = connect_direct(
                     jump_config,
+                    self.config.proxy.as_ref().or(jump_config.proxy.as_ref()),
                     self.known_hosts.clone(),
                     self.verifier.clone(),
                     self.prompter.clone(),
@@ -528,6 +534,7 @@ impl SshConnector {
 /// and as the first hop of a jump connection (see `connect_via_stream`).
 async fn connect_direct(
     config: &SshConfig,
+    proxy: Option<&crate::proxy::ProxyConfig>,
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
     prompter: Arc<dyn AuthPrompter>,
@@ -570,8 +577,25 @@ async fn connect_direct(
         verify_started.clone(),
     );
 
-    let connect_fut = client::connect(ssh_config, (config.host.as_str(), config.port), handler);
-    await_handshake(config, connect_fut, verify_started, prompter, is_jump).await
+    match proxy {
+        None => {
+            let connect_fut =
+                client::connect(ssh_config, (config.host.as_str(), config.port), handler);
+            await_handshake(config, connect_fut, verify_started, prompter, is_jump).await
+        }
+        // The same handshake over a tunnel the proxy opened, which to russh is
+        // just another stream — the ProxyJump trick, one layer further out.
+        Some(proxy) => {
+            let stream = crate::proxy::connect(proxy, &config.host, config.port)
+                .await
+                .map_err(|source| SshError::Proxy {
+                    proxy: format!("{}:{}", proxy.host, proxy.port),
+                    source,
+                })?;
+            let connect_fut = client::connect_stream(ssh_config, stream, handler);
+            await_handshake(config, connect_fut, verify_started, prompter, is_jump).await
+        }
+    }
 }
 
 /// Same as `connect_direct`, but runs the handshake over an already-open

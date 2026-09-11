@@ -216,6 +216,8 @@ pub fn to_profile(session: &PuttySession, id: String) -> Option<SessionProfile> 
         // An import says nothing about whether this host's shell history may be
         // read; that is the user's call, made per host or globally.
         import_remote_history: None,
+        use_proxy: None,
+        log_session: None,
         serial: None,
         local: None,
     })
@@ -276,6 +278,8 @@ fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfil
         // An import says nothing about whether this host's shell history may be
         // read; that is the user's call, made per host or globally.
         import_remote_history: None,
+        use_proxy: None,
+        log_session: None,
         serial: Some(crate::profiles::SerialProfile {
             identity: wr_serial::PortIdentity {
                 port_name,

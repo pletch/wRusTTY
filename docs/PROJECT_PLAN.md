@@ -180,10 +180,28 @@ unchanged.
   pre-connect hook)**. Probes first, so an already-awake host is never sent
   anything. Not attempted behind a jump host; see TODO.md for that and for
   automatic multi-interface broadcast.
-- Proxy support (HTTP CONNECT / SOCKS5) **for reaching a host through a
-  corporate proxy** — not built. Note the SOCKS5 code in `wr-ssh/src/socks.rs`
-  is the *dynamic forward's own server* and is not this; the two get confused
-  because they share a protocol name.
+- **Outbound proxy (HTTP CONNECT / SOCKS5) for reaching a host through a
+  corporate proxy (shipped — `wr-ssh/src/proxy.rs`).** Not the SOCKS5 code in
+  `wr-ssh/src/socks.rs`, which is the *dynamic forward's own server*; the two
+  get confused because they share a protocol name.
+  - **Global, with a per-session opt-out.** The proxy describes this machine's
+    way out of its network, not any one host, so it is set once in Settings →
+    Session. A saved session can decline it (`useProxy: false`, stored only as
+    the opt-out, like `autoReconnect`); the decision is made backend-side in
+    `resolve_profile_config`, where the profile is, so reconnects honour it.
+  - **It carries the first socket only.** With a jump host the proxy reaches
+    the jump host, and the target is reached from its side of the network.
+  - **The proxy resolves the name.** SOCKS5 is sent a domain name rather than an
+    address, since behind a corporate proxy the internal names are often the
+    ones this machine cannot resolve.
+  - **No proxy login.** A corporate HTTP proxy that wants one almost always
+    wants NTLM or Kerberos, which a username and password would not satisfy,
+    and storing one would put a second secret outside the vault. A 407, or a
+    SOCKS5 proxy with no acceptable method, is reported as "requires a login"
+    rather than as a refusal. This is the part to build if someone needs it.
+  - Wake-on-LAN is skipped behind a proxy, for the reason it is behind a jump.
+  - Telnet does not use it yet; it would be the same stream handed to a
+    different connector.
 - **X11 forwarding** — `ssh -X`'s half of the job, so a remote `xterm`,
   `wireshark` or a vendor's Java configuration tool can put a window on the
   Windows desktop. Two halves, and only one of them is ours: requesting the
@@ -347,7 +365,14 @@ unchanged.
     queue, and the menu item greys out rather than disappearing — a menu whose
     items move between entries is harder to learn than one where they dim.
 - Session logging to file (timestamped, per-session toggle) — network/serial
-  engineers rely on this constantly **(shipped)**
+  engineers rely on this constantly **(shipped)**. Also shipped: a saved
+  session remembers its "log this session" box (`logSession`), Settings can log
+  every session automatically, and transcripts go to a chosen folder. The
+  folder must be a full path — a relative one would resolve against whatever
+  the working directory is, for a Start-menu launch usually `System32` — and a
+  log that cannot start is now reported rather than failing silently.
+  Automatic logging starts once, at connect, so stopping it from the toolbar
+  stays stopped.
 - Named colour themes **(partial — eleven built in, a custom theme editor, an
   importer for iTerm2 and VS Code schemes, and a per-pane background opacity;
   following the OS light/dark setting is not built)**. One of the eleven is
@@ -416,8 +441,19 @@ unchanged.
   hole in it and no error anywhere. Pacing lives in the writer tasks, so every
   route to the wire (the three paste shortcuts, broadcast fan-out, a drop
   upload) inherits it; typing never reaches the split.
-- Configurable keyboard shortcuts — **not built**; every binding is hard-coded
-  in `Terminal.tsx` and `App.tsx`
+- **Configurable keyboard shortcuts (shipped — `lib/keybindings.ts`, Settings →
+  Keyboard).** Fourteen actions, window- or pane-scoped, each with a list of
+  chords; only overrides are stored, so a changed default reaches everyone who
+  never touched it. Chords have one canonical spelling, which is what lets
+  conflicts be found by string equality, and **Shift is dropped from a
+  symbol** — `+` is Shift+= on one key and its own key on the numpad, so
+  counting it would make one gesture two chords. A chord needs Ctrl, Alt or Win
+  unless it is a function key or Insert, Escape can never be taken (vim), and a
+  bare Ctrl+letter is allowed but warned about, since it is a control
+  character. Recording sets a module flag both key handlers check, because the
+  window-level handler runs before the recorder and would otherwise act on the
+  chord being bound. The autocomplete keys and the dev-only Ctrl+Alt
+  instruments are deliberately not in the table.
 - Duplicate tab / reconnect / "restart session" actions **(shipped — the tab
   context menu)**. Automatic reconnection on an unexpected drop **(shipped)** —
   and it is a different thing from the button rather than an automatic version
@@ -561,8 +597,8 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - Multi-tab UI (Tabby-style tab bar), per-tab connection state, close/duplicate/reconnect
 - Session manager sidebar: folders, saved sessions (host, port, user, terminal prefs)
 - Settings persistence (JSON config, separate from vault)
-- Keyboard shortcuts (new tab, close, next/prev, quick-connect palette) — the
-  bindings exist; making them *configurable* does not (see terminal & UX)
+- Keyboard shortcuts (new tab, close, next/prev, quick-connect palette) —
+  **shipped, and configurable** (see terminal & UX)
 
 ### Phase 3 — Vault
 - `wr-vault` as designed above; master-password onboarding flow
@@ -580,7 +616,8 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 
 ### Phase 5 — Polish & PuTTY parity — **partial**
 - Port forwarding (local/remote/dynamic) with a management panel **(shipped)**
-- Jump host chains **(shipped)**; outbound proxy support **not built**
+- Jump host chains **(shipped)**; outbound proxy, HTTP CONNECT and SOCKS5
+  **(shipped)**
 - Font settings, paste protection, scrollback search, session logging
   **(shipped)**; colour-scheme import **(shipped)** — eleven presets, a palette
   editor for custom themes, and Import… reads an iTerm2 `.itermcolors` or a

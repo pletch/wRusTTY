@@ -28,6 +28,8 @@ import type { AuthPromptField, ConnectionSource, ConnEvent, Reconnecting } from 
 import * as sessionLog from '../lib/logging'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
+import { proxyConfigFrom } from '../lib/settings'
+import { actionForEvent, isRecordingShortcut } from '../lib/keybindings'
 import { findTheme, backgroundWithOpacity, hexToRgb } from '../lib/theme'
 import { HostKeyPrompt } from './HostKeyPrompt'
 import { AuthPrompt } from './AuthPrompt'
@@ -110,6 +112,12 @@ interface Props {
    * profile is known — see `PaneLeaf.autoReconnect`. */
   autoReconnect?: boolean | null
   logging?: boolean
+  /** Start a transcript at connect even though `logging` is off — Settings'
+   * "log every session", or a saved session that asks for one. */
+  autoLog?: boolean
+  /** Told when `autoLog` started one, so the pane's logging state (and the
+   * toolbar that can stop it) says so. */
+  onAutoLog?: () => void
   /** Whether this is the focused pane within its (possibly split) tab. */
   active?: boolean
   /** This pane's id, so a targeted searchRequest can address exactly it. */
@@ -235,6 +243,8 @@ export function Terminal({
   backspaceSendsCtrlH,
   autoReconnect,
   logging,
+  autoLog,
+  onAutoLog,
   active,
   paneId,
   broadcastGroupId,
@@ -429,6 +439,10 @@ export function Terminal({
 
   const loggingRef = useRef(logging)
   loggingRef.current = logging
+  const autoLogRef = useRef(autoLog)
+  autoLogRef.current = autoLog
+  const onAutoLogRef = useRef(onAutoLog)
+  onAutoLogRef.current = onAutoLog
 
   // Read by applyLogging (below) so logging can start/stop against the live
   // session from outside the connect effect's local `sessionId`.
@@ -451,8 +465,13 @@ export function Terminal({
   function applyLogging(sessionId: string, want: boolean | undefined) {
     if (want && !loggingActiveRef.current) {
       loggingActiveRef.current = true
-      sessionLog.start(sessionId, labelRef.current, settingsRef.current.logPlainText).catch(() => {
+      const { logPlainText, logDirectory } = settingsRef.current
+      sessionLog.start(sessionId, labelRef.current, logPlainText, logDirectory).catch((err) => {
         loggingActiveRef.current = false
+        // Said out loud: the likeliest cause now is a chosen folder that has
+        // gone (an unplugged drive), and a log that silently never starts is
+        // found out only when the transcript is needed.
+        toast.error(`Could not start the session log: ${String(err)}`)
       })
     } else if (!want && loggingActiveRef.current) {
       loggingActiveRef.current = false
@@ -1752,6 +1771,7 @@ export function Terminal({
         cols,
         rows,
         conn.reconnectPolicy(settingsRef.current, autoReconnectRef.current),
+        proxyConfigFrom(settingsRef.current),
       )
       .then((id) => {
         if (disposed) {
@@ -1782,7 +1802,11 @@ export function Terminal({
         // actually usable.
         term.focus()
         lineEditor?.start()
-        applyLogging(id, loggingRef.current)
+        // Here rather than as a prop default so it applies once, at connect:
+        // stopping an automatic log from the toolbar has to stay stopped.
+        const wantLog = loggingRef.current || autoLogRef.current === true
+        applyLogging(id, wantLog)
+        if (wantLog && !loggingRef.current) onAutoLogRef.current?.()
       })
       .catch((err) => {
         if (!disposed) {
@@ -1984,19 +2008,19 @@ export function Terminal({
         e.stopPropagation()
         return
       }
-      // Ctrl+Shift+C is what every terminal binds copy to, precisely because
-      // plain Ctrl+C has to stay available as SIGINT. Until now the only copy in
-      // the app was copy-on-select, so turning that setting off left no way to
-      // copy at all. Runs on capture so the pane's input element never sees it.
+      // The chords are configurable (lib/keybindings.ts), and why each default
+      // is what it is lives beside it there. Runs on capture so the pane's
+      // input element never sees a claimed chord.
       //
-      // That capture is now the whole of the protection, where it used to be
-      // belt and braces: this comment said Ctrl+Shift+C "maps to no sequence
-      // anyway", and since the engine's own key encoder replaced our table it
-      // does — `CSI 99;5u`, and under the Kitty protocol a program may well be
-      // listening for it. Every branch below therefore has to consume what it
-      // claims. `GhosttyInputHandler` skips any event that has been
-      // `preventDefault`ed, which is what makes that enough.
-      if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c') {
+      // That capture is the whole of the protection: since the engine's own
+      // key encoder replaced our table, even Ctrl+Shift+C encodes — `CSI
+      // 99;5u`, and under the Kitty protocol a program may well be listening
+      // for it. Every branch below therefore has to consume what it claims.
+      // `GhosttyInputHandler` skips any event that has been `preventDefault`ed,
+      // which is what makes that enough.
+      if (isRecordingShortcut()) return
+      const action = actionForEvent(e, settingsRef.current.keybindings, 'pane')
+      if (action === 'copy') {
         const text = term.getSelection()
         // With no selection there is nothing to copy, and consuming the key
         // would only mask whatever else might want it — which, now that the
@@ -2005,46 +2029,27 @@ export function Terminal({
         e.preventDefault()
         e.stopPropagation()
         writeText(text).catch(() => {})
-      } else if (
-        // The counterpart to the copy binding above, and consumed the same
-        // way — see the note there about why consuming is now the point.
-        // Plain Ctrl+V deliberately isn't bound —
-        // it sends ^V, which is readline's quoted-insert, and a terminal that
-        // swallowed it would break entering a literal control character.
-        //
-        // Shift+Insert is here because it is what PuTTY binds paste to, and
-        // that is the muscle memory this app's users arrive with.
-        //
-        // Neither respects `rightClickPaste`: that setting is about what the
-        // mouse does, not about whether pasting is allowed at all. Without
-        // these, turning it off left no way to paste — the same hole the
-        // Ctrl+Shift+C binding was added to close for copy.
-        (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'v') ||
-        (e.shiftKey && !e.ctrlKey && !e.altKey && e.key === 'Insert')
-      ) {
+      } else if (action === 'paste') {
+        // Doesn't respect `rightClickPaste`: that setting is about what the
+        // mouse does, not about whether pasting is allowed at all. Without a
+        // key, turning it off left no way to paste — the same hole the copy
+        // binding was added to close.
         e.preventDefault()
         e.stopPropagation()
         pasteFromClipboard()
-      } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') {
+      } else if (action === 'find') {
         e.preventDefault()
         setSearchOpen((v) => !v)
-      } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'm') {
-        // Selecting with the keyboard. Ctrl+Shift+M is what Windows Terminal
-        // binds mark mode to, and like the copy and paste bindings above it
-        // consumes the key rather than leaving it to the encoder. The engine
-        // owns the mode itself — this is only the way in.
+      } else if (action === 'markMode') {
+        // The engine owns the mode itself — this is only the way in.
         e.preventDefault()
         e.stopPropagation()
         term.toggleMarkMode?.()
-      } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'd') {
+      } else if (action === 'paneDump') {
         // Capturing a copy fault that nobody can reproduce on demand. Bound to
         // a key rather than offered in a menu because the state worth having is
         // the state at the moment it is noticed, and anything that takes a
         // mouse and two clicks to reach has already let output scroll over it.
-        //
-        // Consumed like the bindings above: Ctrl+Shift+D encodes under the
-        // Kitty protocol, so leaving it unclaimed would send it on to whatever
-        // is running.
         e.preventDefault()
         e.stopPropagation()
         const dump = term.dumpState?.()
@@ -2056,11 +2061,9 @@ export function Terminal({
           .writePaneDump(labelRef.current, dump)
           .then((path) => toast.success(`Pane dump written to ${path}`))
           .catch((err) => toast.error(`Could not write the pane dump: ${String(err)}`))
-      } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'u') {
-        // Opening a link with the keyboard, beside mark mode's Ctrl+Shift+M so
-        // the two read as a family. Consumed like the bindings above, and it
-        // is the only link gesture that works while a full-screen program is
-        // holding the mouse.
+      } else if (action === 'hintMode') {
+        // Opening a link with the keyboard — the only link gesture that works
+        // while a full-screen program is holding the mouse.
         e.preventDefault()
         e.stopPropagation()
         term.toggleHintMode?.()
@@ -2656,7 +2659,7 @@ export function Terminal({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 runSearch(searchQuery, { back: e.shiftKey })
-              } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
+              } else if (actionForEvent(e, settings.keybindings, 'pane') === 'find') {
                 // Repeated from the pane-level binding because this input is a
                 // *sibling* of the terminal container, not a child — so the
                 // container's capture-phase handler never sees a keystroke

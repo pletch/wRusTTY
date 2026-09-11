@@ -357,6 +357,9 @@ pub async fn ssh_connect(
     mut config: SshConfig,
     jump_profile_id: Option<String>,
     wake: Option<WakeOnLan>,
+    // The global proxy setting, already resolved against this form's own
+    // "use the proxy" box — a one-off connection has no profile to consult.
+    proxy: Option<wr_ssh::ProxyConfig>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     cols: u16,
@@ -365,6 +368,7 @@ pub async fn ssh_connect(
     state: State<'_, SshState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
+    config.proxy = proxy;
     // A manual/one-off connection can still jump through a saved profile —
     // resolved here, same as ssh_connect_profile, so the jump host's
     // vault-stored credential never has to cross into the webview.
@@ -438,6 +442,10 @@ fn keeps_no_secret(config: &SshConfig) -> bool {
 pub async fn ssh_connect_profile(
     app: AppHandle,
     profile_id: String,
+    // The global proxy setting. Whether this profile opts out of it is decided
+    // in `resolve_profile_config`, where the profile is, rather than in the
+    // webview, which holds only an id for it.
+    proxy: Option<wr_ssh::ProxyConfig>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
     cols: u16,
@@ -447,7 +455,7 @@ pub async fn ssh_connect_profile(
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
     let profile = profiles::get_profile(&app, &profile_id)?;
-    let config = resolve_profile_config(&app, &profile_id, &vault_state).await?;
+    let config = resolve_profile_config(&app, &profile_id, &vault_state, proxy.clone()).await?;
 
     // Both hops have to be answerable without a human, since a reconnect
     // authenticates twice and either one can park on a prompt.
@@ -461,6 +469,7 @@ pub async fn ssh_connect_profile(
         move || {
             let app = app.clone();
             let profile_id = profile_id.clone();
+            let proxy = proxy.clone();
             // Every attempt goes back through the vault rather than reusing
             // what the first connect resolved, so the secret is fetched and
             // dropped per attempt — and so that editing the profile's host or
@@ -470,7 +479,7 @@ pub async fn ssh_connect_profile(
             // the run keeps trying, so unlocking within the window is enough.
             async move {
                 let vault_state = app.state::<VaultState>();
-                resolve_profile_config(&app, &profile_id, &vault_state).await
+                resolve_profile_config(&app, &profile_id, &vault_state, proxy).await
             }
         }
     });
@@ -497,9 +506,17 @@ async fn resolve_profile_config(
     app: &AppHandle,
     profile_id: &str,
     vault_state: &VaultState,
+    proxy: Option<wr_ssh::ProxyConfig>,
 ) -> Result<SshConfig, String> {
     let profile = profiles::get_profile(app, profile_id)?;
     let mut config = build_ssh_config(&profile, vault_state).await?;
+    // Opt-out only, like `auto_reconnect`: a profile can decline the global
+    // proxy (the box on the LAN), but has no proxy of its own to name.
+    config.proxy = if profile.use_proxy == Some(false) {
+        None
+    } else {
+        proxy
+    };
 
     if let Some(jump_id) = &profile.jump_profile_id {
         let jump_profile = profiles::get_profile(app, jump_id)?;
@@ -527,6 +544,9 @@ async fn build_ssh_config(
         jump: None,
         term_type: profile.term_type.clone(),
         keepalive_seconds: profile.keepalive_seconds,
+        // Set by the caller: whether a proxy applies depends on which hop this
+        // becomes, and only the first hop's socket leaves this machine.
+        proxy: None,
     })
 }
 
@@ -673,6 +693,16 @@ where
         Some(_) if config.jump.is_some() => {
             log::warn!(
                 "not waking {}: a magic packet can't reach a host behind a jump host",
+                config.host
+            );
+            None
+        }
+        // Same reasoning: a proxy is only needed when the host is somewhere
+        // this machine cannot reach directly, which is also somewhere a
+        // broadcast from here does not arrive.
+        Some(_) if config.proxy.is_some() => {
+            log::warn!(
+                "not waking {}: a magic packet can't reach a host behind a proxy",
                 config.host
             );
             None

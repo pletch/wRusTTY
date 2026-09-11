@@ -42,7 +42,9 @@ import {
   unfocusedAppearance,
   DEFAULT_FONT_SIZE,
   FONT_SIZE_RANGE,
+  proxyConfigFrom,
 } from './lib/settings'
+import { actionForEvent, isRecordingShortcut, withShortcut } from './lib/keybindings'
 import { canElevate } from './lib/local'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
@@ -996,6 +998,15 @@ function App() {
   /** Applies a source/initial pair to an already-open pane, in place —
    * shared by connectPaneFromProfile, editPaneFromProfile, and
    * unlockVaultAndConnectProfile below. */
+  /** Whether the saved session behind this source asks to be logged. Read from
+   * the live profile list rather than anything copied into the pane, so every
+   * route a saved session opens by — the sidebar, a restore, a workspace —
+   * agrees, and an edit takes effect on the next connect. */
+  function profileLogsSession(source: ConnectionSource): boolean {
+    const id = 'profileId' in source ? source.profileId : null
+    return !!id && sessions.some((p) => p.id === id && p.logSession === true)
+  }
+
   function applyProfileToPane(
     tabId: string,
     paneId: string,
@@ -1125,53 +1136,65 @@ function App() {
   // Keydown handlers close over state that changes every render; rather than
   // re-subscribing the listener on every change, keep a ref to the latest
   // callbacks and mount the listener once.
-  const shortcutsRef = useRef({ newTab, closeTab, stepTab, openPalette, zoomFont, activeTabId })
-  shortcutsRef.current = { newTab, closeTab, stepTab, openPalette, zoomFont, activeTabId }
+  const shortcutsRef = useRef({
+    newTab,
+    closeTab,
+    stepTab,
+    openPalette,
+    zoomFont,
+    activeTabId,
+    keybindings: terminalSettings.keybindings,
+  })
+  shortcutsRef.current = {
+    newTab,
+    closeTab,
+    stepTab,
+    openPalette,
+    zoomFont,
+    activeTabId,
+    keybindings: terminalSettings.keybindings,
+  }
 
   useEffect(() => {
     // Capture phase so these fire before the engine's own keydown handler can
-    // treat them as shell input (e.g. Ctrl+W deletes a word in most
-    // shells, so tab shortcuts intentionally avoid plain Ctrl combos).
+    // treat them as shell input. The chords are configurable — see
+    // lib/keybindings.ts, which also says why the tab defaults avoid plain
+    // Ctrl combos (Ctrl+W deletes a word in most shells).
     function onKeyDown(e: KeyboardEvent) {
-      if (!e.ctrlKey) return
+      // Settings is recording a chord; acting on it too would open the tab
+      // the user was trying to bind a key to.
+      if (isRecordingShortcut()) return
       const s = shortcutsRef.current
-
-      // Font zoom, on the bindings every terminal and browser already shares.
-      // Plain Ctrl combos, unlike the tab shortcuts above, because these are
-      // the ones people arrive with -- and because the keys involved are ones
-      // a shell has no use for. Ctrl+- in particular is not readline's undo;
-      // that is Ctrl+_, which is Ctrl+*Shift*+- and deliberately left alone.
-      //
-      // preventDefault is what keeps them off the far end: the engine's input
+      const action = actionForEvent(e, s.keybindings, 'window')
+      if (!action) return
+      // What keeps a claimed chord off the far end: the engine's input
       // handler skips any event that has already been consumed.
-      if (!e.altKey && (e.key === '+' || e.key === '=')) {
-        e.preventDefault()
-        s.zoomFont(1)
-        return
-      }
-      if (!e.altKey && !e.shiftKey && e.key === '-') {
-        e.preventDefault()
-        s.zoomFont(-1)
-        return
-      }
-      if (!e.altKey && !e.shiftKey && e.key === '0') {
-        e.preventDefault()
-        s.zoomFont('reset')
-        return
-      }
-
-      if (e.key === 'Tab') {
-        e.preventDefault()
-        s.stepTab(e.shiftKey ? -1 : 1)
-      } else if (e.shiftKey && e.key.toLowerCase() === 't') {
-        e.preventDefault()
-        s.newTab()
-      } else if (e.shiftKey && e.key.toLowerCase() === 'w') {
-        e.preventDefault()
-        if (s.activeTabId) s.closeTab(s.activeTabId)
-      } else if (e.shiftKey && e.key.toLowerCase() === 'p') {
-        e.preventDefault()
-        s.openPalette()
+      e.preventDefault()
+      switch (action) {
+        case 'zoomIn':
+          s.zoomFont(1)
+          break
+        case 'zoomOut':
+          s.zoomFont(-1)
+          break
+        case 'zoomReset':
+          s.zoomFont('reset')
+          break
+        case 'nextTab':
+          s.stepTab(1)
+          break
+        case 'prevTab':
+          s.stepTab(-1)
+          break
+        case 'newTab':
+          s.newTab()
+          break
+        case 'closeTab':
+          if (s.activeTabId) s.closeTab(s.activeTabId)
+          break
+        case 'quickConnect':
+          s.openPalette()
+          break
       }
     }
 
@@ -1348,6 +1371,7 @@ function App() {
           onSelect={selectTab}
           onClose={closeTab}
           onNew={newTab}
+          newTabTitle={withShortcut('New connection', terminalSettings.keybindings, 'newTab')}
           onDuplicate={duplicateTab}
           onReconnect={reconnectTab}
           onReorder={reorderTabs}
@@ -1389,7 +1413,7 @@ function App() {
             {activeLeaf?.source && (
               <button
                 className="flex items-center justify-center rounded p-1.5 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
-                title="Find in terminal (Ctrl+Shift+F)"
+                title={withShortcut('Find in terminal', terminalSettings.keybindings, 'find')}
                 onClick={() =>
                   activePaneId &&
                   setSearchRequest((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, paneId: activePaneId }))
@@ -1547,6 +1571,7 @@ function App() {
                 cwdByPane={cwdByPane}
                 titleByPane={titleByPane}
                 editorCommand={terminalSettings.externalEditor}
+                proxyAvailable={proxyConfigFrom(terminalSettings) !== null}
                 paneBackground={paneBackground}
                 sessionIdByPane={sessionIdByPane}
                 sessions={sessions}
@@ -1615,6 +1640,10 @@ function App() {
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   autoReconnect={leaf.autoReconnect}
                   logging={loggingByPane[leaf.id] ?? false}
+                  autoLog={terminalSettings.autoLogSessions || profileLogsSession(leaf.source)}
+                  onAutoLog={() =>
+                    dispatchPaneRuntime({ type: 'loggingSet', paneId: leaf.id, logging: true })
+                  }
                   active={leaf.id === tab.activePaneId}
                   paneId={leaf.id}
                   broadcastGroupId={tab.id}

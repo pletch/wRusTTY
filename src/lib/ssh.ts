@@ -8,6 +8,14 @@ export type AuthMethod =
    * at all, such as a FIDO2 security key or a PIV smartcard. */
   | { type: 'Agent' }
 
+/** An outbound proxy for the first socket of an SSH connection — see
+ * `ProxyConfig` in wr-ssh's proxy.rs, whose serde shape this is. */
+export interface ProxyConfig {
+  kind: 'http' | 'socks5'
+  host: string
+  port: number
+}
+
 export interface SshConfig {
   host: string
   port: number

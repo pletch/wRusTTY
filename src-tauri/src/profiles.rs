@@ -95,6 +95,17 @@ pub struct SessionProfile {
     /// what this field needs from the backend is to survive a save.
     #[serde(rename = "importRemoteHistory", default)]
     pub import_remote_history: Option<bool>,
+    /// SSH only — `Some(false)` connects this session directly even when a
+    /// proxy is configured globally. `None` follows the global setting. There
+    /// is no per-profile proxy to name: the proxy belongs to this machine's
+    /// network, not to one host.
+    #[serde(rename = "useProxy", default)]
+    pub use_proxy: Option<bool>,
+    /// Start a transcript as this session connects. `None` and `Some(false)`
+    /// both leave it to the global "log every session" switch; like
+    /// `auto_reconnect`, stored here only so it survives a save.
+    #[serde(rename = "logSession", default)]
+    pub log_session: Option<bool>,
     /// Serial only — `None` for SSH and telnet, which use `host`/`port`.
     ///
     /// Serial used to be ad-hoc precisely because a COM number stops being
