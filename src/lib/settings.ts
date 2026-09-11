@@ -626,8 +626,11 @@ export const FONT_SIZE_RANGE = { min: 8, max: 24 } as const
 /** Capped well short of 100: past about two thirds the pane stops reading as a
  *  window and starts reading as a rendering glitch. */
 // 20 rather than 60: past about 20 the fade reads as too strong, and the
-// narrower range gives the slider whole-percent steps worth having.
+// narrower range gives the slider finer steps worth having.
 export const UNFOCUSED_DIM_RANGE = { min: 0, max: 20 } as const
+/** The slider's step. A saved value off this grid (an older 5 or 15) is moved
+ * onto it on load, so the slider and the setting never disagree. */
+export const UNFOCUSED_DIM_STEP = 2
 export const FONT_WEIGHT_RANGE = { min: 100, max: 900 } as const
 /** 100 is a cell exactly as tall as the font size — anything less clips the
  *  descenders of the face itself, not just of the odd glyph. */
@@ -767,11 +770,11 @@ export function loadSettings(): TerminalSettings {
     // Every one of these reaches the renderer as a number it will size a grid
     // or a face with. A stored zero or a NaN would not be a bad-looking pane,
     // it would be a division by a zero-width cell.
-    merged.unfocusedDimPercent = clampSetting(
-      merged.unfocusedDimPercent,
-      defaults.unfocusedDimPercent,
-      UNFOCUSED_DIM_RANGE,
-    )
+    merged.unfocusedDimPercent =
+      Math.round(
+        clampSetting(merged.unfocusedDimPercent, defaults.unfocusedDimPercent, UNFOCUSED_DIM_RANGE) /
+          UNFOCUSED_DIM_STEP,
+      ) * UNFOCUSED_DIM_STEP
     merged.fontSize = clampSetting(merged.fontSize, defaults.fontSize, FONT_SIZE_RANGE)
     merged.fontWeight = clampSetting(merged.fontWeight, defaults.fontWeight, FONT_WEIGHT_RANGE)
     merged.fontWeightBold = clampSetting(

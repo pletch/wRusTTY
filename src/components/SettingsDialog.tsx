@@ -26,6 +26,7 @@ import {
   LINE_HEIGHT_PERCENT_RANGE,
   LETTER_SPACING_RANGE,
   UNFOCUSED_DIM_RANGE,
+  UNFOCUSED_DIM_STEP,
 } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
@@ -1194,7 +1195,7 @@ export function SettingsDialog({
                         <RangeInput
                           min={UNFOCUSED_DIM_RANGE.min}
                           max={UNFOCUSED_DIM_RANGE.max}
-                          step={1}
+                          step={UNFOCUSED_DIM_STEP}
                           className="mt-1.5 w-full"
                           value={settings.unfocusedDimPercent}
                           aria-label="Fade when unfocused"

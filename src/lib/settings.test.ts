@@ -604,3 +604,12 @@ describe('unfocusedDimPercent', () => {
     expect(loadSettings().unfocusedDimPercent).toBe(0)
   })
 })
+
+describe('unfocusedDimPercent step', () => {
+  it('moves a saved value off the slider grid onto it', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 15 }))
+    expect(loadSettings().unfocusedDimPercent % 2).toBe(0)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 7 }))
+    expect(loadSettings().unfocusedDimPercent).toBe(8)
+  })
+})
