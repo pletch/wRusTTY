@@ -3,9 +3,13 @@
 Implementation plan for a local shell running as administrator, in a tab of
 an ordinary, unelevated wRusTTY window.
 
-**Nothing here is built.** Written against the code at `e7216ed` on
-2026-09-10; every file and line reference was checked against it rather than
-remembered. It builds on `docs/LOCAL_SHELL_PLAN.md`, whose "Elevated shells"
+**Phase 1 is built** — the pipe protocol and the elevated host, in
+`crates/wr-local/src/elevated/`, tested over a real pipe. Phases 2–4 are not,
+so nothing in the app opens an elevated tab yet. What changed on contact is
+under "What Phase 1 actually did" at the end.
+
+Written against the code at `e7216ed` on 2026-09-10; every file and line
+reference was checked against it rather than remembered. It builds on `docs/LOCAL_SHELL_PLAN.md`, whose "Elevated shells"
 entry this replaces.
 
 ---
@@ -164,8 +168,8 @@ Deliberately small, framed, and symmetric in format:
 |---|---|---|
 | `Ready` | host → tab | none — the shell has started |
 | `Data` | both | raw bytes: shell output one way, keystrokes and query replies the other |
-| `Resize` | tab → host | `cols: u16, rows: u16` |
-| `Exit` | host → tab | `code: u32` — the shell exited |
+| `Resize` | tab → host | `cols: u16, rows: u16` — and the tab's **first** message |
+| `Exit` | host → tab | none — the shell exited; its code has already arrived as `Data` |
 | `Error` | host → tab | UTF-8 message — the shell could not start |
 
 No message names a program, a path, an argument or an environment variable, by
@@ -261,5 +265,58 @@ is the pipe.
 - **The UAC prompt's appearance.** An unsigned build gets the yellow "unknown
   publisher" prompt. Code signing (`docs/TODO.md`, item 1) turns it into a
   prompt that names wRusTTY — worth doing before this ships to anyone else.
+
+---
+
+## What Phase 1 actually did
+
+Built as `crates/wr-local/src/elevated/` — `protocol.rs` and `host.rs` — with
+13 unit tests on the frame codec and 12 integration tests in
+`crates/wr-local/tests/elevated_host.rs` that run the host for real over a
+named pipe, unelevated, driving `cmd.exe` through it. Stable across repeated
+runs.
+
+**The protocol table changed in two places**, both now reflected above:
+
+- **`Resize` is the tab's first message.** A pseudoconsole is sized when it is
+  created, and the pane may have been resized while the user read the UAC
+  prompt, so the host waits for the tab's current size rather than taking one
+  from its command line. A tab that opens with anything else is refused.
+- **`Exit` carries no code.** `wr-local` already writes
+  `[process exited with code N]` into the output, so the code reaches the tab
+  as ordinary `Data`; `Exit` only has to say the shell is done.
+
+**The pipe needed an explicit security descriptor, and not only for
+tightness.** An elevated process's objects default to a *high* integrity
+label, and no-write-up would then stop the unelevated tab from writing to its
+own pipe. Their default permissions also go to the elevated token's owner —
+usually the Administrators group, which the tab's filtered token holds only as
+deny-only — while granting read to Everyone. So the defaults would have locked
+out the one client the pipe is for and let everyone else read it. The host now
+creates it with `D:P(A;;GA;;;<current user>)S:(ML;;NW;;;ME)`: full access for
+the current user alone, labelled medium with no-write-up.
+
+That needed Win32 security APIs inside `wr-local`, so the crate now depends on
+`windows` — pinned to exactly the version `src-tauri` pins, which resolves to
+the same single copy.
+
+**Dropping a `LocalSession` now kills its shell.** `disconnect` already did,
+but an early return or a cancelled task never reaches it. The host relies on
+this for "no administrator shell outlives its tab", and it is a better
+invariant for ordinary local tabs too. The existing suite is unaffected.
+
+**Decision 3, tested:** a pipe name without the host's prefix is refused; a
+name something else created first stops the host from starting; a client whose
+process id is not the expected one is refused before the shell starts; a second
+client cannot connect; a host-only frame from the tab ends the session; a tab
+that does not send its size first is refused. The relay tests cover output,
+input, the first and a later resize (read back from `mode con`), the exit, a
+shell that cannot start, and the tab closing its end — which ends a
+sixty-second shell well inside the test's ten-second limit.
+
+Not yet checked, because only a real elevation can check it: that the
+descriptor lets an *unelevated* tab reach an *elevated* host. The tests run
+both ends at the same integrity level. That is the first thing to confirm in
+Phase 2.
 
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general

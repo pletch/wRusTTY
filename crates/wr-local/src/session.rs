@@ -277,6 +277,21 @@ pub struct LocalSession {
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
+/// A session going away takes its shell with it.
+///
+/// `disconnect` already kills the child, and every well-behaved owner calls
+/// it. This is for the owner that doesn't get the chance — an early return,
+/// a panic, a task cancelled mid-await — where the alternative is a shell
+/// left running with nothing attached to it. That matters most for the
+/// elevated host (see `elevated::host`): an administrator shell that outlives
+/// the tab that asked for it is exactly what that design promises cannot
+/// happen. Killing an already-exited child is a harmless error.
+impl Drop for LocalSession {
+    fn drop(&mut self) {
+        let _ = self.killer.kill();
+    }
+}
+
 #[async_trait]
 impl Connector for LocalConnector {
     type Session = LocalSession;

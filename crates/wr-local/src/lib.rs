@@ -16,6 +16,7 @@
 //! See `docs/LOCAL_SHELL_PLAN.md` for the decisions this crate is built to.
 
 mod config;
+pub mod elevated;
 mod error;
 mod session;
 

@@ -21,6 +21,19 @@ tracing.workspace = true
 # than unsafe Win32 written here against the `windows` crate.
 portable-pty = "0.9"
 
+# The elevated host (src/elevated/host.rs): the pipe's security descriptor and
+# checking which process connected. Pinned to exactly the version src-tauri
+# pins, so the two resolve to one copy of the crate — see the long comment on
+# that pin in src-tauri/Cargo.toml for why a second copy breaks things.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # LocalConfig reaches this crate as JSON from the frontend, including from
 # saved session snapshots written by older builds, so its serde shape is a
