@@ -10,7 +10,7 @@ import type { VaultSecret } from '../lib/vault'
 import type { ConnectionSource } from '../lib/connection'
 import { SerialFields } from './SerialFields'
 import { LocalFields } from './LocalFields'
-import { canElevate, shellIdFor, shellLabel } from '../lib/local'
+import { canElevate, localTitle, shellIdFor, shellLabel } from '../lib/local'
 import { SessionBrowser } from './SessionBrowser'
 import {
   connectDraftReducer,
@@ -487,7 +487,7 @@ export function ConnectDialog({
       // purely "remember this shell and how to start it".
       if (saveProfile && onSaveProfile) {
         const profileId = initial?.id ?? crypto.randomUUID()
-        const savedLabel = label.trim() || shellLabel(localConfig)
+        const savedLabel = label.trim() || localTitle(localConfig)
         await onSaveProfile({
           id: profileId,
           label: savedLabel,
@@ -548,7 +548,7 @@ export function ConnectDialog({
       if (asAdmin) {
         onConnect({ protocol: 'elevated', shellId, profileId: null }, logSession, {
           ...paneOptions,
-          label: shellLabel(localConfig),
+          label: localTitle(localConfig),
           form: restoreForm(),
         })
         return

@@ -180,6 +180,29 @@ export function shellIdFor(config: LocalConfig): string {
  * decision 2 of docs/ELEVATED_TABS_PLAN.md. */
 export const ELEVATABLE_SHELL_IDS: readonly string[] = ['pwsh', 'powershell', 'cmd', 'git-bash']
 
+/** What a tab calls a shell it recognises — the same names detection gives
+ * the picker (src-tauri/src/local_shells.rs), so the tab says `PowerShell`
+ * where the list did rather than the executable's `pwsh`. Null for anything
+ * else, which keeps `shellLabel`'s file stem.
+ *
+ * Display only: history keys and log filenames stay on `shellLabel` and
+ * `shellIdFor`, which must not move under existing data. */
+export function shellDisplayName(shellId: string): string | null {
+  if (shellId.startsWith('wsl:')) return `${shellId.slice(4)} (WSL)`
+  const names: Record<string, string> = {
+    pwsh: 'PowerShell',
+    powershell: 'Windows PowerShell',
+    cmd: 'Command Prompt',
+    'git-bash': 'Git Bash',
+  }
+  return names[shellId] ?? null
+}
+
+/** A local session's tab name: its detected name when it has one. */
+export function localTitle(config: LocalConfig): string {
+  return shellDisplayName(shellIdFor(config)) ?? shellLabel(config)
+}
+
 export function canElevate(shellId: string): boolean {
   return ELEVATABLE_SHELL_IDS.includes(shellId)
 }

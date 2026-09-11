@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 import {
   defaultLocalConfig,
+  localTitle,
   familyForShellId,
   recordsHistory,
   shellFamily,
@@ -160,5 +161,16 @@ describe('historyKeyForSource, for local shells', () => {
     expect(
       historyKeyForSource({ protocol: 'localProfile', profileId: 'abc', shellId: '' }),
     ).toBeNull()
+  })
+})
+
+describe('localTitle', () => {
+  it('names a recognised shell the way the picker does', () => {
+    expect(localTitle(config('C:/Program Files/PowerShell/7/pwsh.exe'))).toBe('PowerShell')
+    expect(localTitle(config('C:/Windows/System32/wsl.exe', ['-d', 'Ubuntu']))).toBe('Ubuntu (WSL)')
+  })
+
+  it('falls back to the executable for anything else', () => {
+    expect(localTitle(config('C:/tools/nu.exe'))).toBe('nu')
   })
 })

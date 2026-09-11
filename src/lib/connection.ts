@@ -2,7 +2,7 @@ import { invoke, Channel } from '@tauri-apps/api/core'
 import type { SshConfig } from './ssh'
 import type { TelnetConfig } from './telnet'
 import type { SerialConfig } from './serial'
-import { shellLabel, type LocalConfig } from './local'
+import { localTitle, shellDisplayName, type LocalConfig } from './local'
 import type { WakeOnLan } from './profiles'
 
 export type ConnectionSource =
@@ -370,14 +370,14 @@ export function sourceLabel(source: ConnectionSource): string {
     case 'serial':
       return source.config.portName
     case 'local':
-      return shellLabel(source.config)
+      return localTitle(source.config)
     // The path lives in the saved profile, so the id is all this has — the
     // same position `sshProfile` and `serialProfile` are in, and the status
     // bar resolves it to the profile's own label the same way.
     case 'localProfile':
       return source.profileId
     case 'elevated':
-      return source.shellId
+      return shellDisplayName(source.shellId) ?? source.shellId
     // The port isn't known here — it's resolved backend-side at connect
     // time — so the id is all this has. App's status bar resolves it to the
     // profile's own label, the same way it does for sshProfile.
