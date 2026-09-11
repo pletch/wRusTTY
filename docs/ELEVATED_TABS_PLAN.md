@@ -9,8 +9,8 @@ so nothing in the app opens an elevated tab yet. What changed on contact is
 under "What Phase 1 actually did" at the end.
 
 Written against the code at `e7216ed` on 2026-09-10; every file and line
-reference was checked against it rather than remembered. It builds on `docs/LOCAL_SHELL_PLAN.md`, whose "Elevated shells"
-entry this replaces.
+reference was checked against it rather than remembered. It builds on
+`docs/LOCAL_SHELL_PLAN.md`, whose "Elevated shells" entry this replaces.
 
 ---
 
@@ -78,8 +78,9 @@ and from the tab over a named pipe. To the rest of the app the tab is one more
 Everything the tab does today still works through it, including the parts that
 are easy to forget: the pseudoconsole's opening `ESC [ 6 n` is answered by the
 tab's engine and relayed back like any keystroke (see `LOCAL_SHELL_PLAN.md`,
-"What Phase 1 actually did"), resize is a relayed message, and the exit code
-comes back as its own message so the pane's exit notice still has it.
+"What Phase 1 actually did"), resize is a relayed message, and the exit notice
+with its code arrives as ordinary output, followed by a message saying the
+shell is done.
 
 ---
 
