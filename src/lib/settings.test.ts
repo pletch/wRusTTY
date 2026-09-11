@@ -606,10 +606,15 @@ describe('unfocusedDimPercent', () => {
 })
 
 describe('unfocusedDimPercent step', () => {
-  it('moves a saved value off the slider grid onto it', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 15 }))
-    expect(loadSettings().unfocusedDimPercent % 2).toBe(0)
+  it('clamps an older, stronger saved value to the new top of the range', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 20 }))
+    expect(loadSettings().unfocusedDimPercent).toBe(10)
+  })
+
+  it('keeps every whole percent in range, and rounds a fraction onto the grid', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 7 }))
-    expect(loadSettings().unfocusedDimPercent).toBe(8)
+    expect(loadSettings().unfocusedDimPercent).toBe(7)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 3.4 }))
+    expect(loadSettings().unfocusedDimPercent).toBe(3)
   })
 })
