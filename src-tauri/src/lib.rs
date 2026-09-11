@@ -3,6 +3,7 @@ mod attention;
 mod coalesce;
 mod command_history;
 mod connection_status;
+mod elevation;
 mod fonts;
 #[cfg(target_os = "windows")]
 mod hello;
@@ -55,6 +56,7 @@ pub fn run() {
         .manage(ssh::SshState::default())
         .manage(telnet::TelnetState::default())
         .manage(local::LocalState::default())
+        .manage(elevation::ElevatedState::default())
         .manage(serial::SerialState::default())
         .manage(profiles::ProfileState::default())
         .manage(command_history::HistoryState::default())
@@ -107,6 +109,10 @@ pub fn run() {
             telnet::telnet_disconnect,
             local_shells::local_list_shells,
             shell_icon::local_shell_icon,
+            elevation::elevated_connect,
+            elevation::elevated_write,
+            elevation::elevated_resize,
+            elevation::elevated_disconnect,
             local::local_connect,
             local::local_connect_profile,
             local::local_write,

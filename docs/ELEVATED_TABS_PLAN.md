@@ -3,10 +3,11 @@
 Implementation plan for a local shell running as administrator, in a tab of
 an ordinary, unelevated wRusTTY window.
 
-**Phase 1 is built** — the pipe protocol and the elevated host, in
-`crates/wr-local/src/elevated/`, tested over a real pipe. Phases 2–4 are not,
-so nothing in the app opens an elevated tab yet. What changed on contact is
-under "What Phase 1 actually did" at the end.
+**Phases 1 and 2 are built** — the pipe protocol, the elevated host, the tab's
+connector and the UAC launcher — and tested over a real pipe. Phases 3 and 4
+are not: `wrustty.exe` has no host mode yet and the frontend has no way to ask
+for an elevated tab. What changed on contact is under "What Phase 1 actually
+did" and "What Phase 2 actually did" at the end.
 
 Written against the code at `e7216ed` on 2026-09-10; every file and line
 reference was checked against it rather than remembered. It builds on
@@ -134,6 +135,12 @@ WSL is left out of the first version (see "What this plan does not decide").
   image must be the same `wrustty.exe` as the host's own. Anything else is
   disconnected and the host exits.
 - **The host serves one connection and never accepts another.**
+- **The tab checks who it reached, too.** `GetNamedPipeServerProcessId` must
+  equal the process id of the host it launched, checked before the tab sends
+  anything. Without it, something that created the pipe name first — which
+  makes the real host refuse to start — would get the tab's connection in the
+  moment before it noticed, and with it whatever is typed into what looks like
+  an administrator shell. (Added in Phase 2; see below.)
 
 ### 4. Elevated tabs are never restored or reconnected automatically
 
@@ -319,5 +326,55 @@ Not yet checked, because only a real elevation can check it: that the
 descriptor lets an *unelevated* tab reach an *elevated* host. The tests run
 both ends at the same integrity level. That is the first thing to confirm in
 Phase 2.
+
+## What Phase 2 actually did
+
+Built as `crates/wr-local/src/elevated/connector.rs` — `ElevatedConnector` and
+`ElevatedSession`, taking an injected `Launcher` — and `src-tauri/src/elevation.rs`,
+which holds the `runas` launcher and the `elevated_connect` / `_write` /
+`_resize` / `_disconnect` commands on a registry of their own under the
+`elevated` prefix. Nine integration tests in
+`crates/wr-local/tests/elevated_connector.rs` drive the real connector against
+the real host over a real pipe, with only the launcher replaced by one that
+starts the host in-process; three unit tests pin the host's command line.
+
+**The tab now checks the pipe's server**, the mirror of the host's check on
+its client — added to decision 3 above. The plan had the host verifying who
+connected but not the tab verifying what it connected to. Tested with a
+launcher that creates a rogue pipe itself: the tab refuses it, and the rogue
+end receives nothing at all, not even the size.
+
+**A race, found by repeating the tests.** While waiting for the shell to start,
+the tab first watched both the pipe and the host's exit. A host that cannot
+start the shell writes its `Error` and exits at once, and when the exit won the
+race, the real reason — sitting unread in the pipe — was replaced by "the
+host exited before the shell started". It failed about one run in three. Once
+connected, the host going away already shows on the pipe (what it wrote stays
+readable, then the pipe ends), so the tab now watches only the pipe, bounded by
+a timeout. Fifteen consecutive runs clean since; the host's own suite eight.
+
+**Settled in code:**
+
+- Declining the prompt is `ElevationDeclined` — "elevation was declined" in the
+  pane — and the connector is never retryable: every retry would be a prompt.
+- An elevated session only ever ends `Closed`, never `Lost`, so nothing can
+  invite the registry to reconnect it; and `elevated_connect` passes no
+  reconnect factory at all. The registry gained `NoReconnect` to say so.
+- Dropping an `ElevatedSession` closes the pipe, which is what ends the host
+  and its shell, so a tab that never calls `disconnect` still leaves nothing
+  running.
+- The host's process handle is waited on by a thread started at launch, not by
+  a future that is only polled while connecting, which would have leaked it on
+  every successful connect.
+- The UAC prompt is parented to the main window, so it opens in front of it.
+- Only `pwsh`, `powershell`, `cmd` and `git-bash` can be elevated, checked in
+  the command and again in the launcher; the host's command line is refused if
+  anything in it would need quoting.
+
+**Still unverified: a real elevation.** Nothing has yet gone through an actual
+UAC prompt, because `wrustty.exe --elevated-host` does nothing yet — that is
+Phase 3. So the question left open at the end of Phase 1 is still open: whether
+an unelevated tab can reach an elevated host through the pipe's descriptor.
+Phase 3 is small, and the first real prompt answers it.
 
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general

@@ -20,6 +20,9 @@ tracing.workspace = true
 # docs/LOCAL_SHELL_PLAN.md, "Phase 1", for why this is a dependency rather
 # than unsafe Win32 written here against the `windows` crate.
 portable-pty = "0.9"
+# The elevated tab's pipe name (src/elevated/connector.rs): 128 bits from the
+# OS generator. Already built into the app via tauri, so this adds nothing.
+getrandom = "0.3"
 
 # The elevated host (src/elevated/host.rs): the pipe's security descriptor and
 # checking which process connected. Pinned to exactly the version src-tauri

@@ -35,6 +35,17 @@ pub enum LocalError {
     #[error("not connected")]
     NotConnected,
 
+    /// The user answered No to the UAC prompt. Its own variant because it is
+    /// an answer, not a failure: the pane should say so plainly, and nothing
+    /// should ever retry it — that would be asking again without being asked.
+    #[error("elevation was declined")]
+    ElevationDeclined,
+
+    /// The elevated host could not be started or reached, or was not who it
+    /// should have been. See `elevated::connector`.
+    #[error("could not start the elevated shell: {0}")]
+    Elevation(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

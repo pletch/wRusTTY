@@ -303,6 +303,11 @@ pub enum TransportPhase {
 /// has anything hanging off a connection but the session itself.
 pub type NoRestore = fn(TransportPhase) -> std::future::Ready<()>;
 
+/// The type `None` needs for a transport that must never be rebuilt
+/// unattended, for the same reason [`NoPrepare`] exists. Elevated tabs pass
+/// it: every rebuild would be a UAC prompt nobody asked for.
+pub type NoReconnect<C> = fn() -> std::future::Ready<Result<C, String>>;
+
 /// The pause before the first retry, doubling from there.
 ///
 /// A second, because the overwhelming majority of real drops are a few seconds

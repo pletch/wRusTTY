@@ -7,11 +7,15 @@
 //!
 //! - [`protocol`] is the frame format both ends speak. Portable, and tested
 //!   without any pipe at all.
+//! - [`connector`] is the tab's end: a `Connector`/`Session` that launches a
+//!   host through an injected launcher and relays to it.
 //! - [`host`] is the elevated end. It needs no elevation of its own to work —
 //!   it runs as whatever launched it — which is what lets the whole relay be
 //!   tested unelevated, over a real pipe.
 
 pub mod protocol;
 
+#[cfg(windows)]
+pub mod connector;
 #[cfg(windows)]
 pub mod host;
