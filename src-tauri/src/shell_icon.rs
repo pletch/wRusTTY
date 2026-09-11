@@ -71,6 +71,9 @@ fn encode_png(rgba: &[u8], size: u32) -> Option<Vec<u8>> {
 /// instead, where a white pixel is see-through and a black one is opaque.
 /// Without this fallback such an icon would encode as fully transparent and
 /// simply not appear.
+// Called only by the Windows extractor, but kept ungated so its tests run on
+// every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn bgra_to_rgba(bgra: &[u8], mask: Option<&[u8]>) -> Vec<u8> {
     let has_alpha = bgra.chunks_exact(4).any(|px| px[3] != 0);
     let mut rgba = Vec::with_capacity(bgra.len());
