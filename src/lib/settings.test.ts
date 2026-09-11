@@ -14,6 +14,8 @@ import {
   LINE_HEIGHT_PERCENT_RANGE,
   DEFAULT_FONT_SIZE,
   effectiveBackgroundOpacity,
+  stackedOpacity,
+  TERMINAL_BACKGROUND_LAYERS,
   UNFOCUSED_OPACITY_FLOOR,
   UNFOCUSED_DIM_RANGE,
 } from './settings'
@@ -497,14 +499,17 @@ describe('custom themes', () => {
 })
 
 /**
- * Fading an unfocused window. The rule that matters is the floor, and in
- * particular that the floor never makes a window *more* opaque than it was.
+ * Fading an unfocused window. Asserted in terms of what a connected terminal
+ * *looks like* — its stacked layers composited — because that is what the
+ * setting promises, and the first version of this passed per-layer tests while
+ * barely changing what anyone could see.
  */
 describe('effectiveBackgroundOpacity', () => {
   const at = (backgroundOpacity: number, unfocusedDimPercent: number) => ({
     backgroundOpacity,
     unfocusedDimPercent,
   })
+  const seen = (alpha: number) => stackedOpacity(alpha, TERMINAL_BACKGROUND_LAYERS)
 
   it('leaves a focused window exactly as configured', () => {
     expect(effectiveBackgroundOpacity(at(0.8, 40), true)).toBe(0.8)
@@ -514,21 +519,37 @@ describe('effectiveBackgroundOpacity', () => {
     expect(effectiveBackgroundOpacity(at(0.8, 0), false)).toBe(0.8)
   })
 
-  /** Relative, so it composes with a window already running translucent. */
-  it('fades relative to the configured opacity', () => {
-    expect(effectiveBackgroundOpacity(at(1, 20), false)).toBeCloseTo(0.8)
-    expect(effectiveBackgroundOpacity(at(0.6, 50), false)).toBeCloseTo(0.3)
+  /** The regression: three stacked layers at 60% read as 94% opaque, so
+   *  scaling each layer by the dim barely moved a connected pane. */
+  it('fades what the terminal looks like by the chosen amount', () => {
+    for (const [alpha, dim] of [
+      [1, 30],
+      [0.6, 30],
+      [0.8, 50],
+    ] as const) {
+      const faded = effectiveBackgroundOpacity(at(alpha, dim), false)
+      expect(seen(faded)).toBeCloseTo(seen(alpha) * (1 - dim / 100), 6)
+    }
   })
 
-  it('never fades below the floor', () => {
-    expect(effectiveBackgroundOpacity(at(0.6, 60), false)).toBe(UNFOCUSED_OPACITY_FLOOR)
+  it('is a real step down on a connected pane, not a nudge', () => {
+    // 60% configured, 30% dim: the terminal goes from ~94% to ~66% opaque.
+    const faded = effectiveBackgroundOpacity(at(0.6, 30), false)
+    expect(seen(0.6) - seen(faded)).toBeGreaterThan(0.25)
   })
 
-  /** The case the capped floor exists for: someone already below the floor
-   *  must not see the window firm *up* when they click away. */
+  it('never fades the terminal below the floor', () => {
+    const faded = effectiveBackgroundOpacity(at(1, 90), false)
+    expect(seen(faded)).toBeCloseTo(UNFOCUSED_OPACITY_FLOOR, 6)
+  })
+
+  /** A window already very translucent must not firm *up* on losing focus. */
   it('never makes a window more opaque than it was', () => {
-    expect(effectiveBackgroundOpacity(at(0.2, 30), false)).toBeLessThanOrEqual(0.2)
-    expect(effectiveBackgroundOpacity(at(0.2, 30), false)).toBe(0.2)
+    for (const alpha of [0.05, 0.1, 0.2, 0.6, 1]) {
+      for (const dim of [5, 30, 60]) {
+        expect(effectiveBackgroundOpacity(at(alpha, dim), false)).toBeLessThanOrEqual(alpha)
+      }
+    }
   })
 })
 

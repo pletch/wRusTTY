@@ -645,27 +645,59 @@ function clampSetting(value: unknown, fallback: number, range: { min: number; ma
  *  the pane stops reading as a window over a busy desktop at all. */
 export const UNFOCUSED_OPACITY_FLOOR = 0.3
 
+/** How many translucent layers sit behind a connected terminal, each painted
+ *  at the background opacity: the window itself (App's root), the terminal's
+ *  padding wrapper (Terminal.tsx), and the engine's own cells. */
+export const TERMINAL_BACKGROUND_LAYERS = 3
+
+/** What `layers` stacked copies of one translucent colour look like: each lets
+ *  through `1 - alpha` of what is behind it, so the stack lets through that
+ *  much raised to the number of layers. */
+export function stackedOpacity(alpha: number, layers: number): number {
+  return 1 - (1 - alpha) ** layers
+}
+
 /** The background opacity to paint *now*, given whether the window has focus.
  *
  * The one place the unfocused rule lives, so the pane background and the
  * engine's clear colour cannot disagree about it.
  *
- * The floor is itself capped at the configured opacity. Without that, someone
- * already running at 20% would see the window turn *more* opaque when they
- * clicked away — the opposite of the point of the setting.
+ * # Why this works in stacked terms
  *
- * Deliberately not applied to the acrylic tint. Re-running `setWindowVibrancy`
- * on every focus change is a native call that clears and re-applies the whole
- * effect, and `window_effects.rs` records acrylic's resize/drag performance
- * bug; fading only what sits above the blur leaves that layer alone. */
+ * A connected terminal is seen through {@link TERMINAL_BACKGROUND_LAYERS}
+ * layers, and stacked layers compound: three at 60% read as 94% opaque. The
+ * first version of this scaled the per-layer value directly, which faded the
+ * one-layer tab strip plainly while a connected pane — the thing actually
+ * being looked at — went from 94% to 80% and barely seemed to change at all.
+ *
+ * So the target is set for what the terminal looks like (`dim` percent less
+ * opaque than it looks when focused) and converted back into the per-layer
+ * value that produces it. Everything with fewer layers — the tab strip, a
+ * blank pane — fades further than the terminal does, which reads as the window
+ * fading rather than as an inconsistency.
+ *
+ * Focused, the result is exactly the configured opacity, so the focused look
+ * is untouched. Unfocused, the result never exceeds it: the floor is capped at
+ * what the terminal already looks like, so a window already very translucent
+ * cannot firm *up* when it loses focus.
+ *
+ * Deliberately not applied to the acrylic tint. Re-applying the window effect
+ * natively clears and re-applies the whole of it on every focus change;
+ * fading only what sits above it leaves that layer alone. */
 export function effectiveBackgroundOpacity(
   settings: Pick<TerminalSettings, 'backgroundOpacity' | 'unfocusedDimPercent'>,
   focused: boolean,
+  layers: number = TERMINAL_BACKGROUND_LAYERS,
 ): number {
   const { backgroundOpacity, unfocusedDimPercent } = settings
   if (focused || unfocusedDimPercent <= 0) return backgroundOpacity
-  const floor = Math.min(UNFOCUSED_OPACITY_FLOOR, backgroundOpacity)
-  return Math.max(floor, backgroundOpacity * (1 - unfocusedDimPercent / 100))
+  const seen = stackedOpacity(backgroundOpacity, layers)
+  const floor = Math.min(UNFOCUSED_OPACITY_FLOOR, seen)
+  const target = Math.max(floor, seen * (1 - unfocusedDimPercent / 100))
+  // Clamped because the round trip through the stack is not exact in floating
+  // point: a window already under the floor comes back a hair *above* its own
+  // opacity, and "never more opaque than it was" should be a guarantee.
+  return Math.min(backgroundOpacity, 1 - (1 - target) ** (1 / layers))
 }
 
 export function loadSettings(): TerminalSettings {
