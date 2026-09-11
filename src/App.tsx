@@ -39,6 +39,7 @@ import {
   loadSettings,
   saveSettings,
   effectiveBackgroundLayers,
+  unfocusedAppearance,
   DEFAULT_FONT_SIZE,
   FONT_SIZE_RANGE,
 } from './lib/settings'
@@ -308,11 +309,6 @@ function App() {
   // Mirrors vibrancyMode/theme/opacity to the native window on every change
   // ('off' still round-trips through the Rust side, which clears both
   // effects unconditionally — the no-op case just costs one IPC call).
-  useEffect(() => {
-    const { backgroundOpacity, themeName, vibrancyMode } = terminalSettings
-    const tint = backgroundTint(findTheme(themeName), backgroundOpacity)
-    setWindowVibrancy(vibrancyMode, tint).catch(() => {})
-  }, [terminalSettings.backgroundOpacity, terminalSettings.themeName, terminalSettings.vibrancyMode])
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
@@ -320,6 +316,19 @@ function App() {
   // true: the window is focused when it opens, and assuming otherwise would
   // flash it dim on every launch until the first event corrected it.
   const [windowFocused, setWindowFocused] = useState(true)
+  // What the window should look like now: the settings themselves, except
+  // that 'glass' mode swaps in effect Off and its own opacity while unfocused.
+  // Everything that paints the window reads this rather than terminalSettings.
+  const appearance = unfocusedAppearance(terminalSettings, windowFocused)
+  // Mirrors vibrancyMode/theme/opacity to the native window on every change
+  // ('off' still round-trips through the Rust side, which clears both
+  // effects unconditionally — the no-op case just costs one IPC call). In
+  // 'glass' mode that includes every focus change, which is what turns the
+  // effect off while unfocused and back on after.
+  useEffect(() => {
+    const tint = backgroundTint(findTheme(appearance.themeName), appearance.backgroundOpacity)
+    setWindowVibrancy(appearance.vibrancyMode, tint).catch(() => {})
+  }, [appearance.backgroundOpacity, appearance.themeName, appearance.vibrancyMode])
   // The quick-connect palette, a close confirmation, the launch-restore
   // prompt and the open-workspace-needs-vault prompt used to be five
   // separately-updated pieces of state (paletteOpen, pendingRestore,
@@ -1265,7 +1274,7 @@ function App() {
   // through the settings the panes receive, which costs one redraw per focus
   // change: `setTheme` updates a uniform and flags the frame dirty, rather than
   // anything being composited with CSS opacity on every frame.
-  const backgroundLayers = effectiveBackgroundLayers(terminalSettings, windowFocused)
+  const backgroundLayers = effectiveBackgroundLayers(appearance, windowFocused)
   const configuredTheme = findTheme(terminalSettings.themeName)
   // Unfocused, every surface also changes colour, to the tab strip's: the
   // lighter tone the inactive tabs already sit in. Thinning the background
@@ -1273,12 +1282,12 @@ function App() {
   // flat grey Windows picks — about as dark as Tokyo Night itself — so the
   // fade was invisible there and the strip, losing its wash, went darker.
   // The colour change reads the same over any wallpaper and any backdrop.
-  const faded = !windowFocused && terminalSettings.unfocusedDimPercent > 0
+  const faded = !windowFocused && appearance.unfocusedDimPercent > 0
   const backgroundOverride = faded ? stripColor(configuredTheme) : null
   const paneSettings =
     backgroundLayers.terminal === terminalSettings.backgroundOpacity && !backgroundOverride
       ? terminalSettings
-      : { ...terminalSettings, backgroundOpacity: backgroundLayers.terminal, backgroundOverride }
+      : { ...appearance, backgroundOpacity: backgroundLayers.terminal, backgroundOverride }
   const backgroundTheme = backgroundOverride
     ? { ...configuredTheme, background: backgroundOverride }
     : configuredTheme
@@ -1321,7 +1330,7 @@ function App() {
         // the tab by being the more see-through of the two.
         style={{
           background:
-            windowFocused || terminalSettings.unfocusedDimPercent <= 0
+            windowFocused || appearance.unfocusedDimPercent <= 0
               ? stripOverlay(findTheme(terminalSettings.themeName))
               : 'transparent',
         }}

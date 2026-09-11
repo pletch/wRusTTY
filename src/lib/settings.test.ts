@@ -14,6 +14,7 @@ import {
   LINE_HEIGHT_PERCENT_RANGE,
   DEFAULT_FONT_SIZE,
   effectiveBackgroundLayers,
+  unfocusedAppearance,
   UNFOCUSED_OPACITY_FLOOR,
   UNFOCUSED_DIM_RANGE,
 } from './settings'
@@ -616,5 +617,40 @@ describe('unfocusedDimPercent step', () => {
     expect(loadSettings().unfocusedDimPercent).toBe(7)
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 3.4 }))
     expect(loadSettings().unfocusedDimPercent).toBe(3)
+  })
+})
+
+describe('unfocusedAppearance', () => {
+  const base = { ...loadSettings(), backgroundOpacity: 0.9, vibrancyMode: 'acrylic' as const }
+
+  it('leaves the settings alone while focused, and in fade mode', () => {
+    const glass = { ...base, unfocusedStyle: 'glass' as const }
+    expect(unfocusedAppearance(glass, true)).toBe(glass)
+    const fade = { ...base, unfocusedStyle: 'fade' as const }
+    expect(unfocusedAppearance(fade, false)).toBe(fade)
+  })
+
+  it('in glass mode, looks like effect Off at the unfocused opacity until focus returns', () => {
+    const glass = {
+      ...base,
+      unfocusedStyle: 'glass' as const,
+      unfocusedOpacityPercent: 45,
+      unfocusedDimPercent: 6,
+    }
+    const away = unfocusedAppearance(glass, false)
+    expect(away.vibrancyMode).toBe('off')
+    expect(away.backgroundOpacity).toBe(0.45)
+    // The fade does not stack on top of it.
+    expect(away.unfocusedDimPercent).toBe(0)
+  })
+
+  it('falls back to fade for an unknown saved style, and snaps the opacity onto its grid', () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ unfocusedStyle: 'sparkly', unfocusedOpacityPercent: 47 }),
+    )
+    const loaded = loadSettings()
+    expect(loaded.unfocusedStyle).toBe('fade')
+    expect(loaded.unfocusedOpacityPercent).toBe(45)
   })
 })

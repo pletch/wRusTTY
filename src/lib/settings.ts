@@ -280,6 +280,16 @@ export interface TerminalSettings {
    * that might be more opaque than what they started from. See
    * `effectiveBackgroundOpacity`, which also stops it fading to nothing. */
   unfocusedDimPercent: number
+  /** What losing focus does to the window.
+   *
+   * 'fade' (the default) is `unfocusedDimPercent`: the background shifts
+   * towards the tab strip's colour and thins a little. 'glass' instead makes
+   * the window behave exactly as if the window effect were Off and the
+   * background opacity `unfocusedOpacityPercent`, until focus returns — the
+   * Xfce terminal's look under a compositor. See `unfocusedAppearance`. */
+  unfocusedStyle: UnfocusedStyle
+  /** 'glass' only: the background opacity while unfocused, in percent. */
+  unfocusedOpacityPercent: number
   /** Runtime only, never saved: the colour a pane paints its background in
    * instead of the theme's own, while the window is unfocused. Set by App on
    * the settings it hands the panes, from `stripColor`. */
@@ -551,6 +561,8 @@ const defaults: TerminalSettings = {
   // Off by default: a window that changes appearance when you click away is a
   // surprise unless it was asked for.
   unfocusedDimPercent: 0,
+  unfocusedStyle: 'fade',
+  unfocusedOpacityPercent: 45,
   vibrancyMode: 'off',
   textBlending: 'native',
   ligatures: false,
@@ -633,6 +645,34 @@ export const UNFOCUSED_DIM_RANGE = { min: 0, max: 10 } as const
 /** The slider's step. A saved value off this grid is moved onto it on load, so
  * the slider and the setting never disagree. */
 export const UNFOCUSED_DIM_STEP = 1
+/** 'glass' mode's opacity slider. Lower than the focused slider's 40% floor on
+ * purpose: this is a window you are not using, and seeing through it is the
+ * point. */
+export const UNFOCUSED_OPACITY_RANGE = { min: 20, max: 100 } as const
+export const UNFOCUSED_OPACITY_STEP = 5
+
+export type UnfocusedStyle = 'fade' | 'glass'
+export const UNFOCUSED_STYLES: readonly UnfocusedStyle[] = ['fade', 'glass']
+
+/** The settings the window should *look* like right now.
+ *
+ * Focused, or in 'fade' mode, that is just the settings: the fade is worked
+ * out later by `effectiveBackgroundLayers`. In 'glass' mode an unfocused
+ * window swaps in effect Off and the unfocused opacity, with the fade itself
+ * switched off, so everything downstream — the native window effect, every
+ * surface's opacity — treats it exactly like a window configured that way. */
+export function unfocusedAppearance(
+  settings: TerminalSettings,
+  focused: boolean,
+): TerminalSettings {
+  if (focused || settings.unfocusedStyle !== 'glass') return settings
+  return {
+    ...settings,
+    vibrancyMode: 'off',
+    backgroundOpacity: settings.unfocusedOpacityPercent / 100,
+    unfocusedDimPercent: 0,
+  }
+}
 export const FONT_WEIGHT_RANGE = { min: 100, max: 900 } as const
 /** 100 is a cell exactly as tall as the font size — anything less clips the
  *  descenders of the face itself, not just of the odd glyph. */
@@ -777,6 +817,17 @@ export function loadSettings(): TerminalSettings {
         clampSetting(merged.unfocusedDimPercent, defaults.unfocusedDimPercent, UNFOCUSED_DIM_RANGE) /
           UNFOCUSED_DIM_STEP,
       ) * UNFOCUSED_DIM_STEP
+    if (!UNFOCUSED_STYLES.includes(merged.unfocusedStyle)) {
+      merged.unfocusedStyle = defaults.unfocusedStyle
+    }
+    merged.unfocusedOpacityPercent =
+      Math.round(
+        clampSetting(
+          merged.unfocusedOpacityPercent,
+          defaults.unfocusedOpacityPercent,
+          UNFOCUSED_OPACITY_RANGE,
+        ) / UNFOCUSED_OPACITY_STEP,
+      ) * UNFOCUSED_OPACITY_STEP
     merged.fontSize = clampSetting(merged.fontSize, defaults.fontSize, FONT_SIZE_RANGE)
     merged.fontWeight = clampSetting(merged.fontWeight, defaults.fontWeight, FONT_WEIGHT_RANGE)
     merged.fontWeightBold = clampSetting(

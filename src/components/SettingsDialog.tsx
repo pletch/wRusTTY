@@ -27,6 +27,8 @@ import {
   LETTER_SPACING_RANGE,
   UNFOCUSED_DIM_RANGE,
   UNFOCUSED_DIM_STEP,
+  UNFOCUSED_OPACITY_RANGE,
+  UNFOCUSED_OPACITY_STEP,
 } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
@@ -1184,30 +1186,81 @@ export function SettingsDialog({
                         />
                       </div>
                       <div>
-                        <label className="flex items-center justify-between gap-2 text-chrome/85">
-                          <span>Fade when unfocused</span>
-                          <span className="text-chrome/50">
-                            {settings.unfocusedDimPercent === 0
-                              ? 'Off'
-                              : `${settings.unfocusedDimPercent}%`}
-                          </span>
-                        </label>
-                        <RangeInput
-                          min={UNFOCUSED_DIM_RANGE.min}
-                          max={UNFOCUSED_DIM_RANGE.max}
-                          step={UNFOCUSED_DIM_STEP}
-                          className="mt-1.5 w-full"
-                          value={settings.unfocusedDimPercent}
-                          aria-label="Fade when unfocused"
-                          onChange={(percent) =>
-                            onChange({ ...settings, unfocusedDimPercent: percent })
-                          }
-                        />
-                        <p className="mt-1 text-chrome/40">
-                          While another app is active, shifts the background towards the tab
-                          bar's colour and makes it more see-through, so it is obvious this window
-                          is not the one you are typing into. Text is unaffected.
-                        </p>
+                        <span className="text-chrome/85">When unfocused</span>
+                        <div className="mt-1.5 flex gap-1 rounded-md bg-black/20 p-1">
+                          {(
+                            [
+                              ['fade', 'Fade'],
+                              ['glass', 'See-through'],
+                            ] as const
+                          ).map(([style, sLabel]) => (
+                            <button
+                              key={style}
+                              type="button"
+                              onClick={() => onChange({ ...settings, unfocusedStyle: style })}
+                              className={`flex-1 rounded py-1 transition-colors duration-150 ${
+                                settings.unfocusedStyle === style
+                                  ? 'bg-chrome/15 text-chrome'
+                                  : 'text-chrome/40 hover:text-chrome/70'
+                              }`}
+                            >
+                              {sLabel}
+                            </button>
+                          ))}
+                        </div>
+                        {settings.unfocusedStyle === 'glass' ? (
+                          <>
+                            <label className="mt-3 flex items-center justify-between gap-2 text-chrome/85">
+                              <span>Opacity when unfocused</span>
+                              <span className="text-chrome/50">
+                                {settings.unfocusedOpacityPercent}%
+                              </span>
+                            </label>
+                            <RangeInput
+                              min={UNFOCUSED_OPACITY_RANGE.min}
+                              max={UNFOCUSED_OPACITY_RANGE.max}
+                              step={UNFOCUSED_OPACITY_STEP}
+                              className="mt-1.5 w-full"
+                              value={settings.unfocusedOpacityPercent}
+                              aria-label="Opacity when unfocused"
+                              onChange={(percent) =>
+                                onChange({ ...settings, unfocusedOpacityPercent: percent })
+                              }
+                            />
+                            <p className="mt-1 text-chrome/40">
+                              While another app is active, the window turns its effect off and
+                              uses this opacity instead, then returns to the settings above when
+                              you click back in. Text is unaffected.
+                            </p>
+                          </>
+                        ) : (
+                          <>
+                            <label className="mt-3 flex items-center justify-between gap-2 text-chrome/85">
+                              <span>Fade when unfocused</span>
+                              <span className="text-chrome/50">
+                                {settings.unfocusedDimPercent === 0
+                                  ? 'Off'
+                                  : `${settings.unfocusedDimPercent}%`}
+                              </span>
+                            </label>
+                            <RangeInput
+                              min={UNFOCUSED_DIM_RANGE.min}
+                              max={UNFOCUSED_DIM_RANGE.max}
+                              step={UNFOCUSED_DIM_STEP}
+                              className="mt-1.5 w-full"
+                              value={settings.unfocusedDimPercent}
+                              aria-label="Fade when unfocused"
+                              onChange={(percent) =>
+                                onChange({ ...settings, unfocusedDimPercent: percent })
+                              }
+                            />
+                            <p className="mt-1 text-chrome/40">
+                              While another app is active, shifts the background towards the tab
+                              bar's colour and makes it more see-through, so it is obvious this
+                              window is not the one you are typing into. Text is unaffected.
+                            </p>
+                          </>
+                        )}
                       </div>
                       <div>
                         <span className="text-chrome/85">Window effect</span>
