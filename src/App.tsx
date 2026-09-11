@@ -1355,7 +1355,10 @@ function App() {
         />
         <div
           data-tauri-drag-region
-          className={`min-w-0 flex-1 transition-colors duration-100 ${
+          // Never narrower than this: it is the one place along the strip that
+          // is nothing but a handle for the window, and it used to shrink to
+          // nothing as tabs were added. The tabs scroll before it gives way.
+          className={`min-w-12 flex-1 transition-colors duration-100 ${
             paneDragOverSpacer ? 'bg-sky-400/10' : ''
           }`}
           onDoubleClick={() => getCurrentWindow().toggleMaximize()}

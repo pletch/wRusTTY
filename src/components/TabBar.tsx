@@ -19,6 +19,7 @@ import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
 import { allLeaves, verticalRows } from '../lib/paneTree'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 interface Props {
   tabs: Tab[]
@@ -407,9 +408,25 @@ export function TabBar({
       {/* Also gives the tab strip natural clearance from the window's
        * rounded corner, replacing what used to just be an empty sliver of
        * padding. */}
-      <div className="flex shrink-0 items-center pl-2.5 pr-1.5 text-[#b7410e]">
+      {/* A handle for the window, like the spacer after the tabs: the icon is
+       * the one thing at this end of the strip that is not a tab. `deep` so a
+       * press on the glyph itself counts, not only on the padding around it. */}
+      <div
+        data-tauri-drag-region="deep"
+        onDoubleClick={() => getCurrentWindow().toggleMaximize()}
+        className="flex shrink-0 items-center pl-2.5 pr-1.5 text-[#b7410e]"
+      >
         <TerminalSquare size={16} strokeWidth={2} />
       </div>
+      {/* The gap above the tabs (their `mt-1`) is a handle too, across the
+       * whole strip — what Chrome leaves above its tabs for the same reason.
+       * It covers only that gap, so it takes no clicks from the tabs. */}
+      <div
+        aria-hidden
+        data-tauri-drag-region
+        onDoubleClick={() => getCurrentWindow().toggleMaximize()}
+        className="absolute inset-x-0 top-0 z-20 h-1"
+      />
       {/* The fade mask (not just a visual flourish) keeps a tab that's only
        * partially scrolled into view from ending in a harsh mid-content
        * clip — one that, at just the wrong container width, would slice
@@ -448,6 +465,7 @@ export function TabBar({
         }
       >
         {tabs.map((tab, i) => {
+          const soleTab = tabs.length === 1
           const active = tab.id === activeTabId
           // A hairline between two adjacent *quiet* tabs, and nowhere else.
           // Both the active tab and a hovered one draw their own shape, and a
@@ -495,7 +513,21 @@ export function TabBar({
             <div
               key={tab.id}
               title={remoteTitle ? `${tab.title} — ${remoteTitle}` : tab.title}
-              draggable
+              // With one tab there is nothing to reorder it past and no other
+              // tab to drop it into, so dragging it moves the window instead —
+              // what Chrome does with a lone tab. Its close button still
+              // closes it, and right-click still opens its menu.
+              draggable={!soleTab}
+              onMouseDown={(e) => {
+                if (!soleTab || e.button !== 0) return
+                if (e.target instanceof Element && e.target.closest('button')) return
+                void getCurrentWindow().startDragging()
+              }}
+              onDoubleClick={(e) => {
+                if (!soleTab) return
+                if (e.target instanceof Element && e.target.closest('button')) return
+                void getCurrentWindow().toggleMaximize()
+              }}
               onClick={() => onSelect(tab.id)}
               onMouseEnter={() => setHoveredId(tab.id)}
               onMouseLeave={() => setHoveredId((id) => (id === tab.id ? null : id))}
