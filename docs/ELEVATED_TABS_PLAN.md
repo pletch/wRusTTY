@@ -441,6 +441,11 @@ drops the source as it does for every unrestorable one, but `sanitizeTabs` now
 keeps a tab whose only pane was elevated, and `countUnsaveable` does not count
 it as lost, since what comes back is that form rather than nothing.
 
+*Later refinement:* the restored pane shows a small card instead of the whole
+form — "Reopen as administrator" (still through the prompt), "Close", and a
+link to the full form for changing something first. See
+`src/components/ElevatedRestore.tsx`.
+
 **Marking it (decision 5).** An amber shield before the tab title, the shell's
 own icon as the tab glyph, and `ADMIN` in amber in the status bar with
 "<shell> · Administrator" as the target. Like an ordinary local tab it shows no

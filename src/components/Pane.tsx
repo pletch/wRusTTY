@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { GripVertical, X } from 'lucide-react'
 import { ConnectDialog } from './ConnectDialog'
+import { ElevatedRestore } from './ElevatedRestore'
 import { ForwardPanel } from './ForwardPanel'
 import { FilesPanel } from './FilesPanel'
 import type { PaneLeaf, PaneNode } from '../types'
@@ -56,7 +57,12 @@ interface Props {
     paneId: string,
     source: ConnectionSource,
     logSession: boolean,
-    paneOptions?: { backspaceSendsCtrlH: boolean | null; autoReconnect: boolean | null },
+    paneOptions?: {
+      backspaceSendsCtrlH: boolean | null
+      autoReconnect: boolean | null
+      label?: string | null
+      form?: PaneLeaf['initial'] | null
+    },
   ) => void
   onSelectSession: (paneId: string, profile: SessionProfile) => void
   onEditSession: (paneId: string, profile: SessionProfile) => void
@@ -154,6 +160,11 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
   )
   const [dragOver, setDragOver] = useState(false)
   const [gripHover, setGripHover] = useState(false)
+  // A restored administrator pane asks one question instead of showing the
+  // form — see ElevatedRestore. Its "change settings" link sets this, and the
+  // form then shows as it would for any other blank pane.
+  const [showElevatedForm, setShowElevatedForm] = useState(false)
+  const elevatedShellId = node.initial?.local?.elevated ? node.initial.local.shellId : null
   // Only meaningful once the tab is actually split — a lone pane is trivially
   // "the active one" and needs no highlight (matches how the grip/close
   // hotzone is gated on tabHasSplit too).
@@ -251,6 +262,28 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             if (draggedTabId) onDropTab(node.id, draggedTabId)
           }}
         >
+          {elevatedShellId && !showElevatedForm ? (
+            <ElevatedRestore
+              shellId={elevatedShellId}
+              label={node.initial?.label}
+              onReopen={() =>
+                onConnect(
+                  node.id,
+                  { protocol: 'elevated', shellId: elevatedShellId, profileId: node.initial?.id ?? null },
+                  false,
+                  {
+                    backspaceSendsCtrlH: null,
+                    autoReconnect: false,
+                    label: node.initial?.label ?? null,
+                    // Kept, so closing wRusTTY again brings back this same card.
+                    form: node.initial ?? null,
+                  },
+                )
+              }
+              onClose={() => onClosePane(node.id)}
+              onEdit={() => setShowElevatedForm(true)}
+            />
+          ) : (
           <ConnectDialog
             // Remounts fresh (with the newly-selected profile's data already
             // baked into its initial useState() calls) whenever a different
@@ -283,6 +316,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             onDeleteCredential={onDeleteCredential}
             onReorderSessions={onReorderSessions}
           />
+          )}
         </div>
       )}
       {tabHasSplit && (
