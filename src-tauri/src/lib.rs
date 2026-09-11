@@ -4,6 +4,8 @@ mod coalesce;
 mod command_history;
 mod connection_status;
 mod elevation;
+
+pub use elevation::elevated_entry_point;
 mod fonts;
 #[cfg(target_os = "windows")]
 mod hello;

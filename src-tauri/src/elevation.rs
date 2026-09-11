@@ -5,10 +5,11 @@
 //! the part that needs the app: `ShellExecuteEx`'s `runas`, the main window to
 //! hang the UAC prompt off, and a session registry for the pane's commands.
 //!
-//! Host mode itself — what `wrustty.exe --elevated-host` does when it starts —
-//! is not here yet; it is Phase 3. Until then a launch reaches the UAC prompt
-//! and the host exits without serving the pipe, which the tab reports as the
-//! host having gone away. Nothing in the frontend calls these commands yet.
+//! Host mode — what `wrustty.exe --elevated-host` does when it starts — is
+//! [`elevated_entry_point`], which `main` calls before Tauri exists. Debug
+//! builds also have `--elevated-smoke`, a manual check of the whole path
+//! through a real UAC prompt. Nothing in the frontend calls these commands yet;
+//! that is Phase 4.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -258,9 +259,251 @@ pub async fn elevated_disconnect(
     state.sessions.disconnect(&session_id).await
 }
 
+/// What `main` checks before anything else. `Some(exit code)` when this
+/// process was started in one of the elevated modes; `None` for an ordinary
+/// launch, which then carries on into [`crate::run`].
+///
+/// This has to run **before** Tauri, and in particular before
+/// `tauri_plugin_single_instance` (see `lib.rs`), which would otherwise see a
+/// second `wrustty.exe`, hand its arguments to the running window and exit —
+/// quietly turning every elevated tab into a host that never started.
+pub fn elevated_entry_point() -> Option<i32> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("--elevated-host") => Some(host_main(&args[1..])),
+        // A manual check of the whole path through a real UAC prompt. Debug
+        // builds only: a release binary has no business carrying a mode whose
+        // purpose is to raise a prompt on demand.
+        #[cfg(debug_assertions)]
+        Some("--elevated-smoke") => Some(smoke::main(&args[1..])),
+        _ => None,
+    }
+}
+
+/// The host's command line, parsed strictly: exactly these three options, in
+/// this order, and nothing else. It is only ever written by
+/// [`host_arguments`], so anything that does not match it exactly was not
+/// written by us.
+#[derive(Debug, PartialEq, Eq)]
+struct HostArgs {
+    shell_id: String,
+    pipe_name: String,
+    client_pid: u32,
+}
+
+fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
+    match args {
+        [shell_flag, shell_id, pipe_flag, pipe_name, pid_flag, pid]
+            if shell_flag == "--shell" && pipe_flag == "--pipe" && pid_flag == "--client-pid" =>
+        {
+            Ok(HostArgs {
+                shell_id: shell_id.clone(),
+                pipe_name: pipe_name.clone(),
+                client_pid: pid.parse().map_err(|_| format!("bad client pid {pid:?}"))?,
+            })
+        }
+        _ => Err("expected --shell <id> --pipe <name> --client-pid <pid>".into()),
+    }
+}
+
+/// What an elevatable shell id runs, resolved by this — elevated — process's
+/// own detection. Nothing the tab sent chooses the executable: only the id
+/// travels, and only the ids in [`ELEVATABLE_SHELLS`] resolve at all.
+fn resolve_elevatable(shell_id: &str) -> Option<wr_local::LocalConfig> {
+    if !ELEVATABLE_SHELLS.contains(&shell_id) {
+        return None;
+    }
+    let shell = crate::local_shells::detect(&crate::local_shells::SystemMachine)
+        .into_iter()
+        .find(|s| s.id == shell_id)?;
+    Some(wr_local::LocalConfig {
+        command: shell.command,
+        args: shell.args,
+        ..Default::default()
+    })
+}
+
+/// Host mode: serve one elevated shell to one tab, then exit.
+///
+/// Exit codes are for the record only — the tab learns what happened over the
+/// pipe, or from the host's exit, never from the code. There is no window and,
+/// in a release build, no console, so there is nowhere else to report to.
+fn host_main(args: &[String]) -> i32 {
+    let Ok(parsed) = parse_host_args(args) else {
+        return 2;
+    };
+    let Some(shell) = resolve_elevatable(&parsed.shell_id) else {
+        return 3;
+    };
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    else {
+        return 4;
+    };
+    let outcome = runtime.block_on(wr_local::elevated::host::run_host(
+        wr_local::elevated::host::HostConfig {
+            pipe_name: parsed.pipe_name,
+            client_pid: parsed.client_pid,
+            shell,
+        },
+    ));
+    match outcome {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+/// `wrustty.exe --elevated-smoke [shell]`: opens an elevated shell through the
+/// real launcher — a real UAC prompt, a real elevated host — runs
+/// `whoami /groups` in it, and says whether that shell is actually running at
+/// high integrity.
+///
+/// It exists because the one thing the automated tests cannot cover is the
+/// thing most likely to be wrong: whether an unelevated tab can reach an
+/// elevated host through the pipe's security descriptor. It has to be
+/// `wrustty.exe` itself, because the host refuses any client that is not the
+/// same executable as it is.
+#[cfg(debug_assertions)]
+mod smoke {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::mpsc;
+    use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
+    use wr_local::elevated::connector::ElevatedConnector;
+
+    use super::RunasLauncher;
+
+    /// The Mandatory Label SID for High integrity. Looked for rather than the
+    /// words "High Mandatory Level", which are localised.
+    const HIGH_INTEGRITY_SID: &str = "S-1-16-12288";
+
+    pub(super) fn main(args: &[String]) -> i32 {
+        let shell = args.first().cloned().unwrap_or_else(|| "cmd".into());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(run(shell))
+    }
+
+    async fn run(shell: String) -> i32 {
+        println!("opening an elevated {shell} — approve the UAC prompt to continue");
+        let (tx, mut events) = mpsc::channel(256);
+        let launcher = Arc::new(RunasLauncher { owner: None });
+        let mut session = match ElevatedConnector::new(launcher, shell)
+            .with_size(120, 30)
+            .connect(tx)
+            .await
+        {
+            Ok(session) => session,
+            Err(e) => {
+                println!("RESULT: could not open the elevated shell: {e}");
+                return 1;
+            }
+        };
+        println!("connected to the elevated host; running whoami /groups");
+
+        let mut output = Vec::new();
+        let mut sent = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, events.recv()).await {
+            match event {
+                ConnectionEvent::Data(bytes) => {
+                    // Stands in for the pane's engine: answer the
+                    // pseudoconsole's cursor query, then type.
+                    if bytes.windows(4).any(|w| w == b"\x1b[6n") {
+                        let _ = session.write(b"\x1b[1;1R").await;
+                        if !sent {
+                            sent = true;
+                            let _ = session.write(b"whoami /groups\r\n").await;
+                            tokio::time::sleep(Duration::from_millis(800)).await;
+                            let _ = session.write(b"exit\r\n").await;
+                        }
+                    }
+                    output.extend_from_slice(&bytes);
+                }
+                ConnectionEvent::Status(ConnectionStatus::Disconnected(_)) => break,
+                ConnectionEvent::Status(_) => {}
+            }
+        }
+
+        let text = String::from_utf8_lossy(&output);
+        let elevated = text.contains(HIGH_INTEGRITY_SID);
+        println!("----- shell output -----\n{text}\n------------------------");
+        if elevated {
+            println!("RESULT: the shell is running at High integrity — elevated.");
+            0
+        } else {
+            println!("RESULT: no High integrity label in the output — NOT elevated.");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Whatever `host_arguments` writes, `parse_host_args` must read back —
+    /// they are the two ends of the host's command line.
+    #[test]
+    fn the_host_reads_back_exactly_what_the_launcher_writes() {
+        let written = host_arguments(&request("pwsh", r"\\.\pipe\wrustty-elevated-ab12")).unwrap();
+        let args: Vec<String> = written.split(' ').map(String::from).collect();
+        assert_eq!(args[0], "--elevated-host");
+        assert_eq!(
+            parse_host_args(&args[1..]).unwrap(),
+            HostArgs {
+                shell_id: "pwsh".into(),
+                pipe_name: r"\\.\pipe\wrustty-elevated-ab12".into(),
+                client_pid: 4242,
+            }
+        );
+    }
+
+    /// Strict on purpose: anything but the exact form was not written by the
+    /// launcher, so the host does not try to make sense of it.
+    #[test]
+    fn a_host_command_line_in_any_other_shape_is_refused() {
+        for args in [
+            strings(&[]),
+            strings(&["--shell", "cmd"]),
+            strings(&["--pipe", "p", "--shell", "cmd", "--client-pid", "1"]),
+            strings(&["--shell", "cmd", "--pipe", "p", "--client-pid", "x"]),
+            strings(&[
+                "--shell",
+                "cmd",
+                "--pipe",
+                "p",
+                "--client-pid",
+                "1",
+                "--extra",
+            ]),
+        ] {
+            assert!(
+                parse_host_args(&args).is_err(),
+                "{args:?} should be refused"
+            );
+        }
+    }
+
+    /// Only the allowlist resolves — an id the tab could not have sent must not
+    /// become something to run as administrator.
+    #[test]
+    fn only_allowed_shell_ids_resolve() {
+        assert!(resolve_elevatable("wsl:Debian").is_none());
+        assert!(resolve_elevatable(r"C:\Windows\System32\cmd.exe").is_none());
+        assert!(resolve_elevatable("").is_none());
+        // cmd.exe is on every Windows machine.
+        #[cfg(windows)]
+        assert!(resolve_elevatable("cmd").is_some());
+    }
 
     fn request(shell_id: &str, pipe_name: &str) -> LaunchRequest {
         LaunchRequest {
