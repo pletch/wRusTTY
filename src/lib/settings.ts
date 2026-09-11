@@ -655,7 +655,10 @@ export const TERMINAL_BACKGROUND_LAYERS = 3
 export interface BackgroundLayers {
   /** The window's own background: App's root. Everything sits on this. */
   root: number
-  /** Surfaces painted once over the root — a blank pane, the active tab. */
+  /** A single surface over the root that has to look exactly like a
+   *  connected terminal — the active tab and its shoulders, a blank pane.
+   *  Always the two terminal layers collapsed into one, so each of those
+   *  areas composites to precisely what the terminal content does. */
   overRoot: number
   /** Surfaces of which a connected terminal stacks two over the root — its
    *  padding wrapper and the engine's cells. */
@@ -687,10 +690,16 @@ export function stackedOpacity(alpha: number, layers: number): number {
  * - solving for the terminal instead amplified the change on the tab strip:
  *   at 90% opacity a 5% dim took the strip from 90% to 63%.
  *
- * So the root fades by exactly the dim, and each surface stacked on it is then
- * solved for separately, so that every *area* ends up exactly `dim` percent
- * less opaque than it looks focused. That is also what makes the setting's
- * number mean one thing everywhere.
+ * So the root fades by exactly the dim, and the terminal's surfaces are solved
+ * so the terminal area ends up exactly `dim` percent less opaque than it looks
+ * focused. That is also what makes the setting's number mean one thing
+ * everywhere.
+ *
+ * Everything else inside the pane — the padding and gutter (see the frame in
+ * Terminal.tsx), the active tab, a blank pane — is built to composite to
+ * exactly what the terminal content does, focused or not, so the pane reads
+ * as one surface. Before, each was a different depth of stack: identical
+ * while nearly opaque, and three visibly different greys once faded.
  *
  * Focused, every surface is exactly the configured opacity, so the look while
  * working is untouched. The floor applies to the terminal area, the most
@@ -707,7 +716,7 @@ export function effectiveBackgroundLayers(
 ): BackgroundLayers {
   const alpha = settings.backgroundOpacity
   if (focused || settings.unfocusedDimPercent <= 0) {
-    return { root: alpha, overRoot: alpha, terminal: alpha }
+    return { root: alpha, overRoot: stackedOpacity(alpha, 2), terminal: alpha }
   }
 
   const terminalSeen = stackedOpacity(alpha, TERMINAL_BACKGROUND_LAYERS)
@@ -724,11 +733,11 @@ export function effectiveBackgroundLayers(
   const throughRoot = 1 - root
   if (throughRoot <= 0) return { root, overRoot: 0, terminal: 0 }
 
-  // One layer over the root: 1 - (1 - root)(1 - over) = scale * seen2.
-  const overRoot = bound(1 - (1 - scale * stackedOpacity(alpha, 2)) / throughRoot)
   // Two layers over the root: 1 - (1 - root)(1 - t)^2 = scale * seen3.
   const terminal = bound(1 - Math.sqrt((1 - scale * terminalSeen) / throughRoot))
-  return { root, overRoot, terminal }
+  // Not bounded by alpha like the others: it stands in for *two* layers, so
+  // it is legitimately more opaque than any single one of them.
+  return { root, overRoot: stackedOpacity(terminal, 2), terminal }
 }
 
 export function loadSettings(): TerminalSettings {

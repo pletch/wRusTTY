@@ -126,16 +126,21 @@ body {
   bottom: 0;
   /* Sized dynamically by updateScrollbarGeometry() in Terminal.tsx to
      exactly match FitAddon's reserved gutter plus whatever fractional-
-     column remainder is left over (see the width comment there) — this
-     box exists purely to mask that whole area with the pane's actual
-     background (see --term-scrollbar-bg), since WebView2 doesn't reliably
-     render that reserved-but-unused canvas strip as the real background
-     color on its own. The *visible* controls are a fixed, narrower width
-     regardless (.term-scrollbar-inner below) — this outer box is wider
-     than they need to look, just to fully cover the masking area. */
+     column remainder is left over (see the width comment there). The
+     *visible* controls are a fixed, narrower width regardless
+     (.term-scrollbar-inner below).
+
+     Transparent. This box used to paint the gutter with the theme
+     background, fully opaque, because the gutter came out a different
+     shade from the grid beside it. The real reason was that the gutter is
+     seen through one layer fewer than the grid — and an opaque fill only
+     matches while the whole window is opaque: at any background opacity
+     below 100% it left a solid dark strip down the right edge. The frame
+     in Terminal.tsx now covers the gutter with exactly the missing layer,
+     so this only has to carry the controls. */
   z-index: 20;
   user-select: none;
-  background-color: rgb(var(--term-scrollbar-bg, 22, 23, 29));
+  background-color: transparent;
 }
 .term-scrollbar-inner {
   position: absolute;

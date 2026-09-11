@@ -246,6 +246,9 @@ export function Terminal({
   onReconnect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
+  /** The border-only frame over everything in the pane that is not the grid —
+   *  see where it is rendered. Its widths are measured, not styled. */
+  const frameRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   /** Whether the search box was open on the previous render, so closing it can
    * hand focus back without the mount-time run of that effect doing so. */
@@ -996,9 +999,17 @@ export function Terminal({
     const canvasObserver = new ResizeObserver(() => updateScrollbarGeometry())
     const updateScrollbarGeometry = () => {
       let canvasRight = 0
+      let canvasLeft = Infinity
+      let canvasTop = Infinity
+      let canvasBottom = 0
       for (const canvas of container.querySelectorAll('canvas')) {
         const rect = canvas.getBoundingClientRect()
-        if (rect.width > 0) canvasRight = Math.max(canvasRight, rect.right)
+        if (rect.width > 0) {
+          canvasRight = Math.max(canvasRight, rect.right)
+          canvasLeft = Math.min(canvasLeft, rect.left)
+          canvasTop = Math.min(canvasTop, rect.top)
+          canvasBottom = Math.max(canvasBottom, rect.bottom)
+        }
       }
       // Watching the canvases themselves is what makes this self-correcting:
       // the container doesn't change size when the grid refits from the 80x24
@@ -1017,23 +1028,29 @@ export function Terminal({
       // plus the gutter, so anything beyond that is a stale measurement.
       const width = Math.min(Math.max(gap, SCROLLBAR_GUTTER_PX), SCROLLBAR_GUTTER_PX * 8)
       scrollbarEl.style.width = `${width}px`
+
+      // The frame covers exactly what the grid does not: the wrapper's
+      // padding, the gutter, and the partial column and row the grid leaves
+      // at its right and bottom edges. See where it is rendered for why.
+      const frame = frameRef.current
+      if (frame) {
+        const box = frame.getBoundingClientRect()
+        frame.style.borderTopWidth = `${Math.max(0, canvasTop - box.top)}px`
+        frame.style.borderLeftWidth = `${Math.max(0, canvasLeft - box.left)}px`
+        frame.style.borderRightWidth = `${Math.max(0, box.right - canvasRight)}px`
+        frame.style.borderBottomWidth = `${Math.max(0, box.bottom - canvasBottom)}px`
+      }
     }
 
     // Foreground for the thumb/arrows (matching xterm's own default
     // scrollbarSliderBackground behavior) so they stay legible against any
-    // preset theme; background for the widget's own base fill, covering
-    // FitAddon's reserved gutter (see the .term-scrollbar width comment in
-    // index.css) with the pane's actual background rather than leaving it
-    // transparent — WebView2 doesn't reliably render that reserved-but-
-    // unused canvas strip as the real background color, so painting over
-    // it here is what actually makes it match instead of just hoping the
-    // canvas underneath already does.
+    // preset theme. There is no background colour to set any more: the
+    // gutter is covered by the frame, at the pane's own opacity, rather than
+    // by an opaque fill here — see the .term-scrollbar comment in index.css.
     function updateScrollbarColors() {
       const theme = findTheme(settingsRef.current.themeName)
       const [fr, fg, fb] = hexToRgb(theme.foreground)
-      const [br, bg, bb] = hexToRgb(theme.background)
       scrollbarEl.style.setProperty('--term-scrollbar-fg', `${fr}, ${fg}, ${fb}`)
-      scrollbarEl.style.setProperty('--term-scrollbar-bg', `${br}, ${bg}, ${bb}`)
     }
     updateScrollbarColors()
     updateScrollbarColorsRef.current = updateScrollbarColors
@@ -2318,6 +2335,32 @@ export function Terminal({
           whole pane is visible in peripheral vision in a way a toolbar badge
           is not, and it is the only state in the app that changes what a
           keystroke does. */}
+      {/* One layer at the terminal's own opacity, over everything in the pane
+          that the grid does not cover: the padding, the scrollbar gutter, and
+          the partial column and row left at the grid's edges.
+
+          The grid is seen through one more layer than its surroundings — the
+          engine paints its cells over this wrapper — so without this the
+          padding composited to a lighter grey than the text area beside it.
+          Invisible while nearly opaque; three distinct greys once the window
+          fades. A border-only box rather than four strips because borders meet
+          mitred, so the corners are not painted twice.
+
+          Below the scrollbar controls (z-20) and clear of the grid, so it
+          neither hides the controls nor sits over text. */}
+      <div
+        ref={frameRef}
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-10"
+        style={{
+          borderStyle: 'solid',
+          borderWidth: 0,
+          borderColor: backgroundWithOpacity(
+            findTheme(settings.themeName),
+            settings.backgroundOpacity,
+          ),
+        }}
+      />
       {broadcasting && (
         <div className="pointer-events-none absolute inset-0 z-30 rounded-sm ring-2 ring-inset ring-amber-400/70" />
       )}

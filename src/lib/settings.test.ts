@@ -497,9 +497,9 @@ describe('custom themes', () => {
 })
 
 /**
- * Fading an unfocused window, asserted in terms of what each *area* looks
- * like — its layers composited — because that is what anyone sees. Two earlier
- * versions passed per-layer tests while fading one area and not the other.
+ * The window's background, asserted in terms of what each *area* looks like —
+ * its layers composited — because that is what anyone sees. Earlier versions
+ * passed per-layer tests while leaving the pane three different greys.
  */
 describe('effectiveBackgroundLayers', () => {
   const at = (backgroundOpacity: number, unfocusedDimPercent: number) => ({
@@ -507,60 +507,65 @@ describe('effectiveBackgroundLayers', () => {
     unfocusedDimPercent,
   })
 
-  /** What each area looks like: the tab strip is the root alone, a blank pane
-   *  one surface over it, a connected terminal two. */
+  /** What each area composites to. The tab strip is the root alone; the
+   *  terminal is its wrapper and its cells over the root; the padding is the
+   *  wrapper and the frame over the root; a blank pane and the active tab are
+   *  one `overRoot` surface over it. */
   const areas = (l: { root: number; overRoot: number; terminal: number }) => ({
     tabStrip: l.root,
-    blankPane: 1 - (1 - l.root) * (1 - l.overRoot),
     terminal: 1 - (1 - l.root) * (1 - l.terminal) ** 2,
+    padding: 1 - (1 - l.root) * (1 - l.terminal) ** 2,
+    activeTab: 1 - (1 - l.root) * (1 - l.overRoot),
+    blankPane: 1 - (1 - l.root) * (1 - l.overRoot),
   })
 
-  it('paints every surface at the configured opacity while focused', () => {
-    expect(effectiveBackgroundLayers(at(0.9, 40), true)).toEqual({
-      root: 0.9,
-      overRoot: 0.9,
-      terminal: 0.9,
-    })
+  /** The request that produced this version: the tab and the pane border
+   *  should match the session content. They must, faded or not. */
+  it('makes every area inside the pane match the terminal', () => {
+    for (const alpha of [0.3, 0.6, 0.9, 1]) {
+      for (const dim of [0, 5, 15, 30, 60]) {
+        for (const focused of [true, false]) {
+          const a = areas(effectiveBackgroundLayers(at(alpha, dim), focused))
+          expect(a.activeTab).toBeCloseTo(a.terminal, 9)
+          expect(a.blankPane).toBeCloseTo(a.terminal, 9)
+          expect(a.padding).toBeCloseTo(a.terminal, 9)
+        }
+      }
+    }
   })
 
-  it('does nothing when the setting is off', () => {
-    expect(effectiveBackgroundLayers(at(0.9, 0), false)).toEqual({
-      root: 0.9,
-      overRoot: 0.9,
-      terminal: 0.9,
-    })
+  it('leaves the terminal and the root exactly as configured while focused', () => {
+    const l = effectiveBackgroundLayers(at(0.9, 40), true)
+    expect(l.root).toBe(0.9)
+    expect(l.terminal).toBe(0.9)
   })
 
-  /** The whole point: one number, one visible change, everywhere. */
-  it('fades every area by the same fraction', () => {
+  it('changes nothing when the setting is off', () => {
+    expect(effectiveBackgroundLayers(at(0.9, 0), false)).toEqual(
+      effectiveBackgroundLayers(at(0.9, 0), true),
+    )
+  })
+
+  /** One number, one visible change: the strip and the pane both fade by it. */
+  it('fades the tab strip and the pane by the same fraction', () => {
     for (const [alpha, dim] of [
       [0.9, 5],
-      [0.9, 30],
+      [0.9, 15],
       [0.6, 30],
       [1, 20],
     ] as const) {
       const before = areas(effectiveBackgroundLayers(at(alpha, dim), true))
       const after = areas(effectiveBackgroundLayers(at(alpha, dim), false))
-      for (const area of ['tabStrip', 'blankPane', 'terminal'] as const) {
+      for (const area of ['tabStrip', 'terminal'] as const) {
         expect(after[area]).toBeCloseTo(before[area] * (1 - dim / 100), 6)
       }
     }
   })
 
-  /** The regression from the second attempt: at 90%, a 5% dim took the tab
-   *  strip to 63%. It must now move by the 5% it says. */
+  /** The regression from an earlier attempt: at 90%, a 5% dim took the tab
+   *  strip to 63%. It must move by the 5% it says. */
   it('keeps a small fade small on the tab strip', () => {
-    const faded = effectiveBackgroundLayers(at(0.9, 5), false)
-    expect(faded.root).toBeCloseTo(0.855, 6)
-  })
-
-  /** And the regression from the first: a connected terminal barely moved. */
-  it('moves a connected terminal as much as the tab strip', () => {
-    const before = areas(effectiveBackgroundLayers(at(0.9, 30), true))
-    const after = areas(effectiveBackgroundLayers(at(0.9, 30), false))
-    const terminalDrop = before.terminal - after.terminal
-    const stripDrop = before.tabStrip - after.tabStrip
-    expect(terminalDrop).toBeGreaterThanOrEqual(stripDrop * 0.99)
+    expect(effectiveBackgroundLayers(at(0.9, 5), false).root).toBeCloseTo(0.855, 6)
   })
 
   it('never fades the terminal below the floor', () => {
@@ -568,14 +573,16 @@ describe('effectiveBackgroundLayers', () => {
     expect(after.terminal).toBeCloseTo(UNFOCUSED_OPACITY_FLOOR, 6)
   })
 
-  /** A window already very translucent must not firm *up* on losing focus. */
-  it('never paints any surface more opaque than configured', () => {
+  /** A window already very translucent must not firm *up* on losing focus.
+   *  `overRoot` is excluded: it stands in for two layers, so it is rightly
+   *  more opaque than one — what matters is that no area gets more opaque. */
+  it('never makes any area more opaque than it is focused', () => {
     for (const alpha of [0, 0.05, 0.2, 0.6, 0.9, 1]) {
       for (const dim of [5, 30, 60]) {
-        const l = effectiveBackgroundLayers(at(alpha, dim), false)
-        for (const v of [l.root, l.overRoot, l.terminal]) {
-          expect(v).toBeGreaterThanOrEqual(0)
-          expect(v).toBeLessThanOrEqual(alpha)
+        const before = areas(effectiveBackgroundLayers(at(alpha, dim), true))
+        const after = areas(effectiveBackgroundLayers(at(alpha, dim), false))
+        for (const area of Object.keys(before) as (keyof typeof before)[]) {
+          expect(after[area]).toBeLessThanOrEqual(before[area] + 1e-9)
         }
       }
     }

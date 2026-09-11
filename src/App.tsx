@@ -1274,7 +1274,22 @@ function App() {
         // see stripOverlay. A hardcoded bg-black/20 here had nowhere to go on
         // Campbell and left the strip, the quiet tabs and the active tab all
         // the same colour.
-        style={{ background: stripOverlay(findTheme(terminalSettings.themeName)) }}
+        //
+        // Dropped while the window is faded. The active tab sits on this wash
+        // and is meant to read as the top of the terminal, but it is
+        // translucent, so the wash shows through it — and the thinner the tab
+        // gets as the window fades, the more does, until the tab is visibly
+        // lighter than the terminal it belongs to. No tab opacity cancels it:
+        // a translucent layer cannot hide added light. Focused, the tab is
+        // nearly opaque and what leaks through is a fraction of a level;
+        // faded, there is no wash to leak, and the strip still separates from
+        // the tab by being the more see-through of the two.
+        style={{
+          background:
+            windowFocused || terminalSettings.unfocusedDimPercent <= 0
+              ? stripOverlay(findTheme(terminalSettings.themeName))
+              : 'transparent',
+        }}
       >
         <TabBar
           tabs={tabs}
