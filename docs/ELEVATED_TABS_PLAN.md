@@ -404,8 +404,10 @@ elevated host. It also exercised host mode's parsing, detection running
 elevated, and the prompt itself, which showed the expected yellow
 unknown-publisher banner for an unsigned build.
 
-Not yet tried for real: answering **No**. The mapping from `ERROR_CANCELLED` to
-"elevation was declined" is covered by a test with a stand-in launcher, not by
-a real declined prompt.
+**A real declined prompt, done the same evening.** The same smoke run, with the
+prompt answered **No**, reported `could not open the elevated shell: elevation
+was declined` and exited at once, with no retry and no host or shell started.
+So `ERROR_CANCELLED` maps to the declined error in practice, not only against
+the stand-in launcher the tests use.
 
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general
