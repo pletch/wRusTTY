@@ -8,8 +8,10 @@
 //! Host mode — what `wrustty.exe --elevated-host` does when it starts — is
 //! [`elevated_entry_point`], which `main` calls before Tauri exists. Debug
 //! builds also have `--elevated-smoke`, a manual check of the whole path
-//! through a real UAC prompt. Nothing in the frontend calls these commands yet;
-//! that is Phase 4.
+//! through a real UAC prompt.
+//!
+//! Windows only — `lib.rs` compiles `elevation_unsupported.rs` in its place
+//! elsewhere, since the host and connector it drives exist only on Windows.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -71,7 +73,6 @@ impl Launcher for RunasLauncher {
 /// the Windows Hello and vault consent prompts have, which is what
 /// `win_focus::restore_after_broker_prompt` exists to solve. Without it the
 /// user approves the prompt and then types into nothing.
-#[cfg(windows)]
 fn restore_focus(app: Option<&AppHandle>, owner: Option<isize>) {
     let (Some(app), Some(owner)) = (app, owner) else {
         return;
@@ -82,9 +83,6 @@ fn restore_focus(app: Option<&AppHandle>, owner: Option<isize>) {
     let hwnd = windows::Win32::Foundation::HWND(owner as *mut std::ffi::c_void);
     crate::win_focus::restore_after_broker_prompt(&window, hwnd);
 }
-
-#[cfg(not(windows))]
-fn restore_focus(_app: Option<&AppHandle>, _owner: Option<isize>) {}
 
 /// The host's command line. Nothing in it needs quoting, and that is checked
 /// rather than assumed: the shell id comes from [`ELEVATABLE_SHELLS`] and the
@@ -106,7 +104,6 @@ fn host_arguments(request: &LaunchRequest) -> Result<String, LaunchError> {
     ))
 }
 
-#[cfg(windows)]
 fn runas(owner: Option<isize>, request: &LaunchRequest) -> Result<LaunchedHost, LaunchError> {
     use std::ffi::c_void;
 
@@ -190,11 +187,6 @@ fn runas(owner: Option<isize>, request: &LaunchRequest) -> Result<LaunchedHost, 
             let _ = gone_rx.await;
         }),
     })
-}
-
-#[cfg(not(windows))]
-fn runas(_owner: Option<isize>, _request: &LaunchRequest) -> Result<LaunchedHost, LaunchError> {
-    Err(LaunchError::Failed("elevated tabs are Windows-only".into()))
 }
 
 pub struct ElevatedState {
@@ -538,7 +530,6 @@ mod tests {
         assert!(resolve_elevatable(r"C:\Windows\System32\cmd.exe").is_none());
         assert!(resolve_elevatable("").is_none());
         // cmd.exe is on every Windows machine.
-        #[cfg(windows)]
         assert!(resolve_elevatable("cmd").is_some());
     }
 

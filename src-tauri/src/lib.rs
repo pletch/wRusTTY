@@ -3,6 +3,12 @@ mod attention;
 mod coalesce;
 mod command_history;
 mod connection_status;
+// The elevated host is Windows-only; elsewhere a stand-in with the same
+// commands says so, which keeps the handler list below the same everywhere.
+#[cfg(windows)]
+mod elevation;
+#[cfg(not(windows))]
+#[path = "elevation_unsupported.rs"]
 mod elevation;
 
 pub use elevation::elevated_entry_point;

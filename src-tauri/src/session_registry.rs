@@ -306,6 +306,8 @@ pub type NoRestore = fn(TransportPhase) -> std::future::Ready<()>;
 /// The type `None` needs for a transport that must never be rebuilt
 /// unattended, for the same reason [`NoPrepare`] exists. Elevated tabs pass
 /// it: every rebuild would be a UAC prompt nobody asked for.
+// Only elevated tabs use it, and they exist only on Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub type NoReconnect<C> = fn() -> std::future::Ready<Result<C, String>>;
 
 /// The pause before the first retry, doubling from there.
