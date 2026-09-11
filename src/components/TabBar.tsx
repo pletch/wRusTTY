@@ -418,15 +418,6 @@ export function TabBar({
       >
         <TerminalSquare size={16} strokeWidth={2} />
       </div>
-      {/* The gap above the tabs (their `mt-1`) is a handle too, across the
-       * whole strip — what Chrome leaves above its tabs for the same reason.
-       * It covers only that gap, so it takes no clicks from the tabs. */}
-      <div
-        aria-hidden
-        data-tauri-drag-region
-        onDoubleClick={() => getCurrentWindow().toggleMaximize()}
-        className="absolute inset-x-0 top-0 z-20 h-1"
-      />
       {/* The fade mask (not just a visual flourish) keeps a tab that's only
        * partially scrolled into view from ending in a harsh mid-content
        * clip — one that, at just the wrong container width, would slice
