@@ -38,7 +38,7 @@ import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/conne
 import {
   loadSettings,
   saveSettings,
-  effectiveBackgroundOpacity,
+  effectiveBackgroundLayers,
   DEFAULT_FONT_SIZE,
   FONT_SIZE_RANGE,
 } from './lib/settings'
@@ -1234,27 +1234,29 @@ function App() {
   // connection yet, which paint it for themselves so waiting for one doesn't
   // look different from having one.
   //
-  // Both this and the settings the panes receive use the *effective* opacity,
-  // so the pane chrome and the engine's own clear colour fade together. The
-  // engine side costs one redraw per focus change: `setTheme` updates a
-  // uniform and flags the frame dirty, rather than anything being composited
-  // with CSS opacity on every frame.
-  const backgroundOpacity = effectiveBackgroundOpacity(terminalSettings, windowFocused)
+  // Three surfaces, three values, all equal while focused. They differ only
+  // while unfocused, because the areas they build are stacked to different
+  // depths and have to fade by the same visible amount — see
+  // `effectiveBackgroundLayers`. The terminal's value reaches the engine
+  // through the settings the panes receive, which costs one redraw per focus
+  // change: `setTheme` updates a uniform and flags the frame dirty, rather than
+  // anything being composited with CSS opacity on every frame.
+  const backgroundLayers = effectiveBackgroundLayers(terminalSettings, windowFocused)
   const paneSettings =
-    backgroundOpacity === terminalSettings.backgroundOpacity
+    backgroundLayers.terminal === terminalSettings.backgroundOpacity
       ? terminalSettings
-      : { ...terminalSettings, backgroundOpacity }
-  const paneBackground = backgroundWithOpacity(
-    findTheme(terminalSettings.themeName),
-    backgroundOpacity,
-  )
+      : { ...terminalSettings, backgroundOpacity: backgroundLayers.terminal }
+  const backgroundTheme = findTheme(terminalSettings.themeName)
+  const rootBackground = backgroundWithOpacity(backgroundTheme, backgroundLayers.root)
+  const paneBackground = backgroundWithOpacity(backgroundTheme, backgroundLayers.overRoot)
 
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden ${
         maximized ? '' : 'rounded-lg border border-chrome/10'
       }`}
-      style={{ background: paneBackground }}
+      // The window's own background, which every other surface sits on.
+      style={{ background: rootBackground }}
     >
       {/* No bottom hairline: the tabs above it have rounded tops now, and a
        * line running under the active one cut it off from the terminal it

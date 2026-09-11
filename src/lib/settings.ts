@@ -647,8 +647,20 @@ export const UNFOCUSED_OPACITY_FLOOR = 0.3
 
 /** How many translucent layers sit behind a connected terminal, each painted
  *  at the background opacity: the window itself (App's root), the terminal's
- *  padding wrapper (Terminal.tsx), and the engine's own cells. */
+ *  padding wrapper (Terminal.tsx), and the engine's own cells. The tab strip
+ *  is one layer (the root alone); a blank pane and the active tab are two. */
 export const TERMINAL_BACKGROUND_LAYERS = 3
+
+/** The opacity each kind of background surface paints at. */
+export interface BackgroundLayers {
+  /** The window's own background: App's root. Everything sits on this. */
+  root: number
+  /** Surfaces painted once over the root — a blank pane, the active tab. */
+  overRoot: number
+  /** Surfaces of which a connected terminal stacks two over the root — its
+   *  padding wrapper and the engine's cells. */
+  terminal: number
+}
 
 /** What `layers` stacked copies of one translucent colour look like: each lets
  *  through `1 - alpha` of what is behind it, so the stack lets through that
@@ -657,47 +669,66 @@ export function stackedOpacity(alpha: number, layers: number): number {
   return 1 - (1 - alpha) ** layers
 }
 
-/** The background opacity to paint *now*, given whether the window has focus.
+/** The opacity each background surface should paint at *now*.
  *
- * The one place the unfocused rule lives, so the pane background and the
- * engine's clear colour cannot disagree about it.
+ * The one place the unfocused rule lives, so no two surfaces can disagree
+ * about it.
  *
- * # Why this works in stacked terms
+ * # Why each surface gets its own value
  *
- * A connected terminal is seen through {@link TERMINAL_BACKGROUND_LAYERS}
- * layers, and stacked layers compound: three at 60% read as 94% opaque. The
- * first version of this scaled the per-layer value directly, which faded the
- * one-layer tab strip plainly while a connected pane — the thing actually
- * being looked at — went from 94% to 80% and barely seemed to change at all.
+ * The window is three kinds of area, stacked to different depths: the tab
+ * strip is the root alone, a blank pane or the active tab is two layers, and a
+ * connected terminal is three. Stacked layers compound — three at 90% read as
+ * 99.9% opaque — so no single per-layer value can fade all three areas by the
+ * same amount. Two earlier versions of this tried and each got one area wrong:
  *
- * So the target is set for what the terminal looks like (`dim` percent less
- * opaque than it looks when focused) and converted back into the per-layer
- * value that produces it. Everything with fewer layers — the tab strip, a
- * blank pane — fades further than the terminal does, which reads as the window
- * fading rather than as an inconsistency.
+ * - scaling every layer by the dim faded the tab strip plainly while a
+ *   connected terminal barely moved;
+ * - solving for the terminal instead amplified the change on the tab strip:
+ *   at 90% opacity a 5% dim took the strip from 90% to 63%.
  *
- * Focused, the result is exactly the configured opacity, so the focused look
- * is untouched. Unfocused, the result never exceeds it: the floor is capped at
- * what the terminal already looks like, so a window already very translucent
- * cannot firm *up* when it loses focus.
+ * So the root fades by exactly the dim, and each surface stacked on it is then
+ * solved for separately, so that every *area* ends up exactly `dim` percent
+ * less opaque than it looks focused. That is also what makes the setting's
+ * number mean one thing everywhere.
+ *
+ * Focused, every surface is exactly the configured opacity, so the look while
+ * working is untouched. The floor applies to the terminal area, the most
+ * opaque one, and scales everything together rather than clipping one area;
+ * it is capped at what the terminal already looks like, so a window that is
+ * already very translucent cannot firm *up* when it loses focus.
  *
  * Deliberately not applied to the acrylic tint. Re-applying the window effect
  * natively clears and re-applies the whole of it on every focus change;
  * fading only what sits above it leaves that layer alone. */
-export function effectiveBackgroundOpacity(
+export function effectiveBackgroundLayers(
   settings: Pick<TerminalSettings, 'backgroundOpacity' | 'unfocusedDimPercent'>,
   focused: boolean,
-  layers: number = TERMINAL_BACKGROUND_LAYERS,
-): number {
-  const { backgroundOpacity, unfocusedDimPercent } = settings
-  if (focused || unfocusedDimPercent <= 0) return backgroundOpacity
-  const seen = stackedOpacity(backgroundOpacity, layers)
-  const floor = Math.min(UNFOCUSED_OPACITY_FLOOR, seen)
-  const target = Math.max(floor, seen * (1 - unfocusedDimPercent / 100))
-  // Clamped because the round trip through the stack is not exact in floating
-  // point: a window already under the floor comes back a hair *above* its own
-  // opacity, and "never more opaque than it was" should be a guarantee.
-  return Math.min(backgroundOpacity, 1 - (1 - target) ** (1 / layers))
+): BackgroundLayers {
+  const alpha = settings.backgroundOpacity
+  if (focused || settings.unfocusedDimPercent <= 0) {
+    return { root: alpha, overRoot: alpha, terminal: alpha }
+  }
+
+  const terminalSeen = stackedOpacity(alpha, TERMINAL_BACKGROUND_LAYERS)
+  const floorScale = terminalSeen > 0 ? Math.min(1, UNFOCUSED_OPACITY_FLOOR / terminalSeen) : 1
+  const scale = Math.max(1 - settings.unfocusedDimPercent / 100, floorScale)
+
+  // Every value is kept within [0, alpha]: floating point makes the solved
+  // values come back a hair outside it, and "never more opaque than it was"
+  // should be a guarantee rather than approximately true.
+  const bound = (v: number) => Math.min(alpha, Math.max(0, v))
+
+  const root = bound(alpha * scale)
+  // What the root lets through, which every surface above it has to make up.
+  const throughRoot = 1 - root
+  if (throughRoot <= 0) return { root, overRoot: 0, terminal: 0 }
+
+  // One layer over the root: 1 - (1 - root)(1 - over) = scale * seen2.
+  const overRoot = bound(1 - (1 - scale * stackedOpacity(alpha, 2)) / throughRoot)
+  // Two layers over the root: 1 - (1 - root)(1 - t)^2 = scale * seen3.
+  const terminal = bound(1 - Math.sqrt((1 - scale * terminalSeen) / throughRoot))
+  return { root, overRoot, terminal }
 }
 
 export function loadSettings(): TerminalSettings {

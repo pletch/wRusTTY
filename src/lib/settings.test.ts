@@ -13,9 +13,7 @@ import {
   FONT_WEIGHT_RANGE,
   LINE_HEIGHT_PERCENT_RANGE,
   DEFAULT_FONT_SIZE,
-  effectiveBackgroundOpacity,
-  stackedOpacity,
-  TERMINAL_BACKGROUND_LAYERS,
+  effectiveBackgroundLayers,
   UNFOCUSED_OPACITY_FLOOR,
   UNFOCUSED_DIM_RANGE,
 } from './settings'
@@ -499,55 +497,86 @@ describe('custom themes', () => {
 })
 
 /**
- * Fading an unfocused window. Asserted in terms of what a connected terminal
- * *looks like* — its stacked layers composited — because that is what the
- * setting promises, and the first version of this passed per-layer tests while
- * barely changing what anyone could see.
+ * Fading an unfocused window, asserted in terms of what each *area* looks
+ * like — its layers composited — because that is what anyone sees. Two earlier
+ * versions passed per-layer tests while fading one area and not the other.
  */
-describe('effectiveBackgroundOpacity', () => {
+describe('effectiveBackgroundLayers', () => {
   const at = (backgroundOpacity: number, unfocusedDimPercent: number) => ({
     backgroundOpacity,
     unfocusedDimPercent,
   })
-  const seen = (alpha: number) => stackedOpacity(alpha, TERMINAL_BACKGROUND_LAYERS)
 
-  it('leaves a focused window exactly as configured', () => {
-    expect(effectiveBackgroundOpacity(at(0.8, 40), true)).toBe(0.8)
+  /** What each area looks like: the tab strip is the root alone, a blank pane
+   *  one surface over it, a connected terminal two. */
+  const areas = (l: { root: number; overRoot: number; terminal: number }) => ({
+    tabStrip: l.root,
+    blankPane: 1 - (1 - l.root) * (1 - l.overRoot),
+    terminal: 1 - (1 - l.root) * (1 - l.terminal) ** 2,
   })
 
-  it('does nothing when the setting is off, focused or not', () => {
-    expect(effectiveBackgroundOpacity(at(0.8, 0), false)).toBe(0.8)
+  it('paints every surface at the configured opacity while focused', () => {
+    expect(effectiveBackgroundLayers(at(0.9, 40), true)).toEqual({
+      root: 0.9,
+      overRoot: 0.9,
+      terminal: 0.9,
+    })
   })
 
-  /** The regression: three stacked layers at 60% read as 94% opaque, so
-   *  scaling each layer by the dim barely moved a connected pane. */
-  it('fades what the terminal looks like by the chosen amount', () => {
+  it('does nothing when the setting is off', () => {
+    expect(effectiveBackgroundLayers(at(0.9, 0), false)).toEqual({
+      root: 0.9,
+      overRoot: 0.9,
+      terminal: 0.9,
+    })
+  })
+
+  /** The whole point: one number, one visible change, everywhere. */
+  it('fades every area by the same fraction', () => {
     for (const [alpha, dim] of [
-      [1, 30],
+      [0.9, 5],
+      [0.9, 30],
       [0.6, 30],
-      [0.8, 50],
+      [1, 20],
     ] as const) {
-      const faded = effectiveBackgroundOpacity(at(alpha, dim), false)
-      expect(seen(faded)).toBeCloseTo(seen(alpha) * (1 - dim / 100), 6)
+      const before = areas(effectiveBackgroundLayers(at(alpha, dim), true))
+      const after = areas(effectiveBackgroundLayers(at(alpha, dim), false))
+      for (const area of ['tabStrip', 'blankPane', 'terminal'] as const) {
+        expect(after[area]).toBeCloseTo(before[area] * (1 - dim / 100), 6)
+      }
     }
   })
 
-  it('is a real step down on a connected pane, not a nudge', () => {
-    // 60% configured, 30% dim: the terminal goes from ~94% to ~66% opaque.
-    const faded = effectiveBackgroundOpacity(at(0.6, 30), false)
-    expect(seen(0.6) - seen(faded)).toBeGreaterThan(0.25)
+  /** The regression from the second attempt: at 90%, a 5% dim took the tab
+   *  strip to 63%. It must now move by the 5% it says. */
+  it('keeps a small fade small on the tab strip', () => {
+    const faded = effectiveBackgroundLayers(at(0.9, 5), false)
+    expect(faded.root).toBeCloseTo(0.855, 6)
+  })
+
+  /** And the regression from the first: a connected terminal barely moved. */
+  it('moves a connected terminal as much as the tab strip', () => {
+    const before = areas(effectiveBackgroundLayers(at(0.9, 30), true))
+    const after = areas(effectiveBackgroundLayers(at(0.9, 30), false))
+    const terminalDrop = before.terminal - after.terminal
+    const stripDrop = before.tabStrip - after.tabStrip
+    expect(terminalDrop).toBeGreaterThanOrEqual(stripDrop * 0.99)
   })
 
   it('never fades the terminal below the floor', () => {
-    const faded = effectiveBackgroundOpacity(at(1, 90), false)
-    expect(seen(faded)).toBeCloseTo(UNFOCUSED_OPACITY_FLOOR, 6)
+    const after = areas(effectiveBackgroundLayers(at(1, 90), false))
+    expect(after.terminal).toBeCloseTo(UNFOCUSED_OPACITY_FLOOR, 6)
   })
 
   /** A window already very translucent must not firm *up* on losing focus. */
-  it('never makes a window more opaque than it was', () => {
-    for (const alpha of [0.05, 0.1, 0.2, 0.6, 1]) {
+  it('never paints any surface more opaque than configured', () => {
+    for (const alpha of [0, 0.05, 0.2, 0.6, 0.9, 1]) {
       for (const dim of [5, 30, 60]) {
-        expect(effectiveBackgroundOpacity(at(alpha, dim), false)).toBeLessThanOrEqual(alpha)
+        const l = effectiveBackgroundLayers(at(alpha, dim), false)
+        for (const v of [l.root, l.overRoot, l.terminal]) {
+          expect(v).toBeGreaterThanOrEqual(0)
+          expect(v).toBeLessThanOrEqual(alpha)
+        }
       }
     }
   })
