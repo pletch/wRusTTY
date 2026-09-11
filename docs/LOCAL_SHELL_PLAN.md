@@ -455,7 +455,8 @@ presentation-only field belongs.
   PowerShell entry in the session browser, or leaves the user to add one, is a
   product call better made once the dialog exists.
 - **Elevated shells.** Launching as administrator needs a UAC transition that a
-  ConPTY spawn cannot perform, so it would take a different mechanism entirely.
+  ConPTY spawn cannot perform, so it takes a different mechanism entirely —
+  now planned separately in `docs/ELEVATED_TABS_PLAN.md`.
 
 ---
 
@@ -712,8 +713,10 @@ means a distro installed mid-session needs the dialog reopened.
 macOS nearly free, and `wr-local` compiles there already, but detection is
 Windows-only and nothing else in this app targets those platforms.
 
-**Elevated shells remain out of scope**, as recorded above: launching as
-administrator needs a UAC transition a ConPTY spawn cannot perform.
+**Elevated shells** are out of this plan's scope, as recorded above — a ConPTY
+spawn cannot perform the UAC transition. They have their own plan in
+`docs/ELEVATED_TABS_PLAN.md`: an administrator shell in a tab of an ordinary
+window, through a small elevated host relaying over a named pipe.
 
 Two things from the original scoping stay deliberately undone: a **local file
 browser** (decision 3) and a **"run on connect" field** (decision 4).
