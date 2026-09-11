@@ -75,11 +75,21 @@ impl LocalConfig {
     /// `C--Program-Files-PowerShell-7-pwsh-exe` says the same thing and is
     /// unreadable. `logging.rs` sanitizes whatever it gets, so this only has
     /// to be meaningful, not safe.
+    ///
+    /// Split on both separators by hand rather than through `Path`, which only
+    /// knows the host's own: on Linux a Windows path is a single file name. The
+    /// frontend's `shellLabel` does the same.
     pub fn label(&self) -> &str {
-        std::path::Path::new(&self.command)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("shell")
+        let leaf = self.command.rsplit(['/', '\\']).next().unwrap_or("");
+        let stem = match leaf.rsplit_once('.') {
+            Some((stem, _)) if !stem.is_empty() => stem,
+            _ => leaf,
+        };
+        if stem.is_empty() {
+            "shell"
+        } else {
+            stem
+        }
     }
 }
 
