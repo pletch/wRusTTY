@@ -215,10 +215,11 @@ pub async fn elevated_connect(
     rows: u16,
     state: State<'_, ElevatedState>,
 ) -> Result<String, String> {
-    // Checked here as well as in the launcher, so a bad id fails before a
-    // session id is issued rather than after.
-    if !ELEVATABLE_SHELLS.contains(&shell_id.as_str()) {
-        return Err(format!("{shell_id} cannot be run as administrator"));
+    // Checked here as well as in the launcher and the host, so a shell the host
+    // would refuse fails before a session id is issued — and before a UAC
+    // prompt the user would approve for nothing.
+    if let Some(why) = elevation_refusal(&shell_id) {
+        return Err(why);
     }
     let owner = app
         .get_webview_window("main")
@@ -335,17 +336,49 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
 /// What an elevatable shell id runs, resolved by this — elevated — process's
 /// own detection. Nothing the tab sent chooses the executable: only the id
 /// travels, and only the ids in [`ELEVATABLE_SHELLS`] resolve at all.
+///
+/// Through [`ElevatedMachine`](crate::local_shells::ElevatedMachine), not the
+/// environment: nothing the user can set without elevation — `ComSpec` in
+/// `HKCU\Environment`, a binary under `%LOCALAPPDATA%` — gets to decide what an
+/// approved UAC prompt runs.
 fn resolve_elevatable(shell_id: &str) -> Option<wr_local::LocalConfig> {
     if !ELEVATABLE_SHELLS.contains(&shell_id) {
         return None;
     }
-    let shell = crate::local_shells::detect(&crate::local_shells::SystemMachine)
+    let shell = crate::local_shells::detect(&crate::local_shells::ElevatedMachine)
         .into_iter()
         .find(|s| s.id == shell_id)?;
     Some(wr_local::LocalConfig {
         command: shell.command,
         args: shell.args,
         ..Default::default()
+    })
+}
+
+/// Why `shell_id` cannot be opened elevated, decided *before* the UAC prompt.
+///
+/// The host would refuse it anyway, but only after the user had approved a
+/// prompt, and its refusal reaches the tab as nothing better than "the host
+/// exited". The usual cause is a shell installed for this user alone — the
+/// Store's PowerShell, a per-user Git — which is detected for an ordinary tab
+/// and deliberately not for an elevated one, so that case is named.
+fn elevation_refusal(shell_id: &str) -> Option<String> {
+    if !ELEVATABLE_SHELLS.contains(&shell_id) {
+        return Some(format!("{shell_id} cannot be run as administrator"));
+    }
+    if resolve_elevatable(shell_id).is_some() {
+        return None;
+    }
+    let for_user = crate::local_shells::detect(&crate::local_shells::SystemMachine)
+        .into_iter()
+        .find(|s| s.id == shell_id);
+    Some(match for_user {
+        Some(shell) => format!(
+            "{} is installed only for your account ({}), so it cannot be run as \
+             administrator. Install it for all users to open it elevated.",
+            shell.label, shell.command
+        ),
+        None => format!("{shell_id} is not installed"),
     })
 }
 
@@ -531,6 +564,25 @@ mod tests {
         assert!(resolve_elevatable("").is_none());
         // cmd.exe is on every Windows machine.
         assert!(resolve_elevatable("cmd").is_some());
+    }
+
+    /// The host runs the system's cmd.exe whatever `ComSpec` says — that
+    /// variable is the user's to override without elevation.
+    #[test]
+    fn the_elevated_cmd_is_the_system_one() {
+        let cmd = resolve_elevatable("cmd").unwrap();
+        assert!(cmd
+            .command
+            .to_ascii_lowercase()
+            .ends_with(r"\system32\cmd.exe"));
+        assert!(elevation_refusal("cmd").is_none());
+    }
+
+    #[test]
+    fn a_shell_that_cannot_be_elevated_is_refused_with_a_reason() {
+        assert!(elevation_refusal("wsl:Debian")
+            .unwrap()
+            .contains("cannot be run as administrator"));
     }
 
     fn request(shell_id: &str, pipe_name: &str) -> LaunchRequest {

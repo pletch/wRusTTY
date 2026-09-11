@@ -235,6 +235,65 @@ impl Machine for SystemMachine {
     }
 }
 
+/// The machine as the *elevated host* may see it: system locations only.
+///
+/// [`SystemMachine`] answers from the environment, and the environment is the
+/// user's to set — `HKCU\Environment` can override `ComSpec`, `SystemRoot` or
+/// `ProgramFiles` for every process they start, the elevated one included, with
+/// no elevation needed to write it. `LOCALAPPDATA` is under the user's control
+/// by definition. Resolving an administrator shell through any of those would
+/// let anything running as the user pick what the next UAC approval runs.
+///
+/// So this answers the three folder variables detection needs from the known-
+/// folder API, which reads machine-wide configuration rather than the
+/// environment, and answers nothing else: no `ComSpec`, so Command Prompt is
+/// `System32\cmd.exe`; no `LOCALAPPDATA`, so neither the `WindowsApps` alias for
+/// PowerShell nor a per-user Git install is considered. Git's `HKLM` install
+/// path stays, since only an administrator can write it. WSL is not elevatable
+/// and is left out.
+#[cfg(windows)]
+pub struct ElevatedMachine;
+
+#[cfg(windows)]
+impl Machine for ElevatedMachine {
+    fn var(&self, name: &str) -> Option<String> {
+        use windows::Win32::UI::Shell::{
+            FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Windows,
+        };
+        match name {
+            "SystemRoot" => known_folder(&FOLDERID_Windows),
+            "ProgramFiles" => known_folder(&FOLDERID_ProgramFiles),
+            "ProgramFiles(x86)" => known_folder(&FOLDERID_ProgramFilesX86),
+            _ => None,
+        }
+    }
+
+    fn is_file(&self, path: &str) -> bool {
+        SystemMachine.is_file(path)
+    }
+
+    fn git_install_path(&self) -> Option<String> {
+        SystemMachine.git_install_path()
+    }
+
+    fn wsl_distros(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// A known folder's path, or `None` if Windows will not say.
+#[cfg(windows)]
+fn known_folder(id: &windows::core::GUID) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+
+    let path = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None) }.ok()?;
+    let text = unsafe { path.to_string() };
+    // Freed whether or not it decoded: the shell allocated it for us.
+    unsafe { CoTaskMemFree(Some(path.0 as *const std::ffi::c_void)) };
+    text.ok().filter(|p| !p.is_empty())
+}
+
 /// The two registry reads detection needs, in the shape `putty_import.rs`
 /// established: read-only, a self-closing key, and a missing key treated as
 /// "not installed" rather than as an error.
@@ -583,6 +642,36 @@ mod tests {
             find(&detect(&machine), "cmd").command,
             r"C:\Windows\System32\cmd.exe"
         );
+    }
+
+    /// The elevated host's view, against the real machine. Whatever this
+    /// user's environment says, Command Prompt is the one in the system
+    /// directory and nothing resolves under their profile.
+    #[cfg(windows)]
+    #[test]
+    fn the_elevated_view_resolves_only_system_locations() {
+        let machine = ElevatedMachine;
+        assert_eq!(machine.var("ComSpec"), None);
+        assert_eq!(machine.var("LOCALAPPDATA"), None);
+        let windows = machine.var("SystemRoot").expect("a Windows directory");
+        assert!(Path::new(&windows).join("System32").is_dir());
+
+        let shells = detect(&machine);
+        let cmd = find(&shells, "cmd");
+        assert!(cmd
+            .command
+            .eq_ignore_ascii_case(&join(&windows, r"System32\cmd.exe")));
+
+        let profile = std::env::var("USERPROFILE").unwrap().to_ascii_lowercase();
+        for shell in &shells {
+            assert!(
+                !shell.command.to_ascii_lowercase().starts_with(&profile),
+                "{} resolved under the user profile: {}",
+                shell.id,
+                shell.command
+            );
+        }
+        assert!(!ids(&shells).iter().any(|id| id.starts_with("wsl:")));
     }
 
     /// Nothing found is an empty list, never an error: a machine this bare is
