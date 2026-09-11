@@ -34,6 +34,11 @@ function restorableSource(
   // a network, so restoring one can always succeed. It re-resolves its shell id
   // on the way back, exactly as a fresh connect does.
   if (source.protocol === 'localProfile') return source
+  // And so can an unsaved one, for the same reasons. It used to be dropped
+  // alongside an unsaved SSH session, but that rule exists for a password that
+  // was never stored, and a local shell has none — so a restart lost every
+  // ordinary shell tab while an administrator one came back as its form.
+  if (source.protocol === 'local') return source
   if (source.protocol === 'serial' && opts.allowSerial) return source
   // An administrator shell is never restored connected (decision 4 of
   // docs/ELEVATED_TABS_PLAN.md): that would be a UAC prompt nobody asked for.

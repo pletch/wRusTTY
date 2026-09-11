@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { ConnectionSource } from './connection'
+import { defaultLocalConfig } from './local'
 import type { SessionProfile } from './profiles'
 import type { PaneNode, Tab } from '../types'
 import { blankLeaf } from './paneTree'
@@ -200,5 +201,20 @@ describe('administrator panes', () => {
 
   it('are not counted as lost, since their form survives', () => {
     expect(countUnsaveable([tabWith(elevated, rawSshSource)], { allowSerial: true })).toBe(1)
+  })
+})
+
+describe('local shells', () => {
+  const adHoc: ConnectionSource = {
+    protocol: 'local',
+    config: { ...defaultLocalConfig(), command: 'C:/Program Files/PowerShell/7/pwsh.exe' },
+  }
+
+  // No credential and no network: an unsaved shell can always start again,
+  // so it comes back connected rather than vanishing with its tab.
+  it('restores an unsaved local shell connected', () => {
+    const result = sanitizeTabs([tabWith(adHoc)], { allowSerial: true })
+    expect(collectSources(result)).toEqual([adHoc])
+    expect(countUnsaveable([tabWith(adHoc)], { allowSerial: true })).toBe(0)
   })
 })
