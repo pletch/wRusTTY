@@ -25,6 +25,7 @@ import {
   FONT_WEIGHT_RANGE,
   LINE_HEIGHT_PERCENT_RANGE,
   LETTER_SPACING_RANGE,
+  UNFOCUSED_DIM_RANGE,
 } from '../lib/settings'
 import { listInstalledFonts, stackFor, type InstalledFont } from '../lib/fonts'
 import {
@@ -1180,6 +1181,32 @@ export function SettingsDialog({
                             onChange({ ...settings, backgroundOpacity: percent / 100 })
                           }
                         />
+                      </div>
+                      <div>
+                        <label className="flex items-center justify-between gap-2 text-chrome/85">
+                          <span>Fade when unfocused</span>
+                          <span className="text-chrome/50">
+                            {settings.unfocusedDimPercent === 0
+                              ? 'Off'
+                              : `${settings.unfocusedDimPercent}%`}
+                          </span>
+                        </label>
+                        <RangeInput
+                          min={UNFOCUSED_DIM_RANGE.min}
+                          max={UNFOCUSED_DIM_RANGE.max}
+                          step={5}
+                          className="mt-1.5 w-full"
+                          value={settings.unfocusedDimPercent}
+                          aria-label="Fade when unfocused"
+                          onChange={(percent) =>
+                            onChange({ ...settings, unfocusedDimPercent: percent })
+                          }
+                        />
+                        <p className="mt-1 text-chrome/40">
+                          Makes the background more see-through while another app is active, so
+                          it is obvious this window is not the one you are typing into. Text is
+                          unaffected.
+                        </p>
                       </div>
                       <div>
                         <span className="text-chrome/85">Window effect</span>

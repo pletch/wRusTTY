@@ -13,6 +13,9 @@ import {
   FONT_WEIGHT_RANGE,
   LINE_HEIGHT_PERCENT_RANGE,
   DEFAULT_FONT_SIZE,
+  effectiveBackgroundOpacity,
+  UNFOCUSED_OPACITY_FLOOR,
+  UNFOCUSED_DIM_RANGE,
 } from './settings'
 import { PRESET_THEMES, findTheme, getCustomThemes, setCustomThemes } from './theme'
 
@@ -490,5 +493,57 @@ describe('custom themes', () => {
     localStorage.setItem(STORAGE_KEY, '{not json')
     expect(loadSettings().customThemes).toEqual([])
     expect(getCustomThemes()).toEqual([])
+  })
+})
+
+/**
+ * Fading an unfocused window. The rule that matters is the floor, and in
+ * particular that the floor never makes a window *more* opaque than it was.
+ */
+describe('effectiveBackgroundOpacity', () => {
+  const at = (backgroundOpacity: number, unfocusedDimPercent: number) => ({
+    backgroundOpacity,
+    unfocusedDimPercent,
+  })
+
+  it('leaves a focused window exactly as configured', () => {
+    expect(effectiveBackgroundOpacity(at(0.8, 40), true)).toBe(0.8)
+  })
+
+  it('does nothing when the setting is off, focused or not', () => {
+    expect(effectiveBackgroundOpacity(at(0.8, 0), false)).toBe(0.8)
+  })
+
+  /** Relative, so it composes with a window already running translucent. */
+  it('fades relative to the configured opacity', () => {
+    expect(effectiveBackgroundOpacity(at(1, 20), false)).toBeCloseTo(0.8)
+    expect(effectiveBackgroundOpacity(at(0.6, 50), false)).toBeCloseTo(0.3)
+  })
+
+  it('never fades below the floor', () => {
+    expect(effectiveBackgroundOpacity(at(0.6, 60), false)).toBe(UNFOCUSED_OPACITY_FLOOR)
+  })
+
+  /** The case the capped floor exists for: someone already below the floor
+   *  must not see the window firm *up* when they click away. */
+  it('never makes a window more opaque than it was', () => {
+    expect(effectiveBackgroundOpacity(at(0.2, 30), false)).toBeLessThanOrEqual(0.2)
+    expect(effectiveBackgroundOpacity(at(0.2, 30), false)).toBe(0.2)
+  })
+})
+
+describe('unfocusedDimPercent', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('defaults to off', () => {
+    expect(loadSettings().unfocusedDimPercent).toBe(0)
+  })
+
+  /** It reaches the renderer as an alpha, so a hand-edited value must not. */
+  it('is clamped on load', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 500 }))
+    expect(loadSettings().unfocusedDimPercent).toBe(UNFOCUSED_DIM_RANGE.max)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ unfocusedDimPercent: 'lots' }))
+    expect(loadSettings().unfocusedDimPercent).toBe(0)
   })
 })

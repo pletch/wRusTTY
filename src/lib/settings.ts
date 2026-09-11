@@ -270,6 +270,16 @@ export interface TerminalSettings {
    * corners); with acrylic/mica it's layered under that OS effect instead,
    * so the two read as one consistent translucent window. */
   backgroundOpacity: number
+  /** How much further to fade the background while the window is *not* the
+   * active one, as a percentage of `backgroundOpacity`. 0 (the default) leaves
+   * an unfocused window looking exactly like a focused one.
+   *
+   * Relative rather than absolute because it has to compose with whatever
+   * `backgroundOpacity` is already set to: someone running at 60% wants a
+   * *further* step down when they click away, not a jump to some fixed value
+   * that might be more opaque than what they started from. See
+   * `effectiveBackgroundOpacity`, which also stops it fading to nothing. */
+  unfocusedDimPercent: number
   /** 'off' skips the native call entirely. 'acrylic' is live blur-behind
    * (the classic Windows Terminal look) but has a documented Microsoft
    * resize/drag perf bug on Win10 1903+/Win11 22000+. 'mica' and 'tabbed'
@@ -534,6 +544,9 @@ const defaults: TerminalSettings = {
   customThemes: [],
   restoreSessionsOnLaunch: false,
   backgroundOpacity: 1,
+  // Off by default: a window that changes appearance when you click away is a
+  // surprise unless it was asked for.
+  unfocusedDimPercent: 0,
   vibrancyMode: 'off',
   textBlending: 'native',
   ligatures: false,
@@ -606,6 +619,9 @@ export function scrollbackTierForRows(rows: number): number {
  * the same setting the slider does and the two must agree on where it stops.
  */
 export const FONT_SIZE_RANGE = { min: 8, max: 24 } as const
+/** Capped well short of 100: past about two thirds the pane stops reading as a
+ *  window and starts reading as a rendering glitch. */
+export const UNFOCUSED_DIM_RANGE = { min: 0, max: 60 } as const
 export const FONT_WEIGHT_RANGE = { min: 100, max: 900 } as const
 /** 100 is a cell exactly as tall as the font size — anything less clips the
  *  descenders of the face itself, not just of the odd glyph. */
@@ -623,6 +639,33 @@ function clampSetting(value: unknown, fallback: number, range: { min: number; ma
   // whole reason there is a fallback argument.
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
   return Math.min(Math.max(Math.round(value), range.min), range.max)
+}
+
+/** The least an unfocused window's background will fade to. Below roughly this
+ *  the pane stops reading as a window over a busy desktop at all. */
+export const UNFOCUSED_OPACITY_FLOOR = 0.3
+
+/** The background opacity to paint *now*, given whether the window has focus.
+ *
+ * The one place the unfocused rule lives, so the pane background and the
+ * engine's clear colour cannot disagree about it.
+ *
+ * The floor is itself capped at the configured opacity. Without that, someone
+ * already running at 20% would see the window turn *more* opaque when they
+ * clicked away — the opposite of the point of the setting.
+ *
+ * Deliberately not applied to the acrylic tint. Re-running `setWindowVibrancy`
+ * on every focus change is a native call that clears and re-applies the whole
+ * effect, and `window_effects.rs` records acrylic's resize/drag performance
+ * bug; fading only what sits above the blur leaves that layer alone. */
+export function effectiveBackgroundOpacity(
+  settings: Pick<TerminalSettings, 'backgroundOpacity' | 'unfocusedDimPercent'>,
+  focused: boolean,
+): number {
+  const { backgroundOpacity, unfocusedDimPercent } = settings
+  if (focused || unfocusedDimPercent <= 0) return backgroundOpacity
+  const floor = Math.min(UNFOCUSED_OPACITY_FLOOR, backgroundOpacity)
+  return Math.max(floor, backgroundOpacity * (1 - unfocusedDimPercent / 100))
 }
 
 export function loadSettings(): TerminalSettings {
@@ -646,6 +689,11 @@ export function loadSettings(): TerminalSettings {
     // Every one of these reaches the renderer as a number it will size a grid
     // or a face with. A stored zero or a NaN would not be a bad-looking pane,
     // it would be a division by a zero-width cell.
+    merged.unfocusedDimPercent = clampSetting(
+      merged.unfocusedDimPercent,
+      defaults.unfocusedDimPercent,
+      UNFOCUSED_DIM_RANGE,
+    )
     merged.fontSize = clampSetting(merged.fontSize, defaults.fontSize, FONT_SIZE_RANGE)
     merged.fontWeight = clampSetting(merged.fontWeight, defaults.fontWeight, FONT_WEIGHT_RANGE)
     merged.fontWeightBold = clampSetting(

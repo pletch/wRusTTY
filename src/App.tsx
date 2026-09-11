@@ -35,7 +35,13 @@ import * as vault from './lib/vault'
 import type { VaultStatus, VaultSecret } from './lib/vault'
 import type { ConnectionSource } from './lib/connection'
 import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/connection'
-import { loadSettings, saveSettings, DEFAULT_FONT_SIZE, FONT_SIZE_RANGE } from './lib/settings'
+import {
+  loadSettings,
+  saveSettings,
+  effectiveBackgroundOpacity,
+  DEFAULT_FONT_SIZE,
+  FONT_SIZE_RANGE,
+} from './lib/settings'
 import { formatCommandDuration } from './lib/shellIntegration'
 import type { CommandResult } from './lib/shellIntegration'
 import {
@@ -308,6 +314,10 @@ function App() {
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  // Whether this window is the active one, for `unfocusedDimPercent`. Starts
+  // true: the window is focused when it opens, and assuming otherwise would
+  // flash it dim on every launch until the first event corrected it.
+  const [windowFocused, setWindowFocused] = useState(true)
   // The quick-connect palette, a close confirmation, the launch-restore
   // prompt and the open-workspace-needs-vault prompt used to be five
   // separately-updated pieces of state (paletteOpen, pendingRestore,
@@ -426,6 +436,19 @@ function App() {
 
   // Rounded corners only make sense for a floating window — a maximized
   // one should fill the screen edge-to-edge like any other app.
+  // One listener for the whole window. Terminal.tsx has its own
+  // `onFocusChanged`, but it is per pane and only acts on regaining focus — it
+  // exists to un-wedge WebView2's refocus — so it is the wrong shape to hang a
+  // window-wide appearance change off.
+  useEffect(() => {
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload }) =>
+      setWindowFocused(payload),
+    )
+    return () => {
+      unlisten.then((f) => f())
+    }
+  }, [])
+
   useEffect(() => {
     const win = getCurrentWindow()
     win.isMaximized().then(setMaximized)
@@ -1210,9 +1233,20 @@ function App() {
   // so that tab and terminal read as one surface, and with panes that have no
   // connection yet, which paint it for themselves so waiting for one doesn't
   // look different from having one.
+  //
+  // Both this and the settings the panes receive use the *effective* opacity,
+  // so the pane chrome and the engine's own clear colour fade together. The
+  // engine side costs one redraw per focus change: `setTheme` updates a
+  // uniform and flags the frame dirty, rather than anything being composited
+  // with CSS opacity on every frame.
+  const backgroundOpacity = effectiveBackgroundOpacity(terminalSettings, windowFocused)
+  const paneSettings =
+    backgroundOpacity === terminalSettings.backgroundOpacity
+      ? terminalSettings
+      : { ...terminalSettings, backgroundOpacity }
   const paneBackground = backgroundWithOpacity(
     findTheme(terminalSettings.themeName),
-    terminalSettings.backgroundOpacity,
+    backgroundOpacity,
   )
 
   return (
@@ -1513,7 +1547,7 @@ function App() {
                   key={`${leaf.id}-${leaf.generation}`}
                   source={leaf.source}
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
-                  settings={terminalSettings}
+                  settings={paneSettings}
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   autoReconnect={leaf.autoReconnect}
                   logging={loggingByPane[leaf.id] ?? false}
