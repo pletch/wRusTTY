@@ -106,7 +106,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// never reports its exit is exactly the bug worth failing on, and without a
 /// deadline that bug hangs the suite instead of failing it.
 ///
-/// `input` is written once the pseudoconsole is known to be up — that is, right
+/// On Windows, `input` is written once the pseudoconsole is known to be up — that is, right
 /// after its opening query is answered. Writing before that point is a race:
 /// the bytes go into the pty either way, but whether the child has started
 /// reading yet is not something the test can know.
@@ -119,6 +119,14 @@ async fn drive(
     let mut statuses = Vec::new();
     let mut input = input;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+
+    // A Unix pty asks no opening question to wait for, and needs none: the
+    // line discipline holds what is written until the child reads it, so there
+    // is no race to avoid. Waiting for the query there meant never writing.
+    #[cfg(not(windows))]
+    if let Some(pending) = input.take() {
+        let _ = session.write(pending).await;
+    }
 
     while let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await {
         match event {
