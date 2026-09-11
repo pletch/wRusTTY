@@ -1,8 +1,12 @@
 import { useState } from 'react'
-import { Lock, Fingerprint, RotateCcw } from 'lucide-react'
+import { Lock, Fingerprint, RotateCcw, ShieldCheck } from 'lucide-react'
 
 interface Props {
   count: number
+  /** How many of `count` are administrator tabs, which come back waiting for
+   * a UAC approval rather than connected. Named in the prompt so the total
+   * matches the tabs that appear. */
+  awaitingElevation?: number
   needsVaultUnlock: boolean
   osUnlockAvailable: boolean
   onRestore: () => void
@@ -27,6 +31,7 @@ const inputClass =
 
 export function RestoreSessionsPrompt({
   count,
+  awaitingElevation = 0,
   needsVaultUnlock,
   osUnlockAvailable,
   onRestore,
@@ -80,6 +85,18 @@ export function RestoreSessionsPrompt({
           {body ??
             `${count === 1 ? 'A session was' : 'Sessions were'} open when wRusTTY last closed.`}
         </p>
+        {awaitingElevation > 0 && (
+          <p className="flex items-start gap-1.5 text-xs leading-relaxed text-chrome/50">
+            <ShieldCheck size={13} className="mt-px shrink-0 text-amber-400" />
+            <span>
+              {awaitingElevation === 1
+                ? count === 1
+                  ? 'It is an administrator tab, and waits for you to approve it before it opens.'
+                  : '1 of them is an administrator tab, and waits for you to approve it before it opens.'
+                : `${awaitingElevation} of them are administrator tabs, and wait for you to approve each before it opens.`}
+            </span>
+          </p>
+        )}
 
         {needsVaultUnlock ? (
           <form onSubmit={submitUnlock} className="space-y-3">

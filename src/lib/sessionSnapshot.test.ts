@@ -12,6 +12,7 @@ import {
   loadSnapshot,
   clearSnapshot,
   countSessions,
+  countAwaitingElevation,
   isVaultBound,
   needsVaultUnlock,
 } from './sessionSnapshot'
@@ -216,5 +217,26 @@ describe('local shells', () => {
     const result = sanitizeTabs([tabWith(adHoc)], { allowSerial: true })
     expect(collectSources(result)).toEqual([adHoc])
     expect(countUnsaveable([tabWith(adHoc)], { allowSerial: true })).toBe(0)
+  })
+})
+
+describe('countAwaitingElevation', () => {
+  const elevated: ConnectionSource = { protocol: 'elevated', shellId: 'pwsh', profileId: null }
+
+  // The launch prompt's count: after a restart, an administrator pane has no
+  // source (it waits for approval), so countSessions alone left it out.
+  it('counts restored administrator panes, which countSessions does not', () => {
+    const tab = tabWith(sshProfileSource('p1'), elevated)
+    const leaves = tab.root.type === 'split' ? tab.root.children : []
+    const adminLeaf = leaves[1]
+    if (adminLeaf.type === 'leaf') {
+      adminLeaf.initial = {
+        protocol: 'local',
+        local: { shellId: 'pwsh', command: 'pwsh.exe', args: [], cwd: null, elevated: true },
+      }
+    }
+    const restored = sanitizeTabs([tab], { allowSerial: true })
+    expect(countSessions(restored)).toBe(1)
+    expect(countAwaitingElevation(restored)).toBe(1)
   })
 })

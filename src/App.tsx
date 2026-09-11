@@ -1916,7 +1916,13 @@ function App() {
             return (
               sessionsLoaded && (
                 <RestoreSessionsPrompt
-                  count={sessionSnapshot.countSessions(modal.snapshot.tabs)}
+                  // Administrator tabs are sessions too, even though they come
+                  // back waiting for approval rather than connected.
+                  count={
+                    sessionSnapshot.countSessions(modal.snapshot.tabs) +
+                    sessionSnapshot.countAwaitingElevation(modal.snapshot.tabs)
+                  }
+                  awaitingElevation={sessionSnapshot.countAwaitingElevation(modal.snapshot.tabs)}
                   needsVaultUnlock={
                     sessionSnapshot.needsVaultUnlock(modal.snapshot.tabs, sessions) && vaultStatus !== 'unlocked'
                   }

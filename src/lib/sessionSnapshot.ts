@@ -47,7 +47,7 @@ function restorableSource(
 }
 
 /** A pane restored without its connection but still worth its tab: an
- * administrator shell reopens as a form with the box already ticked, one
+ * administrator shell reopens as its reopen-or-close card (ElevatedRestore), one
  * deliberate click from where it was, rather than vanishing. */
 function keepsBlank(source: ConnectionSource | null): boolean {
   return source?.protocol === 'elevated'
@@ -136,6 +136,17 @@ export function clearSnapshot() {
 
 export function countSessions(tabs: Tab[]): number {
   return tabs.reduce((n, t) => n + allLeaves(t.root).filter((l) => l.source).length, 0)
+}
+
+/** Administrator panes coming back as their reopen card: restored, but with no
+ * connection until someone approves the UAC prompt (see `keepsBlank`). Counted
+ * apart from `countSessions` so the restore prompt can name them as sessions
+ * of their own that wait, rather than leave them out of the total. */
+export function countAwaitingElevation(tabs: Tab[]): number {
+  return tabs.reduce(
+    (n, t) => n + allLeaves(t.root).filter((l) => !l.source && l.initial?.local?.elevated).length,
+    0,
+  )
 }
 
 /** Whether connecting this saved profile has to go through the vault.
