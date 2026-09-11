@@ -456,9 +456,17 @@ disabled for a typed path, the warning only when ticked, and the source sent
 each way. `sessionSnapshot.test.ts` and `commandHistory.test.ts` cover restore
 and history.
 
-**Not yet checked in the running app.** The in-app flow — tick, prompt, shield,
-restart, restore as a form — and the Task Manager check for orphaned
-administrator processes (see *What must not regress*) both need a rebuilt
-`wrustty.exe` and a person at the prompt.
+**Checked in the running app, 2026-09-10.** Ticking the box on PowerShell and
+approving the prompt opened a tab with the shield, `ADMIN · pwsh ·
+Administrator` in the status bar, and the shell's own console title reading
+`Administrator: C:\Program Files\PowerShell\7\pwsh.exe` — Windows' prefix for
+an elevated console, independent of anything drawn here. The process tree was
+app → host `wrustty.exe` → `pwsh.exe` + `conhost.exe`, the three unreadable
+from a medium-integrity process. Closing the tab ended all three. Restarting
+brought the tab back as the ticked form, with no prompt until asked.
+
+**Still to check by hand:** the shell exiting on its own (`exit`), and
+wRusTTY killed outright with an administrator tab open — the host must see
+its pipe close and take the shell with it.
 
 [wt-elevate]: https://learn.microsoft.com/en-us/windows/terminal/customize-settings/profile-general
