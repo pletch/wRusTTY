@@ -161,3 +161,26 @@ describe('StatusBar remote title and directory', () => {
     expect(title).toMatch(/remote host/i)
   })
 })
+
+/**
+ * A running local shell has no connection to report, so "Connected" and its
+ * green dot say nothing the pane's existence does not. The rule stops at
+ * `connected`: a shell that failed to start keeps its state, because that pane
+ * stays open precisely so the reason can be read.
+ */
+describe('StatusBar connection state for a local shell', () => {
+  it('says nothing about a running local shell', () => {
+    render(<StatusBar {...base} protocol="LOCAL" target="pwsh" />)
+    expect(screen.queryByText('Connected')).toBeNull()
+  })
+
+  it('still reports a local shell that failed to start', () => {
+    render(<StatusBar {...base} protocol="LOCAL" target="pwsh" status="failed: no such executable" />)
+    expect(screen.getByText('Failed')).toBeTruthy()
+  })
+
+  it('keeps reporting a remote connection', () => {
+    render(<StatusBar {...base} />)
+    expect(screen.getByText('Connected')).toBeTruthy()
+  })
+})

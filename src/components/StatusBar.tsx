@@ -179,11 +179,22 @@ export function StatusBar({
       ? estimateScrollbackRows(scrollbackBudgetBytes, dimensions.cols)
       : null
 
+  // A running local shell says nothing about its connection, because it has
+  // none: the process is either running — in which case this pane exists — or
+  // gone, in which case the pane closes. "● Connected" there restates the
+  // pane's own existence. Same rule as the tab badge (TabBar.statusDotColor),
+  // and for the same reason it stops at `connected`: a shell that failed to
+  // start keeps its red dot and its "Failed", since that pane stays open
+  // precisely so the reason can be read.
+  const quietLocal = protocol === 'LOCAL' && status === 'connected'
+
   return (
     <footer className="flex h-6 shrink-0 items-center gap-2 border-t border-chrome/10 bg-black/20 px-3 text-xs text-chrome/45">
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-base ease-swift ${statusDotColor(status)}`}
-      />
+      {!quietLocal && (
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-base ease-swift ${statusDotColor(status)}`}
+        />
+      )}
       {protocol && (
         <span className="shrink-0 font-medium tracking-wide text-chrome/55">{protocol}</span>
       )}
@@ -192,7 +203,7 @@ export function StatusBar({
           {target}
         </span>
       )}
-      <span className="shrink-0">{statusLabel(status)}</span>
+      {!quietLocal && <span className="shrink-0">{statusLabel(status)}</span>}
 
       {/* Both absent for any host that reports neither, so the bar reads
           exactly as it always did until one opts in. `shrink` rather than
