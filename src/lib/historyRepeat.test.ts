@@ -294,17 +294,48 @@ describe('HistoryRepeatWatcher', () => {
     expect(found).toEqual([])
   })
 
-  it('compares at the backstop however long output keeps arriving', () => {
+  it('gives up at the backstop rather than comparing mid-sentence', () => {
     const { found, press, watcher } = watch()
     press()
     // A pane printing something unrelated — a tail, a progress bar — would
-    // otherwise restart the settle timer for ever and the press would never
-    // be answered at all.
+    // otherwise restart the settle timer for ever, so the backstop has to end
+    // the press. What it must not do is *answer* it: the far end was still
+    // talking when it fired, so the line is mid-redraw and "unchanged" would
+    // be a claim about a snapshot taken too early.
     for (let elapsed = 0; elapsed < MAX_WAIT_MS * 2; elapsed += SETTLE_MS - 10) {
       watcher.noteParsed()
       vi.advanceTimersByTime(SETTLE_MS - 10)
     }
-    expect(found).toHaveLength(1)
+    expect(found).toEqual([])
+    // Ended, not merely postponed — nothing is left ticking against the pane.
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('says nothing on a link too slow for the deadline to mean anything', () => {
+    const { found, press, reply, watcher } = watch()
+    // A link whose round trip is past what MAX_DEADLINE_MS can wait out. The
+    // deadline is then a ceiling rather than evidence: it fires while the far
+    // end is still on its way, and every press would flicker — including the
+    // ones that walked the history perfectly well.
+    press()
+    vi.advanceTimersByTime(600)
+    reply('cargo test')
+    expect(watcher.deadlineMs).toBe(MAX_DEADLINE_MS)
+
+    press()
+    vi.advanceTimersByTime(MAX_WAIT_MS)
+    expect(found).toEqual([])
+  })
+
+  it('says nothing on the first press of a session that has never answered', () => {
+    const { found, press, noReply } = watch()
+    // Nothing measured, so silence could be a duplicate or could be a link
+    // slower than the ceiling. Guessing here is how a slow session greets you
+    // with a flicker under a press that did move the history.
+    press()
+    noReply()
+    vi.advanceTimersByTime(MAX_WAIT_MS)
+    expect(found).toEqual([])
   })
 
   it('says nothing where the line cannot be read', () => {

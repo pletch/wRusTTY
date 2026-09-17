@@ -2124,8 +2124,20 @@ export function Terminal({
       if (container.clientWidth === 0 || container.clientHeight === 0) return
       // Fitted immediately: the canvas has to track the container while the
       // pointer is still moving, or the pane visibly lags the window.
+      const gridBefore = `${term.cols}x${term.rows}`
       term.fit()
       reportDimensions(term)
+      // A reflow moves text between rows, which is the one thing an absolute
+      // row cannot survive — so anything holding one about the current line
+      // lets go of it here. Guarded on the grid actually changing because this
+      // also fires on a tab becoming visible again, at pointer rate during a
+      // drag, and on any resize that does not cross a cell boundary.
+      if (`${term.cols}x${term.rows}` !== gridBefore) {
+        promptInput.noteResized()
+        autocomplete.reset()
+        historyRepeats.reset()
+        historyFlicker.stop()
+      }
       // The far end is told once the drag settles — see ptyResize.ts. This
       // observer fires at pointer rate, and every intermediate size that
       // crosses a row boundary is its own SIGWINCH there. A program pinning a

@@ -125,11 +125,9 @@ describe('reading the prompt line off a live grid', () => {
 
   it('stops reading once a command starts and resumes at the next prompt', async () => {
     const { engine, tracker } = await ready()
-    // Prompt and marker in one write, the echo of typing in another — the
-    // only order that can actually occur, since the far end cannot echo a
-    // keystroke in the same chunk as the prompt that preceded it. Put them in
-    // one write and the origin correctly lands *after* the text, because by
-    // the end of that write that is genuinely where the cursor is.
+    // Prompt and marker in one write, the echo of typing in another, which is
+    // the ordinary shape of it. The case where one write carries both is its
+    // own test below.
     engine.write('$ \x1b]133;B\x07')
     engine.write('make')
     expect(tracker.read()?.text).toBe('make')
@@ -153,5 +151,56 @@ describe('reading the prompt line off a live grid', () => {
     // ...and it must not be completed there, since appending would splice
     // text into the middle of the command.
     expect(input?.atEnd).toBe(false)
+  })
+
+  /**
+   * The redraw readline does when the window is resized, and the regression
+   * this file exists to catch.
+   *
+   * On SIGWINCH — and on `^L`, and after a job-control message — the shell
+   * reprints the prompt *and* the line being edited, in one write. The prompt
+   * carries the `B` marker, so that single chunk says "the input starts here"
+   * and then keeps drawing. Measuring the origin at the end of the write puts
+   * it at the end of the recalled command instead of at the prompt, and every
+   * read afterwards returns a fragment of the line or nothing at all: the
+   * history flicker blinked the tail of a wrapped command, and stopped
+   * blinking entirely once the window was widened enough to unwrap it.
+   *
+   * The engine splits its parse at each dispatched OSC, so the handler runs at
+   * exactly the right instant. This pins that the tracker measures there.
+   */
+  it('puts the origin at the prompt when one write redraws the whole line', async () => {
+    const { engine, tracker } = await ready(20, 8)
+    engine.write('$ \x1b]133;B\x07')
+    engine.write('cat a.log | grep x | sort | uniq -c')
+    const before = tracker.read()
+    expect(before?.text).toBe('cat a.log | grep x | sort | uniq -c')
+
+    // The whole line again — erase, prompt, marker, command — as one chunk.
+    engine.write('\r\x1b[J$ \x1b]133;B\x07cat a.log | grep x | sort | uniq -c')
+    const after = tracker.read()
+    expect(after?.text).toBe('cat a.log | grep x | sort | uniq -c')
+    expect(after?.origin.col).toBe(2)
+    // The command wraps, so the origin is a row above the cursor. Reading the
+    // origin off the end of the write would have collapsed the two onto the
+    // last row and left nothing between them.
+    expect(after!.cursor.row).toBe(after!.origin.row + 1)
+  })
+
+  /**
+   * The same redraw, then the widening that follows it. The command now fits
+   * on one row, and the origin still has to name the cell after the prompt —
+   * an origin left on the old second row is *below* the cursor, which the read
+   * can only answer with null.
+   */
+  it('still reads the line after a redraw and a widening', async () => {
+    const { engine, tracker } = await ready(20, 8)
+    engine.write('$ \x1b]133;B\x07cat a.log | grep x | sort | uniq -c')
+    engine.resize(60, 8)
+    // The shell redraws at the new width, as it does on SIGWINCH.
+    engine.write('\r\x1b[J$ \x1b]133;B\x07cat a.log | grep x | sort | uniq -c')
+    const input = tracker.read()
+    expect(input?.text).toBe('cat a.log | grep x | sort | uniq -c')
+    expect(input?.cursor.row).toBe(input?.origin.row)
   })
 })

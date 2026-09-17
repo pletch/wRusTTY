@@ -202,6 +202,85 @@ describe('PromptInputTracker', () => {
       expect(tracker.read()?.text).toBe('ls -')
     })
 
+    /**
+     * The guess is "output stopped, then you typed, so the cursor is at a
+     * fresh prompt". A key pressed before the quiet period gets no origin —
+     * and if the far end answers it by drawing a recalled command, the next
+     * key's quiet period is measured against a line that is no longer empty.
+     * Believing it there puts the origin at the end of the command.
+     */
+    it('declines to guess at a line a blind keystroke has already changed', () => {
+      const grid = makeGrid(40)
+      let clock = 10_000
+      const tracker = new PromptInputTracker(grid, () => clock)
+      grid.setRows('bash-5.2$ ')
+      grid.setCursor(0, 10)
+      tracker.noteParsed()
+
+      // Up, pressed while the last command's output is still recent.
+      clock += 100
+      tracker.noteInput(Uint8Array.from([0x1b, 0x5b, 0x41]))
+      // The shell recalls a command in answer to it.
+      grid.setRows('bash-5.2$ journalctl -u nginx -f')
+      grid.setCursor(0, 31)
+      tracker.noteParsed()
+
+      // The hand pauses and keeps walking. The pane has been quiet for five
+      // seconds, but the line is not the empty one the quiet period implies.
+      clock += 5_000
+      tracker.noteInput(Uint8Array.from([0x1b, 0x5b, 0x41]))
+      expect(tracker.read()).toBeNull()
+    })
+
+    it('guesses again at the next line', () => {
+      const grid = makeGrid(40)
+      let clock = 10_000
+      const tracker = new PromptInputTracker(grid, () => clock)
+      grid.setRows('bash-5.2$ ')
+      grid.setCursor(0, 10)
+      tracker.noteParsed()
+      clock += 100
+      tracker.noteInput(Uint8Array.from([0x1b, 0x5b, 0x41]))
+      grid.setRows('bash-5.2$ ls -la')
+      grid.setCursor(0, 16)
+      tracker.noteParsed()
+
+      // Enter runs it, which ends the line and everything guessed about it.
+      tracker.reset()
+      grid.setRows('bash-5.2$ ')
+      grid.setCursor(0, 10)
+      tracker.noteParsed()
+      clock += 5_000
+      tracker.noteInput(new TextEncoder().encode('m'))
+      grid.setRows('bash-5.2$ m')
+      grid.setCursor(0, 11)
+      expect(tracker.read()?.text).toBe('m')
+    })
+
+    it('takes a marker as the answer to a line it had given up on', () => {
+      const grid = makeGrid(40)
+      let clock = 10_000
+      const tracker = new PromptInputTracker(grid, () => clock)
+      grid.setRows('bash-5.2$ ')
+      grid.setCursor(0, 10)
+      tracker.noteParsed()
+      clock += 100
+      tracker.noteInput(Uint8Array.from([0x1b, 0x5b, 0x41]))
+      grid.setRows('bash-5.2$ make test')
+      grid.setCursor(0, 19)
+      tracker.noteParsed()
+
+      // The host turns out to be integrated after all — a prompt marker says
+      // outright where the next line starts, so there is nothing left to guess.
+      grid.setRows('$ ')
+      grid.setCursor(0, 2)
+      tracker.handleOsc('B')
+      grid.setRows('$ git push')
+      grid.setCursor(0, 10)
+      expect(tracker.read()?.text).toBe('git push')
+      expect(tracker.exact).toBe(true)
+    })
+
     it('never lets a guess replace a marker', () => {
       const grid = makeGrid(40)
       let clock = 10_000
@@ -218,6 +297,70 @@ describe('PromptInputTracker', () => {
       grid.setRows('$ git log')
       expect(tracker.read()?.text).toBe('git log')
       expect(tracker.exact).toBe(true)
+    })
+  })
+
+  describe('after a resize', () => {
+    /**
+     * An absolute row survives output scrolling underneath it, which is the
+     * whole reason the origin is one. It does not survive a reflow: the core
+     * rewraps the buffer at the new width, so the row noted before the resize
+     * names different cells after it — and a command that used to wrap onto a
+     * second row leaves the origin *below* the cursor, which reads as nothing
+     * being there at all.
+     */
+    it('lets go of an origin the reflow may have moved', () => {
+      const grid = makeGrid(40)
+      const tracker = new PromptInputTracker(grid)
+      grid.setRows('$ ')
+      grid.setCursor(0, 2)
+      tracker.handleOsc('B')
+      grid.setRows('$ cat a.log | grep x')
+      grid.setCursor(0, 20)
+      expect(tracker.read()?.text).toBe('cat a.log | grep x')
+
+      tracker.noteResized()
+      expect(tracker.read()).toBeNull()
+    })
+
+    it('takes the prompt marker the resize provokes', () => {
+      const grid = makeGrid(60)
+      const tracker = new PromptInputTracker(grid)
+      grid.setRows('$ ')
+      grid.setCursor(0, 2)
+      tracker.handleOsc('B')
+      tracker.noteResized()
+
+      // readline redraws its prompt on SIGWINCH, markers and all, which is
+      // what puts an integrated host straight back in business.
+      grid.setRows('$ ')
+      grid.setCursor(0, 2)
+      tracker.handleOsc('B')
+      grid.setRows('$ cat a.log | grep x | sort')
+      grid.setCursor(0, 27)
+      expect(tracker.read()?.text).toBe('cat a.log | grep x | sort')
+      expect(tracker.exact).toBe(true)
+    })
+
+    it('does not guess at the redrawn line on a host with no markers', () => {
+      const grid = makeGrid(60)
+      let clock = 10_000
+      const tracker = new PromptInputTracker(grid, () => clock)
+      grid.setRows('bash-5.2$ ')
+      grid.setCursor(0, 10)
+      tracker.noteParsed()
+      clock += 5_000
+      tracker.noteInput(new TextEncoder().encode('l'))
+      grid.setRows('bash-5.2$ ls -la')
+      grid.setCursor(0, 16)
+      expect(tracker.read()?.text).toBe('ls -la')
+
+      // Nothing here can re-measure, and the line still holds the command the
+      // shell redrew, so the next keystroke must not be read as starting one.
+      tracker.noteResized()
+      clock += 5_000
+      tracker.noteInput(new TextEncoder().encode('x'))
+      expect(tracker.read()).toBeNull()
     })
   })
 

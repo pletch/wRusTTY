@@ -137,19 +137,6 @@ export class PromptInputTracker {
    * complete at — before the first marker, while a command runs, or on the
    * alternate screen. */
   private origin: Cell | null = null
-  /**
-   * A `B` marker has arrived but its origin has not been measured yet.
-   *
-   * The delay is not an optimisation. The engine dispatches OSC by scanning
-   * the raw byte stream *before* the chunk reaches the parser, so at the
-   * moment `B` is handed over the prompt it terminates has not been drawn —
-   * the cursor is still wherever the previous line left it. Measuring there
-   * puts the origin at the start of the prompt instead of the end of it, and
-   * every read would then include the prompt text as if the user had typed
-   * it. The measurement is taken at the end of the write instead, once the
-   * parser has applied the whole chunk.
-   */
-  private pendingOrigin = false
   /** Whether `origin` came from an OSC 133 `B` marker (exact) or was inferred
    * from a quiet period (a guess). Only reported, never acted on differently
    * here — the difference matters to the caller deciding how much to trust a
@@ -167,6 +154,36 @@ export class PromptInputTracker {
   private typed = 0
   private running = false
   private onAlternate = false
+  /**
+   * A keystroke went out while there was no origin to attribute it to, and
+   * nothing has come back yet.
+   *
+   * Only half of the state below; `lineUnaccounted` is where it lands.
+   */
+  private blindKey = false
+  /**
+   * Something was drawn onto this line by a keystroke we could not place, so
+   * the cursor no longer stands where an inferred origin would want it.
+   *
+   * This is what stops the quiet period from being believed twice over. The
+   * guess in `noteInput` is "output stopped, then you typed, so the cursor is
+   * at a fresh prompt" — true of the first key at an idle prompt, and false
+   * the moment a key has already put something on the line. Press Up inside
+   * `QUIET_BEFORE_INPUT_MS` of a command's last output and no origin is taken;
+   * the shell recalls a command anyway; pause, press Up again, and the quiet
+   * test now passes with a full command line on screen. The origin is then
+   * taken at the *end* of that command, and every read after it returns a
+   * fragment of the line: the history flicker blinks the tail of the command
+   * rather than the command, and the capture path records the fragment as if
+   * it were something someone typed.
+   *
+   * So a line that has been written to behind our back is one this declines to
+   * guess about at all, until `reset` ends it — Enter, `^C` — or a marker
+   * says outright where the next one begins. Silence costs this host the
+   * blink and the passive capture for that one line; guessing costs it a wrong
+   * answer and a junk entry in the command store.
+   */
+  private lineUnaccounted = false
 
   constructor(grid: GridReader, now: () => number = Date.now) {
     this.grid = grid
@@ -184,28 +201,45 @@ export class PromptInputTracker {
    * `CommandTracker.handleOsc` takes, so both can sit on one handler. */
   handleOsc(data: string): void {
     const kind = data.split(';')[0]
+    // A marker is the far end saying where it is in the cycle, which settles
+    // every question the guesswork below exists to answer. Whatever was on the
+    // old line stops mattering at the same moment. `D` is left out: it ends a
+    // command, and the prompt that follows it carries its own `A`.
+    if (kind === 'A' || kind === 'B' || kind === 'C') {
+      this.blindKey = false
+      this.lineUnaccounted = false
+    }
     switch (kind) {
       case 'A':
         // A prompt is about to be drawn. Whatever was being typed is gone.
         this.origin = null
-        this.pendingOrigin = false
         this.running = false
         break
       case 'B':
-        // The prompt has finished drawing, so the cursor is about to be
-        // standing exactly where the user's own text will begin — the
-        // measurement the whole design rests on, and why an integrated host
-        // gets a materially better experience than an inferred one. Taken at
-        // the end of the write rather than here; see `pendingOrigin`.
-        this.origin = null
-        this.pendingOrigin = true
+        // The prompt has finished drawing, so the cursor is standing exactly
+        // where the user's own text will begin — the measurement the whole
+        // design rests on, and why an integrated host gets a materially
+        // better experience than an inferred one.
+        //
+        // Measured here, in the handler, and that is load-bearing. The engine
+        // splits its parse at each OSC it dispatches, so a handler runs with
+        // every byte *before* the marker already applied and none of what
+        // follows it — which is precisely the instant being asked about. An
+        // earlier version deferred this to the end of the write instead, and
+        // overshot by whatever the rest of the chunk drew: readline reprints
+        // the prompt and the line being edited in one write on SIGWINCH, on
+        // `^L` and after a job-control message, so a single terminal resize
+        // moved the origin to the *end* of the recalled command and every
+        // read after it returned a fragment of the line or nothing at all.
+        // See GhosttyEngine.parseAndDispatch and its `segEnd` handling.
+        this.origin = this.readCursor()
+        this.originExact = this.origin !== null
         this.running = false
         break
       case 'C':
         // A command is running: what is on screen is its output, not a line
         // being typed.
         this.origin = null
-        this.pendingOrigin = false
         this.running = true
         break
       case 'D':
@@ -225,17 +259,19 @@ export class PromptInputTracker {
   /**
    * A write has been fully parsed — wire this to `onWriteParsed`.
    *
-   * Two jobs. It is the moment a pending `B` origin can finally be measured,
-   * because the grid now reflects the chunk that carried the marker. And the
-   * time it records is what the inferred origin's quiet period is measured
-   * against, for hosts with no markers at all.
+   * The time it records is what the inferred origin's quiet period is measured
+   * against, for hosts with no markers at all. A marked prompt's origin is not
+   * measured here; see the `B` case above for why it cannot be.
    */
   noteParsed() {
     this.lastOutputAt = this.now()
-    if (!this.pendingOrigin) return
-    this.pendingOrigin = false
-    this.origin = this.readCursor()
-    this.originExact = this.origin !== null
+    // The far end answered a keystroke that had no origin to belong to, which
+    // means this line now holds text nothing here can account for. See
+    // `lineUnaccounted`.
+    if (this.blindKey) {
+      this.blindKey = false
+      this.lineUnaccounted = true
+    }
   }
 
   /**
@@ -247,11 +283,14 @@ export class PromptInputTracker {
    */
   noteInput(data?: Uint8Array) {
     if (this.origin === null && !this.running && !this.onAlternate) {
-      if (this.now() - this.lastOutputAt >= QUIET_BEFORE_INPUT_MS) {
+      if (!this.lineUnaccounted && this.now() - this.lastOutputAt >= QUIET_BEFORE_INPUT_MS) {
         this.origin = this.readCursor()
         this.originExact = false
         this.typed = 0
       }
+      // Still nowhere to put this keystroke, so whatever the far end draws in
+      // answer to it lands on a line this can no longer describe.
+      if (this.origin === null) this.blindKey = true
     }
     if (!data || this.origin === null) return
     for (const byte of data) {
@@ -282,15 +321,40 @@ export class PromptInputTracker {
    * for Enter, `^C`, and anything else that ends a line being typed. */
   reset() {
     this.origin = null
-    this.pendingOrigin = false
     this.typed = 0
+    this.blindKey = false
+    this.lineUnaccounted = false
+  }
+
+  /**
+   * The grid has been resized.
+   *
+   * An origin is an absolute buffer row, which is what keeps it valid as
+   * output scrolls underneath it — but a resize is the one event that moves
+   * text between rows rather than moving rows past text. The core reflows the
+   * buffer at the new width, so a row noted before the resize names different
+   * cells after it, and a line that used to wrap may not any more: the origin
+   * can end up *below* the cursor, which reads as no input at all.
+   *
+   * An integrated host re-answers this within the same breath, because the
+   * shell redraws its prompt on SIGWINCH and that redraw carries a `B`. A host
+   * with no markers has nothing to re-answer with, so this line goes unread
+   * until the next one begins — the same trade as `lineUnaccounted`, for the
+   * same reason.
+   */
+  noteResized() {
+    this.origin = null
+    this.typed = 0
+    this.blindKey = false
+    this.lineUnaccounted = true
   }
 
   /** Everything is unknown again: a disconnect, or a pane being torn down. */
   resetAll() {
     this.origin = null
-    this.pendingOrigin = false
     this.typed = 0
+    this.blindKey = false
+    this.lineUnaccounted = false
     this.running = false
     this.onAlternate = false
     this.originExact = false

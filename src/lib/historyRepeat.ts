@@ -90,8 +90,15 @@ export const SETTLE_MS = 40
  * the far end's own redraw on even a local connection. */
 export const MIN_DEADLINE_MS = 45
 
-/** Ceiling over it, for a link slow enough that waiting for certainty would
- * cost more than the answer is worth. */
+/**
+ * Ceiling over it, for a link slow enough that waiting for certainty would
+ * cost more than the answer is worth.
+ *
+ * Past this the feature goes quiet rather than guessing: a deadline shorter
+ * than the link's own round trip cannot tell "said nothing" from "has not
+ * answered yet", and reporting on it would put a flicker under every press on
+ * a slow session. See `deadlineBounded`.
+ */
 export const MAX_DEADLINE_MS = 400
 
 /**
@@ -110,6 +117,11 @@ const DEADLINE_SAFETY = 3
  * `SETTLE_MS` restarting on every chunk is what makes a split redraw work, and
  * it is also what would let a pane that is busy printing something unrelated
  * postpone the comparison indefinitely. This is the backstop.
+ *
+ * It ends the press rather than answering it. Firing here means the far end
+ * was still talking, so the line is in flux and there is nothing to compare —
+ * see `trustworthy`. The press is resolved and holds no timer; it simply
+ * produces no finding.
  */
 export const MAX_WAIT_MS = 700
 
@@ -165,8 +177,14 @@ export class HistoryRepeatWatcher {
    * is the round trip this learns from. */
   private pressedAt = 0
   /** Whether this press has already contributed a measurement, so a redraw
-   * split across five chunks is timed once rather than five times. */
+   * split across five chunks is timed once rather than five times. Doubles as
+   * "the far end has said something since this press", which is what decides
+   * how the comparison has to be justified — see `trustworthy`. */
   private timed = false
+  /** When the last chunk was parsed. The settle period is a quiet period, and
+   * the backstop can fire in the middle of one; this is how the comparison
+   * tells those two apart. */
+  private lastParsedAt = 0
   /** The slowest recent round trip from a history key to the first byte back,
    * decayed so a one-off stall does not slow the pane down for ever. Null
    * until this session has answered at all. */
@@ -186,6 +204,27 @@ export class HistoryRepeatWatcher {
     if (this.latencyMs === null) return MAX_DEADLINE_MS
     const scaled = Math.round(this.latencyMs * DEADLINE_SAFETY) + 15
     return Math.max(MIN_DEADLINE_MS, Math.min(MAX_DEADLINE_MS, scaled))
+  }
+
+  /**
+   * Whether the deadline is long enough to be evidence, or merely a ceiling.
+   *
+   * `MAX_DEADLINE_MS` exists because waiting out a genuinely slow link costs
+   * more than the answer is worth — but the thing the clamp buys is silence,
+   * not a guess. Once this session's measured round trip needs longer than
+   * the ceiling allows, the timer stops meaning "the far end had its chance
+   * and said nothing" and starts meaning "the far end has not replied yet",
+   * and those are opposite findings. On a link past that point every press
+   * would otherwise flicker, including the ones that walked the history
+   * perfectly well.
+   *
+   * False before this session has answered at all, for the same reason: an
+   * unmeasured link may be any speed, and the first press of a session is
+   * almost never the duplicate this exists for.
+   */
+  private get deadlineBounded(): boolean {
+    if (this.latencyMs === null) return false
+    return Math.round(this.latencyMs * DEADLINE_SAFETY) + 15 <= MAX_DEADLINE_MS
   }
 
   /**
@@ -230,9 +269,10 @@ export class HistoryRepeatWatcher {
    * worth reading as soon as it stops. */
   noteParsed(): void {
     if (this.pending === null) return
+    this.lastParsedAt = Date.now()
     if (!this.timed) {
       this.timed = true
-      this.observeLatency(Date.now() - this.pressedAt)
+      this.observeLatency(this.lastParsedAt - this.pressedAt)
     }
     this.schedule(SETTLE_MS)
   }
@@ -269,10 +309,52 @@ export class HistoryRepeatWatcher {
     }, wait)
   }
 
+  /**
+   * Whether "the line is unchanged" is a finding or just a snapshot taken too
+   * early.
+   *
+   * The whole feature rests on one claim — that the press landed on the text
+   * already showing — and the only way to get that wrong is to look before
+   * the far end has had its chance. A flicker under a press that *did* walk
+   * the history is worse than the silence this replaced: it is the terminal
+   * asserting something false about the session, rather than the shell
+   * declining to say anything.
+   *
+   * Two ways the look is early, and they are distinguished by whether
+   * anything has come back at all:
+   *
+   *   - **The far end is mid-sentence.** A redraw arrives split across
+   *     chunks, and `MAX_WAIT_MS` can fire in the gap between two of them —
+   *     on a line that is briefly still the old text, or briefly empty. The
+   *     settle period is a *quiet* period, so it is only evidence once it has
+   *     actually elapsed since the last chunk.
+   *   - **Nothing has come back, on a link too slow to read that as an
+   *     answer.** See `deadlineBounded`.
+   *
+   * A press resolved early by the user's own next keystroke goes through this
+   * too rather than around it, and the fast walk through history it exists
+   * for still passes: a recalled duplicate puts nothing on the wire, so
+   * nothing has come back, so there is no redraw to be in the middle of.
+   * What it now also catches is the burst where the far end *did* start
+   * redrawing — a different command on its way — and the next keystroke
+   * arrived before it landed.
+   */
+  private get trustworthy(): boolean {
+    if (this.timed) return Date.now() - this.lastParsedAt >= SETTLE_MS
+    return this.deadlineBounded
+  }
+
   private compare(): void {
     const before = this.pending
     this.pending = null
     if (before === null) return
+    // Resolved either way — the press is answered and holds no timer — but
+    // answered with silence, which is the only honest thing to say about a
+    // line nobody has had the chance to change yet.
+    if (!this.trustworthy) {
+      this.run = 0
+      return
+    }
     const now = this.read()
     // The line stopped being readable between the press and the redraw: the
     // screen scrolled, a program painted over the prompt, or the origin went

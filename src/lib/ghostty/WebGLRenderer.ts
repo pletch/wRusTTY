@@ -1019,6 +1019,21 @@ export class WebGLRenderer {
         // asked for a specific background gets it at full strength, the same way
         // xterm treats an explicit SGR background.
         let bgIsDefault = true
+        /**
+         * The glyph is to disappear into its own cell — the history flicker's
+         * `hiddenSpans`, and the off half of a blink.
+         *
+         * Matching the foreground *colour* to the background is only half of
+         * that, and the missing half only shows up on a translucent pane. The
+         * foreground alpha is otherwise always 255 while a default background
+         * carries `defaultBgA`, and the shader mixes the two by coverage — so
+         * every pixel the glyph covers comes out more opaque than the cells
+         * around it, and the "hidden" text reappears as a solid silhouette of
+         * itself against whatever is behind the window. Flagging it here lets
+         * the alpha follow the background as well, which is what actually
+         * leaves a hole rather than a patch.
+         */
+        let glyphHidden = false
 
         if (rowValid && c < wasmCols) {
           // Read into the renderer's own scratch cell: every field is copied
@@ -1237,6 +1252,16 @@ export class WebGLRenderer {
             const span = rowHidden[i]
             if (c < span.from || c >= span.to) continue
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
+            glyphHidden = true
+            // A colour glyph does not read the foreground at all, so matching
+            // it to the background hides everything on the line except an
+            // emoji — which would then be the one character refusing to
+            // flicker. Sending the cell down the coverage path is what hides
+            // it, exactly as the blink rule below does: the sample there is a
+            // slot no coverage was ever written to, and whatever it returns is
+            // mixed between a foreground and a background that are by now the
+            // same colour.
+            isColor = 0
             break
           }
         }
@@ -1314,6 +1339,7 @@ export class WebGLRenderer {
           this.sawBlinkingCell = true
           if (!this.blinkOn) {
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
+            glyphHidden = true
             // A colour glyph does not read the foreground, so matching it to
             // the background hides everything except an emoji -- which would
             // then be the one character on the row refusing to blink. Sending
@@ -1331,7 +1357,14 @@ export class WebGLRenderer {
         this.instanceData[outIdx++] = finalFgR
         this.instanceData[outIdx++] = finalFgG
         this.instanceData[outIdx++] = finalFgB
-        this.instanceData[outIdx++] = 255
+        // Normally opaque — a glyph stays solid over a translucent pane, which
+        // is the whole point of keeping alpha in coverage units. A hidden
+        // glyph is the one exception, and it takes the cell's own background
+        // alpha so the two ends of the shader's mix are identical in all four
+        // channels: the cell then renders exactly as it would have with no
+        // glyph in it, at any background opacity.
+        this.instanceData[outIdx++] =
+          glyphHidden && bgIsDefault ? this.defaultBgA * 255 : 255
 
         this.instanceData[outIdx++] = finalBgR
         this.instanceData[outIdx++] = finalBgG
