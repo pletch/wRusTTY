@@ -94,3 +94,131 @@ describe('TabBar close button', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * The badge a program sets for itself.
+ *
+ * There is no icon protocol that survives SSH, so a program that wants to mark
+ * itself in the strip writes a symbol at the front of its title (OSC 0/2) and
+ * lets the font draw it. wRusTTY already had these titles — they reached the
+ * tooltip and the status bar — so this is only about the strip finally showing
+ * one. See lib/titleBadge.ts for which characters qualify and why.
+ */
+describe('TabBar remote title badge', () => {
+  it('shows the symbol a program leads its title with', () => {
+    render(bar({ titleByPane: { 't1-pane': '\u2733 Building the renderer' } }))
+    expect(screen.getByText('\u2733')).toBeTruthy()
+  })
+
+  it('keeps the connection name as the label beside it', () => {
+    // The tab is still which host it is. A remote program that could rename it
+    // would cost the strip the one thing it is for.
+    render(bar({ titleByPane: { 't1-pane': '\u2733 Building the renderer' } }))
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(screen.queryByText('Building the renderer')).toBeNull()
+  })
+
+  it('shows nothing for an ordinary title', () => {
+    render(bar({ titleByPane: { 't1-pane': 'tim@build01: ~/src' } }))
+    // A badge here would be noise on every tab in the strip.
+    expect(screen.getByText('alpha')).toBeTruthy()
+    expect(screen.queryByText('tim@build01: ~/src')).toBeNull()
+  })
+
+  it('shows nothing when the far end set no title at all', () => {
+    render(bar())
+    expect(screen.getByText('alpha')).toBeTruthy()
+  })
+
+  it('still carries the full title on the tooltip, badge or not', () => {
+    // The badge is aria-hidden, so the tooltip is where the title is readable
+    // as words rather than as a symbol a screen reader would have to name.
+    const { container } = render(bar({ titleByPane: { 't1-pane': '\u2733 Building' } }))
+    const withTooltip = container.querySelector('[title="alpha — \u2733 Building"]')
+    expect(withTooltip).toBeTruthy()
+  })
+})
+
+/**
+ * A badge in a split tab.
+ *
+ * The active pane is preferred, so the badge describes what clicking the tab
+ * would show. The fallback exists because the case worth catching is the one
+ * where the working pane is *not* the one you are looking at.
+ */
+function splitTab(id: string, title: string, activePane: 'a' | 'b'): Tab {
+  return {
+    id,
+    title,
+    root: {
+      type: 'split',
+      id: `${id}-split`,
+      direction: 'horizontal',
+      sizes: [50, 50],
+      children: [
+        { type: 'leaf', id: `${id}-a`, source: null, generation: 0 },
+        { type: 'leaf', id: `${id}-b`, source: null, generation: 0 },
+      ],
+    },
+    activePaneId: `${id}-${activePane}`,
+  }
+}
+
+describe('TabBar badge across a split', () => {
+  it('prefers the active pane when both panes badge', () => {
+    render(
+      bar({
+        tabs: [splitTab('t1', 'alpha', 'a')],
+        titleByPane: { 't1-a': '\u2733 active one', 't1-b': '\u{1F525} other one' },
+      }),
+    )
+    expect(screen.getByText('\u2733')).toBeTruthy()
+    expect(screen.queryByText('\u{1F525}')).toBeNull()
+  })
+
+  it('falls back to the other pane when the active one has no badge', () => {
+    // The case the fallback is for: you are looking at a shell while the pane
+    // next to it is the one working.
+    render(
+      bar({
+        tabs: [splitTab('t1', 'alpha', 'a')],
+        titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': '\u2733 Building' },
+      }),
+    )
+    expect(screen.getByText('\u2733')).toBeTruthy()
+  })
+
+  it('names the badge\u2019s own pane in the tooltip when it is not the active one', () => {
+    // Otherwise the tooltip describes one pane while the badge beside it
+    // describes another.
+    const { container } = render(
+      bar({
+        tabs: [splitTab('t1', 'alpha', 'a')],
+        titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': '\u2733 Building' },
+      }),
+    )
+    expect(
+      container.querySelector('[title="alpha \u2014 tim@build01: ~/src \u2014 \u2733 Building"]'),
+    ).toBeTruthy()
+  })
+
+  it('does not double up the title when the badge is the active pane\u2019s own', () => {
+    const { container } = render(
+      bar({
+        tabs: [splitTab('t1', 'alpha', 'a')],
+        titleByPane: { 't1-a': '\u2733 Building' },
+      }),
+    )
+    expect(container.querySelector('[title="alpha \u2014 \u2733 Building"]')).toBeTruthy()
+  })
+
+  it('shows nothing when no pane in the split badges', () => {
+    render(
+      bar({
+        tabs: [splitTab('t1', 'alpha', 'a')],
+        titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': 'vim README.md' },
+      }),
+    )
+    expect(screen.getByText('alpha')).toBeTruthy()
+  })
+})

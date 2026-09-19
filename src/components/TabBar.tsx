@@ -19,6 +19,7 @@ import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
 import { allLeaves, verticalRows } from '../lib/paneTree'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
+import { titleBadge } from '../lib/titleBadge'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 interface Props {
@@ -503,10 +504,34 @@ export function TabBar({
           const running = runningPaneIds.size > 0
           const attention = attentionPaneIds.size > 0
           const remoteTitle = leaf ? titleByPane[leaf.id] : undefined
+          // Only the leading symbol, never the title itself. The label stays
+          // the connection's name: a remote program renaming the tab it is
+          // running in would cost the user the one thing the strip is for —
+          // which pane is which host — and a program that wants to be found
+          // is not the same as one entitled to that slot.
+          //
+          // The tab's active pane first, so the badge describes what clicking
+          // the tab would actually show you. But a split whose *other* pane is
+          // the one working would then badge nothing, and noticing that pane
+          // without switching to it is the whole point — so any badged pane
+          // beats none, which is also how `running` and `attention` below
+          // already treat a split. Identical to active-pane-only whenever the
+          // tab holds one pane, which is nearly always.
+          const badgeTitle =
+            (titleBadge(remoteTitle) !== null ? remoteTitle : undefined) ??
+            leaves.map((l) => titleByPane[l.id]).find((t) => titleBadge(t) !== null)
+          const badge = titleBadge(badgeTitle)
           return (
             <div
               key={tab.id}
-              title={remoteTitle ? `${tab.title} — ${remoteTitle}` : tab.title}
+              // The badge is a symbol with no words attached, so the tooltip is
+              // the only place its meaning is readable. When it came from a
+              // pane other than the active one — the split case — that pane's
+              // title is added too, otherwise the tooltip would describe one
+              // pane while the badge beside it describes another.
+              title={[tab.title, remoteTitle, badgeTitle !== remoteTitle ? badgeTitle : undefined]
+                .filter(Boolean)
+                .join(' — ')}
               // With one tab there is nothing to reorder it past and no other
               // tab to drop it into, so dragging it moves the window instead —
               // what Chrome does with a lone tab. Its close button still
@@ -753,6 +778,20 @@ export function TabBar({
               {elevated && (
                 <span title="Administrator" className="-ml-0.5 shrink-0 text-amber-400">
                   <ShieldCheck size={12} aria-label="Administrator" />
+                </span>
+              )}
+              {/* The mark a program put at the front of its own title. Its own
+                  size and colour are whatever the emoji font gives it, so
+                  nothing here tints it: `✳` is green because Segoe UI Emoji
+                  draws it green, and a badge recoloured to the chrome grey
+                  would stop being the thing the user recognises from every
+                  other terminal they use.
+                  `aria-hidden` because the full title is already on the tab's
+                  tooltip, where a screen reader gets it as words rather than
+                  as a symbol it would have to name. */}
+              {badge && (
+                <span aria-hidden className="shrink-0 text-[11px] leading-none">
+                  {badge}
                 </span>
               )}
               <span className="truncate">{tab.title}</span>
