@@ -790,7 +790,19 @@ export function TabBar({
                   tooltip, where a screen reader gets it as words rather than
                   as a symbol it would have to name. */}
               {badge && (
-                <span aria-hidden className="shrink-0 text-[11px] leading-none">
+                // A fixed box rather than one the glyph sizes, because the
+                // badge swaps between kinds of glyph as the program works: the
+                // colour emoji at rest and a text-font spinner frame while it
+                // is busy advance differently, so a box that fitted the glyph
+                // resized several times a second and slid the label — and the
+                // tab itself, whose width is content-driven — along with it.
+                // Centred and allowed to overflow rather than clipped: the
+                // width only has to stop the glyph *moving* its neighbours,
+                // and a hidden overflow would crop a wide one instead.
+                <span
+                  aria-hidden
+                  className="inline-flex w-[14px] shrink-0 justify-center text-[11px] leading-none"
+                >
                   {badge}
                 </span>
               )}

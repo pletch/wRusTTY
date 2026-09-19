@@ -228,3 +228,22 @@ describe('TabBar badge across a split', () => {
     expect(screen.getByText('alpha')).toBeTruthy()
   })
 })
+
+describe('TabBar badge does not move the label', () => {
+  it('gives the badge a fixed box rather than one the glyph sizes', () => {
+    // The badge swaps between a colour emoji at rest and a text-font spinner
+    // frame while the program works, and the two advance differently. Without
+    // a fixed width the box resizes several times a second and slides the
+    // label — and the tab, whose width is content-driven — along with it.
+    const { container } = render(bar({ titleByPane: { 't1-pane': '\u2733 Building' } }))
+    const badge = container.querySelector('[aria-hidden][class*="w-[14px]"]')
+    expect(badge).toBeTruthy()
+    expect(badge?.textContent).toBe('\u2733\uFE0F')
+  })
+
+  it('sizes the same box for a spinner frame', () => {
+    const { container } = render(bar({ titleByPane: { 't1-pane': '\u25D0 Building' } }))
+    const badge = container.querySelector('[aria-hidden][class*="w-[14px]"]')
+    expect(badge?.textContent).toBe('\u25D0')
+  })
+})
