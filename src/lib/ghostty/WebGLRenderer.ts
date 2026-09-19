@@ -191,6 +191,10 @@ export const BLEND_LINEAR_CORRECTED = 2
  *  scale saying which atlas those UVs address and how strongly to draw it. */
 const INSTANCE_FLOATS = 15
 
+/** Instances the cursor overlay can draw in a frame: one per column the cursor
+ *  covers, which is two on a wide character and one on everything else. */
+const CURSOR_OVERLAY_CAP = 2
+
 /** How far faint text is darkened towards black. One constant, because the
  *  coverage path applies it to the foreground and the colour path applies it
  *  to the glyph's own colours, and the two have to fade alike. */
@@ -293,6 +297,8 @@ export class WebGLRenderer {
   private instanceBuffer!: WebGLBuffer
   private quadBuffer!: WebGLBuffer
   private vao!: WebGLVertexArrayObject
+  private overlayBuffer!: WebGLBuffer
+  private overlayVao!: WebGLVertexArrayObject
   private uResolution: WebGLUniformLocation | null = null
   private uAtlas: WebGLUniformLocation | null = null
   private uColorAtlas: WebGLUniformLocation | null = null
@@ -446,6 +452,11 @@ export class WebGLRenderer {
   // cellPos.x, cellPos.y, fgR, fgG, fgB, fgA, bgR, bgG, bgB, bgA, u0, v0, u1, v1 (14 floats = 56 bytes per cell)
   private instanceData!: Float32Array
 
+  // The cursor overlay's own instances. Fixed size and allocated once for the
+  // pane's lifetime — it never holds more than the columns of a single cell.
+  private overlayData = new Float32Array(CURSOR_OVERLAY_CAP * INSTANCE_FLOATS)
+  private overlayCount = 0
+
   // Scrollback is read one row at a time into a scratch buffer. It only has to
   // exist while the viewport is scrolled up, and it outlives the frame so
   // scrolling doesn't churn the WASM allocator once per row per frame.
@@ -574,7 +585,9 @@ export class WebGLRenderer {
     this.gl.deleteProgram(this.program)
     this.gl.deleteBuffer(this.instanceBuffer)
     this.gl.deleteBuffer(this.quadBuffer)
+    this.gl.deleteBuffer(this.overlayBuffer)
     this.gl.deleteVertexArray(this.vao)
+    this.gl.deleteVertexArray(this.overlayVao)
     this.ready = false
   }
 
@@ -671,6 +684,82 @@ export class WebGLRenderer {
     this.instanceData = new Float32Array(this.cols * this.rows * INSTANCE_FLOATS)
     gl.bufferData(gl.ARRAY_BUFFER, this.instanceData, gl.DYNAMIC_DRAW)
 
+    this.bindInstanceAttribs()
+
+    // The cursor overlay draws from its own VAO and its own two-instance
+    // buffer rather than from an offset into the grid's. WebGL2's
+    // drawArraysInstanced has no base-instance parameter, so the alternative
+    // is re-pointing four attributes twice a frame and restoring them after —
+    // a second VAO is the same state, set once, and it keeps the grid's own
+    // bindings untouched.
+    this.overlayVao = gl.createVertexArray()!
+    gl.bindVertexArray(this.overlayVao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer)
+    gl.enableVertexAttribArray(0)
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0)
+    this.overlayBuffer = gl.createBuffer()!
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.overlayBuffer)
+    gl.bufferData(gl.ARRAY_BUFFER, this.overlayData, gl.DYNAMIC_DRAW)
+    this.bindInstanceAttribs()
+    gl.bindVertexArray(this.vao)
+
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height)
+    this.ready = true
+  }
+
+  /**
+   * Points the five per-instance attributes at whatever ARRAY_BUFFER is bound,
+   * into whatever VAO is bound. The grid and the cursor overlay feed the same
+   * shader from the same instance layout, so they configure identically.
+   */
+  /**
+   * Queues one column of a cursor shape to be drawn over the finished grid.
+   *
+   * The instance is an ordinary one in every respect but its colours: the
+   * background carries the cursor's own RGB at **zero alpha**, so the shader's
+   * `mix(bg, fg, coverage)` returns the cursor colour at every coverage value
+   * and the alpha it returns is the coverage itself. Source-over then composites
+   * the shape onto whatever the grid already drew, antialiased edges included,
+   * and it does so identically in all three blend modes — the corrected one
+   * sees two equal luminances and skips its solve, which is right, because
+   * there is no foreground-against-background weight to correct here.
+   *
+   * `spansTwo` means the shape was rasterized double-width for a wide cell, in
+   * which case each column samples its own half, exactly as a wide glyph does.
+   */
+  private pushCursorOverlay(
+    col: number,
+    row: number,
+    glyph: number,
+    spansTwo: boolean,
+    cellWidth: number,
+  ) {
+    if (this.overlayCount >= CURSOR_OVERLAY_CAP) return
+    const rect = this.atlas.getGlyph(glyph, spansTwo ? GLYPH_WIDE : 0)
+    const mid = (rect.u0 + rect.u1) / 2
+
+    let i = this.overlayCount * INSTANCE_FLOATS
+    const d = this.overlayData
+    d[i++] = col
+    d[i++] = row
+    d[i++] = this.cursorR
+    d[i++] = this.cursorG
+    d[i++] = this.cursorB
+    d[i++] = 255
+    d[i++] = this.cursorR
+    d[i++] = this.cursorG
+    d[i++] = this.cursorB
+    d[i++] = 0
+    d[i++] = spansTwo && cellWidth === 0 ? mid : rect.u0
+    d[i++] = rect.v0
+    d[i++] = spansTwo && cellWidth === 2 ? mid : rect.u1
+    d[i++] = rect.v1
+    d[i++] = 0
+    this.overlayCount++
+  }
+
+  private bindInstanceAttribs() {
+    const gl = this.gl
     const stride = INSTANCE_FLOATS * 4
 
     // a_cellPos
@@ -697,9 +786,6 @@ export class WebGLRenderer {
     gl.enableVertexAttribArray(5)
     gl.vertexAttribPointer(5, 1, gl.FLOAT, false, stride, 14 * 4)
     gl.vertexAttribDivisor(5, 1)
-
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height)
-    this.ready = true
   }
 
   private resizeCanvas() {
@@ -920,6 +1006,7 @@ export class WebGLRenderer {
     const runs = this.runs
 
     let outIdx = 0
+    this.overlayCount = 0
 
     for (let r = 0; r < rows; r++) {
       // Absolute row: scrollback rows come first, then the active screen.
@@ -1291,20 +1378,16 @@ export class WebGLRenderer {
                   : GLYPH_CURSOR_OUTLINE // hollow block
               : 0
           if (shaped !== 0) {
-            // A bar or underline does not cover the character, so unlike the
-            // block it leaves the cell's own colours alone and only replaces
-            // the glyph — the same substitution the unfocused outline makes.
+            // A bar or underline genuinely does not cover the character, so it
+            // is drawn *over* the cell in a second pass instead of taking the
+            // cell's one quad. Substituting the glyph here is what used to
+            // erase the character the cursor was sitting on — the cell kept its
+            // colours, but the only thing in it was the bar.
             // A bar always draws in the leading column, so a wide cell's
             // trailing spacer must not draw one too.
             const spansTwo = shape !== CURSOR_STYLE_BAR && (cellWidth === 2 || cellWidth === 0)
             if (!(shape === CURSOR_STYLE_BAR && cellWidth === 0)) {
-              const rect = this.atlas.getGlyph(shaped, spansTwo ? GLYPH_WIDE : 0)
-              const mid = (rect.u0 + rect.u1) / 2
-              v0 = rect.v0; v1 = rect.v1
-              isColor = 0
-              u0 = spansTwo && cellWidth === 0 ? mid : rect.u0
-              u1 = spansTwo && cellWidth === 2 ? mid : rect.u1
-              finalFgR = this.cursorR; finalFgG = this.cursorG; finalFgB = this.cursorB
+              this.pushCursorOverlay(c, r, shaped, spansTwo, cellWidth)
             }
           } else if (cursor.on && cursor.focused) {
             finalFgR = this.defaultBgR; finalFgG = this.defaultBgG; finalFgB = this.defaultBgB
@@ -1313,19 +1396,14 @@ export class WebGLRenderer {
           } else if (!cursor.focused) {
             // An unfocused pane outlines the cell instead of filling it: it
             // still says where typing would land, without competing with the
-            // pane that actually has focus. Replacing the glyph rather than
-            // tinting the cell is what makes it read as an outline — and it
-            // costs no extra geometry, since the outline is a cached glyph.
+            // pane that actually has focus. Outlining rather than tinting is
+            // the whole point, so like the bar it goes over the cell in the
+            // second pass — a hollow block that erased the character it was
+            // drawn around would not be hollow in any useful sense.
             // A cursor on a wide character outlines both its columns, so the
             // outline is rasterized double-width and split like any wide glyph.
             const spansTwo = cellWidth === 2 || cellWidth === 0
-            const rect = this.atlas.getGlyph(GLYPH_CURSOR_OUTLINE, spansTwo ? GLYPH_WIDE : 0)
-            const mid = (rect.u0 + rect.u1) / 2
-            v0 = rect.v0; v1 = rect.v1
-            isColor = 0
-            u0 = cellWidth === 0 ? mid : rect.u0
-            u1 = cellWidth === 2 ? mid : rect.u1
-            finalFgR = this.cursorR; finalFgG = this.cursorG; finalFgB = this.cursorB
+            this.pushCursorOverlay(c, r, GLYPH_CURSOR_OUTLINE, spansTwo, cellWidth)
           }
         }
 
@@ -1398,6 +1476,24 @@ export class WebGLRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.atlas.colorTexture)
 
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cols * rows)
+
+    // The cursor shapes that sit on top of the character rather than replacing
+    // it. One or two instances, drawn after the grid is complete so there is
+    // something underneath to composite onto.
+    if (this.overlayCount > 0) {
+      gl.bindVertexArray(this.overlayVao)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.overlayBuffer)
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.overlayData, 0, this.overlayCount * INSTANCE_FLOATS)
+      gl.enable(gl.BLEND)
+      // Separate alpha, because the shapes are straight RGBA rather than
+      // premultiplied: weighting the source's alpha by itself would leave a
+      // translucent pane's cursor edges thinner than its glyph edges, which
+      // the main pass writes at full coverage alpha.
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.overlayCount)
+      gl.disable(gl.BLEND)
+      gl.bindVertexArray(this.vao)
+    }
   }
 
   dispose() {

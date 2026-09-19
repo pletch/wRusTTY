@@ -105,7 +105,16 @@ out += `  ... .. ?. ?? ?: ;; %% ^= $> \\\\ #? __ www   — the ones a wider alph
 out += `  <==> <--> !=== ====  <---> ===== <===>   — the ones longer than three cells\r\n`
 out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} coloured\r\n`
 
-out += `\r\n  cursor is here ->${ESC}[5 q `
+// Parked *on* a character rather than past the end of the line: a bar or an
+// underline that erased the cell it sat on looked perfectly correct on a blank,
+// which is what let it ship. The cursor lands on the `s` of `set`.
+//
+// The shape is also selectable as ?cursor=N, on the same grounds as ?blend=
+// below: a keystroke is not available to a headless browser, so without it
+// only the one shape written here can ever be screenshotted.
+const requestedCursor = new URLSearchParams(location.search).get('cursor')
+const cursorShape = /^[1-6]$/.test(requestedCursor ?? '') ? requestedCursor : '5'
+out += `\r\n  cursor is here -> set${ESC}[3D${ESC}[${cursorShape} q`
 engine.write(out)
 
 /**
