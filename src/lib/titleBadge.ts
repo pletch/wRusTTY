@@ -66,6 +66,38 @@ function firstGrapheme(s: string): string {
 }
 
 /**
+ * Asks for the colour form of a character that has one but does not default
+ * to it.
+ *
+ * Most of the marks worth badging — `✳` U+2733 among them — are
+ * `Extended_Pictographic` but `Emoji_Presentation: no`, meaning their default
+ * form is a monochrome *text* glyph. Windows Terminal shows `✳` green anyway
+ * because DirectWrite's fallback happens to reach Segoe UI Emoji; Blink
+ * deliberately prefers a text font for these, so the same character in our own
+ * tab strip would come out grey and look nothing like the thing the user
+ * recognises from every other terminal. U+FE0F is the standard way to say
+ * "the colour one", rather than betting on a fallback chain.
+ *
+ * Only for characters that actually have a colour form. The spinner frames are
+ * Geometric Shapes and Braille — not emoji at all, with no colour form to ask
+ * for — so they stay text glyphs and take the tab's own colour, which is what
+ * Windows Terminal shows for them too.
+ */
+function withEmojiPresentation(grapheme: string): string {
+  const cps = [...grapheme]
+  // A selector already present is the program's own statement about how it
+  // wants to be drawn — U+FE0F for colour, U+FE0E for text. Neither is ours to
+  // overrule. Multi-codepoint clusters are left alone for the same reason a
+  // selector has to sit against its base: appending to the end of a ZWJ
+  // sequence would attach it to the wrong character.
+  if (cps.length !== 1) return grapheme
+  const base = cps[0]
+  if (!/\p{Extended_Pictographic}/u.test(base)) return grapheme
+  if (/\p{Emoji_Presentation}/u.test(base)) return grapheme
+  return `${base}️`
+}
+
+/**
  * The badge for a remote-set title, or null when the title is an ordinary one.
  *
  * Leading whitespace is skipped rather than disqualifying: a program that
@@ -78,5 +110,5 @@ export function titleBadge(title: string | null | undefined): string | null {
   if (trimmed === '') return null
   const first = firstGrapheme(trimmed)
   if (BADGE_EXCLUDE.test(first)) return null
-  return BADGE_START.test(first) ? first : null
+  return BADGE_START.test(first) ? withEmojiPresentation(first) : null
 }

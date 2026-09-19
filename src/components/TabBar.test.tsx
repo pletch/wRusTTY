@@ -107,7 +107,9 @@ describe('TabBar close button', () => {
 describe('TabBar remote title badge', () => {
   it('shows the symbol a program leads its title with', () => {
     render(bar({ titleByPane: { 't1-pane': '\u2733 Building the renderer' } }))
-    expect(screen.getByText('\u2733')).toBeTruthy()
+    // With the variation selector: the badge asks for the colour form, since
+    // U+2733's default presentation is a monochrome text glyph.
+    expect(screen.getByText('\u2733\ufe0f')).toBeTruthy()
   })
 
   it('keeps the connection name as the label beside it', () => {
@@ -172,7 +174,9 @@ describe('TabBar badge across a split', () => {
         titleByPane: { 't1-a': '\u2733 active one', 't1-b': '\u{1F525} other one' },
       }),
     )
-    expect(screen.getByText('\u2733')).toBeTruthy()
+    // With the variation selector: the badge asks for the colour form, since
+    // U+2733's default presentation is a monochrome text glyph.
+    expect(screen.getByText('\u2733\ufe0f')).toBeTruthy()
     expect(screen.queryByText('\u{1F525}')).toBeNull()
   })
 
@@ -185,7 +189,9 @@ describe('TabBar badge across a split', () => {
         titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': '\u2733 Building' },
       }),
     )
-    expect(screen.getByText('\u2733')).toBeTruthy()
+    // With the variation selector: the badge asks for the colour form, since
+    // U+2733's default presentation is a monochrome text glyph.
+    expect(screen.getByText('\u2733\ufe0f')).toBeTruthy()
   })
 
   it('names the badge\u2019s own pane in the tooltip when it is not the active one', () => {

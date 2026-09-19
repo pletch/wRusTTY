@@ -3,7 +3,7 @@ import { titleBadge } from './titleBadge'
 
 describe('titleBadge', () => {
   it('takes the asterisk Claude Code leads its title with', () => {
-    expect(titleBadge('✳ Cursor obscuring characters in nano')).toBe('✳')
+    expect(titleBadge('✳ Cursor obscuring characters in nano')).toBe('✳️')
   })
 
   it('takes the spinner frames the same program cycles while it works', () => {
@@ -40,11 +40,11 @@ describe('titleBadge', () => {
   })
 
   it('skips leading whitespace rather than being disqualified by it', () => {
-    expect(titleBadge('  ✳ Building')).toBe('✳')
+    expect(titleBadge('  ✳ Building')).toBe('✳️')
   })
 
   it('handles a title that is only the symbol', () => {
-    expect(titleBadge('✳')).toBe('✳')
+    expect(titleBadge('✳')).toBe('✳️')
   })
 
   it('handles absent and empty titles', () => {
@@ -96,5 +96,48 @@ describe('titleBadge never fires on ordinary text', () => {
     // badge from it.
     expect(titleBadge('\u2500\u2500 htop \u2500\u2500')).toBeNull()
     expect(titleBadge('\u250C nano')).toBeNull()
+  })
+})
+
+/**
+ * Colour presentation.
+ *
+ * The marks worth badging are mostly text-presentation by default, so without
+ * an explicit request they render as monochrome glyphs in the tab's own colour
+ * — nothing like the green square the user recognises. U+FE0F asks for the
+ * colour form rather than betting on Blink's font fallback resolving the way
+ * DirectWrite's does in Windows Terminal.
+ */
+describe('titleBadge colour presentation', () => {
+  it('asks for the colour form of a text-default emoji', () => {
+    // U+2733 is Extended_Pictographic but Emoji_Presentation: no.
+    expect(titleBadge('\u2733 Building')).toBe('\u2733\uFE0F')
+    expect(titleBadge('\u2714 done')).toBe('\u2714\uFE0F')
+  })
+
+  it('leaves an already-colour emoji alone', () => {
+    // Emoji_Presentation: yes — a selector would be noise.
+    expect(titleBadge('\u{1F525} hot')).toBe('\u{1F525}')
+  })
+
+  it('does not overrule a selector the program chose itself', () => {
+    // U+FE0E is an explicit request for the *text* form. Forcing colour over
+    // it would be overruling a deliberate statement.
+    expect(titleBadge('\u2733\uFE0E Building')).toBe('\u2733\uFE0E')
+    expect(titleBadge('\u2733\uFE0F Building')).toBe('\u2733\uFE0F')
+  })
+
+  it('leaves the spinner frames as text glyphs', () => {
+    // Not emoji at all, so there is no colour form to ask for — and a selector
+    // on one would be meaningless. They take the tab's own colour, which is
+    // what Windows Terminal shows for them too.
+    expect(titleBadge('\u25D0 thinking')).toBe('\u25D0')
+    expect(titleBadge('\u280B installing')).toBe('\u280B')
+  })
+
+  it('does not append into the middle of a ZWJ sequence', () => {
+    // A selector has to sit against its base; appending to the end of a
+    // cluster would attach it to the wrong character.
+    expect(titleBadge('\u{1F469}\u200D\u{1F4BB} building')).toBe('\u{1F469}\u200D\u{1F4BB}')
   })
 })
