@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 492300cad104195411d12217dd22f1cd05f31376
+ghostty-org/ghostty @ 622b4eecd7d2ce1a10930537c17f0d61abdba817
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,12 +34,61 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, **189 here** — so re-pin only with a reason and re-run the checks when you
-do. The long run of it going *down* was consolidation rather than a broken
-build (see the ABI breaks below); the one back up is `ghostty_terminal_paste`,
-added at this pin and unused by the shim.
+180, 181, 189, **189 here** — so re-pin only with a reason and re-run the checks
+when you do. The long run of it going *down* was consolidation rather than a
+broken build (see the ABI breaks below); the step back up was the search API at
+`492300ca`.
 
-### Moving from `4540d499` (2026-08-28) to this pin
+### Moving from `492300ca` (2026-09-04) to this pin
+
+190 commits over nineteen days, a clean fast-forward and **no ABI break**: every
+exported name is unchanged (189, 187 of them functions), and the two new
+terminal options were appended to the enum as `OPT_RESIZE_PULL_SCROLLBACK = 40`
+and `OPT_RENDER_HOLD = 41`, so no existing key moved. The headers otherwise
+changed only in comments. `abi.manifest.test.ts`, `abi.parity.test.ts` and the
+whole suite passed against the new binary before anything here was touched.
+
+Taken for three things, all reachable:
+
+- **`9dc0d974e` + `3beb6d717`** (#14236, #14237) — ANSI DECRQM. Only the DEC
+  private form (`CSI ? Ps $ p`) reached the mode-query handler; `CSI Ps $ p`
+  was dropped without a reply, so a program asking about IRM or LNM waited out
+  its timeout. Separately, the query identifier was truncated to 15 bits, so
+  `CSI ? 32885 $ p` was answered as DEC 117. Both are pinned in
+  `effects.test.ts`, and both new assertions were run against the previous
+  binary and watched to fail with exactly those answers.
+- **`c55f213aa`** (#14294) — `OPT_RESIZE_PULL_SCROLLBACK`. Growing the rows
+  pulls lines back out of scrollback, which a ConPTY cannot follow: it keeps
+  its own buffer with no scrollback, so the two disagree about what is on
+  screen and later output lands on the wrong rows.
+- **`e50779498`** (#14317) — `OPT_RENDER_HOLD`, a callback at the exact byte
+  where synchronized output (mode 2026) begins and ends. Before it the core
+  only set the mode bit, and we did not read that either.
+
+Also taken: **`079502e23`**, a sorted-set mode lookup (a mode get 10.5 ns ->
+3.2 ns upstream), and **`12542b392`**, Unicode 18 through `uucode`. The latter
+changes widths only for the new codepoints, which nothing in
+`gridSnapshot.test.ts` uses.
+
+Inert here: Windows page reclaim (`95cfbbb05`, gated on `.windows`), the Windows
+`TinyIo` (`f6cb8312b`), kitty's Windows path blocklist (`0b5446364`),
+NULL-for-empty from the `*_alloc` formatters (`dd2edd760` — we call none of
+them), and `compressPage`'s smaller memset (we never call `compress`).
+
+One build-side change to know about before the next rebuild: `translate_c` is
+now a path dependency (`pkg/translate-c`) whose own dependency is fetched from
+**codeberg.org**, eagerly, because `build.zig` imports it at top level. The
+first build at this pin failed on a codeberg outage with `unable to connect to
+server: Timeout`, and there is no mirror on `deps.files.ghostty.org` or GitHub.
+Waiting it out worked; `zig fetch <url>` run from the checkout pre-seeds the
+cache (hash `translate_c-0.0.0-Q_BUWhVNBwDOEcIqub4VFPJPB6D9dgwzUMHTX5KWr8Xr`).
+
+The binary grew **2,526 bytes** (1,127,956 -> 1,130,482). `scrollbackLimit.test.ts`
+passes unchanged, so `SCROLLBACK_BYTES_PER_CELL` and the tier table stand, and
+both parse probes land inside the ranges quoted above (search 0.8x-0.9x, raw
+cells 0.9x-1.2x).
+
+### Moving from `4540d499` (2026-08-28) to `492300ca`
 
 148 commits over seven days, 27 of them in the vt library, a clean fast-forward
 and **no ABI break**: no header changed at all, so the shim needed nothing. The
@@ -236,7 +285,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 492300cad104195411d12217dd22f1cd05f31376
+cd ghostty && git checkout 622b4eecd7d2ce1a10930537c17f0d61abdba817
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm

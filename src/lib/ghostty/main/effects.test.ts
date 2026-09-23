@@ -114,6 +114,31 @@ run('query responses via OPT_WRITE_PTY', () => {
     effects.dispose()
   })
 
+  it('answers both forms of DECRQM, in their own namespaces', () => {
+    // The ANSI form (`CSI Ps $ p`, no `?`) went unanswered before upstream
+    // #14236 — not "not recognised", nothing at all, so a program asking about
+    // IRM or LNM waited out its timeout. Mode 4 exists in both namespaces
+    // (ANSI insert, DEC smooth scroll), so setting one and clearing the other
+    // shows the replies are keyed by namespace rather than by number.
+    const { ex, term, write } = boot()
+    const effects = new MainEffects({ ex, term })
+    write('\x1b[4h\x1b[?4l')
+    write('\x1b[4$p')
+    write('\x1b[?4$p')
+    expect(decode(effects.takeResponses())).toEqual(['\x1b[4;1$y', '\x1b[?4;2$y'])
+    effects.dispose()
+  })
+
+  it('reports an unknown mode number above 32767 as itself', () => {
+    // Upstream #14237: the query identifier was truncated to 15 bits, so
+    // 32772 came back as ANSI mode 4 and 32885 as DEC 117.
+    const { ex, term, write } = boot()
+    const effects = new MainEffects({ ex, term })
+    write('\x1b[?32885$p')
+    expect(decode(effects.takeResponses())).toEqual(['\x1b[?32885;0$y'])
+    effects.dispose()
+  })
+
   it('keeps several replies from one write separate and ordered', () => {
     const { ex, term, write } = boot()
     const effects = new MainEffects({ ex, term })

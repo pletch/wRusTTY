@@ -6,7 +6,7 @@
  * imports from there or is imported by it, so the two can coexist until the
  * read path moves over.
  *
- * Pinned to ghostty-org/ghostty @ 492300cad104195411d12217dd22f1cd05f31376.
+ * Pinned to ghostty-org/ghostty @ 622b4eecd7d2ce1a10930537c17f0d61abdba817.
  * Every value below is transcribed from that commit's headers and exercised
  * against that commit's binary by `main/abi.parity.test.ts`, and the struct
  * layouts are checked against the binary itself by `main/abi.manifest.test.ts`.

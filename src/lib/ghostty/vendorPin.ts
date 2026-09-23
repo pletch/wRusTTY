@@ -22,13 +22,13 @@ export const GHOSTTY_PIN = {
   /** The branch the pin is on. ghostty `main`, post-v1.3.1 — there is no
    *  upstream release number that describes this build. */
   upstream: 'main',
-  commit: '492300cad104195411d12217dd22f1cd05f31376',
+  commit: '622b4eecd7d2ce1a10930537c17f0d61abdba817',
   /** Carried on top of the pin — see `patches/ghostty-main-esc-k.patch`. Worth
    *  showing: it changes parser behaviour, so "ghostty at <commit>" alone would
    *  not reproduce what the user is running. */
   patch: 'ghostty-main-esc-k.patch (#176)',
-  sha256: '3457ccec7e220ce5253035e8c2db945bdc84747814b220fdd889ead9c0b3a939',
-  bytes: 1_127_956,
+  sha256: '23cfa45b9fe0d463fcb2d7fac8cfa9d7c3ababcfac33206381005063597d4a65',
+  bytes: 1_130_482,
   zig: '0.16.0',
   buildFlags: '-Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast',
 } as const
