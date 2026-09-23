@@ -95,6 +95,12 @@ export interface GhosttyExports {
   ghostty_terminal_new_with_config(cols: number, rows: number, config: number): number
   ghostty_terminal_free(term: number): void
   ghostty_terminal_resize(term: number, cols: number, rows: number): void
+  /**
+   * Whether growing the rows may pull lines back out of scrollback; nonzero
+   * allows it, which is also the default. Only the `main` shim provides this —
+   * the v1.3.1 build always pulls, and has no way to be told otherwise.
+   */
+  ghostty_terminal_set_resize_pull_scrollback?(term: number, pull: number): void
   ghostty_terminal_write(term: number, data: number, len: number): void
 
   // Render state. `update` rebuilds the snapshot and must be called once per

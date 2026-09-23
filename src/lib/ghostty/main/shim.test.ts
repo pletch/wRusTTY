@@ -456,3 +456,55 @@ run('the main shim, against the ABI it replaces', () => {
       return parseCell(v, 0).codepoint
     }).then((cp) => expect(cp).toBe('b'.codePointAt(0))))
 })
+
+/**
+ * Against the shipped binary rather than the comparison build, so these run on
+ * CI: they are about a behaviour the app switches on, not parity with v1.3.1,
+ * which has no such switch.
+ */
+describe('resize pulling rows back from scrollback', () => {
+  const SHIPPED = join(here, '../vendor/ghostty-vt.wasm')
+  let shipped: Promise<GhosttyWasm> | null = null
+  const load = () =>
+    (shipped ??= instantiateMainGhosttyWasm(readFileSync(SHIPPED).buffer as ArrayBuffer))
+
+  /** Thirty numbered lines into a 40x8 pane, then made 16 rows tall. */
+  async function grow(pull: boolean | null) {
+    const wasm = await load()
+    const ex = wasm.exports
+    const term = createTerminal(wasm, COLS, ROWS, CONFIG)
+    if (pull !== null) ex.ghostty_terminal_set_resize_pull_scrollback!(term, pull ? 1 : 0)
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`)
+    writeString(wasm, term, lines.join('\r\n'))
+    const before = ex.ghostty_terminal_get_scrollback_length(term)
+    ex.ghostty_terminal_resize(term, COLS, ROWS * 2)
+    ex.ghostty_render_state_update(term)
+    const after = {
+      scrollback: ex.ghostty_terminal_get_scrollback_length(term),
+      cursorY: ex.ghostty_render_state_get_cursor_y(term),
+    }
+    ex.ghostty_terminal_free(term)
+    return { before, ...after }
+  }
+
+  it('pulls by default, moving the cursor down with the rows it brought back', async () => {
+    const r = await grow(null)
+    expect(r.before).toBe(30 - ROWS)
+    expect(r.scrollback).toBe(30 - ROWS * 2)
+    expect(r.cursorY).toBe(ROWS * 2 - 1)
+  })
+
+  it('leaves scrollback and the cursor row alone when told not to, as a ConPTY needs', async () => {
+    // The pseudoconsole's cursor is still on row 7 after the resize. If ours
+    // moved to 15, every absolute cursor move it sends from here on is eight
+    // rows out.
+    const r = await grow(false)
+    expect(r.scrollback).toBe(r.before)
+    expect(r.cursorY).toBe(ROWS - 1)
+  })
+
+  it('can be turned back on', async () => {
+    const r = await grow(true)
+    expect(r.scrollback).toBe(30 - ROWS * 2)
+  })
+})

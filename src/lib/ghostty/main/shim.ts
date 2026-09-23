@@ -516,6 +516,11 @@ class MainShim {
       ghostty_terminal_resize: (term, cols, rows) => {
         ex.ghostty_terminal_resize(term, cols, rows)
       },
+      ghostty_terminal_set_resize_pull_scrollback: (term, pull) => {
+        // `bool*`: one byte, pointed at like every other scalar option.
+        this.dv().setUint8(this.scratch, pull !== 0 ? 1 : 0)
+        ex.ghostty_terminal_set(term, abi.T_OPT_RESIZE_PULL_SCROLLBACK, this.scratch)
+      },
       // Returns void on both sides, but for different reasons: ours never
       // reported failure, and main's reports it out-of-band through
       // T_DATA_VT_PROCESSING_ERROR. Wrapping this in a result check compares

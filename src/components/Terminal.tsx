@@ -958,6 +958,12 @@ export function Terminal({
     // the same rule as everything above: repeated here so a new pane gets it,
     // because the effect that tracks it only fires on changes.
     term.setBackspaceSendsCtrlH?.(backspaceRef.current)
+    // Local and elevated shells both run on a ConPTY, which keeps no
+    // scrollback of its own and so cannot follow a resize that pulls rows back
+    // out of ours. Set once per engine: this effect builds a new one whenever
+    // the source changes.
+    const transport = conn.transportOf(source)
+    term.setResizePullsScrollback?.(transport !== 'local' && transport !== 'elevated')
     // Read back rather than echoing the setting: the engine resolves an
     // unknown tier to its own fallback, and this has to describe what the pane
     // got. Reported after the setter above and only here — the core fixes the

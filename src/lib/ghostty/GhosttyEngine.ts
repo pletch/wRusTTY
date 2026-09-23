@@ -246,6 +246,12 @@ export class GhosttyEngine implements TerminalEngine {
    * output — see the note there for what that cost.
    */
   private backspaceSendsCtrlH = false
+  /**
+   * Whether growing the pane may pull rows back out of scrollback. False for a
+   * ConPTY session — see `setResizePullsScrollback`. Kept here as well as in
+   * the core because the terminal may not exist yet when the pane says so.
+   */
+  private resizePullsScrollback = true
 
   private onDataHandlers = new Set<(data: Uint8Array) => void>()
   /** Fired from the two sites a human is behind — key input and paste — and
@@ -654,6 +660,8 @@ export class GhosttyEngine implements TerminalEngine {
         this.failInit('Ghostty could not allocate a terminal.')
         return
       }
+      // Before the first resize can happen, which is the only thing it governs.
+      if (!this.resizePullsScrollback) this.applyResizePull()
 
       // Before the buffered writes below: those writes can carry the very
       // sequence that turns the Kitty protocol on, and an encoder made
@@ -2055,6 +2063,21 @@ export class GhosttyEngine implements TerminalEngine {
    *  Unix expects and what a session that never said gets. */
   setBackspaceSendsCtrlH(enabled: boolean | null | undefined): void {
     this.backspaceSendsCtrlH = enabled === true
+  }
+
+  setResizePullsScrollback(pull: boolean): void {
+    if (pull === this.resizePullsScrollback) return
+    this.resizePullsScrollback = pull
+    this.applyResizePull()
+  }
+
+  /** No-op until the terminal exists; `initWasm` applies it then. */
+  private applyResizePull(): void {
+    if (!this.wasm || !this.termPtr) return
+    this.wasm.exports.ghostty_terminal_set_resize_pull_scrollback?.(
+      this.termPtr,
+      this.resizePullsScrollback ? 1 : 0,
+    )
   }
 
   isPasteSafe(text: string): boolean | null {

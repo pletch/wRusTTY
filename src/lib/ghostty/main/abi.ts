@@ -566,6 +566,17 @@ export const T_OPT_PROGRESS_REPORT = 30
 export const T_OPT_TITLE_REPORT = 32
 
 /**
+ * Whether growing the rows may pull lines back out of scrollback. `bool*`;
+ * the core defaults to true and keeps the setting across a RIS.
+ *
+ * Off for anything behind a ConPTY. The pseudoconsole keeps its own screen
+ * buffer with no scrollback, so it cannot follow a pull: after one, the two
+ * disagree about which row the cursor is on and later output lands on the
+ * wrong rows. Upstream `c55f213aa` (#14294), which names ConPTY as the case.
+ */
+export const T_OPT_RESIZE_PULL_SCROLLBACK = 40
+
+/**
  * `GhosttyColorRgb` is **3 packed bytes**, no padding, so a 256-entry palette is
  * 768 bytes. Verified: at stride 4 a palette of `rgb(i, 100, 200)` resolved
  * index 7 to `(100, 200, 0)` — shifted by one channel, a plausible colour that

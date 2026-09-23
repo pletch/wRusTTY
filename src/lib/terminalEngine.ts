@@ -67,6 +67,13 @@ export interface TerminalEngine {
    * of that split it also rewrites mouse reports, where 0x7f is column 95.
    */
   setBackspaceSendsCtrlH?(enabled: boolean | null | undefined): void
+  /**
+   * Whether making the pane taller may bring rows back from scrollback, which
+   * is the default. False for a session behind a ConPTY: the pseudoconsole has
+   * no scrollback to pull from, so after a pull the two disagree about where
+   * the cursor is and later output lands on the wrong rows.
+   */
+  setResizePullsScrollback?(pull: boolean): void
 
   getSelection(): string
   onSelectionChange(cb: () => void): IDisposable

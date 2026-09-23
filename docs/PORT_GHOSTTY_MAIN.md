@@ -60,7 +60,10 @@ Taken for three things, all reachable:
 - **`c55f213aa`** (#14294) — `OPT_RESIZE_PULL_SCROLLBACK`. Growing the rows
   pulls lines back out of scrollback, which a ConPTY cannot follow: it keeps
   its own buffer with no scrollback, so the two disagree about what is on
-  screen and later output lands on the wrong rows.
+  screen and later output lands on the wrong rows. `Terminal.tsx` turns it
+  off for local and elevated panes through a shim-only
+  `ghostty_terminal_set_resize_pull_scrollback`; `shim.test.ts` pins both
+  behaviours against the shipped binary, so it runs on CI.
 - **`e50779498`** (#14317) — `OPT_RENDER_HOLD`, a callback at the exact byte
   where synchronized output (mode 2026) begins and ends. Before it the core
   only set the mode bit, and we did not read that either.
