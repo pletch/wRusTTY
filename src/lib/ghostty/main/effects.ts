@@ -39,32 +39,41 @@
 import * as abi from './abi'
 
 /**
- * A module importing `env.cb : (i32,i32,i32,i32) -> ()` and exporting `f`,
- * which forwards to it. Assembled by hand because it is far smaller than any
- * dependency that would emit it, and it never needs to change: the signature is
- * fixed by `GhosttyTerminalWritePtyFn`.
+ * A module importing `env.cb : (i32 x arity) -> ()` and exporting `f`, which
+ * forwards to it. Assembled by hand because it is far smaller than any
+ * dependency that would emit it. Every callback we register is all-i32 with no
+ * result — `GhosttyTerminalWritePtyFn` takes four, `GhosttyTerminalRenderHoldFn`
+ * three (a C `bool` is an i32 in wasm32) — so the arity is the only thing that
+ * varies. At four this is byte-for-byte the module this file used to embed.
  */
-const TRAMPOLINE_WASM = Uint8Array.from([
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-  // type: one func type, (i32 i32 i32 i32) -> ()
-  0x01, 0x08, 0x01, 0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x00,
-  // import: env.cb, func, type 0
-  0x02, 0x0a, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x02, 0x63, 0x62, 0x00, 0x00,
-  // function: one func, type 0
-  0x03, 0x02, 0x01, 0x00,
-  // export: "f" -> func index 1 (0 is the import)
-  0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x01,
-  // code: local.get 0..3; call 0; end
-  0x0a, 0x0e, 0x01, 0x0c, 0x00,
-  0x20, 0x00, 0x20, 0x01, 0x20, 0x02, 0x20, 0x03, 0x10, 0x00, 0x0b,
-])
+function trampolineBytes(arity: number): Uint8Array<ArrayBuffer> {
+  const i32s = new Array<number>(arity).fill(0x7f)
+  const gets = Array.from({ length: arity }, (_, i) => [0x20, i]).flat()
+  // locals (none), the gets, call 0, end
+  const body = [0x00, ...gets, 0x10, 0x00, 0x0b]
+  return Uint8Array.from([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    // type: one func type, (i32 x arity) -> ()
+    0x01, 4 + arity, 0x01, 0x60, arity, ...i32s, 0x00,
+    // import: env.cb, func, type 0
+    0x02, 0x0a, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x02, 0x63, 0x62, 0x00, 0x00,
+    // function: one func, type 0
+    0x03, 0x02, 0x01, 0x00,
+    // export: "f" -> func index 1 (0 is the import)
+    0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x01,
+    // code: one body
+    0x0a, body.length + 2, 0x01, body.length, ...body,
+  ])
+}
 
-let trampolineModule: WebAssembly.Module | null = null
-function trampoline(onCall: (ptr: number, len: number) => void): WebAssembly.Instance {
-  trampolineModule ??= new WebAssembly.Module(TRAMPOLINE_WASM)
-  return new WebAssembly.Instance(trampolineModule, {
-    env: { cb: (_term: number, _userdata: number, ptr: number, len: number) => onCall(ptr, len) },
-  })
+const trampolineModules = new Map<number, WebAssembly.Module>()
+function trampoline(arity: number, cb: (...args: number[]) => void): WebAssembly.Instance {
+  let mod = trampolineModules.get(arity)
+  if (!mod) {
+    mod = new WebAssembly.Module(trampolineBytes(arity))
+    trampolineModules.set(arity, mod)
+  }
+  return new WebAssembly.Instance(mod, { env: { cb } })
 }
 
 /**
@@ -79,16 +88,27 @@ const freeSlots = new WeakMap<object, number[]>()
 export interface EffectsHandles {
   ex: abi.GhosttyMainExports & { __indirect_function_table?: WebAssembly.Table }
   term: number
+  /**
+   * Synchronized output (mode 2026) beginning or ending. Called *during*
+   * `vt_write`, at the exact byte, which is the point: when `held` is true the
+   * terminal holds precisely the frame the program wants left on screen, even
+   * if the rest of the frame follows in the same write. So unlike the replies
+   * this cannot be buffered — the caller has to act on it before returning.
+   * Taking a render snapshot here is allowed; writing to the terminal is not.
+   * Omitted, no callback is installed and mode 2026 is only a mode bit.
+   */
+  onRenderHold?: (held: boolean) => void
 }
 
 export class MainEffects {
   private readonly ex: EffectsHandles['ex']
   private readonly table: WebAssembly.Table
   private readonly slot: number
+  private readonly holdSlot: number | null = null
   private pending: Uint8Array[] = []
   private disposed = false
 
-  constructor({ ex, term }: EffectsHandles) {
+  constructor({ ex, term, onRenderHold }: EffectsHandles) {
     const table = ex.__indirect_function_table
     if (!table) {
       throw new Error('ghostty wasm build does not export __indirect_function_table')
@@ -96,7 +116,7 @@ export class MainEffects {
     this.ex = ex
     this.table = table
 
-    const inst = trampoline((ptr, len) => {
+    const inst = trampoline(4, (_term, _userdata, ptr, len) => {
       if (len <= 0) return
       // "The data is only valid for the duration of the call" — so copy now.
       // Handing the caller a view over wasm memory would give them bytes that
@@ -104,12 +124,22 @@ export class MainEffects {
       this.pending.push(new Uint8Array(ex.memory.buffer, ptr, len).slice())
     })
 
-    const recycled = freeSlots.get(ex)?.pop()
-    this.slot = recycled ?? table.grow(1)
-    table.set(this.slot, inst.exports.f as WebAssembly.ExportValue)
-
+    this.slot = this.claimSlot(inst)
     // The value IS the function pointer here, not a pointer to it.
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_WRITE_PTY, this.slot), 'set WRITE_PTY')
+
+    if (onRenderHold) {
+      const hold = trampoline(3, (_term, _userdata, held) => onRenderHold(held !== 0))
+      this.holdSlot = this.claimSlot(hold)
+      abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_RENDER_HOLD, this.holdSlot), 'set RENDER_HOLD')
+    }
+  }
+
+  /** A table entry for `inst`'s export, reusing one a disposed pane gave back. */
+  private claimSlot(inst: WebAssembly.Instance): number {
+    const slot = freeSlots.get(this.ex)?.pop() ?? this.table.grow(1)
+    this.table.set(slot, inst.exports.f as WebAssembly.ExportValue)
+    return slot
   }
 
   /**
@@ -134,9 +164,12 @@ export class MainEffects {
     // Cleared rather than left pointing at a live trampoline: the terminal is
     // usually freed around now, and a stale entry that still resolves is worse
     // than one that traps.
-    this.table.set(this.slot, null)
     const list = freeSlots.get(this.ex) ?? []
-    list.push(this.slot)
+    for (const slot of [this.slot, this.holdSlot]) {
+      if (slot === null) continue
+      this.table.set(slot, null)
+      list.push(slot)
+    }
     freeSlots.set(this.ex, list)
   }
 }

@@ -577,6 +577,24 @@ export const T_OPT_TITLE_REPORT = 32
 export const T_OPT_RESIZE_PULL_SCROLLBACK = 40
 
 /**
+ * `GhosttyTerminalRenderHoldFn`: `(terminal, userdata, bool held) -> void`,
+ * called at the byte where synchronized output (mode 2026) begins and again
+ * when it ends — by the program, by a RIS, or by a resize. Upstream
+ * `e50779498` (#14317). The value is the function pointer itself, as for
+ * `T_OPT_WRITE_PTY`.
+ */
+export const T_OPT_RENDER_HOLD = 41
+
+/**
+ * Sets a mode, taking a `GhosttyTerminalModeConfig*` (see `MODE_CONFIG_*`).
+ * Unlike the program setting it, this never fires the render-hold callback —
+ * which is what makes it the way to end a hold the program never released.
+ */
+export const T_OPT_MODE = 34
+/** DEC private mode 2026, synchronized output. */
+export const MODE_SYNC_OUTPUT = 2026
+
+/**
  * `GhosttyColorRgb` is **3 packed bytes**, no padding, so a 256-entry palette is
  * 768 bytes. Verified: at stride 4 a palette of `rgb(i, 100, 200)` resolved
  * index 7 to `(100, 200, 0)` — shifted by one channel, a plausible colour that

@@ -1478,11 +1478,19 @@ export class GhosttyEngine implements TerminalEngine {
     // A pane with no context has nowhere to draw, and the snapshot work below
     // is the bulk of a frame. Leaving needsRedraw set means the pane repaints
     // in full the moment it gets a context back.
-    if (this.needsRedraw && !this.renderer.isContextLost) {
+    //
+    // A held frame is the same: the program is mid-redraw under synchronized
+    // output, the finished frame before it is already on screen, and
+    // needsRedraw stays set so the frame after the hold ends draws at once.
+    if (
+      this.needsRedraw &&
+      !this.renderer.isContextLost &&
+      this.wasm.exports.ghostty_render_state_is_held?.(this.termPtr) !== 1
+    ) {
       // update() rebuilds the render snapshot and has to run before the
       // viewport is read; mark_clean() afterwards resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
-      const scrollbackCount = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+      const scrollbackCount = this.snapshotScrollbackLength()
       // Read straight after the update, so it is the depth the snapshot below
       // was taken at rather than whatever the core has reached by the time
       // something reads a row. See the field.
@@ -2581,7 +2589,21 @@ export class GhosttyEngine implements TerminalEngine {
     this.wasm.exports.ghostty_render_state_update(this.termPtr)
     // Same pairing as the frame does: a snapshot and the depth it was taken
     // at, recorded together and never sampled apart. See `snapshotScrollback`.
-    this.snapshotScrollback = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
+    this.snapshotScrollback = this.snapshotScrollbackLength()
+  }
+
+  /**
+   * The scrollback depth the current render snapshot was taken at. Read
+   * straight after `render_state_update`, the live count used to be the same
+   * number — until synchronized output, where the update keeps the frame
+   * captured when the hold began and the live count runs on past it.
+   */
+  private snapshotScrollbackLength(): number {
+    const ex = this.wasm!.exports
+    return (
+      ex.ghostty_render_state_get_scrollback_length?.(this.termPtr) ??
+      ex.ghostty_terminal_get_scrollback_length(this.termPtr)
+    )
   }
 
   cursorCell(): { x: number; y: number } {

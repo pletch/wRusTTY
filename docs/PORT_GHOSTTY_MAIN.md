@@ -66,7 +66,17 @@ Taken for three things, all reachable:
   behaviours against the shipped binary, so it runs on CI.
 - **`e50779498`** (#14317) — `OPT_RENDER_HOLD`, a callback at the exact byte
   where synchronized output (mode 2026) begins and ends. Before it the core
-  only set the mode bit, and we did not read that either.
+  only set the mode bit, and we did not read that either, so a redraw split
+  across two chunks was drawn half-finished. The shim takes the render
+  snapshot inside the callback and leaves it alone until the hold ends;
+  `renderFrame` skips a frame while `ghostty_render_state_is_held` says the
+  captured one is already up, and a hold ends after one second whatever the
+  program does. The snapshot's own scrollback depth is recorded with it
+  (`ghostty_render_state_get_scrollback_length`), because during a hold the
+  live count runs past the frame being shown and copy maps rows through it.
+  `renderHold.test.ts` pins it against the shipped binary; six of its eight
+  cases fail with the callback left uninstalled. The capture costs 0.7 µs per
+  synchronized frame at 80x24 and 5.4 µs at 200x60.
 
 Also taken: **`079502e23`**, a sorted-set mode lookup (a mode get 10.5 ns ->
 3.2 ns upstream), and **`12542b392`**, Unicode 18 through `uucode`. The latter

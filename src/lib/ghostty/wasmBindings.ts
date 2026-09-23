@@ -106,6 +106,22 @@ export interface GhosttyExports {
   // Render state. `update` rebuilds the snapshot and must be called once per
   // frame before reading the viewport.
   ghostty_render_state_update(term: number): number
+  /**
+   * Nonzero when this frame should not be drawn: the program is holding the
+   * screen with synchronized output (mode 2026) and the frame captured when
+   * the hold began has already been shown. Keep the redraw pending and ask
+   * again next frame. Also where a hold past its timeout is ended, so it needs
+   * asking every frame for the timeout to be real. Only the `main` shim
+   * provides it; the v1.3.1 build draws through mode 2026 regardless.
+   */
+  ghostty_render_state_is_held?(term: number): number
+  /**
+   * Scrollback depth when the render snapshot was last actually rebuilt. The
+   * live `terminal_get_scrollback_length` only agrees with the snapshot right
+   * after an update that did rebuild it, and during a hold `update` does not.
+   * `main` shim only; fall back to the live count without it.
+   */
+  ghostty_render_state_get_scrollback_length?(term: number): number
   ghostty_render_state_get_cols(term: number): number
   ghostty_render_state_get_rows(term: number): number
   ghostty_render_state_get_cursor_x(term: number): number

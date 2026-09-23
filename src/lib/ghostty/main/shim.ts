@@ -31,6 +31,9 @@
  *   the shim updates only where our ABI updates.
  * - **Replies are a callback, not a queue** — buffered by `MainEffects` and
  *   handed back through `has_response`/`read_response`.
+ * - **Synchronized output is a callback too**, and the one that cannot be
+ *   buffered: the snapshot has to be taken at the byte where the hold begins.
+ *   See `RenderHold`.
  * - **The cursor style enum is renumbered.** Ours is block=0, bar=1; main's is
  *   bar=0, block=1. Nothing about a mis-mapping looks like an error: you get a
  *   cursor, just the wrong shape, so it is translated in one place here.
@@ -154,7 +157,41 @@ interface TerminalState {
    */
   cursorRead: boolean
   colorsRead: boolean
+  /** Scrollback depth when the render snapshot was last actually rebuilt. */
+  snapshotScrollback: number
+  hold: RenderHold
 }
+
+/**
+ * Synchronized output, as the render snapshot sees it.
+ *
+ * A program redrawing in several steps sets mode 2026 first, so no frame is
+ * drawn half-finished. The core calls back at that exact byte, and the snapshot
+ * taken there is the last complete frame; it is then left alone until the
+ * program resets the mode. Before this the core only set the mode bit and we
+ * drew whatever the grid held at animation-frame time, which for a redraw
+ * spanning two chunks was half of each.
+ */
+interface RenderHold {
+  active: boolean
+  /** `performance.now()` when the hold began, for the timeout. */
+  since: number
+  /**
+   * The captured frame has not been drawn yet. A hold can begin partway
+   * through a write whose earlier bytes were never shown, so the first frame
+   * inside it still has to draw — just from the capture rather than live.
+   */
+  fresh: boolean
+}
+
+/**
+ * The longest a program may freeze the screen. The core has no clock and never
+ * ends a hold itself, so a program that dies between setting 2026 and
+ * resetting it would otherwise leave the pane frozen for good. One second is
+ * upstream's suggestion and what other terminals use; a real frame is a few
+ * milliseconds.
+ */
+export const RENDER_HOLD_TIMEOUT_MS = 1000
 
 class MainShim {
   private readonly ex: MainExports
@@ -308,11 +345,13 @@ class MainShim {
       // Installed at creation, before a single byte is written: `vt_write`
       // ignores anything needing a reply until it is, and a query missed during
       // startup is one a program is already waiting on.
-      effects: new MainEffects({ ex, term }),
+      effects: new MainEffects({ ex, term, onRenderHold: (held) => this.onRenderHold(term, held) }),
       pending: [],
       dirtyIter: 0,
       cursorRead: false,
       colorsRead: false,
+      snapshotScrollback: 0,
+      hold: { active: false, since: 0, fresh: false },
     })
     return term
   }
@@ -446,6 +485,54 @@ class MainShim {
     this.ex.ghostty_terminal_free(term)
   }
 
+  /* --------------------------------------------------------- snapshots */
+
+  /**
+   * Rebuilds the render snapshot, and records the scrollback depth beside it.
+   *
+   * The frame boundary, and so the only place the cursor and colour snapshots
+   * may be invalidated. Anything that re-read them elsewhere would hand the
+   * renderer a cursor from a newer grid than its cells.
+   */
+  private snapshot(term: number, st: TerminalState): void {
+    st.reader.update()
+    st.cursorRead = false
+    st.colorsRead = false
+    st.snapshotScrollback = this.tGet(term, abi.T_DATA_SCROLLBACK_ROWS)
+      ? this.dv().getUint32(this.scratch, true)
+      : 0
+  }
+
+  /**
+   * Runs inside `vt_write`. Only snapshots and reads happen here — the core
+   * allows that mid-write, and forbids writing to the terminal.
+   */
+  private onRenderHold(term: number, held: boolean): void {
+    const st = this.state(term)
+    if (!st) return
+    if (held) {
+      this.snapshot(term, st)
+      st.hold = { active: true, since: performance.now(), fresh: true }
+    } else {
+      st.hold.active = false
+    }
+  }
+
+  /**
+   * Ends a hold that has outlived the timeout. Through `T_OPT_MODE`, which
+   * does not fire the callback, so the bookkeeping is ours to do. A program
+   * that sets 2026 again during the hold changes nothing, so it cannot push
+   * the deadline back.
+   */
+  private expireHold(term: number, st: TerminalState): void {
+    if (!st.hold.active || performance.now() - st.hold.since < RENDER_HOLD_TIMEOUT_MS) return
+    const d = this.dv()
+    d.setUint16(this.scratch + abi.MODE_CONFIG_MODE_OFFSET, abi.MODE_SYNC_OUTPUT, true)
+    d.setUint8(this.scratch + abi.MODE_CONFIG_VALUE_OFFSET, 0)
+    this.ex.ghostty_terminal_set(term, abi.T_OPT_MODE, this.scratch)
+    st.hold.active = false
+  }
+
   /* ---------------------------------------------------------- responses */
 
   private drain(term: number): Uint8Array[] {
@@ -530,14 +617,21 @@ class MainShim {
       ghostty_render_state_update: (term) => {
         const st = this.state(term)
         if (!st) return 0
-        st.reader.update()
-        // The frame boundary, and so the only place the cursor and colour
-        // snapshots may be invalidated. Anything that re-read them elsewhere
-        // would hand the renderer a cursor from a newer grid than its cells.
-        st.cursorRead = false
-        st.colorsRead = false
+        this.expireHold(term, st)
+        // During a hold the snapshot *is* the frame to show — taken when the
+        // hold began — so rebuilding it here would draw the half-finished one
+        // the hold exists to hide.
+        if (st.hold.active) st.hold.fresh = false
+        else this.snapshot(term, st)
         return 0
       },
+      ghostty_render_state_is_held: (term) => {
+        const st = this.state(term)
+        if (!st) return 0
+        this.expireHold(term, st)
+        return st.hold.active && !st.hold.fresh ? 1 : 0
+      },
+      ghostty_render_state_get_scrollback_length: (term) => this.state(term)?.snapshotScrollback ?? 0,
       ghostty_render_state_get_cols: (term) => this.rsU16(term, abi.RS_DATA_COLS),
       ghostty_render_state_get_rows: (term) => this.rsU16(term, abi.RS_DATA_ROWS),
       // The five cursor getters below share one `RS_DATA_CURSOR` read per frame.
