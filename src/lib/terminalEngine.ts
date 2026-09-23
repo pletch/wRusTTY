@@ -70,8 +70,8 @@ export interface TerminalEngine {
   /**
    * Whether making the pane taller may bring rows back from scrollback, which
    * is the default. False for a session behind a ConPTY: the pseudoconsole has
-   * no scrollback to pull from, so after a pull the two disagree about where
-   * the cursor is and later output lands on the wrong rows.
+   * no scrollback to pull from and repaints its own buffer after a resize,
+   * which paints over whatever was pulled back and loses it from history.
    */
   setResizePullsScrollback?(pull: boolean): void
 

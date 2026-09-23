@@ -495,9 +495,10 @@ describe('resize pulling rows back from scrollback', () => {
   })
 
   it('leaves scrollback and the cursor row alone when told not to, as a ConPTY needs', async () => {
-    // The pseudoconsole's cursor is still on row 7 after the resize. If ours
-    // moved to 15, every absolute cursor move it sends from here on is eight
-    // rows out.
+    // A ConPTY answers a resize by repainting its own buffer from the top,
+    // with its cursor still on row 7. Rows we had pulled back into rows 0-7
+    // would be painted over, and gone from scrollback as well — the loss a
+    // replayed capture from a real pseudoconsole showed.
     const r = await grow(false)
     expect(r.scrollback).toBe(r.before)
     expect(r.cursorY).toBe(ROWS - 1)

@@ -1527,7 +1527,12 @@ export class GhosttyEngine implements TerminalEngine {
       }
       this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
-      this.needsRedraw = false
+      // Still pending if that was the frame captured when a hold began. The
+      // hold can end with no further output — the timeout is exactly that
+      // case — and only a pending redraw makes the next frame ask `is_held`,
+      // which is where the timeout is checked. Skipped frames cost that one
+      // call each.
+      this.needsRedraw = this.wasm.exports.ghostty_render_state_is_held?.(this.termPtr) === 1
       // After the draw this frame, so the harness's present clock sees exactly
       // the frames that changed the canvas. Skipped on idle frames above.
       if (this.onRenderHandlers.size > 0) {

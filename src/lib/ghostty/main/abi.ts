@@ -570,9 +570,12 @@ export const T_OPT_TITLE_REPORT = 32
  * the core defaults to true and keeps the setting across a RIS.
  *
  * Off for anything behind a ConPTY. The pseudoconsole keeps its own screen
- * buffer with no scrollback, so it cannot follow a pull: after one, the two
- * disagree about which row the cursor is on and later output lands on the
- * wrong rows. Upstream `c55f213aa` (#14294), which names ConPTY as the case.
+ * buffer with no scrollback, so it cannot follow a pull. Measured on a real
+ * one: after the resize it repaints its buffer from the top, so the screen
+ * comes out right — but the rows we pulled back are painted over, and they are
+ * gone from history too. A 10 -> 20 row grow after 40 lines lost lines 22-31.
+ * Upstream `c55f213aa` (#14294), which reports output landing on the wrong
+ * rows instead — what a ConPTY that did not repaint would show.
  */
 export const T_OPT_RESIZE_PULL_SCROLLBACK = 40
 

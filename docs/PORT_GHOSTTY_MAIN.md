@@ -59,8 +59,12 @@ Taken for three things, all reachable:
   binary and watched to fail with exactly those answers.
 - **`c55f213aa`** (#14294) — `OPT_RESIZE_PULL_SCROLLBACK`. Growing the rows
   pulls lines back out of scrollback, which a ConPTY cannot follow: it keeps
-  its own buffer with no scrollback, so the two disagree about what is on
-  screen and later output lands on the wrong rows. `Terminal.tsx` turns it
+  its own buffer with no scrollback. Upstream reports output landing on the
+  wrong rows. What a real one did here was different and quieter: captured
+  through `portable-pty` across a 10 -> 20 row grow and replayed through this
+  binary, it repainted its buffer from the top, so the screen came out right
+  — and lines 22-31 of 40, pulled back by the resize, were painted over and
+  gone from scrollback. With the pull off nothing was lost. `Terminal.tsx` turns it
   off for local and elevated panes through a shim-only
   `ghostty_terminal_set_resize_pull_scrollback`; `shim.test.ts` pins both
   behaviours against the shipped binary, so it runs on CI.
@@ -77,6 +81,14 @@ Taken for three things, all reachable:
   `renderHold.test.ts` pins it against the shipped binary; six of its eight
   cases fail with the callback left uninstalled. The capture costs 0.7 µs per
   synchronized frame at 80x24 and 5.4 µs at 200x60.
+
+  **Checked in a browser against the real renderer**, which found a bug the
+  shim tests could not: the frame that draws a hold's capture cleared the
+  pending redraw, so `is_held` was never asked again and the timeout never
+  fired — a program that set 2026 and died froze the pane until other output
+  arrived. The frame now stays pending while a hold is up, and
+  `renderHoldLive.test.ts` drives `renderFrame` itself to pin it; it fails
+  with the fix reverted.
 
 Also taken: **`079502e23`**, a sorted-set mode lookup (a mode get 10.5 ns ->
 3.2 ns upstream), and **`12542b392`**, Unicode 18 through `uucode`. The latter
