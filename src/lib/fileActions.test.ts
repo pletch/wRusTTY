@@ -37,7 +37,7 @@ describe('describeTree', () => {
 
 describe('startDirFor', () => {
   it('prefers what the host actually reported', () => {
-    expect(startDirFor('/etc/nginx', 'tim@build01: /tmp')).toBe('/etc/nginx')
+    expect(startDirFor('/etc/nginx', 'dev@build01: /tmp')).toBe('/etc/nginx')
   })
 
   /**
@@ -46,8 +46,8 @@ describe('startDirFor', () => {
    * directory however plainly the title said `/tmp`.
    */
   it('falls back to the title when nothing was reported', () => {
-    expect(startDirFor(null, 'tim@build01: /tmp')).toBe('/tmp')
-    expect(startDirFor(undefined, 'tim@build01: /var/log')).toBe('/var/log')
+    expect(startDirFor(null, 'dev@build01: /tmp')).toBe('/tmp')
+    expect(startDirFor(undefined, 'dev@build01: /var/log')).toBe('/var/log')
   })
 
   it('gives up rather than guessing at a title that is not a path', () => {
@@ -59,33 +59,33 @@ describe('startDirFor', () => {
   /** `\w` renders the home directory as `~`, so this is what most of these
    *  titles actually look like. Passed through for `expandHome` to resolve. */
   it('passes a tilde path through rather than dropping it', () => {
-    expect(startDirFor(null, 'tim@build01: ~/src')).toBe('~/src')
+    expect(startDirFor(null, 'dev@build01: ~/src')).toBe('~/src')
   })
 })
 
 describe('expandHome', () => {
   it('resolves a bare tilde to the home directory', () => {
-    expect(expandHome('~', '/home/tim')).toBe('/home/tim')
+    expect(expandHome('~', '/home/dev')).toBe('/home/dev')
   })
 
   it('resolves a tilde path', () => {
-    expect(expandHome('~/src/wrustty', '/home/tim')).toBe('/home/tim/src/wrustty')
+    expect(expandHome('~/src/wrustty', '/home/dev')).toBe('/home/dev/src/wrustty')
   })
 
   it('does not double the separator when home is the root', () => {
     expect(expandHome('~/src', '/')).toBe('/src')
-    expect(expandHome('~/src', '/home/tim/')).toBe('/home/tim/src')
+    expect(expandHome('~/src', '/home/dev/')).toBe('/home/dev/src')
   })
 
   it('leaves an absolute path alone', () => {
-    expect(expandHome('/tmp', '/home/tim')).toBe('/tmp')
+    expect(expandHome('/tmp', '/home/dev')).toBe('/tmp')
   })
 
   /** Only a *leading* tilde is home. A directory called `~backup` is a
    *  directory called `~backup`. */
   it('leaves a tilde that is not the whole first segment alone', () => {
-    expect(expandHome('~backup', '/home/tim')).toBe('~backup')
-    expect(expandHome('/srv/~cache', '/home/tim')).toBe('/srv/~cache')
+    expect(expandHome('~backup', '/home/dev')).toBe('~backup')
+    expect(expandHome('/srv/~cache', '/home/dev')).toBe('/srv/~cache')
   })
 })
 

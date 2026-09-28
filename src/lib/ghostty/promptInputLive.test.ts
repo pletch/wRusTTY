@@ -74,7 +74,7 @@ describe('reading the prompt line off a live grid', () => {
   it('reads text typed after the prompt marker', async () => {
     const { engine, tracker } = await ready()
     expect(tracker.supported).toBe(true)
-    engine.write('tim@host:~$ \x1b]133;B\x07')
+    engine.write('dev@host:~$ \x1b]133;B\x07')
     engine.write('git status')
     expect(tracker.read()?.text).toBe('git status')
     expect(tracker.read()?.atEnd).toBe(true)
@@ -118,7 +118,7 @@ describe('reading the prompt line off a live grid', () => {
    */
   it('reads nothing when the far end echoes nothing', async () => {
     const { engine, tracker } = await ready()
-    engine.write("tim@host's password: \x1b]133;B\x07")
+    engine.write("dev@host's password: \x1b]133;B\x07")
     // No echo written, which is what `read -s` looks like from out here.
     expect(tracker.read()?.text).toBe('')
   })

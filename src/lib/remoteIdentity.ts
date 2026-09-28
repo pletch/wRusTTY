@@ -122,7 +122,7 @@ export function parseCwd(data: string): string | null {
  */
 export function parseCwdProperty(data: string): string | null {
   const raw = data.trim()
-  // `P;Cwd=/home/tim` — the property form, with the leading `P;` already part
+  // `P;Cwd=/home/dev` — the property form, with the leading `P;` already part
   // of the payload the handler is given.
   const property = /^P;(?:.*;)?Cwd=(.*)$/.exec(raw) ?? /^CurrentDir=(.*)$/.exec(raw)
   if (!property) return null

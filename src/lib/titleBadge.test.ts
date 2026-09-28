@@ -29,7 +29,7 @@ describe('titleBadge', () => {
 
   it('returns nothing for the ordinary titles that make up the strip', () => {
     // The case that matters most: a badge here would be noise on every tab.
-    expect(titleBadge('tim@build01: ~/src')).toBeNull()
+    expect(titleBadge('dev@build01: ~/src')).toBeNull()
     expect(titleBadge('vim README.md')).toBeNull()
     expect(titleBadge('root@opnsense.home')).toBeNull()
     expect(titleBadge('/usr/local/bin')).toBeNull()

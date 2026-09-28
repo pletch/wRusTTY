@@ -142,8 +142,8 @@ describe('StatusBar remote title and directory', () => {
   })
 
   it('shows the reported title', () => {
-    render(<StatusBar {...base} remoteTitle="tim@build01: ~/src" />)
-    expect(screen.getByText('tim@build01: ~/src')).toBeTruthy()
+    render(<StatusBar {...base} remoteTitle="dev@build01: ~/src" />)
+    expect(screen.getByText('dev@build01: ~/src')).toBeTruthy()
   })
 
   it('keeps the connection target alongside them, not replaced by them', () => {

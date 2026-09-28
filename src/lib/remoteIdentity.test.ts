@@ -3,7 +3,7 @@ import { parseWindowTitle, parseCwd, parseCwdProperty, guessCwdFromTitle } from 
 
 describe('parseWindowTitle', () => {
   it('takes the title a shell sets', () => {
-    expect(parseWindowTitle('tim@build01: ~/src')).toBe('tim@build01: ~/src')
+    expect(parseWindowTitle('dev@build01: ~/src')).toBe('dev@build01: ~/src')
   })
 
   it('reports an empty payload as no title', () => {
@@ -37,11 +37,11 @@ describe('parseWindowTitle', () => {
 
 describe('parseCwd', () => {
   it('decodes a file URL', () => {
-    expect(parseCwd('file://build01/home/tim/src')).toBe('/home/tim/src')
+    expect(parseCwd('file://build01/home/dev/src')).toBe('/home/dev/src')
   })
 
   it('decodes percent-escapes', () => {
-    expect(parseCwd('file://build01/home/tim/my%20project')).toBe('/home/tim/my project')
+    expect(parseCwd('file://build01/home/dev/my%20project')).toBe('/home/dev/my project')
   })
 
   it('drops the host, which is not ours to report', () => {
@@ -56,7 +56,7 @@ describe('parseCwd', () => {
   })
 
   it('drops the URL grammar slash from a Windows path', () => {
-    expect(parseCwd('file:///C:/Users/tim')).toBe('C:/Users/tim')
+    expect(parseCwd('file:///C:/Users/dev')).toBe('C:/Users/dev')
   })
 
   it('reports no directory for a URL with no path', () => {
@@ -88,7 +88,7 @@ describe('parseCwd', () => {
  */
 describe('parseCwdProperty', () => {
   it('reads the VS Code shell integration property', () => {
-    expect(parseCwdProperty('P;Cwd=/home/tim/src')).toBe('/home/tim/src')
+    expect(parseCwdProperty('P;Cwd=/home/dev/src')).toBe('/home/dev/src')
   })
 
   it('reads it past other properties in the same payload', () => {
@@ -100,7 +100,7 @@ describe('parseCwdProperty', () => {
   })
 
   it('accepts a Windows path', () => {
-    expect(parseCwdProperty('P;Cwd=C:\\Users\\tim')).toBe('C:\\Users\\tim')
+    expect(parseCwdProperty('P;Cwd=C:\\Users\\dev')).toBe('C:\\Users\\dev')
   })
 
   it('ignores the rest of the sequence family', () => {
@@ -118,7 +118,7 @@ describe('parseCwdProperty', () => {
 describe('guessCwdFromTitle', () => {
   /** Bash's stock `\u@\h: \w` — the case this exists for. */
   it('takes the path out of a user@host title', () => {
-    expect(guessCwdFromTitle('tim@build01: ~/src/wrustty')).toBe('~/src/wrustty')
+    expect(guessCwdFromTitle('dev@build01: ~/src/wrustty')).toBe('~/src/wrustty')
     expect(guessCwdFromTitle('root@fw1: /etc/frr')).toBe('/etc/frr')
   })
 
@@ -134,7 +134,7 @@ describe('guessCwdFromTitle', () => {
   /** Everything else is a title, and a title is not a destination. */
   it('offers nothing for a title that is not a path', () => {
     expect(guessCwdFromTitle('vim README.md')).toBeNull()
-    expect(guessCwdFromTitle('tim@build01: bash')).toBeNull()
+    expect(guessCwdFromTitle('dev@build01: bash')).toBeNull()
     expect(guessCwdFromTitle('Restarting nginx')).toBeNull()
     expect(guessCwdFromTitle(null)).toBeNull()
     expect(guessCwdFromTitle('')).toBeNull()

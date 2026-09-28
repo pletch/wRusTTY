@@ -49,12 +49,12 @@ describe('PromptInputTracker', () => {
   it('reads what is between the prompt and the cursor', () => {
     const grid = makeGrid(40)
     const tracker = new PromptInputTracker(grid)
-    grid.setRows('tim@host:~$ ')
+    grid.setRows('dev@host:~$ ')
     grid.setCursor(0, 12)
     tracker.handleOsc('B')
     tracker.noteParsed()
 
-    grid.setRows('tim@host:~$ git st')
+    grid.setRows('dev@host:~$ git st')
     grid.setCursor(0, 18)
     expect(tracker.read()?.text).toBe('git st')
     expect(tracker.exact).toBe(true)

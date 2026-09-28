@@ -310,9 +310,9 @@ describe('scrollbackBudgetSet', () => {
  */
 describe('titleChanged / cwdChanged', () => {
   it('records what the host reported', () => {
-    let state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'tim@build01' })
+    let state = paneRuntimeReducer(EMPTY, { type: 'titleChanged', paneId: 'p1', title: 'dev@build01' })
     state = paneRuntimeReducer(state, { type: 'cwdChanged', paneId: 'p1', cwd: '/etc/frr' })
-    expect(state.p1.title).toBe('tim@build01')
+    expect(state.p1.title).toBe('dev@build01')
     expect(state.p1.cwd).toBe('/etc/frr')
   })
 

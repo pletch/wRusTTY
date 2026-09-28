@@ -11,7 +11,7 @@
  *
  * So this is a *heuristic on a convention*, not a parser for a format, and it
  * is written to fail closed: an ordinary title must yield nothing at all.
- * `tim@build01: ~/src` and `vim README.md` are the common case, and a badge
+ * `dev@build01: ~/src` and `vim README.md` are the common case, and a badge
  * for either would be noise on every tab in the strip.
  *
  * Pure — no state, no DOM. `TabBar.tsx` owns where the result is drawn.

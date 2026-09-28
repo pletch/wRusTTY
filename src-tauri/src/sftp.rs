@@ -3794,7 +3794,7 @@ mod tests {
             "../..",
             "../../etc/passwd",
             "sub/dir",
-            "C:\\Users\\tim\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\evil.bat",
+            "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\evil.bat",
             "/etc/cron.d/evil",
             "nul\0.txt",
             "",
@@ -3903,11 +3903,11 @@ mod tests {
     /// staging the download was meant to avoid.
     #[test]
     fn a_download_stages_beside_its_destination() {
-        let local = Path::new("C:/Users/tim/Downloads/report.log");
+        let local = Path::new("C:/Users/dev/Downloads/report.log");
         let part = part_path_for(local).unwrap();
         assert_eq!(
             part,
-            PathBuf::from("C:/Users/tim/Downloads/report.log.wrustty-part")
+            PathBuf::from("C:/Users/dev/Downloads/report.log.wrustty-part")
         );
         assert_eq!(part.parent(), local.parent());
     }
@@ -3954,7 +3954,7 @@ mod tests {
     fn a_rename_cannot_climb_out_of_its_directory() {
         for name in ["../passwd", "/etc/passwd", "a/b", "a\\b", "..", ".", ""] {
             assert!(
-                rename_target("/home/tim/notes.txt", name).is_err(),
+                rename_target("/home/dev/notes.txt", name).is_err(),
                 "{name:?} should be refused as a new name"
             );
         }

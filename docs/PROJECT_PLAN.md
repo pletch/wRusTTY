@@ -16,8 +16,8 @@ holds is an SCP fallback for hosts with no SFTP subsystem.
 
 - **Stack:** Rust + Tauri 2 backend, TypeScript + React frontend, a vendored
   Ghostty VT core (WASM) behind the app's own WebGL renderer
-- **Visual reference:** Tabby (`/home/tim/Repos/tabby`) — layout, theming, polish
-- **Architecture reference:** r-shell (`/home/tim/Repos/r-shell`) — Tauri 2 + russh
+- **Visual reference:** [Tabby](https://github.com/Eugeny/tabby) — layout, theming, polish
+- **Architecture reference:** r-shell — Tauri 2 + russh
   patterns, SFTP client structure
 
 **The status markers below are audited against the code**, not estimated:
@@ -724,7 +724,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   the host last reported, the same one a file dropped on that pane would land
   in. The two used to disagree: you could drop a file onto a pane sitting in
   `/etc/nginx`, open the panel to check it arrived, and be looking at
-  `/home/tim`. The reported directory already existed in `cwdByPane` for the
+  `/home/dev`. The reported directory already existed in `cwdByPane` for the
   status bar; the panel simply wasn't given it.
   - Read **once, at mount**. Following it afterwards would yank the listing out
     from under someone who had navigated elsewhere in the panel, every time they

@@ -212,7 +212,7 @@ export class CommandTracker {
         this.pendingCommand = unescapeCommandText(rest.split(';')[0]) || null
         break
 
-      // `P` (OSC 633 property reports such as `P;Cwd=/home/tim`) and any
+      // `P` (OSC 633 property reports such as `P;Cwd=/home/dev`) and any
       // future letters fall through unhandled but still consumed.
     }
     return true

@@ -121,10 +121,10 @@ describe('TabBar remote title badge', () => {
   })
 
   it('shows nothing for an ordinary title', () => {
-    render(bar({ titleByPane: { 't1-pane': 'tim@build01: ~/src' } }))
+    render(bar({ titleByPane: { 't1-pane': 'dev@build01: ~/src' } }))
     // A badge here would be noise on every tab in the strip.
     expect(screen.getByText('alpha')).toBeTruthy()
-    expect(screen.queryByText('tim@build01: ~/src')).toBeNull()
+    expect(screen.queryByText('dev@build01: ~/src')).toBeNull()
   })
 
   it('shows nothing when the far end set no title at all', () => {
@@ -186,7 +186,7 @@ describe('TabBar badge across a split', () => {
     render(
       bar({
         tabs: [splitTab('t1', 'alpha', 'a')],
-        titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': '\u2733 Building' },
+        titleByPane: { 't1-a': 'dev@build01: ~/src', 't1-b': '\u2733 Building' },
       }),
     )
     // With the variation selector: the badge asks for the colour form, since
@@ -200,11 +200,11 @@ describe('TabBar badge across a split', () => {
     const { container } = render(
       bar({
         tabs: [splitTab('t1', 'alpha', 'a')],
-        titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': '\u2733 Building' },
+        titleByPane: { 't1-a': 'dev@build01: ~/src', 't1-b': '\u2733 Building' },
       }),
     )
     expect(
-      container.querySelector('[title="alpha \u2014 tim@build01: ~/src \u2014 \u2733 Building"]'),
+      container.querySelector('[title="alpha \u2014 dev@build01: ~/src \u2014 \u2733 Building"]'),
     ).toBeTruthy()
   })
 
@@ -222,7 +222,7 @@ describe('TabBar badge across a split', () => {
     render(
       bar({
         tabs: [splitTab('t1', 'alpha', 'a')],
-        titleByPane: { 't1-a': 'tim@build01: ~/src', 't1-b': 'vim README.md' },
+        titleByPane: { 't1-a': 'dev@build01: ~/src', 't1-b': 'vim README.md' },
       }),
     )
     expect(screen.getByText('alpha')).toBeTruthy()

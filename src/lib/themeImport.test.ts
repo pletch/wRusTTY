@@ -339,13 +339,13 @@ describe('fileStem', () => {
     // dialog hands back here. A character class that had lost its backslash
     // returned the whole path as the theme name, which is the sort of wrong
     // that looks like it works until you read the picker.
-    expect(fileStem(String.raw`C:\Users\Tim\Downloads\Solarized Dark.itermcolors`)).toBe(
+    expect(fileStem(String.raw`C:\Users\Dev\Downloads\Solarized Dark.itermcolors`)).toBe(
       'Solarized Dark',
     )
   })
 
   it('takes the name out of a forward-slash path', () => {
-    expect(fileStem('/home/tim/themes/Nord.json')).toBe('Nord')
+    expect(fileStem('/home/dev/themes/Nord.json')).toBe('Nord')
   })
 
   it('handles a bare file name', () => {

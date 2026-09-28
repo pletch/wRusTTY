@@ -289,7 +289,7 @@ const WORD_BOUNDARIES: &[char] = &[
 /// useful and produced exactly the failure it was meant to avoid. A command
 /// line is long and full of common letters, so almost any short input matched
 /// almost everything: typing `exit` matched
-/// `/home/tim/Repos/xrdp/xrdp_accel_assist/...` (the `e` of *home*, the `x` of
+/// `/home/dev/Repos/xrdp/xrdp_accel_assist/...` (the `e` of *home*, the `x` of
 /// *xrdp*, an `i` and a `t` from *assist*), and with no real prefix hits to
 /// outrank them the whole list was noise. A suggestion list that answers
 /// something other than what was typed is worse than an empty one.
@@ -999,7 +999,7 @@ mod tests {
         for command in [
             "git commit -m 'fix the thing'",
             "mkdir -p /var/log/app",
-            "ssh -p 2222 tim@example.com",
+            "ssh -p 2222 dev@example.com",
             "cp -p a b",
             "tail -f /var/log/nginx/access.log",
             "docker compose up -d",
@@ -1093,7 +1093,7 @@ mod tests {
     fn a_short_word_does_not_match_every_long_command_it_shares_letters_with() {
         let entries = vec![
             entry(
-                "sudo cp /home/tim/Repos/xrdp/xrdp_accel_assist/.libs/xrdp-accel-assist /usr/local/libexec/xrdp/xrdp-accel-assist",
+                "sudo cp /home/dev/Repos/xrdp/xrdp_accel_assist/.libs/xrdp-accel-assist /usr/local/libexec/xrdp/xrdp-accel-assist",
                 5,
                 0,
             ),
@@ -1152,14 +1152,14 @@ mod tests {
     #[test]
     fn the_directory_you_are_in_breaks_a_tie() {
         let mut here = entry("make test", 2, 0);
-        here.cwd = Some("/home/tim/project".into());
+        here.cwd = Some("/home/dev/project".into());
         let mut elsewhere = entry("make install", 2, 0);
         elsewhere.cwd = Some("/tmp".into());
         assert_eq!(
             suggest(
                 &[elsewhere, here],
                 "make ",
-                Some("/home/tim/project"),
+                Some("/home/dev/project"),
                 NOW,
                 1
             ),
@@ -1260,13 +1260,13 @@ mod tests {
         let json = r#"{
             "version": 1,
             "hosts": {
-                "tim@host:22": [
+                "dev@host:22": [
                     { "command": "ls", "count": 2, "lastUsed": 1700000000000, "source": "screen" }
                 ]
             }
         }"#;
         let store: HistoryStore = serde_json::from_str(json).unwrap();
-        let entries = &store.hosts["tim@host:22"];
+        let entries = &store.hosts["dev@host:22"];
         assert_eq!(entries[0].accepted, 0);
         assert!(entries[0].cwd.is_none());
         assert_eq!(entries[0].source, HistorySource::Screen);
@@ -1304,7 +1304,7 @@ mod tests {
 
     #[test]
     fn plain_bash_history_imports_a_command_per_line() {
-        let payload = "@@WRUSTTY-HISTORY:/home/tim/.bash_history\nls -la\ncd /etc\nls -la\n";
+        let payload = "@@WRUSTTY-HISTORY:/home/dev/.bash_history\nls -la\ncd /etc\nls -la\n";
         assert_eq!(
             harvested(payload),
             vec![("ls -la".to_string(), 2), ("cd /etc".to_string(), 1)],
@@ -1326,7 +1326,7 @@ mod tests {
 
     #[test]
     fn zsh_extended_metadata_is_stripped() {
-        let payload = "@@WRUSTTY-HISTORY:/home/tim/.zsh_history\n\
+        let payload = "@@WRUSTTY-HISTORY:/home/dev/.zsh_history\n\
 : 1700000000:0;git status\n\
 : 1700000060:12;make -j8\n";
         assert_eq!(
@@ -1339,7 +1339,7 @@ mod tests {
     /// up to the first semicolon.
     #[test]
     fn a_command_starting_with_a_colon_is_not_mistaken_for_metadata() {
-        let payload = "@@WRUSTTY-HISTORY:/home/tim/.zsh_history\n: nope;echo hi\n";
+        let payload = "@@WRUSTTY-HISTORY:/home/dev/.zsh_history\n: nope;echo hi\n";
         assert_eq!(harvested(payload), vec![(": nope;echo hi".to_string(), 1)]);
     }
 
@@ -1352,7 +1352,7 @@ mod tests {
     #[test]
     fn a_continued_line_is_neither_split_into_fragments_nor_stored_whole() {
         let payload =
-            "@@WRUSTTY-HISTORY:/home/tim/.bash_history\nfor f in *.log; do \\\n  gzip $f\\\ndone\nls\n";
+            "@@WRUSTTY-HISTORY:/home/dev/.bash_history\nfor f in *.log; do \\\n  gzip $f\\\ndone\nls\n";
         // Only the single-line command survives — no `for f in *.log; do`, no
         // bare `done`, and nothing carrying a newline.
         assert_eq!(harvested(payload), vec![("ls".to_string(), 1)]);
@@ -1360,7 +1360,7 @@ mod tests {
 
     #[test]
     fn fish_history_reads_the_cmd_lines_only() {
-        let payload = "@@WRUSTTY-HISTORY:/home/tim/.local/share/fish/fish_history\n\
+        let payload = "@@WRUSTTY-HISTORY:/home/dev/.local/share/fish/fish_history\n\
 - cmd: nvim config.fish\n  when: 1700000000\n\
 - cmd: fisher update\n  when: 1700000060\n";
         assert_eq!(
@@ -1382,7 +1382,7 @@ mod tests {
         assert!(parse_remote_history("Welcome to SwitchOS v4.\nswitch> ").is_none());
         // ...whereas a readable file with nothing in it is a real answer.
         assert_eq!(
-            parse_remote_history("@@WRUSTTY-HISTORY:/home/tim/.bash_history\n"),
+            parse_remote_history("@@WRUSTTY-HISTORY:/home/dev/.bash_history\n"),
             Some(Vec::new()),
         );
     }
@@ -1392,7 +1392,7 @@ mod tests {
     #[test]
     fn a_login_banner_before_the_marker_does_not_hide_it() {
         let payload =
-            "*** AUTHORISED USE ONLY ***\n@@WRUSTTY-HISTORY:/home/tim/.bash_history\nhtop\n";
+            "*** AUTHORISED USE ONLY ***\n@@WRUSTTY-HISTORY:/home/dev/.bash_history\nhtop\n";
         assert_eq!(harvested(payload), vec![("htop".to_string(), 1)]);
     }
 
@@ -1401,14 +1401,14 @@ mod tests {
     /// lives.
     #[test]
     fn credentials_in_the_history_file_are_refused_like_any_other_line() {
-        let payload = "@@WRUSTTY-HISTORY:/home/tim/.bash_history\n\
+        let payload = "@@WRUSTTY-HISTORY:/home/dev/.bash_history\n\
 mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         assert_eq!(harvested(payload), vec![("ls".to_string(), 1)]);
     }
 
     #[test]
     fn a_wildly_repeated_command_cannot_dominate_the_ranking() {
-        let mut payload = String::from("@@WRUSTTY-HISTORY:/home/tim/.bash_history\n");
+        let mut payload = String::from("@@WRUSTTY-HISTORY:/home/dev/.bash_history\n");
         for _ in 0..500 {
             payload.push_str("ls\n");
         }

@@ -79,14 +79,14 @@ describe('a host reporting its title and directory over the wire', () => {
 
   it('delivers a title set with BEL, the terminator shells actually use', async () => {
     const { engine, titles } = await ready()
-    engine.write('\x1b]2;tim@build01: ~/src\x07$ ')
-    expect(titles).toEqual(['tim@build01: ~/src'])
+    engine.write('\x1b]2;dev@build01: ~/src\x07$ ')
+    expect(titles).toEqual(['dev@build01: ~/src'])
   })
 
   it('delivers a title set with ST', async () => {
     const { engine, titles } = await ready()
-    engine.write('\x1b]2;tim@build01\x1b\\$ ')
-    expect(titles).toEqual(['tim@build01'])
+    engine.write('\x1b]2;dev@build01\x1b\\$ ')
+    expect(titles).toEqual(['dev@build01'])
   })
 
   it('reads OSC 0 as a title too, without swallowing it', async () => {
@@ -108,19 +108,19 @@ describe('a host reporting its title and directory over the wire', () => {
 
   it('delivers a working directory as a file URL', async () => {
     const { engine, dirs } = await ready()
-    engine.write('\x1b]7;file://build01/home/tim/src\x07')
-    expect(dirs).toEqual(['/home/tim/src'])
+    engine.write('\x1b]7;file://build01/home/dev/src\x07')
+    expect(dirs).toEqual(['/home/dev/src'])
   })
 
   it('follows a shell that reports both on every prompt', async () => {
     // What PROMPT_COMMAND actually emits: directory and title together, over
     // and over, with the prompt itself between them.
     const { engine, titles, dirs } = await ready()
-    for (const dir of ['/home/tim', '/home/tim/src', '/etc']) {
-      engine.write(`\x1b]7;file://h${dir}\x07\x1b]2;tim@h: ${dir}\x07${dir}$ `)
+    for (const dir of ['/home/dev', '/home/dev/src', '/etc']) {
+      engine.write(`\x1b]7;file://h${dir}\x07\x1b]2;dev@h: ${dir}\x07${dir}$ `)
     }
-    expect(dirs).toEqual(['/home/tim', '/home/tim/src', '/etc'])
-    expect(titles).toEqual(['tim@h: /home/tim', 'tim@h: /home/tim/src', 'tim@h: /etc'])
+    expect(dirs).toEqual(['/home/dev', '/home/dev/src', '/etc'])
+    expect(titles).toEqual(['dev@h: /home/dev', 'dev@h: /home/dev/src', 'dev@h: /etc'])
   })
 
   it('survives delivery one byte at a time', async () => {

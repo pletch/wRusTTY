@@ -301,7 +301,7 @@ surprising.
 Initials, and not the plain subsequence this plan originally called for. A
 subsequence test shipped and was wrong in practice: a command line is long and
 full of common letters, so almost any short input matched almost everything —
-typing `exit` matched `/home/tim/Repos/xrdp/xrdp_accel_assist/...` on the `e`
+typing `exit` matched `/home/dev/Repos/xrdp/xrdp_accel_assist/...` on the `e`
 of *home*, the `x` of *xrdp*, and an `i` and `t` out of *assist*. Ordering it
 below prefix hits was not enough, because when nothing matches by prefix the
 whole list is noise, and a list that answers something other than what was
