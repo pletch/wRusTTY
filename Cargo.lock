@@ -7144,7 +7144,7 @@ dependencies = [
 
 [[package]]
 name = "wr-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -7153,14 +7153,14 @@ dependencies = [
 
 [[package]]
 name = "wr-fs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "wr-local"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "getrandom 0.3.4",
@@ -7176,7 +7176,7 @@ dependencies = [
 
 [[package]]
 name = "wr-serial"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -7189,7 +7189,7 @@ dependencies = [
 
 [[package]]
 name = "wr-sftp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "russh-sftp",
  "serde",
@@ -7199,7 +7199,7 @@ dependencies = [
 
 [[package]]
 name = "wr-ssh"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "dirs",
@@ -7218,7 +7218,7 @@ dependencies = [
 
 [[package]]
 name = "wr-telnet"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -7231,7 +7231,7 @@ dependencies = [
 
 [[package]]
 name = "wr-vault"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2 0.5.3",
  "async-trait",
@@ -7256,7 +7256,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wrustty"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
