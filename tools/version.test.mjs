@@ -14,8 +14,8 @@ const CHANGELOG = `# Changelog
 
 First release.
 
-[Unreleased]: https://github.com/pletch/wrustty/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/pletch/wrustty/releases/tag/v0.2.0
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/pletch/wRusTTY/releases/tag/v0.2.0
 `
 
 describe('nextVersion', () => {
@@ -59,9 +59,9 @@ describe('rollChangelog', () => {
     expect(sectionBody(out, 'Unreleased')).toBe('')
     expect(sectionBody(out, '0.3.0')).toBe('### Added\n\n- A thing.')
     expect(out).toContain('## [0.3.0] - 2026-10-01')
-    expect(out).toContain('[Unreleased]: https://github.com/pletch/wrustty/compare/v0.3.0...HEAD')
-    expect(out).toContain('[0.3.0]: https://github.com/pletch/wrustty/compare/v0.2.0...v0.3.0')
-    expect(out).toContain('[0.2.0]: https://github.com/pletch/wrustty/releases/tag/v0.2.0')
+    expect(out).toContain('[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.3.0...HEAD')
+    expect(out).toContain('[0.3.0]: https://github.com/pletch/wRusTTY/compare/v0.2.0...v0.3.0')
+    expect(out).toContain('[0.2.0]: https://github.com/pletch/wRusTTY/releases/tag/v0.2.0')
   })
 
   it('keeps CRLF line endings', () => {

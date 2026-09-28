@@ -23,7 +23,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const REPO_URL = 'https://github.com/pletch/wrustty'
+const REPO_URL = 'https://github.com/pletch/wRusTTY'
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/
 
 /** Each place the version is written, as [file, pattern whose group 2 is the version]. */

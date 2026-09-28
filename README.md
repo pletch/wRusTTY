@@ -160,7 +160,7 @@ safe to run twice:
 ## Install
 
 Download the latest installer — `.exe` (NSIS) or `.msi`, both x64 — from
-[**Releases**](https://github.com/pletch/wrustty/releases). What changed in each one is in
+[**Releases**](https://github.com/pletch/wRusTTY/releases). What changed in each one is in
 [CHANGELOG.md](CHANGELOG.md).
 
 **The installers are not code signed, so expect a SmartScreen warning** the
