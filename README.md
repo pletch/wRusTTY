@@ -217,7 +217,7 @@ npm run release -- minor   # or patch, major, X.Y.Z
 ```
 
 That sets the version in `package.json`, `package-lock.json`,
-`tauri.conf.json` and `Cargo.toml`, dates the Unreleased section and refreshes
+`tauri.conf.json`, `Cargo.toml` and `src/lib/version.ts`, dates the Unreleased section and refreshes
 `Cargo.lock`, then prints the commit, tag and push to run. Pushing a `v*` tag
 builds the installers in CI and publishes them as a GitHub release with that
 CHANGELOG section as the notes.

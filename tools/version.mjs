@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The app's version lives in four files, and a release is a tag plus a
+// The app's version lives in five files, and a release is a tag plus a
 // CHANGELOG section. This keeps all of that in step:
 //
 //   node tools/version.mjs bump <major|minor|patch|X.Y.Z>
@@ -8,7 +8,7 @@
 //       prints the commands for that, so the diff can be looked at first.
 //
 //   node tools/version.mjs check [vX.Y.Z]
-//       Fails if the four files disagree. Given a tag, also fails unless the
+//       Fails if the five files disagree. Given a tag, also fails unless the
 //       tag names that version and CHANGELOG has a section for it. CI runs the
 //       first form on every push and the second before publishing a release.
 //
@@ -33,6 +33,8 @@ export const SOURCES = [
   ['package-lock.json', /("packages": \{\s*"": \{\s*"name": "wrustty",\s*"version": ")([^"]+)/],
   ['src-tauri/tauri.conf.json', /("productName": "wRusTTY",\s*"version": ")([^"]+)/],
   ['Cargo.toml', /(\[workspace\.package\]\r?\nversion = ")([^"]+)/],
+  // What the About panel shows. src/lib/version.test.ts pins it to the others too.
+  ['src/lib/version.ts', /^(export const APP_VERSION = ')([^']+)/m],
 ]
 
 export function nextVersion(current, how) {

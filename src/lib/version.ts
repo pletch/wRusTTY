@@ -10,9 +10,9 @@
  * the one failure mode the define would have prevented — someone bumping the
  * manifests and forgetting this — and catches it at the same moment, on CI.
  *
- * Four files carry this number: here, `package.json`, the workspace
- * `Cargo.toml`, and `src-tauri/tauri.conf.json`. The last is the one users see
- * in Add/Remove Programs, so it is the one to treat as authoritative when they
- * disagree.
+ * Five files carry this number: here, `package.json`, `package-lock.json`, the
+ * workspace `Cargo.toml`, and `src-tauri/tauri.conf.json`. The last is the one
+ * users see in Add/Remove Programs, so it is the one to treat as authoritative
+ * when they disagree. `npm run release` (tools/version.mjs) sets all five.
  */
-export const APP_VERSION = '0.2.0'
+export const APP_VERSION = '0.3.0'

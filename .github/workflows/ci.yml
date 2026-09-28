@@ -31,8 +31,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # package.json, package-lock.json, tauri.conf.json and Cargo.toml
-      # each carry the version; this fails if a hand edit moved only some.
+      # package.json, package-lock.json, tauri.conf.json, Cargo.toml and
+      # src/lib/version.ts each carry the version; this fails if a hand edit
+      # moved only some.
       - run: node tools/version.mjs check
       - run: npm run lint
       - run: npm test
