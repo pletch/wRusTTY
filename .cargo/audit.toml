@@ -17,4 +17,37 @@ ignore = [
   # pulling in a fixed quick-xml would resolve this on its own.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+
+  # gtk-rs GTK3 bindings unmaintained, plus the two crates only they reach.
+  # All Linux-only: Tauri's webview backend there (wry/muda -> gtk 0.18). The
+  # audit runs on Linux and so sees them, but none is in the Windows build —
+  # `cargo tree --target x86_64-pc-windows-msvc -i gtk` prints nothing. The
+  # fix is Tauri moving off GTK3; there is no edge of ours to change.
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  # glib: VariantStrIter unsound, fixed in 0.20. Same GTK3 chain (glib 0.18),
+  # same reason.
+  "RUSTSEC-2024-0429",
+  # proc-macro-error unmaintained. Build-time, and reached only through
+  # glib-macros, so Linux-only as above.
+  "RUSTSEC-2024-0370",
+
+  # unic-* unmaintained. These do reach the Windows build, through
+  # tauri-utils -> urlpattern 0.3, where they classify identifier characters
+  # in Tauri's URL patterns. "Unmaintained" is a notice, not a known flaw, and
+  # there is no newer unic to move to; revisit when Tauri's urlpattern drops
+  # them.
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
 ]
