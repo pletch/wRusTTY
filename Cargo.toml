@@ -7,7 +7,7 @@ version = "0.2.0"
 edition = "2021"
 authors = ["pletch"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/pletch/wrustty"
 
 # Cargo's defaults for `release` are tuned for build time, not for the
 # artifact: `lto = false`, `codegen-units = 16`, and debug symbols retained.

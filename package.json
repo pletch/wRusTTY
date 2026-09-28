@@ -15,7 +15,8 @@
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev --features devtools"
+    "tauri:dev": "tauri dev --features devtools",
+    "release": "node tools/version.mjs bump"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

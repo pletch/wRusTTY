@@ -160,7 +160,8 @@ safe to run twice:
 ## Install
 
 Download the latest installer — `.exe` (NSIS) or `.msi`, both x64 — from
-[**Releases**](https://github.com/pletch/wrustty/releases).
+[**Releases**](https://github.com/pletch/wrustty/releases). What changed in each one is in
+[CHANGELOG.md](CHANGELOG.md).
 
 **The installers are not code signed, so expect a SmartScreen warning** the
 first time you run one. Click *More info* → *Run anyway*.
@@ -204,6 +205,22 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+### Releasing
+
+Versions follow semver: while on 0.x, a minor bump for new features and a patch
+bump for fixes only. Add a line under **Unreleased** in `CHANGELOG.md` as
+changes land, then:
+
+```sh
+npm run release -- minor   # or patch, major, X.Y.Z
+```
+
+That sets the version in `package.json`, `package-lock.json`,
+`tauri.conf.json` and `Cargo.toml`, dates the Unreleased section and refreshes
+`Cargo.lock`, then prints the commit, tag and push to run. Pushing a `v*` tag
+builds the installers in CI and publishes them as a GitHub release with that
+CHANGELOG section as the notes.
 
 ### Layout
 
