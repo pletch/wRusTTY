@@ -1852,7 +1852,13 @@ export function SettingsDialog({
                           distributed — including into a shipped installer,
                           where a file in the repo would never reach anyone.
                           THIRD-PARTY-NOTICES.md carries the long form. */}
-                      <div className="mt-2 border-t border-chrome/10 px-2 py-2">
+                      <div className="mt-2 space-y-2 border-t border-chrome/10 px-2 py-2">
+                        {/* The engine is compiled into the installer, so its MIT
+                            notice has to travel inside it too. */}
+                        <p className="leading-relaxed text-chrome/40">
+                          Terminal engine: Ghostty, copyright (c) 2024 Mitchell Hashimoto and
+                          Ghostty contributors, used under the MIT License.
+                        </p>
                         <p className="leading-relaxed text-chrome/40">
                           Shell icons identify the products they launch. The Git logo is by Jason
                           Long, licensed CC BY 3.0. Linux is a trademark of Linus Torvalds, used

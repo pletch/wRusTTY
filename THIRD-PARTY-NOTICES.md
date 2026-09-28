@@ -5,6 +5,38 @@ wRusTTY. Rust and npm dependencies carry their own licences in their packages;
 this file covers material that is embedded in the application's own source and
 therefore has nowhere else to declare itself.
 
+## Ghostty — terminal engine
+
+`src/lib/ghostty/vendor/ghostty-vt.wasm` is compiled from
+[Ghostty](https://github.com/ghostty-org/ghostty) at the commit recorded in
+that directory's README, with the patches in `patches/` applied. The same
+credit appears in the application's About panel, since the binary ships inside
+the installer.
+
+```text
+MIT License
+
+Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Shell icons
 
 Local session tabs show an icon for the shell they launch. Where those icons
