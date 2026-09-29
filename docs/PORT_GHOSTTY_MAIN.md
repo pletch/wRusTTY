@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 622b4eecd7d2ce1a10930537c17f0d61abdba817
+ghostty-org/ghostty @ f9e82709360d97b2246718f774c544de0f16787b
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,12 +34,56 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, **189 here** — so re-pin only with a reason and re-run the checks
-when you do. The long run of it going *down* was consolidation rather than a
-broken build (see the ABI breaks below); the step back up was the search API at
-`492300ca`.
+180, 181, 189, 189, **190 here** — so re-pin only with a reason and re-run the
+checks when you do. The long run of it going *down* was consolidation rather
+than a broken build (see the ABI breaks below); the steps back up were the
+search API at `492300ca` and `ghostty_osc_set` here.
 
-### Moving from `492300ca` (2026-09-04) to this pin
+### Moving from `622b4eec` (2026-09-23) to this pin
+
+88 commits over six days, a clean fast-forward and **no ABI break**: the
+headers only add (mouse shapes, overscan, the OSC unknown-sequence tag), no
+enum value moved, and the one new export is `ghostty_osc_set`, which the shim
+does not use. The whole suite passed against the new binary before anything
+here was touched.
+
+Taken for four core changes, all reachable from ordinary remote output:
+
+- **`a4f0d9f4a`** — DEC Special Graphics and the British set now go through
+  the batched cell write instead of one `print()` per byte. That is the
+  `ESC ( 0` line drawing `dialog`, ncurses under a non-UTF-8 locale and a lot
+  of network-gear menus use. Measured here on a 200x60 box redrawn in it:
+  **5.2x-5.4x** (126 -> 660-686 MB/s); the same box in ASCII is unchanged.
+- **`520d8f55a`** — CAN and SUB cancel an OSC in progress. The core ran the
+  command anyway, so `ESC ] 2 ; title CAN` set the title. `oscCancel.test.ts`
+  pins it against the shipped binary, and fails on the previous one with the
+  cancelled title winning. `oscScanner.ts` had the same hole on our side and
+  is fixed separately.
+- **`d4f45bee3`** — reverse wraparound could move a restored cursor down to
+  the top margin when clearing pending wrap used up the last step left.
+- **`73768913b`** — OSC numbers stop accepting Zig digit separators
+  (`9;4;1;4_2` set progress to 42) and leading signs.
+
+Inert here: word selection across wide characters and hard line breaks
+(`a3e80a685`, `c4f15c884` — our double-click selection is our own JS), the
+kitty placeholder flag and wuffs zlib (no kitty graphics reaches us), tmux
+control mode, CSI 8 t window resize (off unless opted into, and it should stay
+off: a remote host would be resizing the window), and `b1c264163`, a search
+tick after its terminal is freed, which `NativeSearchController` cannot reach
+because the search is freed first and every tick follows a feed that already
+refused a freed terminal.
+
+Worth having later, not taken: OSC 22 pointer shapes (`TERMINAL_DATA_MOUSE_SHAPE`),
+render-state overscan with stable row ids for fractional scrolling
+(`ca4f719f7`, `2ea1eeae2`), and OSC through the unknown-sequence callback
+(`7b11f3dca`), which is most of what `oscScanner.ts` would need to go.
+
+The wuffs change puts C into the wasm build for the first time since the port
+and it built without trouble. The binary grew **7,854 bytes** (1,130,482 ->
+1,138,336). `scrollbackLimit.test.ts` passes unchanged and both parse probes sit
+inside the ranges quoted above.
+
+### Moving from `492300ca` (2026-09-04) to `622b4eec`
 
 190 commits over nineteen days, a clean fast-forward and **no ABI break**: every
 exported name is unchanged (189, 187 of them functions), and the two new
@@ -310,7 +354,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 622b4eecd7d2ce1a10930537c17f0d61abdba817
+cd ghostty && git checkout f9e82709360d97b2246718f774c544de0f16787b
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm
