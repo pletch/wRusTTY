@@ -159,6 +159,41 @@ describe('scanOsc', () => {
     })
   })
 
+  // CAN (0x18) and SUB (0x1A) cancel a control string in progress: the command
+  // is dropped and what follows is ordinary output (DEC parser; xterm; the core
+  // since upstream 520d8f55a, pinned in main/oscCancel.test.ts). The scanner
+  // knew only BEL and ESC, so a cancelled OSC stayed open until the next BEL
+  // and was dispatched with the following output as its payload — a title of
+  // "evil␘ normal text", or an OSC 52 write with output glued to the base64.
+  describe('CAN and SUB cancel an OSC', () => {
+    it('drops an OSC cancelled with CAN, and dispatches nothing for the BEL after it', () => {
+      const src = '\x1b]2;evil title\x18 normal text\x07'
+      // The BEL is a bell now: the string had already ended at the CAN.
+      expect(replay([src]).log).toEqual([`parse:${src}`, 'bell'])
+    })
+
+    it('drops a clipboard write cancelled with SUB', () => {
+      const src = '\x1b]52;c;aGVsbG8=\x1a more output \x1b\\'
+      expect(replay([src]).log).toEqual([`parse:${src}`])
+    })
+
+    it('still dispatches an OSC that follows a cancelled one', () => {
+      const src = '\x1b]2;cancelled\x18text\x1b]2;real\x07'
+      expect(replay([src]).log).toEqual([`parse:${src}`, 'osc:2:real'])
+    })
+
+    it('drops one cancelled in a later chunk than it opened in', () => {
+      const { log, pending } = replay(['\x1b]2;split ti', 'tle\x18after', ' more\x07'])
+      expect(log.filter((l) => !l.startsWith('parse:'))).toEqual(['bell'])
+      expect(parsedText(log)).toBe('\x1b]2;split title\x18after more\x07')
+      expect(pending).toBeNull()
+    })
+
+    it('carries nothing once the sequence is cancelled', () => {
+      expect(replay(['\x1b]2;gone\x18']).pending).toBeNull()
+    })
+  })
+
   describe('the carried-over buffer', () => {
     it('retains an unterminated sequence', () => {
       const { pending } = replay(['\x1b]133;' + 'x'.repeat(10)])

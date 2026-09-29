@@ -23,10 +23,17 @@
  *
  * The payload deliberately cannot span BEL or ESC: that is what bounds it, and
  * what an unterminated sequence would otherwise run past.
+ *
+ * CAN (0x18) and SUB (0x1A) cancel it: the sequence ends, nothing is
+ * dispatched, and scanning resumes after the cancelling byte — as the DEC
+ * parser, xterm and the core all do. Without that, a cancelled OSC stayed open
+ * until the next BEL and was dispatched with the output after it as payload.
  */
 
 const ESC = 0x1b
 const BEL = 0x07
+const CAN = 0x18
+const SUB = 0x1a
 const OSC_INTRO = 0x5d // ']', as in ESC ]
 const ST_TAIL = 0x5c // '\', as in ESC \
 const SEMICOLON = 0x3b
@@ -193,6 +200,12 @@ export function scanOsc(
         termEnd = k + 1
         break
       }
+      // Cancelled: resume *after* the CAN/SUB, which unlike an aborting ESC
+      // cannot open anything itself. A BEL further on is then a real bell.
+      if (c === CAN || c === SUB) {
+        abortedAt = k + 1
+        break
+      }
       if (c === ESC) {
         // Need the next byte to tell ST from an abort.
         if (k + 1 >= scan.length) break
@@ -208,8 +221,9 @@ export function scanOsc(
     }
 
     if (abortedAt >= 0) {
-      // An ESC that isn't ST ends this sequence without terminating it. Resume
-      // at that ESC: it may open the next one.
+      // An ESC that isn't ST ends this sequence without terminating it, and so
+      // does a CAN or SUB. Resume at that ESC, which may open the next one, or
+      // just past the CAN/SUB.
       i = abortedAt
       continue
     }
