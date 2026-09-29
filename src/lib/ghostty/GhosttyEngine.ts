@@ -12,7 +12,8 @@ import { encodePaste, hasPasteEncoder, pasteIsSafe } from './pasteEncode'
 import { translateBackspace } from '../translateBackspace'
 import { SelectionController } from './SelectionController'
 import { MarkModeController } from './MarkModeController'
-import { LinkController, type Link } from './LinkController'
+import type { PathFlavor } from '../pathDetect'
+import { LinkController, type Link, type LinkKind } from './LinkController'
 import { HintModeController } from './HintModeController'
 import { isOpenableUrl } from '../urlDetect'
 import { ContextManager } from './ContextManager'
@@ -353,6 +354,10 @@ export class GhosttyEngine implements TerminalEngine {
   private readonly hintMode: HintModeController
   private onHintModeHandlers = new Set<(active: boolean) => void>()
   private onLinkActivateHandlers = new Set<(url: string) => void>()
+  private onPathActivateHandlers = new Set<(path: string) => void>()
+  /** Whether file paths are links too, and in which syntax. Off until the
+   *  frontend says the pane has somewhere to send one — see `setPathLinks`. */
+  private pathLinks: PathFlavor | null = null
   /** Where the pointer last was, so the hit test can be redone when the
    *  modifier is pressed or released without the mouse having moved. */
   private hoverPointer: { clientX: number; clientY: number } | null = null
@@ -368,7 +373,7 @@ export class GhosttyEngine implements TerminalEngine {
   private linkRangesSig = ''
   /** A Ctrl+press that landed on a link, waiting for the release that decides
    *  whether it was a click or the start of a drag. */
-  private pendingLink: { url: string; at: { x: number; y: number } } | null = null
+  private pendingLink: { url: string; kind: LinkKind; at: { x: number; y: number } } | null = null
   private onCopyRequestHandlers = new Set<(text: string) => void>()
   /** Bytes of an OSC that began in an earlier chunk and has not terminated.
    *  Already parsed; retained only to match the pattern across the boundary. */
@@ -527,6 +532,7 @@ export class GhosttyEngine implements TerminalEngine {
       totalRows: () => this.scrollbackLength,
       bufferGen: () => this.bufferGen,
       cols: () => this._cols,
+      pathLinks: () => this.pathLinks,
     })
     this.hintMode = new HintModeController({
       linksInViewport: () => this.links.linksInViewport(),
@@ -540,7 +546,7 @@ export class GhosttyEngine implements TerminalEngine {
         }
         this.needsRedraw = true
       },
-      openLink: (url) => this.activateLink(url),
+      openLink: (url, kind) => this.activateLink(url, kind),
       notifyMode: (active) => {
         for (const h of this.onHintModeHandlers) h(active)
       },
@@ -1208,7 +1214,9 @@ export class GhosttyEngine implements TerminalEngine {
     this.pendingLink = null
     if (pending && this.withinCanvas(e)) {
       const at = this.getCoords(e)
-      if (at.x === pending.at.x && at.y === pending.at.y) this.activateLink(pending.url)
+      if (at.x === pending.at.x && at.y === pending.at.y) {
+        this.activateLink(pending.url, pending.kind)
+      }
     }
 
     this.mouse.reportRelease(e)
@@ -1286,7 +1294,14 @@ export class GhosttyEngine implements TerminalEngine {
     const sig = `${this.bufferGen}:${this.viewportY}:${this._cols}`
     if (sig === this.linkRangesSig) return
     this.linkRangesSig = sig
-    const ranges = this.links.linksInViewport().flatMap((l) => l.segments)
+    // URLs only. A path is a link on demand — under a held Ctrl, or in hint
+    // mode — but not an underline at rest: compiler output, `find` and `ls -l`
+    // of absolute paths would otherwise be underlined wall to wall, and a URL
+    // is rare enough in output that marking every one still means something.
+    const ranges = this.links
+      .linksInViewport()
+      .filter((l) => l.kind === 'url')
+      .flatMap((l) => l.segments)
     // An empty screen keeps `null` rather than an empty array, so the
     // renderer's per-row filter is skipped entirely on the common case of a
     // pane with no links in it.
@@ -1301,6 +1316,7 @@ export class GhosttyEngine implements TerminalEngine {
       (before !== null &&
         link !== null &&
         before.url === link.url &&
+        before.kind === link.kind &&
         before.segments[0].row === link.segments[0].row &&
         before.segments[0].from === link.segments[0].from)
     this.hoveredLink = link
@@ -1363,7 +1379,15 @@ export class GhosttyEngine implements TerminalEngine {
    * The engine does not open it itself: every other platform interaction is
    * the frontend's, and the engine has no platform dependency today.
    */
-  private activateLink(url: string): void {
+  private activateLink(url: string, kind: LinkKind = 'url'): void {
+    // A path goes to its own handlers, which never reach the platform opener:
+    // the frontend resolves it on the remote host. It is not put through
+    // `isOpenableUrl` because it is not a URL — and it must not be put through
+    // the URL handlers, whose whole job is to hand a string to the OS.
+    if (kind === 'path') {
+      for (const h of this.onPathActivateHandlers) h(url)
+      return
+    }
     if (!isOpenableUrl(url)) return
     for (const h of this.onLinkActivateHandlers) h(url)
   }
@@ -1641,7 +1665,7 @@ export class GhosttyEngine implements TerminalEngine {
         const at = this.getCoords(e)
         const link = this.links.linkAt(at)
         if (link) {
-          this.pendingLink = { url: link.url, at }
+          this.pendingLink = { url: link.url, kind: link.kind, at }
           e.preventDefault()
           this.inputHandler?.focus()
           // Under mouse reporting there is no selection to begin, so the press
@@ -2696,7 +2720,40 @@ export class GhosttyEngine implements TerminalEngine {
    */
   linkAtPointer(e: MouseEvent): string | null {
     if (!this.renderer || !this.withinCanvas(e)) return null
-    return this.links.linkAt(this.getCoords(e))?.url ?? null
+    const link = this.links.linkAt(this.getCoords(e))
+    return link?.kind === 'url' ? link.url : null
+  }
+
+  /** The file path under a pointer event, as written, or null. The context
+   *  menu's counterpart to `linkAtPointer` for path links. */
+  pathAtPointer(e: MouseEvent): string | null {
+    if (!this.renderer || !this.withinCanvas(e)) return null
+    const link = this.links.linkAt(this.getCoords(e))
+    return link?.kind === 'path' ? link.url : null
+  }
+
+  /** A path link was activated. The engine only says which text was clicked;
+   *  resolving it — against which directory, on which host — is the pane's. */
+  onPathActivate(cb: (path: string) => void): IDisposable {
+    this.onPathActivateHandlers.add(cb)
+    return { dispose: () => this.onPathActivateHandlers.delete(cb) }
+  }
+
+  /**
+   * Whether file paths are links as well as URLs, and which syntax they are
+   * written in — POSIX for an SSH host, Windows for a local shell.
+   *
+   * Off by default, and turned on only by a pane that can do something with
+   * one: a path the user can Ctrl+click and nothing happens is worse than a
+   * path that is plain text.
+   */
+  setPathLinks(flavor: PathFlavor | null): void {
+    if (flavor === this.pathLinks) return
+    this.pathLinks = flavor
+    this.links.invalidate()
+    this.linkRangesSig = ''
+    this.hoverSig = ''
+    this.needsRedraw = true
   }
 
   /** Opens a URL that came back from `linkAtPointer`, subject to the same

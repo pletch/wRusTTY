@@ -37,7 +37,7 @@ let viewportQueries = 0
 
 /** A link on row 0, columns 4 to 9. */
 function linkStub(url = URL): Internals['links'] {
-  const link: Link = { url, segments: [{ row: 0, from: 4, to: 9 }], source: 'detected' }
+  const link: Link = { url, kind: 'url', segments: [{ row: 0, from: 4, to: 9 }], source: 'detected' }
   return {
     linkAt: (pos) => (pos.y === 0 && pos.x >= 4 && pos.x <= 9 ? link : null),
     linksInViewport: () => {

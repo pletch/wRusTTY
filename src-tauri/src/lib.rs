@@ -16,6 +16,7 @@ mod fonts;
 #[cfg(target_os = "windows")]
 mod hello;
 mod local;
+mod local_open;
 mod local_shells;
 mod logging;
 mod profiles;
@@ -73,6 +74,7 @@ pub fn run() {
         .manage(logging::LoggingState::default())
         .manage(sftp::SftpState::default())
         .invoke_handler(tauri::generate_handler![
+            local_open::open_local_path,
             ssh::ssh_connect,
             ssh::ssh_connect_profile,
             ssh::ssh_write,

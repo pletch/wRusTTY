@@ -1,4 +1,4 @@
-import type { Link } from './LinkController'
+import type { Link, LinkKind } from './LinkController'
 
 /**
  * Opening a link with the keyboard.
@@ -28,6 +28,7 @@ export interface Hint {
   row: number
   col: number
   url: string
+  kind: LinkKind
 }
 
 /**
@@ -46,9 +47,10 @@ export interface HintModeHost {
   /** Hand the renderer the labels to paint, or null for none. Also marks the
    *  view dirty. */
   setHints(hints: Hint[] | null): void
-  /** Open a URL. The engine's own path, so the scheme check that guards
-   *  Ctrl+click guards this too. */
-  openLink(url: string): void
+  /** Open a link. The engine's own path, so the scheme check that guards
+   *  Ctrl+click guards this too — and a path goes where a Ctrl+clicked path
+   *  goes. */
+  openLink(url: string, kind: LinkKind): void
   /** The mode turned on or off, for the pane's indicator. */
   notifyMode(active: boolean): void
 }
@@ -145,7 +147,7 @@ export class HintModeController {
       // Left before opening, so the pane is back to normal whatever the opener
       // does — including failing.
       this.exit()
-      this.host.openLink(exact.url)
+      this.host.openLink(exact.url, exact.kind)
       return true
     }
     if (this.hints.some((h) => h.label.startsWith(next))) {
@@ -194,6 +196,7 @@ export class HintModeController {
         row: head.row,
         col: Math.max(0, Math.min(head.from, cols - label.length)),
         url: link.url,
+        kind: link.kind,
       })
     }
     return out

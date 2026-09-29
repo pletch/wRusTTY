@@ -154,4 +154,36 @@ describe('LinkController', () => {
     const s = stub([['go https://аpple.com/x', false]], 1)
     expect(new LinkController(s.host).linkAt({ x: 5, y: 0 })).toBeNull()
   })
+
+  describe('paths', () => {
+    it('offers none unless the host asks for them', () => {
+      const s = stub([['cat /etc/hosts', false]], 1)
+      expect(new LinkController(s.host).linksInViewport()).toEqual([])
+    })
+
+    it('offers them, marked as paths, when it does', () => {
+      const s = stub([['cat /etc/hosts', false]], 1)
+      s.host.pathLinks = () => 'posix'
+      const link = new LinkController(s.host).linkAt({ x: 6, y: 0 })
+      expect(link).toMatchObject({ url: '/etc/hosts', kind: 'path' })
+      expect(link?.segments).toEqual([{ row: 0, from: 4, to: 13 }])
+    })
+
+    it('lets a URL win over the path inside it', () => {
+      const s = stub([['https://a.ex/b/c', false]], 1)
+      s.host.pathLinks = () => 'posix'
+      const links = new LinkController(s.host).linksInViewport()
+      expect(links.map((l) => [l.kind, l.url])).toEqual([['url', 'https://a.ex/b/c']])
+    })
+
+    it('reparses when the setting changes', () => {
+      const s = stub([['cat /etc/hosts', false]], 1)
+      let on = false
+      s.host.pathLinks = () => (on ? 'posix' : null)
+      const c = new LinkController(s.host)
+      expect(c.linksInViewport()).toEqual([])
+      on = true
+      expect(c.linksInViewport()).toHaveLength(1)
+    })
+  })
 })

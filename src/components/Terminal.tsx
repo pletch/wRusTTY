@@ -17,6 +17,7 @@ import {
   Upload,
   ExternalLink,
   Copy,
+  FolderOpen,
 } from 'lucide-react'
 import { writeText, readText } from '@tauri-apps/plugin-clipboard-manager'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -38,6 +39,7 @@ import { useDismissable } from '../hooks/useDismissable'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
+import { pathFlavorFor } from '../lib/localOpen'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import {
   harvestRemoteHistory,
@@ -179,6 +181,11 @@ interface Props {
   onRemoteTitle?: (title: string | null) => void
   /** The far end reported its working directory (OSC 7). */
   onRemoteCwd?: (cwd: string) => void
+  /** A file path in the output was Ctrl+clicked (or picked in hint mode), as
+   *  written. Resolving it — against the pane's directory, on its host — is
+   *  the caller's. Path links are only offered where `pathFlavorFor` says the
+   *  source has somewhere to send one, and only when this is given. */
+  onOpenPath?: (path: string) => void
   /** A command finished, with its exit code and how long it took. */
   onCommandComplete?: (result: CommandResult) => void
   /** The far end rang the terminal bell (BEL, 0x07) — the oldest and most
@@ -262,6 +269,7 @@ export function Terminal({
   onRemoteNotify,
   onRemoteTitle,
   onRemoteCwd,
+  onOpenPath,
   onCommandComplete,
   onBell,
   onBackToConnect,
@@ -319,7 +327,12 @@ export function Terminal({
    * anyone who never learns Ctrl+click — the same reason VTE has it — and it
    * also puts the destination on screen before anything is opened.
    */
-  const [linkMenu, setLinkMenu] = useState<{ x: number; y: number; url: string } | null>(null)
+  const [linkMenu, setLinkMenu] = useState<{
+    x: number
+    y: number
+    url: string
+    kind: 'url' | 'path'
+  } | null>(null)
   useDismissable(linkMenu !== null, () => setLinkMenu(null))
 
   /**
@@ -553,6 +566,9 @@ export function Terminal({
 
   const onRemoteCwdRef = useRef(onRemoteCwd)
   onRemoteCwdRef.current = onRemoteCwd
+
+  const onOpenPathRef = useRef(onOpenPath)
+  onOpenPathRef.current = onOpenPath
 
   const onBellRef = useRef(onBell)
   onBellRef.current = onBell
@@ -964,6 +980,9 @@ export function Terminal({
     // builds a new one whenever the source changes.
     const transport = conn.transportOf(source)
     term.setResizePullsScrollback?.(transport !== 'local' && transport !== 'elevated')
+    // Paths are links only where there is somewhere to send one — see
+    // `pathFlavorFor`. Same once-per-engine reasoning as above.
+    term.setPathLinks?.(onOpenPathRef.current === undefined ? null : pathFlavorFor(source))
     // Read back rather than echoing the setting: the engine resolves an
     // unknown tier to its own fallback, and this has to describe what the pane
     // got. Reported after the setter above and only here — the core fixes the
@@ -1501,6 +1520,11 @@ export function Terminal({
           // sweeping until the first turn.
           tracker.noteProgress()
         } else if (result.kind === 'notify') onRemoteNotifyRef.current?.(result.notification)
+        // A Windows directory is only this pane's if the shell is on this
+        // machine. Over SSH it would become the next drop's destination.
+        else if (result.kind === 'cwd' && conn.transportOf(sourceRef.current) !== 'ssh') {
+          noteRemoteCwd(result.cwd)
+        }
         // Claimed either way, including the ignored forms: nothing else here
         // handles OSC 9, and letting an unrecognised subcommand fall through
         // gains nothing.
@@ -1965,6 +1989,10 @@ export function Terminal({
       })
     })
 
+    // A path never goes near the opener above: it names a file on the remote
+    // host, and the caller resolves and looks it up there.
+    const pathListener = term.onPathActivate?.((path) => onOpenPathRef.current?.(path))
+
     // The single paste path, shared by right-click, Ctrl+Shift+V and
     // Shift+Insert. Its own function precisely so the multi-line guard cannot
     // apply to one route and not another: a keyboard paste that silently ran
@@ -2023,7 +2051,13 @@ export function Terminal({
       const url = term.linkAtPointer?.(e) ?? null
       if (url) {
         e.preventDefault()
-        setLinkMenu({ x: e.clientX, y: e.clientY, url })
+        setLinkMenu({ x: e.clientX, y: e.clientY, url, kind: 'url' })
+        return
+      }
+      const path = term.pathAtPointer?.(e) ?? null
+      if (path) {
+        e.preventDefault()
+        setLinkMenu({ x: e.clientX, y: e.clientY, url: path, kind: 'path' })
         return
       }
       if (!settingsRef.current.rightClickPaste) return
@@ -2253,6 +2287,7 @@ export function Terminal({
       markModeListener?.dispose()
       hintModeListener?.dispose()
       linkListener?.dispose()
+      pathListener?.dispose()
       dataListener.dispose()
       inputListener.dispose()
       scrollListener.dispose()
@@ -2677,11 +2712,22 @@ export function Terminal({
             <button
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10"
               onClick={() => {
-                termRef.current?.openLink?.(linkMenu.url)
+                if (linkMenu.kind === 'path') onOpenPathRef.current?.(linkMenu.url)
+                else termRef.current?.openLink?.(linkMenu.url)
                 setLinkMenu(null)
               }}
             >
-              <ExternalLink size={13} /> Open link
+              {linkMenu.kind === 'path' ? (
+                <>
+                  <FolderOpen size={13} />{' '}
+                  {/* A local path opens here; a remote one can only be shown. */}
+                  {canUpload ? 'Show in files' : 'Open'}
+                </>
+              ) : (
+                <>
+                  <ExternalLink size={13} /> Open link
+                </>
+              )}
             </button>
             <button
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10"
@@ -2690,7 +2736,7 @@ export function Terminal({
                 setLinkMenu(null)
               }}
             >
-              <Copy size={13} /> Copy link
+              <Copy size={13} /> {linkMenu.kind === 'path' ? 'Copy path' : 'Copy link'}
             </button>
             <div className="mt-1 break-all border-t border-chrome/10 px-3 pt-1.5 text-[11px] text-chrome/40">
               {linkMenu.url}

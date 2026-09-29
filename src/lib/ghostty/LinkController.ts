@@ -1,3 +1,4 @@
+import { findPaths, type PathFlavor } from '../pathDetect'
 import { findUrls } from '../urlDetect'
 import { logicalLines, segmentsFor, type Segment } from './logicalLines'
 import type { RowText } from './rowText'
@@ -28,8 +29,21 @@ import type { Point } from './SelectionController'
  */
 export type LinkSource = 'detected' | 'osc8'
 
+/**
+ * What a link points at, which decides who acts on it.
+ *
+ * A `'url'` goes to the platform opener, behind `isOpenableUrl`. A `'path'` is
+ * a file on the remote host, and never reaches the opener at all: the pane
+ * resolves it against its own directory and shows it in the files panel. Kept
+ * apart at the type rather than by prefixing the string, so no path can be
+ * mistaken for a URL on its way out — or the other way round.
+ */
+export type LinkKind = 'url' | 'path'
+
 export interface Link {
+  /** The URL, or for a `'path'` link the path as written. */
   url: string
+  kind: LinkKind
   /** Every row the link covers; more than one when it crosses a wrap. */
   segments: Segment[]
   source: LinkSource
@@ -52,6 +66,11 @@ export interface LinkHost {
   /** Live read — a value snapshotted at construction is wrong after a resize,
    *  and a resize reflows every row. */
   cols(): number
+  /** Whether to look for file paths as well as URLs, and in which syntax.
+   *  Only a pane with somewhere to send one — a files panel, or this machine's
+   *  file associations — asks; everywhere else a path is just text. Absent or
+   *  null means no. */
+  pathLinks?(): PathFlavor | null
 }
 
 /**
@@ -114,16 +133,17 @@ export class LinkController {
    */
   private links(): Link[] {
     const top = this.host.viewportY()
-    const key = `${this.host.bufferGen()}:${top}:${this.host.cols()}`
+    const paths = this.host.pathLinks?.() ?? null
+    const key = `${this.host.bufferGen()}:${top}:${this.host.cols()}:${paths}`
     if (this.cached !== null && key === this.cacheKey) return this.cached
 
-    const parsed = this.parse(top)
+    const parsed = this.parse(top, paths)
     this.cached = parsed
     this.cacheKey = key
     return parsed
   }
 
-  private parse(top: number): Link[] {
+  private parse(top: number, paths: PathFlavor | null): Link[] {
     const total = this.host.totalRows()
     if (total <= 0) return []
     const viewTop = Math.max(0, Math.min(top, total - 1))
@@ -150,7 +170,21 @@ export class LinkController {
 
     const out: Link[] = []
     for (const line of lines) {
-      for (const match of findUrls(line.text)) {
+      const found: { start: number; end: number; url: string; kind: LinkKind }[] = findUrls(
+        line.text,
+      ).map((m) => ({ ...m, kind: 'url' }))
+      if (paths) {
+        const urls = found.slice()
+        for (const m of findPaths(line.text, paths)) {
+          // A URL has a path in it, and the URL wins: `https://x/a/b` is one
+          // link, not a link with a second one inside its tail.
+          if (urls.some((u) => m.start < u.end && m.end > u.start)) continue
+          found.push({ start: m.start, end: m.end, url: m.path, kind: 'path' })
+        }
+        // In reading order, which is the order hint mode hands out labels in.
+        found.sort((a, b) => a.start - b.start)
+      }
+      for (const match of found) {
         // `end` is half-open; `segmentsFor` takes an inclusive last character.
         const segments = segmentsFor(line, match.start, match.end - 1)
         if (segments.length === 0) continue
@@ -158,7 +192,7 @@ export class LinkController {
         // of it is on screen — nothing can point at or label a row nobody can
         // see, and hint mode would otherwise hand out labels for them.
         if (!segments.some((s) => s.row >= viewTop && s.row <= viewBottom)) continue
-        out.push({ url: match.url, segments, source: 'detected' })
+        out.push({ url: match.url, kind: match.kind, segments, source: 'detected' })
       }
     }
     return out

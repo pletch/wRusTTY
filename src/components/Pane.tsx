@@ -4,7 +4,7 @@ import { GripVertical, X } from 'lucide-react'
 import { ConnectDialog } from './ConnectDialog'
 import { ElevatedRestore } from './ElevatedRestore'
 import { ForwardPanel } from './ForwardPanel'
-import { FilesPanel } from './FilesPanel'
+import { FilesPanel, type FilesReveal } from './FilesPanel'
 import type { PaneLeaf, PaneNode } from '../types'
 import type { ConnectionSource } from '../lib/connection'
 import type { SessionProfile } from '../lib/profiles'
@@ -33,6 +33,8 @@ interface Props {
    *  re-established behind it and some may not have come back. */
   statusByPane: Record<string, string>
   filesOpenByPane: Record<string, boolean>
+  /** Where a Ctrl+clicked path asked each pane's files panel to go. */
+  filesRevealByPane: Record<string, FilesReveal>
   /** The directory each pane's host last *reported*, where it reported one.
    *  The Files panel opens there rather than at the remote home — the same
    *  place a file dropped on that pane would land. */
@@ -124,6 +126,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     forwardsOpenByPane,
     statusByPane,
     filesOpenByPane,
+    filesRevealByPane,
     cwdByPane,
     titleByPane,
     editorCommand,
@@ -352,6 +355,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         <FilesPanel
           sessionId={sessionId}
           startDir={startDirFor(cwdByPane[node.id], titleByPane[node.id])}
+          reveal={filesRevealByPane[node.id] ?? null}
           editorCommand={editorCommand}
           onClose={() => onCloseFiles(node.id)}
         />

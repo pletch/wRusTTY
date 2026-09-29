@@ -77,8 +77,13 @@ describe('parseOsc9 — notifications', () => {
     })
   })
 
-  it('ignores ConEmu cwd reports rather than announcing them', () => {
+  it('ignores ConEmu cwd reports that are not Windows paths rather than announcing them', () => {
     expect(parseOsc9('9;/home/tim')).toEqual({ kind: 'ignore' })
+  })
+
+  it('reads a ConEmu cwd report, quoted or bare', () => {
+    expect(parseOsc9('9;"C:\\Users\\tim"')).toEqual({ kind: 'cwd', cwd: 'C:\\Users\\tim' })
+    expect(parseOsc9('9;D:/work')).toEqual({ kind: 'cwd', cwd: 'D:/work' })
   })
 
   it('ignores an empty payload', () => {

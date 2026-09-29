@@ -1,3 +1,4 @@
+import type { PathFlavor } from './pathDetect'
 import type { CursorStyleSetting, TextBlending } from './settings'
 import type { FontSelection } from './fontStack'
 import type { RowText } from './ghostty/rowText'
@@ -260,4 +261,14 @@ export interface TerminalEngine {
    *  rather than straight to the opener so every route takes the same scheme
    *  check. */
   openLink?(url: string): void
+  /**
+   * File paths as links, in the syntax the pane's host writes them in. Off
+   * until `setPathLinks` names one; null turns them off again. A path link is never a URL: the engine
+   * reports the text that was activated and the frontend resolves it on the
+   * remote host. Optional as a group, like the URL methods above.
+   */
+  setPathLinks?(flavor: PathFlavor | null): void
+  onPathActivate?(cb: (path: string) => void): IDisposable
+  /** The path under a pointer event, as written, for a context menu. */
+  pathAtPointer?(e: MouseEvent): string | null
 }

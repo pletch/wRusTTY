@@ -47,6 +47,10 @@ export type Osc9Result =
    * explicitly clearing its progress (ConEmu state 0). */
   | { kind: 'progress'; progress: AppProgress | null }
   | { kind: 'notify'; notification: RemoteNotification }
+  /** ConEmu's working-directory report, `9;9;<path>` — the one Windows
+   *  Terminal documents for PowerShell and oh-my-posh emits. Only ever a
+   *  drive-absolute Windows path. */
+  | { kind: 'cwd'; cwd: string }
   | { kind: 'ignore' }
 
 /**
@@ -112,9 +116,14 @@ export function parseOsc9(data: string): Osc9Result {
           return { kind: 'ignore' }
       }
     }
-    // ConEmu's working-directory report. Nothing here consumes it, and it must
-    // not be mistaken for notification text.
-    if (head === '9') return { kind: 'ignore' }
+    // ConEmu's working-directory report, which must not be mistaken for
+    // notification text either way. Quoted in Windows Terminal's own snippet,
+    // bare in some prompts; anything but a drive-absolute path is dropped.
+    if (head === '9') {
+      const cwd = data.slice(sep + 1).trim().replace(/^"(.*)"$/, '$1')
+      if (/^[A-Za-z]:[\\/]/.test(cwd) && !/\p{Cc}/u.test(cwd)) return { kind: 'cwd', cwd }
+      return { kind: 'ignore' }
+    }
   } else if (head === '4') {
     // A bare `OSC 9 ; 4` carries no state at all.
     return { kind: 'ignore' }

@@ -39,6 +39,21 @@ import { SudoPrompt } from './SudoPrompt'
 import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 
+/**
+ * A request to show a particular place: a directory, and optionally one entry
+ * in it to pick out. Made by Ctrl+clicking a path in the terminal, already
+ * resolved and looked up, so the panel only has to go there.
+ *
+ * `nonce` is what makes a second click on the same path a second request: the
+ * user may have browsed away in between, and clicking it again should bring
+ * them back.
+ */
+export interface FilesReveal {
+  dir: string
+  select: string | null
+  nonce: number
+}
+
 interface Props {
   sessionId: string
   /**
@@ -57,6 +72,10 @@ interface Props {
    * home. See `startDirFor` for where it comes from.
    */
   startDir: string | null
+  /** Where a clicked path asked the panel to go, or null. Wins over `startDir`
+   *  when the panel opens because of it, and moves an open panel when it
+   *  changes. */
+  reveal: FilesReveal | null
   /** The `externalEditor` setting, passed through to every edit this panel
    *  opens. Empty means the OS handler, which cannot report a close. */
   editorCommand: string
@@ -135,7 +154,7 @@ interface Transfer {
 // yet — so the row renders throughout, and cancelling before the id lands is a
 // no-op rather than an error.
 
-export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Props) {
+export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose }: Props) {
   // Rendered only while open, so it is always dismissable while mounted.
   useDismissable(true, onClose, { within: '[data-files-panel], [data-files-toggle]' })
   const confirm = useConfirm()
@@ -147,6 +166,12 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The entry a clicked path pointed at, picked out until the listing changes.
+  const [selected, setSelected] = useState<string | null>(null)
+  // The reveal already acted on, so a re-render with the same one does not
+  // yank the listing back after the user has browsed away from it.
+  const seenReveal = useRef<number | null>(reveal?.nonce ?? null)
+  const selectedRef = useRef<HTMLLIElement | null>(null)
   // remotePath -> editId. Seeded from the backend on mount (see below) rather
   // than only from what this panel instance happened to open, because watches
   // outlive the panel: without that, closing and reopening the panel loses
@@ -431,7 +456,10 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
    * "no such directory" and *then* silently succeeding somewhere else would be
    * the worst of both.
    */
-  async function load(path: string, { quiet = false } = {}): Promise<boolean> {
+  async function load(
+    path: string,
+    { quiet = false, select = null }: { quiet?: boolean; select?: string | null } = {},
+  ): Promise<boolean> {
     setLoading(true)
     if (!quiet) setError(null)
     try {
@@ -442,6 +470,7 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
       })
       setEntries(list)
       setCwd(path)
+      setSelected(select)
       return true
     } catch (err) {
       if (!quiet) setError(String(err))
@@ -459,6 +488,10 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
     // you browse, not a mirror of the prompt.
     const openAt = async () => {
       let home: string | null = null
+      // A clicked path is already absolute and already known to exist; it only
+      // falls through to the ordinary start if it vanished in between.
+      if (reveal && (await load(reveal.dir, { quiet: true, select: reveal.select }))) return
+      if (cancelled) return
       let target = startDir
       // A `~` has to be resolved before it is sent: SFTP has no tilde
       // expansion, so `~/src` would ask for a directory literally called `~`.
@@ -509,6 +542,20 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
+
+  // A path clicked while the panel is already open moves it.
+  useEffect(() => {
+    if (!reveal || reveal.nonce === seenReveal.current) return
+    seenReveal.current = reveal.nonce
+    void load(reveal.dir, { select: reveal.select })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal])
+
+  // Brought into view once it is in the listing; a directory of a few hundred
+  // entries would otherwise pick out a row nobody can see.
+  useEffect(() => {
+    if (selected) selectedRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selected, entries])
 
   /** Starting a transfer takes three steps, and every caller does all three:
    *  show the row before the id exists, give it the id when it arrives, and take
@@ -1029,12 +1076,16 @@ export function FilesPanel({ sessionId, startDir, editorCommand, onClose }: Prop
           return (
             <li
               key={entry.name}
+              ref={entry.name === selected ? selectedRef : undefined}
+              aria-selected={entry.name === selected || undefined}
               onDoubleClick={() => open(entry)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setMenu({ entry, x: e.clientX, y: e.clientY })
               }}
-              className="flex cursor-default items-center justify-between gap-2 rounded px-2 py-1.5 hover:bg-chrome/5"
+              className={`flex cursor-default items-center justify-between gap-2 rounded px-2 py-1.5 ${
+                entry.name === selected ? 'bg-sky-400/15' : 'hover:bg-chrome/5'
+              }`}
             >
               <span className="flex min-w-0 flex-1 items-center gap-1.5 text-chrome/80">
                 {entry.isDir ? (

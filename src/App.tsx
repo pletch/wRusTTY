@@ -28,12 +28,17 @@ import {
   Search,
 } from 'lucide-react'
 import { toast } from './lib/toast'
+import type { FilesReveal } from './components/FilesPanel'
+import * as sftp from './lib/sftp'
+import { startDirFor } from './lib/fileActions'
+import { resolveRemotePath, splitRemotePath } from './lib/pathDetect'
+import { openLocalPath } from './lib/localOpen'
 import { notifyInBackground, flashWindow } from './lib/notify'
 import * as profiles from './lib/profiles'
 import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
 import type { VaultStatus, VaultSecret } from './lib/vault'
-import type { ConnectionSource } from './lib/connection'
+import { transportOf, type ConnectionSource } from './lib/connection'
 import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/connection'
 import {
   loadSettings,
@@ -232,6 +237,20 @@ function App() {
   const attentionPanes = useMemo(() => attentionPanesOf(paneRuntime), [paneRuntime])
   const dimensionsByPane = useMemo(() => dimensionsByPaneOf(paneRuntime), [paneRuntime])
   const scrollbackBudgetByPane = useMemo(() => scrollbackBudgetByPaneOf(paneRuntime), [paneRuntime])
+  // Where a Ctrl+clicked path asked each pane's files panel to go. Held only
+  // while that panel is open (see the effect below), so reopening it by hand
+  // later starts from the pane's directory as usual, not from an old click.
+  const [filesRevealByPane, setFilesRevealByPane] = useState<Record<string, FilesReveal>>({})
+  const revealNonce = useRef(0)
+  useEffect(() => {
+    setFilesRevealByPane((prev) => {
+      const stale = Object.keys(prev).filter((id) => !filesOpenByPane[id])
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const id of stale) delete next[id]
+      return next
+    })
+  }, [filesOpenByPane])
   // Set by the toolbar search button to ask one specific pane's terminal to
   // open its search box (the box itself is per-Terminal local state, so this
   // is how an App-level control reaches into it). Targeted by pane id — not a
@@ -833,6 +852,90 @@ function App() {
   function toggleFiles(paneId: string) {
     dispatchPaneRuntime({ type: 'panelToggled', paneId, panel: 'files' })
     dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'forwards', open: false })
+  }
+
+  /**
+   * A path in a pane's output was clicked: find it on that pane's host and
+   * show it in the files panel — the directory itself, or a file picked out in
+   * its parent.
+   *
+   * Looked up before the panel moves, because detection only knows the text
+   * looks like a path. `and/or`, a path printed before a `cd`, or one on some
+   * other machine all read the same, and the honest answer to each is "not
+   * found" rather than a panel opened on the wrong place.
+   */
+  async function openPathInFiles(paneId: string, path: string) {
+    const sessionId = sessionIdByPane[paneId]
+    if (!sessionId) return
+    try {
+      const home = await sftp.canonicalize(sessionId, '.')
+      const abs = resolveRemotePath(path, startDirFor(cwdByPane[paneId], titleByPane[paneId]), home)
+      if (!abs) {
+        toast.error(`Can't tell what ${path} is relative to — this host hasn't reported its directory.`)
+        return
+      }
+      const { dir, name } = splitRemotePath(abs)
+      let target: Omit<FilesReveal, 'nonce'> = { dir: '/', select: null }
+      if (name !== null) {
+        const entry = (await sftp.listDir(sessionId, dir)).find((e) => e.name === name)
+        if (!entry) {
+          toast.error(`Not found on the host: ${abs}`)
+          return
+        }
+        // A listing describes a symlink as itself, not what it points at, so a
+        // link to a directory needs asking directly.
+        const isDir =
+          entry.isDir ||
+          (entry.isSymlink &&
+            (await sftp.listDir(sessionId, abs).then(
+              () => true,
+              () => false,
+            )))
+        target = isDir ? { dir: abs, select: null } : { dir, select: name }
+      }
+      setFilesRevealByPane((prev) => ({ ...prev, [paneId]: { ...target, nonce: ++revealNonce.current } }))
+      dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'files', open: true })
+      dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'forwards', open: false })
+    } catch (err) {
+      toast.error(`Could not look up ${path}: ${String(err)}`)
+    }
+  }
+
+  /**
+   * A path in a local pane's output was clicked: open it on this machine.
+   *
+   * A relative path is tried against the directory the shell last reported,
+   * then the one the pane started in; the backend adds home after both, which
+   * is where a pane with no configured directory starts. Most Windows shells
+   * report nothing unless their prompt is set up to, so the start directory is
+   * often the only thing to go on — and the lookup is what keeps a wrong guess
+   * from opening the wrong file.
+   */
+  async function openLocalPathFor(paneId: string, source: ConnectionSource, path: string) {
+    const launched =
+      source.protocol === 'local'
+        ? source.config.cwd
+        : source.protocol === 'localProfile'
+          ? (sessions.find((s) => s.id === source.profileId)?.local?.cwd ?? null)
+          : null
+    const cwds = [cwdByPane[paneId], launched].filter((c): c is string => !!c)
+    try {
+      const outcome = await openLocalPath(path, cwds)
+      switch (outcome.kind) {
+        case 'notFound':
+          toast.error(`Not found: ${path}`)
+          break
+        case 'revealed':
+          // Said, because Explorer opening instead of the file is otherwise a
+          // mystery — and the reason is the whole point.
+          toast.info(`${outcome.path} is a program or script, so it was shown in Explorer rather than run.`)
+          break
+        default:
+          break
+      }
+    } catch (err) {
+      toast.error(`Could not open ${path}: ${String(err)}`)
+    }
   }
 
   function closeFiles(paneId: string) {
@@ -1568,6 +1671,7 @@ function App() {
                 forwardsOpenByPane={forwardsOpenByPane}
                 statusByPane={statusByPane}
                 filesOpenByPane={filesOpenByPane}
+                filesRevealByPane={filesRevealByPane}
                 cwdByPane={cwdByPane}
                 titleByPane={titleByPane}
                 editorCommand={terminalSettings.externalEditor}
@@ -1746,6 +1850,13 @@ function App() {
                   onRemoteCwd={(cwd) =>
                     dispatchPaneRuntime({ type: 'cwdChanged', paneId: leaf.id, cwd })
                   }
+                  onOpenPath={(path) => {
+                    const source = leaf.source
+                    if (!source) return
+                    void (transportOf(source) === 'ssh'
+                      ? openPathInFiles(leaf.id, path)
+                      : openLocalPathFor(leaf.id, source, path))
+                  }}
                   onRemoteNotify={(notification) => {
                     if (!terminalSettings.remoteNotifications) return
                     // The pane's name is prepended rather than used as the

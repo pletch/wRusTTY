@@ -13,7 +13,7 @@ import type { Link } from './LinkController'
 const COLS = 20
 
 function link(url: string, row: number, from: number, to = from + 4): Link {
-  return { url, segments: [{ row, from, to }], source: 'detected' }
+  return { url, kind: 'url', segments: [{ row, from, to }], source: 'detected' }
 }
 
 interface Harness {
@@ -47,8 +47,8 @@ describe('hint mode', () => {
     h.mode.enter()
     expect(h.mode.isActive()).toBe(true)
     expect(h.hints).toEqual([
-      { label: 'a', row: 0, col: 2, url: 'https://a.example' },
-      { label: 's', row: 3, col: 5, url: 'https://b.example' },
+      { label: 'a', row: 0, col: 2, url: 'https://a.example', kind: 'url' },
+      { label: 's', row: 3, col: 5, url: 'https://b.example', kind: 'url' },
     ])
     expect(h.modeChanges).toEqual([true])
   })
@@ -156,6 +156,7 @@ describe('hint mode', () => {
   it('labels the first row of a wrapped link that is actually on screen', () => {
     const wrapped: Link = {
       url: 'https://long.example/path',
+      kind: 'url',
       segments: [
         { row: 2, from: 10, to: 19 },
         { row: 3, from: 0, to: 4 },
@@ -165,7 +166,7 @@ describe('hint mode', () => {
     // The viewport starts below the link's own first row.
     const h = harness([wrapped], { top: 3, bottom: 9 })
     h.mode.enter()
-    expect(h.hints).toEqual([{ label: 'a', row: 3, col: 0, url: 'https://long.example/path' }])
+    expect(h.hints).toEqual([{ label: 'a', row: 3, col: 0, url: 'https://long.example/path', kind: 'url' }])
   })
 
   /** A label half off the right edge names nothing. */
