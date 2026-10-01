@@ -1619,6 +1619,11 @@ export function Terminal({
           onStatusRef.current?.(event.status)
           const retry = parseReconnecting(event.status)
           if (event.status.startsWith('failed') || isDisconnect(event.status)) {
+            // Before the status line, so it lands on the primary screen in
+            // plain colors rather than inside a dead program's alternate
+            // screen — and so a reconnect's new shell isn't handed the mouse
+            // and keyboard modes that program never got to turn off.
+            term.resetSessionModes?.()
             term.writeln(`\r\n[${event.status}]`)
             // Whatever was running went down with the connection. Its real
             // outcome is unknowable from here, so drop it silently rather

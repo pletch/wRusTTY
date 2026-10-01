@@ -54,6 +54,7 @@ import {
 import { GhosttyInputHandler } from './GhosttyInputHandler'
 import { KeyEncoder } from './KeyEncoder'
 import { NativeSearchController } from './NativeSearchController'
+import { sessionModeReset } from './sessionModes'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
 // `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
@@ -2067,6 +2068,16 @@ export class GhosttyEngine implements TerminalEngine {
 
   writeln(data: string): void {
     this.write(data + '\r\n')
+  }
+
+  /** Turns off what a program left on when its session died under it — see
+   *  `sessionModes.ts`. Written through the parser like anything else, so the
+   *  encoders, which read their modes from the core, follow without being
+   *  told. */
+  resetSessionModes(): void {
+    if (!this.wasm || !this.termPtr) return
+    const onAlt = this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
+    this.write(sessionModeReset(onAlt))
   }
 
   /**

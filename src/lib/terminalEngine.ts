@@ -52,6 +52,14 @@ export interface TerminalEngine {
 
   write(data: Uint8Array | string): void
   writeln(data: string): void
+  /**
+   * Turns off the modes a program on the far end left on — mouse reporting,
+   * the Kitty keyboard protocol, the alternate screen — without the full reset
+   * that would also clear the scrollback. For a session that died, so that the
+   * next one in the same pane starts clean. Optional: an engine without it
+   * leaves the modes as they are.
+   */
+  resetSessionModes?(): void
   paste(text: string): void
   /**
    * Whether `paste` can be called without asking the user first, or null when
