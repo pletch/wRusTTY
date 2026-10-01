@@ -78,6 +78,7 @@ import {
 import type { SplitLimit } from './lib/paneTree'
 import * as sessionSnapshot from './lib/sessionSnapshot'
 import type { SessionSnapshot } from './lib/sessionSnapshot'
+import { keepWindowOnScreen } from './lib/windowFit'
 import type { PaneLeaf, PaneNode, Tab } from './types'
 import { runVaultGatedAction } from './state/vaultGate'
 import type { VaultGatedAction, VaultGateEffects } from './state/vaultGate'
@@ -400,9 +401,14 @@ function App() {
   // (which only runs after the browser has painted this component's first
   // render) means the window only ever appears already correctly sized and
   // already showing the real UI, not a flash of blank/wrong-sized chrome.
+  //
+  // Fitted to the screen first, for the same reason: the restored geometry is
+  // whatever was saved, on whatever display it was saved on — see
+  // keepWindowOnScreen. A failure there must not keep the window hidden.
   useEffect(() => {
-    getCurrentWindow()
-      .show()
+    keepWindowOnScreen()
+      .catch(() => {})
+      .then(() => getCurrentWindow().show())
       .catch(() => {})
   }, [])
 

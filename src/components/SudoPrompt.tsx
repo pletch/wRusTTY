@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ShieldAlert } from 'lucide-react'
 import { useDismissable } from '../hooks/useDismissable'
+import { WindowDragStrip } from './WindowDragStrip'
 
 interface Props {
   /** The file this is being asked for. Named, because "enter your password" with
@@ -58,8 +59,9 @@ export function SudoPrompt({ remotePath, retry, onAnswer }: Props) {
       data-modal
       className="animate-in fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 duration-150"
     >
+      <WindowDragStrip />
       <form
-        className="animate-in zoom-in-95 w-[26rem] max-w-full space-y-3 rounded-lg border border-amber-500/25 bg-surface p-5 shadow-2xl duration-150"
+        className="animate-in zoom-in-95 relative w-[26rem] max-w-full space-y-3 rounded-lg border border-amber-500/25 bg-surface p-5 shadow-2xl duration-150"
         onSubmit={(e) => {
           e.preventDefault()
           onAnswer(password)

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Lock, Fingerprint, RotateCcw, ShieldCheck } from 'lucide-react'
+import { WindowDragStrip } from './WindowDragStrip'
 
 interface Props {
   count: number
@@ -74,7 +75,8 @@ export function RestoreSessionsPrompt({
 
   return (
     <div className="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 duration-150">
-      <div className="animate-in zoom-in-95 w-80 space-y-3 rounded-lg border border-chrome/10 bg-surface p-5 shadow-2xl duration-150">
+      <WindowDragStrip />
+      <div className="animate-in zoom-in-95 relative w-80 space-y-3 rounded-lg border border-chrome/10 bg-surface p-5 shadow-2xl duration-150">
         <div className="flex items-center gap-2 text-chrome/90">
           <RotateCcw size={15} className="text-sky-400" />
           <span className="font-medium">

@@ -70,6 +70,7 @@ import { ThemeEditor } from './ThemeEditor'
 import { CommandHistorySection } from './CommandHistorySection'
 import { useDismissable } from '../hooks/useDismissable'
 import type { VaultStatus } from '../lib/vault'
+import { WindowDragStrip } from './WindowDragStrip'
 
 interface Props {
   settings: TerminalSettings
@@ -961,13 +962,14 @@ export function SettingsDialog({
             className="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 duration-150"
             onClick={() => setOpen(false)}
           >
+            <WindowDragStrip />
             <div
               // Fixed height, not sized to its contents: the sections differ
               // a lot in length, and a dialog that resized as you moved
               // between them would shift the category list out from under
               // the pointer. Capped against the window so a short one still
               // fits on a small screen.
-              className="animate-in zoom-in-95 flex h-[430px] max-h-full w-[660px] max-w-full overflow-hidden rounded-xl border border-chrome/10 bg-surface text-xs shadow-2xl duration-150"
+              className="animate-in zoom-in-95 relative flex h-[430px] max-h-full w-[660px] max-w-full overflow-hidden rounded-xl border border-chrome/10 bg-surface text-xs shadow-2xl duration-150"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2">
