@@ -11,6 +11,8 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-02
+
 ### Added
 
 - **Ctrl+click a file path** in terminal output to open it, the way a URL
@@ -113,6 +115,7 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/pletch/wRusTTY/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pletch/wRusTTY/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pletch/wRusTTY/releases/tag/v0.2.0

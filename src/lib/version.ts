@@ -15,4 +15,4 @@
  * users see in Add/Remove Programs, so it is the one to treat as authoritative
  * when they disagree. `npm run release` (tools/version.mjs) sets all five.
  */
-export const APP_VERSION = '0.3.0'
+export const APP_VERSION = '0.4.0'
