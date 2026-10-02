@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ f9e82709360d97b2246718f774c544de0f16787b
+ghostty-org/ghostty @ f523504ea5c9f41d150d1eb93cc7a748b90f9361
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,12 +34,68 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, **190 here** — so re-pin only with a reason and re-run the
-checks when you do. The long run of it going *down* was consolidation rather
+180, 181, 189, 189, 190, **190 here** — so re-pin only with a reason and re-run
+the checks when you do. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
-search API at `492300ca` and `ghostty_osc_set` here.
+search API at `492300ca` and `ghostty_osc_set` at `f9e82709`.
 
-### Moving from `622b4eec` (2026-09-23) to this pin
+### Moving from `f9e82709` (2026-09-29) to this pin
+
+51 commits over six days, a clean fast-forward and **no ABI break**. Two
+dozen are macOS, GTK and vouch-list traffic. The headers only add: semantic
+prompt and reset effects (`GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT`/`_RESET`), a
+memory usage query, and snapshot history compression. The one removed header
+line is a doc comment. All of it is option and data keys, so the export count
+holds at 190. The whole suite passed against the new binary before anything
+here was touched, bar the two integrity checks that are meant to fail.
+
+Taken for two core changes, both reachable from ordinary remote output:
+
+- **`bb20f8e45`** — RIS resets the palette. Measured on the previous binary: a
+  remote OSC 4 recoloured entry 1 and `ESC c` left it recoloured, so a program
+  that changed the palette kept it changed through `reset`. It goes back to the
+  palette's *default*, which is the theme, because the shim sets the theme with
+  `T_OPT_COLOR_PALETTE` and that is `changeDefault`, not a write to the current
+  table. `sessionModes.ts` now sends OSC 104 for the same reason, since a
+  dropped session cannot use RIS.
+- **`f9ab34f10`** — a cursor waiting to wrap at the right edge stays armed
+  after a resize moves the edge away from it, so the next character started a
+  new row though the widened line had room for it. Panes resize all the time
+  here: splits, the window, a font change.
+
+`repinFixes.test.ts` pins both against the shipped binary. Both fail on the
+previous one.
+
+Also in, smaller: `afded91df` (a saved cursor drifted back a cell when the pane
+was widened twice) and `36953bca8` (OSC 105 is parsed now, but the core still
+stores no special colours, so nothing changes).
+
+**One behaviour change to watch:** `9a4787d90` makes a same-size
+`ghostty_terminal_resize` stop being a no-op. The grid is left alone, but
+synchronized output is ended and a size report goes out. `GhosttyEngine.resize`
+only reaches the core at the same size when forced, which is a font change, and
+both of those are right then: the pixel size moved. Nothing else calls it at the
+same size.
+
+Inert here: OSC 22's empty-name pointer reset (`b1bfd1d9c`, we read no pointer
+shape), relative prompt-click coordinates (`5170b06f6`, we use no prompt click),
+the paste *reader* failing after a refused write (`2b0ceff7d`, we encode
+pastes with `ghostty_paste_encode`), and `51d3ca168` (NULL OSC command data, a
+C API we do not call).
+
+Worth having later, not taken: the semantic prompt effect (`7bb45ba34`) reports
+OSC 133 prompt, input, output and command-end from the core, with exit code,
+which is part of what `oscScanner.ts` does by hand. It does not cover OSC 633,
+so the scanner stays for now. The reset effect from the same commit would let
+the pane drop its own per-command state on RIS.
+
+The binary grew **8,492 bytes** (1,138,336 -> 1,146,828). `scrollbackLimit.test.ts`
+passes unchanged. The search probe sits inside the range quoted above (0.9x and
+0.8x). `iter.mjs`'s steady-state row at 80x24 read 0.12x-0.26x across runs on
+this binary and 0.12x-0.14x on the previous one: timer noise at 2-4µs a frame,
+not a regression. 200x60 read 0.04x on both.
+
+### Moving from `622b4eec` (2026-09-23) to `f9e82709`
 
 88 commits over six days, a clean fast-forward and **no ABI break**: the
 headers only add (mouse shapes, overscan, the OSC unknown-sequence tag), no
@@ -354,7 +410,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout f9e82709360d97b2246718f774c544de0f16787b
+cd ghostty && git checkout f523504ea5c9f41d150d1eb93cc7a748b90f9361
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm

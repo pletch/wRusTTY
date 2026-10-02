@@ -60,5 +60,8 @@ export function sessionModeReset(onAltScreen: boolean): string {
     '\x1b7\x1b[?6l\x1b[r\x1b8',
     // Line-drawing charset, a hidden cursor, and whatever colors were set.
     '\x0f\x1b(B\x1b[?25h\x1b[0m',
+    // The palette, if the program recoloured it with OSC 4. Back to the
+    // theme, which the core holds as the palette's default.
+    '\x1b]104\x07',
   ].join('')
 }

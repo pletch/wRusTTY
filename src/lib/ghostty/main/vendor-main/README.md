@@ -11,10 +11,10 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ f9e82709360d97b2246718f774c544de0f16787b
+ghostty-org/ghostty @ f523504ea5c9f41d150d1eb93cc7a748b90f9361
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  47f7ceaa2db35ae31f59e81386f8efe7a2f29468cf5ee5838dd9fec335fe83ce
-Size     4,683,414 bytes
+SHA-256  f4b2cc1007d997c804bc0e2b201ad5b08947f5e51e431a455c0b31fe7884838c
+Size     4,711,379 bytes
 Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 Exports  190 (188 functions) — the patch adds none
 ```
@@ -48,7 +48,7 @@ Rebuilding needs **Zig 0.16.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin f9e82709360d97b2246718f774c544de0f16787b
+git fetch -q --depth 1 origin f523504ea5c9f41d150d1eb93cc7a748b90f9361
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch

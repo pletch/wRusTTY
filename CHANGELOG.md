@@ -13,18 +13,50 @@ release job publishes it as the GitHub release notes.
 
 ### Added
 
+- **Ctrl+click a file path** in terminal output to open it, the way a URL
+  opens. On an SSH pane it is shown in that pane's files panel; on a local
+  pane it opens in whatever Windows associates with its type. Network and
+  device paths are refused, and anything Windows would run is shown selected
+  in Explorer instead of opened. Hint mode offers paths alongside URLs.
+- A local PowerShell pane's working directory is read from OSC 9;9, so
+  relative paths there resolve where the shell is.
 - Autocomplete: Shift+Delete forgets the highlighted suggestion and stops it
   being suggested again — running it or re-importing it no longer brings it
   back. Forgetting a command from Settings does the same. Settings lists each
   host's never-suggested commands with "Allow again" to undo it.
 
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `f523504e`. Line drawing in the
+  DEC Special Graphics set, used by ncurses under a non-UTF-8 locale and by
+  network-gear menus, is about five times faster.
+
 ### Fixed
 
+- A window restored taller than the screen, or partly off it, is fitted back
+  onto the screen before it appears. The window can also be dragged or
+  maximized by its title bar while a dialog is open.
+- A session that drops while a program has mouse reporting or the Kitty
+  keyboard protocol on no longer leaves them on. After reconnecting, the shell
+  used to receive mouse reports as typed text and keys it could not read. A
+  palette the program recoloured is put back to the theme too.
+- `reset` puts back a palette a program recoloured, rather than keeping its
+  colours.
+- After a line fills the pane and the pane is widened, the next character
+  continues on that line instead of starting a new one.
+- An OSC sequence cancelled with CAN or SUB is dropped, as the terminal
+  standard requires. It was run anyway, with the output that followed it
+  taken as its payload — a window title or a clipboard write.
 - Command history in Settings is headed by the saved session's name rather
   than its id.
 - A saved session that connected through the connect form (its saved password
   unavailable) kept its command history apart from the session's own. It now
   shares it, as long as the form still points at the same host, port and user.
+
+### Security
+
+- `event-listener` is updated to 5.4.2 for RUSTSEC-2026-0221. It reaches only
+  the Linux build.
 
 ## [0.3.0] - 2026-09-28
 
