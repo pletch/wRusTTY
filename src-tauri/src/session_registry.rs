@@ -1260,7 +1260,7 @@ mod tests {
             if self
                 .script
                 .fail_first
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_ok()
             {
                 // Real connectors report their own failure from inside
