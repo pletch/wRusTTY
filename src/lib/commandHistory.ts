@@ -12,6 +12,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import type { ConnectionSource } from './connection'
+import { profileSubtitle, type SessionProfile } from './profiles'
 import { familyForShellId, recordsHistory, shellFamily, shellIdFor } from './local'
 
 /** Where an entry came from. Matches `HistorySource` in the Rust module. */
@@ -34,6 +35,9 @@ export interface HistoryEntry {
 export interface HostHistory {
   host: string
   entries: HistoryEntry[]
+  /** Commands never to suggest on this host, newest first. Forgetting one
+   * command puts it here; `allowCommandHistory` takes it back off. */
+  blocked: string[]
 }
 
 /**
@@ -70,8 +74,24 @@ export function historyKey(opts: {
  * would mean trusting a typed hostname to mean the same machine as a stored
  * one, and it is far better to under-share a history than to offer one host's
  * commands at another's prompt.
+ *
+ * **`savedProfile` is the saved session this pane was opened from**, if any.
+ * A saved session does not always connect as `sshProfile`: when its stored
+ * credential cannot be used (vault locked, nothing saved) the pane falls back
+ * to the connect form, which connects as plain `ssh` with the host typed out.
+ * Keyed by address, that run's history split off from the session's own, and
+ * Settings showed one machine twice. So a plain source files under the profile
+ * after all — but only while it still points where the *stored* profile does.
+ * Compared against the saved copy rather than the form, so editing the host in
+ * the form before connecting is a different machine and gets its own history.
  */
-export function historyKeyForSource(source: ConnectionSource): string | null {
+export function historyKeyForSource(
+  source: ConnectionSource,
+  savedProfile?: SessionProfile | null,
+): string | null {
+  if (savedProfile && pointsAtProfile(source, savedProfile)) {
+    return `profile://${savedProfile.id}`
+  }
   switch (source.protocol) {
     case 'ssh':
       return historyKey({
@@ -128,6 +148,59 @@ export function historyKeyForSource(source: ConnectionSource): string | null {
   }
 }
 
+/** Whether a plain ssh/telnet source is the saved session's own endpoint. */
+function pointsAtProfile(source: ConnectionSource, profile: SessionProfile): boolean {
+  switch (source.protocol) {
+    case 'ssh':
+      return (
+        profile.protocol === 'ssh' &&
+        source.config.host === profile.host &&
+        source.config.port === profile.port &&
+        source.config.username === profile.username
+      )
+    case 'telnet':
+      return (
+        profile.protocol === 'telnet' &&
+        source.config.host === profile.host &&
+        source.config.port === profile.port
+      )
+    default:
+      return false
+  }
+}
+
+/**
+ * How a history key reads in Settings: what the user calls it, and where it
+ * points.
+ *
+ * Display only — the key itself stays the profile id, for the reasons on
+ * `historyKeyForSource`. Looked up at render time rather than stored beside the
+ * history, so a renamed session shows its new name without the store having to
+ * be told, and the store never holds a copy of the saved-session list.
+ *
+ * A `profile://` key whose session has since been deleted says so plainly:
+ * its history outlives it on purpose (deleting a session is not "forget what
+ * I ran there"), and the id is no use to anyone as a heading.
+ */
+export function describeHistoryHost(
+  key: string,
+  profiles: ReadonlyMap<string, SessionProfile>,
+): { title: string; detail: string | null } {
+  const match = /^([a-z]+):\/\/(.*)$/.exec(key)
+  if (!match) return { title: key, detail: null }
+  const [, scheme, rest] = match
+  if (scheme === 'profile') {
+    const profile = profiles.get(rest)
+    return profile
+      ? { title: profile.label, detail: profileSubtitle(profile) }
+      : { title: 'Deleted saved session', detail: null }
+  }
+  if (scheme === 'local') {
+    return { title: rest.startsWith('wsl:') ? `WSL ${rest.slice(4)}` : rest, detail: 'local shell' }
+  }
+  return { title: rest, detail: scheme }
+}
+
 /** Fold a command into a host's history. Resolves false when the backend
  * refused it — an empty line, or one that looked like it carried a
  * credential. Not an error: refusing is the expected outcome for a good
@@ -174,7 +247,9 @@ export function listCommandHistory(): Promise<HostHistory[]> {
 }
 
 /** Drop one command, one host, or everything: `command` narrows `host`, and
- * omitting `host` clears the lot. */
+ * omitting `host` clears the lot. One command is also blocked, so it is not
+ * recorded, imported or suggested again until it is allowed; a host or
+ * everything takes its blocks with it. */
 export function forgetCommandHistory(opts?: {
   host?: string
   command?: string
@@ -183,6 +258,12 @@ export function forgetCommandHistory(opts?: {
     host: opts?.host ?? null,
     command: opts?.command ?? null,
   })
+}
+
+/** Lift a never-suggest block. Restores nothing: the command is learned again
+ * the next time it is run or imported. */
+export function allowCommandHistory(host: string, command: string): Promise<void> {
+  return invoke('command_history_allow', { host, command })
 }
 
 /**

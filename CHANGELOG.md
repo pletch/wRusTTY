@@ -11,6 +11,21 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Autocomplete: Shift+Delete forgets the highlighted suggestion and stops it
+  being suggested again — running it or re-importing it no longer brings it
+  back. Forgetting a command from Settings does the same. Settings lists each
+  host's never-suggested commands with "Allow again" to undo it.
+
+### Fixed
+
+- Command history in Settings is headed by the saved session's name rather
+  than its id.
+- A saved session that connected through the connect form (its saved password
+  unavailable) kept its command history apart from the session's own. It now
+  shares it, as long as the form still points at the same host, port and user.
+
 ## [0.3.0] - 2026-09-28
 
 ### Added

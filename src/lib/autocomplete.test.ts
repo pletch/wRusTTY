@@ -145,6 +145,19 @@ describe('suggestionKeyAction', () => {
     expect(suggestionKeyAction(key('ArrowUp', { shiftKey: true }), list)).toBe('ignore')
   })
 
+  it('forgets with Shift+Delete, in either view, and only while one is showing', () => {
+    expect(suggestionKeyAction(key('Delete', { shiftKey: true }), open)).toBe('forget')
+    expect(suggestionKeyAction(key('Delete', { shiftKey: true }), list)).toBe('forget')
+    const closed = { open: false, atLineEnd: true, mode: 'inline' } as const
+    expect(suggestionKeyAction(key('Delete', { shiftKey: true }), closed)).toBe('ignore')
+    // Plain Delete is the shell's delete-char, and Ctrl+Shift+Delete is not
+    // this binding.
+    expect(suggestionKeyAction(key('Delete'), open)).toBe('ignore')
+    expect(suggestionKeyAction(key('Delete', { shiftKey: true, ctrlKey: true }), open)).toBe(
+      'ignore',
+    )
+  })
+
   it('ignores ordinary typing', () => {
     for (const k of ['a', 'Enter', 'Backspace', 'Home', 'F5']) {
       expect(suggestionKeyAction(key(k), open)).toBe('ignore')
@@ -187,24 +200,32 @@ function promptInput(text: string, atEnd = true): PromptInput {
 function makeController(
   input: PromptInput | null,
   items: string[],
-  overrides: { enabled?: boolean; exact?: boolean } = {},
+  overrides: { enabled?: boolean; exact?: boolean; forget?: (command: string) => Promise<void> } = {},
 ) {
   const { tracker, state } = fakeTracker(input, overrides.exact ?? true)
   const views: (SuggestionView | null)[] = []
   const sent: string[] = []
   const accepted: string[] = []
+  const forgotten: string[] = []
   const controller = new AutocompleteController({
     tracker,
-    suggest: async () => items,
+    suggest: async (_typed, limit) => items.slice(0, limit),
     send: (text) => sent.push(text),
     noteAccepted: (command) => accepted.push(command),
+    forget: async (command) => {
+      if (overrides.forget) return overrides.forget(command)
+      // The store as the backend would leave it: the next suggest no longer
+      // returns what was forgotten.
+      forgotten.push(command)
+      items.splice(items.indexOf(command), 1)
+    },
     enabled: () => overrides.enabled ?? true,
     onChange: (view) => views.push(view),
   })
   // A list only opens in response to typing, so every test that expects one
   // has to have typed. See `noteInput`.
   controller.noteInput(TYPING)
-  return { controller, state, views, sent, accepted }
+  return { controller, state, views, sent, accepted, forgotten }
 }
 
 describe('AutocompleteController', () => {
@@ -305,6 +326,74 @@ describe('AutocompleteController', () => {
     state.input = null
     controller.accept()
     expect(sent).toEqual([])
+  })
+
+  describe('forgetting a suggestion', () => {
+    it('deletes the highlighted one and backfills from the store', async () => {
+      const items = ['git status', 'git stash', 'git show', 'git switch', 'git stage', 'git shortlog']
+      // The store holds six; the offer shows the top five.
+      const { controller, forgotten } = makeController(promptInput('git s'), items)
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.handleKey(key('Delete', { shiftKey: true }))
+      expect(forgotten).toEqual(['git status'])
+      // Off screen straight away, before the round trip.
+      expect(controller.current?.items[0]).toBe('git stash')
+      await vi.waitFor(() => expect(controller.current?.items).toContain('git shortlog'))
+      expect(controller.current?.items).not.toContain('git status')
+    })
+
+    it('stays in the list, on the same row, so the next one can be forgotten too', async () => {
+      const items = ['git status', 'git stash', 'git show']
+      const { controller } = makeController(promptInput('git s'), items)
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.expand()
+      controller.move(1)
+      controller.forget()
+      await vi.waitFor(() => expect(controller.current?.items).toEqual(['git status', 'git show']))
+      expect(controller.current?.mode).toBe('list')
+      expect(controller.current?.items[controller.current.index]).toBe('git show')
+    })
+
+    it('takes the offer down when the last candidate is forgotten', async () => {
+      const { controller, sent } = makeController(promptInput('git s'), ['git status'])
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.forget()
+      expect(controller.current).toBeNull()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(controller.current).toBeNull()
+      // Forgetting never types anything.
+      expect(sent).toEqual([])
+    })
+
+    it('shows the entry again when the delete failed', async () => {
+      const { controller } = makeController(promptInput('git s'), ['git status', 'git stash'], {
+        forget: () => Promise.reject(new Error('store unavailable')),
+      })
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.forget()
+      expect(controller.current?.items).toEqual(['git stash'])
+      await vi.waitFor(() => expect(controller.current?.items).toEqual(['git status', 'git stash']))
+    })
+
+    it('drops the refill when the user typed on in the meantime', async () => {
+      let release!: () => void
+      const { controller, state } = makeController(promptInput('git s'), ['git status', 'git stash'], {
+        forget: () => new Promise<void>((r) => (release = r)),
+      })
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current).not.toBeNull())
+      controller.forget()
+      state.input = promptInput('git st')
+      controller.refresh()
+      await vi.waitFor(() => expect(controller.current?.typed).toBe('git st'))
+      release()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(controller.current?.typed).toBe('git st')
+    })
   })
 
   describe('taking one word at a time', () => {
@@ -487,6 +576,7 @@ describe('AutocompleteController', () => {
       suggest: () => new Promise<string[]>((resolve) => (release = resolve)),
       send: () => {},
       noteAccepted: () => {},
+      forget: async () => {},
       enabled: () => true,
       onChange: (v) => views.push(v),
     })
@@ -509,6 +599,7 @@ describe('AutocompleteController', () => {
       },
       send: () => {},
       noteAccepted: () => {},
+      forget: async () => {},
       enabled: () => true,
       onChange: () => {},
     })
@@ -529,6 +620,7 @@ describe('AutocompleteController', () => {
       },
       send: () => {},
       noteAccepted: () => {},
+      forget: async () => {},
       enabled: () => true,
       onChange: () => {},
     })

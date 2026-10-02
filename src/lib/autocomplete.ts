@@ -26,6 +26,7 @@ export type SuggestionKeyAction =
   | 'previous'
   | 'dismiss'
   | 'expand'
+  | 'forget'
   | 'ignore'
 
 /**
@@ -104,6 +105,14 @@ export type SuggestionMode = 'inline' | 'list'
  *     in the feature.
  *   - **Escape** dismisses and sends nothing further. It is not forwarded,
  *     because the user is dismissing this, not talking to vim.
+ *   - **Shift+Delete** forgets the highlighted suggestion — deletes it from
+ *     the store and blocks it from being recorded, imported or suggested
+ *     again, until it is allowed back from Settings. The browser and Windows binding for
+ *     removing an entry from an autocomplete dropdown, so it is the one people
+ *     already try. Claimed in both views, since inline there is still exactly
+ *     one thing being offered. Taking it from the shell costs little: bash
+ *     and zsh have no default binding for `CSI 3;2~`, and PSReadLine's (Cut)
+ *     has no selection to act on at the moment a suggestion is showing.
  *
  * Any modifier disqualifies everything: Ctrl+Right, Alt+Up and friends are
  * bindings elsewhere or sequences the remote wants, and none of them mean
@@ -129,6 +138,9 @@ export function suggestionKeyAction(
   if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
     if (e.key === 'ArrowRight') return opts.atLineEnd ? 'accept-word' : 'ignore'
     return 'ignore'
+  }
+  if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    return e.key === 'Delete' ? 'forget' : 'ignore'
   }
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return 'ignore'
   switch (e.key) {
@@ -270,6 +282,9 @@ export interface AutocompleteDeps {
   send: (text: string) => void
   /** Tell the store a suggestion was taken. Best-effort. */
   noteAccepted: (command: string) => void
+  /** Delete a command from the store and block it from coming back. Rejects
+   * are treated like a refill that found it still there — see `forget`. */
+  forget: (command: string) => Promise<void>
   /** Whether the feature is on right now. Read per call rather than captured,
    * because the setting can change while a pane is open. */
   enabled: () => boolean
@@ -484,6 +499,51 @@ export class AutocompleteController {
     this.lastQueried = command
   }
 
+  /**
+   * Delete the highlighted suggestion from the store — which also blocks it
+   * from returning — and offer what is left.
+   *
+   * It comes off screen at once rather than after the round trip, so the key
+   * feels like it did something; then the store is asked again for the same
+   * line, which both backfills a candidate that the forgotten one had been
+   * crowding out of the top five and shows the truth if the delete failed —
+   * a command that reappears is a more honest answer than a toast over a
+   * terminal. The refill keeps the mode and position, because someone working
+   * down a list deleting stale entries should not be thrown back to inline
+   * after each one.
+   *
+   * The refill goes out only once the delete has settled. Both are calls into
+   * the same store, and nothing orders two in-flight invokes, so asking
+   * straight away could read the entry back before it was gone.
+   */
+  forget(): void {
+    const view = this.view
+    if (!view) return
+    const command = view.items[view.index]
+    const items = view.items.filter((_, i) => i !== view.index)
+    if (items.length === 0) this.hide()
+    else this.publish({ ...view, items, index: Math.min(view.index, items.length - 1) })
+
+    const id = ++this.queryId
+    const refill = () => {
+      if (id !== this.queryId) return
+      this.deps
+        .suggest(view.typed, MAX_SUGGESTIONS)
+        .then((found) => {
+          if (id !== this.queryId) return
+          const still = this.deps.tracker.read()
+          if (!this.shouldOffer(still) || still.text !== view.typed) return this.clear()
+          if (found.length === 0) return this.hide()
+          const index = Math.min(this.view?.index ?? view.index, found.length - 1)
+          this.publish({ ...view, items: found, index, origin: still.origin, cursor: still.cursor })
+        })
+        .catch(() => {
+          if (id === this.queryId) this.clear()
+        })
+    }
+    this.deps.forget(command).then(refill, refill)
+  }
+
   /** Handle a keystroke. Returns whether it was consumed, i.e. whether the
    * caller should stop it reaching the far end. */
   handleKey(e: {
@@ -513,6 +573,9 @@ export class AutocompleteController {
         return true
       case 'expand':
         this.expand()
+        return true
+      case 'forget':
+        this.forget()
         return true
       case 'dismiss':
         this.clear()

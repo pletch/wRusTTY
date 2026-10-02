@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SCROLLBAR_GUTTER_PX, type TerminalEngine } from '../lib/terminalEngine'
 import { buildFontSelection } from '../lib/fontStack'
+import type { SessionProfile } from '../lib/profiles'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
 import {
   Search,
@@ -43,6 +44,7 @@ import { pathFlavorFor } from '../lib/localOpen'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import {
   harvestRemoteHistory,
+  forgetCommandHistory,
   historyKeyForSource,
   recordAccepted,
   recordCommand,
@@ -105,6 +107,10 @@ function reportEngineFailure(message: string) {
 
 interface Props {
   source: ConnectionSource
+  /** The saved session this pane was opened from, if any — so history files
+   * under the session even when it connected through the form. See
+   * `historyKeyForSource`. */
+  savedProfile?: SessionProfile | null
   label: string
   settings: TerminalSettings
   /** Which byte Backspace sends for this pane: true = ^H, false/null = ^?.
@@ -247,6 +253,7 @@ function countLines(text: string): number {
 
 export function Terminal({
   source,
+  savedProfile,
   label,
   settings,
   backspaceSendsCtrlH,
@@ -425,6 +432,10 @@ export function Terminal({
   // through a ref rather than added to the effect's dependency array.
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  // Read at each use rather than captured: the session list loads after the
+  // pane may already be connected, and a rename or edit should apply too.
+  const savedProfileRef = useRef(savedProfile)
+  savedProfileRef.current = savedProfile
 
   // Same live-ref treatment as `settings`: read inside the connection effect,
   // which must not re-run (and tear down the session) when this changes.
@@ -1296,7 +1307,7 @@ export function Terminal({
         // and under a partial integration the code is often null anyway.
         if (!settingsRef.current.autocompleteEnabled || !result.command) return
         // Null for a pane that records nothing — see `historyKeyForSource`.
-        const historyKey = historyKeyForSource(source)
+        const historyKey = historyKeyForSource(source, savedProfileRef.current)
         if (!historyKey) return
         void recordCommand({
           host: historyKey,
@@ -1359,7 +1370,7 @@ export function Terminal({
     const autocomplete = new AutocompleteController({
       tracker: promptInput,
       suggest: (typed, limit) => {
-        const historyKey = historyKeyForSource(source)
+        const historyKey = historyKeyForSource(source, savedProfileRef.current)
         if (!historyKey) return Promise.resolve([])
         return suggestCommands({
           host: historyKey,
@@ -1373,9 +1384,14 @@ export function Terminal({
         if (id) conn.write(source, id, new TextEncoder().encode(text)).catch(() => {})
       },
       noteAccepted: (command) => {
-        const historyKey = historyKeyForSource(source)
+        const historyKey = historyKeyForSource(source, savedProfileRef.current)
         if (!historyKey) return
         void recordAccepted(historyKey, command).catch(() => {})
+      },
+      forget: (command) => {
+        const historyKey = historyKeyForSource(source, savedProfileRef.current)
+        if (!historyKey) return Promise.resolve()
+        return forgetCommandHistory({ host: historyKey, command })
       },
       enabled: () => settingsRef.current.autocompleteEnabled,
       onChange: (view) => {
@@ -1411,14 +1427,16 @@ export function Terminal({
       // setting and the saved session's override of it are resolved backend
       // side, before any channel is opened. See `harvestRemoteHistory`.
       if (!settingsRef.current.autocompleteEnabled) return
-      const historyKey = historyKeyForSource(source)
+      const historyKey = historyKeyForSource(source, savedProfileRef.current)
       if (!historyKey) return
       harvestAttempted = true
       void harvestRemoteHistory({
         sessionId: id,
         host: historyKey,
         importGlobally: settingsRef.current.autocompleteImportRemoteHistory,
-        profileId: source.protocol === 'sshProfile' ? source.profileId : null,
+        // The profile's own import override applies whenever the history is
+        // filed under it, which is the same decision as the key above.
+        profileId: historyKey.startsWith('profile://') ? historyKey.slice('profile://'.length) : null,
       }).catch(() => {
         // A host that will not answer is an ordinary outcome, not something to
         // interrupt a session over.
@@ -1465,7 +1483,7 @@ export function Terminal({
       // The gate decision 2 turns on: a PowerShell or CMD pane never reaches
       // the screen-harvest path at all, rather than having its results
       // filtered after the fact.
-      const historyKey = historyKeyForSource(source)
+      const historyKey = historyKeyForSource(source, savedProfileRef.current)
       if (!historyKey) return
       void recordCommand({
         host: historyKey,

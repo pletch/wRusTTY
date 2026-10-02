@@ -1745,6 +1745,9 @@ function App() {
                 <Terminal
                   key={`${leaf.id}-${leaf.generation}`}
                   source={leaf.source}
+                  savedProfile={
+                    leaf.initial?.id ? (sessions.find((p) => p.id === leaf.initial?.id) ?? null) : null
+                  }
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
                   settings={paneSettings}
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}

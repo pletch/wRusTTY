@@ -145,6 +145,7 @@ pub fn run() {
             command_history::command_history_accepted,
             command_history::command_history_list,
             command_history::command_history_forget,
+            command_history::command_history_allow,
             command_history::command_history_forget_imported,
             command_history::command_history_harvest,
             putty_import::putty_sessions_available,

@@ -411,6 +411,12 @@ Keys, chosen to collide with nothing the remote reasonably wants at a prompt:
 - **Ctrl+Up/Ctrl+Down** — the same, kept because Ctrl+Space is how the list was
   opened and the modifier is often still held when the first arrow is pressed.
 - **Esc** — dismiss, sending nothing.
+- **Shift+Delete** — forget the highlighted suggestion: delete it from the
+  store and put it on that host's never-suggest list, so neither running it
+  again nor the next harvest brings it back; then backfill from what is left.
+  Settings lists the blocks per host, each with "Allow again". The binding
+  browsers and Windows use for removing an entry from an autocomplete
+  dropdown. Works inline as well as in the list.
 
 **A list only opens in response to typing.** The other half of the same fix,
 and the more important one: a printable keystroke arms the offer and anything

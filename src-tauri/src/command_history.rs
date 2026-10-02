@@ -89,6 +89,17 @@ pub struct HistoryStore {
     pub version: u32,
     #[serde(default)]
     pub hosts: BTreeMap<String, Vec<HistoryEntry>>,
+    /// Commands the user has said never to suggest, per host, newest last.
+    ///
+    /// Forgetting one command lands it here, so a forget is permanent rather
+    /// than lasting until the next harvest re-imports the line or the next run
+    /// re-records it — either of which would make the delete look broken. A
+    /// block is lifted only explicitly ("Allow again"), never by time or use.
+    ///
+    /// Exact, normalised command text: the same form `redact` stores, so a
+    /// lookup is a string comparison and needs no idea of what a command means.
+    #[serde(default)]
+    pub blocked: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for HistoryStore {
@@ -96,7 +107,59 @@ impl Default for HistoryStore {
         Self {
             version: STORE_VERSION,
             hosts: BTreeMap::new(),
+            blocked: BTreeMap::new(),
         }
+    }
+}
+
+impl HistoryStore {
+    pub fn is_blocked(&self, host: &str, command: &str) -> bool {
+        self.blocked
+            .get(host)
+            .is_some_and(|commands| commands.iter().any(|c| c == command))
+    }
+
+    /// Drop one command and keep it from coming back: not suggested, not
+    /// recorded when run again, not re-imported.
+    pub fn forget_and_block(&mut self, host: &str, command: &str) {
+        if let Some(entries) = self.hosts.get_mut(host) {
+            entries.retain(|e| e.command != command);
+        }
+        if !self.is_blocked(host, command) {
+            self.blocked
+                .entry(host.to_string())
+                .or_default()
+                .push(command.to_string());
+        }
+        self.drop_empty_hosts();
+    }
+
+    /// Lift a block. Nothing is restored — the command was deleted when it was
+    /// blocked — so it is learned again from scratch, the next time it is run
+    /// or imported.
+    pub fn allow(&mut self, host: &str, command: &str) {
+        if let Some(commands) = self.blocked.get_mut(host) {
+            commands.retain(|c| c != command);
+        }
+        self.drop_empty_hosts();
+    }
+
+    /// Forget a host entirely, blocks included. A block list is itself a list
+    /// of commands typed on that host, so "forget this host" leaving it behind
+    /// would not be forgetting.
+    pub fn forget_host(&mut self, host: &str) {
+        self.hosts.remove(host);
+        self.blocked.remove(host);
+    }
+
+    pub fn forget_all(&mut self) {
+        self.hosts.clear();
+        self.blocked.clear();
+    }
+
+    fn drop_empty_hosts(&mut self) {
+        self.hosts.retain(|_, entries| !entries.is_empty());
+        self.blocked.retain(|_, commands| !commands.is_empty());
     }
 }
 
@@ -523,6 +586,8 @@ fn now_ms() -> i64 {
 pub struct HostHistory {
     pub host: String,
     pub entries: Vec<HistoryEntry>,
+    /// Never-suggest commands for this host, newest first.
+    pub blocked: Vec<String>,
 }
 
 #[tauri::command]
@@ -537,6 +602,10 @@ pub async fn command_history_record(
     let now = now_ms();
     state
         .with_store(&app, |store| {
+            // Checked against the normalised form, which is what a block holds.
+            if redact(&command).is_some_and(|c| store.is_blocked(&host, &c)) {
+                return Ok((false, false));
+            }
             let entries = store.hosts.entry(host).or_default();
             let stored = record(entries, &command, cwd.as_deref(), source, now);
             Ok((stored, stored))
@@ -594,19 +663,25 @@ pub async fn command_history_list(
     state
         .with_store(&app, |store| {
             let now = now_ms();
-            let listed = store
-                .hosts
-                .iter()
-                .map(|(host, entries)| {
-                    let mut entries = entries.clone();
+            // A host can have blocks and nothing else — every command it had was
+            // forgotten — and still needs a row, or there is no way back.
+            let hosts: std::collections::BTreeSet<&String> =
+                store.hosts.keys().chain(store.blocked.keys()).collect();
+            let listed = hosts
+                .into_iter()
+                .map(|host| {
+                    let mut entries = store.hosts.get(host).cloned().unwrap_or_default();
                     entries.sort_by(|a, b| {
                         score(b, now, None)
                             .total_cmp(&score(a, now, None))
                             .then_with(|| a.command.cmp(&b.command))
                     });
+                    let mut blocked = store.blocked.get(host).cloned().unwrap_or_default();
+                    blocked.reverse();
                     HostHistory {
                         host: host.clone(),
                         entries,
+                        blocked,
                     }
                 })
                 .collect();
@@ -616,7 +691,8 @@ pub async fn command_history_list(
 }
 
 /// Drop one command, or one host's worth, or everything — `command` narrows
-/// `host`, and no `host` means all of them.
+/// `host`, and no `host` means all of them. A single command is also blocked
+/// from coming back; see [`HistoryStore::blocked`].
 #[tauri::command]
 pub async fn command_history_forget(
     app: AppHandle,
@@ -627,17 +703,26 @@ pub async fn command_history_forget(
     state
         .with_store(&app, |store| {
             match (host, command) {
-                (None, _) => store.hosts.clear(),
-                (Some(host), None) => {
-                    store.hosts.remove(&host);
-                }
-                (Some(host), Some(command)) => {
-                    if let Some(entries) = store.hosts.get_mut(&host) {
-                        entries.retain(|e| e.command != command);
-                    }
-                }
+                (None, _) => store.forget_all(),
+                (Some(host), None) => store.forget_host(&host),
+                (Some(host), Some(command)) => store.forget_and_block(&host, &command),
             }
-            store.hosts.retain(|_, entries| !entries.is_empty());
+            Ok(((), true))
+        })
+        .await
+}
+
+/// Lift a never-suggest block, so the command can be learned again.
+#[tauri::command]
+pub async fn command_history_allow(
+    app: AppHandle,
+    state: tauri::State<'_, HistoryState>,
+    host: String,
+    command: String,
+) -> Result<(), String> {
+    state
+        .with_store(&app, |store| {
+            store.allow(&host, &command);
             Ok(((), true))
         })
         .await
@@ -969,6 +1054,10 @@ pub async fn command_history_harvest(
     let now = now_ms();
     state
         .with_store(&app, |store| {
+            let imported = imported
+                .into_iter()
+                .filter(|(command, _)| !store.is_blocked(&host, command))
+                .collect();
             let entries = store.hosts.entry(host).or_default();
             let added = import(entries, imported, now);
             Ok((added, added > 0))
@@ -1490,5 +1579,68 @@ mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         assert!(json.contains("\"integration\""), "{json}");
         let reparsed: HistoryStore = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed.hosts["h"], store.hosts["h"]);
+    }
+
+    /// A store written before blocks existed still loads, rather than being
+    /// discarded as unparseable — which `read_store` would do silently.
+    #[test]
+    fn a_store_from_before_blocks_still_loads() {
+        let json = r#"{"version":1,"hosts":{"h":[{"command":"ls","count":1,"lastUsed":0,"source":"screen"}]}}"#;
+        let store: HistoryStore = serde_json::from_str(json).unwrap();
+        assert_eq!(store.hosts["h"].len(), 1);
+        assert!(store.blocked.is_empty());
+    }
+
+    #[test]
+    fn forgetting_one_command_blocks_it_on_that_host_only() {
+        let mut store = HistoryStore::default();
+        for host in ["a", "b"] {
+            record(
+                store.hosts.entry(host.into()).or_default(),
+                "rm -rf build",
+                None,
+                HistorySource::Integration,
+                NOW,
+            );
+        }
+        store.forget_and_block("a", "rm -rf build");
+        assert!(!store.hosts.contains_key("a"));
+        assert!(store.is_blocked("a", "rm -rf build"));
+        assert!(!store.is_blocked("b", "rm -rf build"));
+        assert_eq!(store.hosts["b"].len(), 1);
+
+        // Forgetting twice does not list it twice.
+        store.forget_and_block("a", "rm -rf build");
+        assert_eq!(store.blocked["a"].len(), 1);
+    }
+
+    #[test]
+    fn allowing_again_lifts_the_block_and_restores_nothing() {
+        let mut store = HistoryStore::default();
+        record(
+            store.hosts.entry("a".into()).or_default(),
+            "make deploy",
+            None,
+            HistorySource::Integration,
+            NOW,
+        );
+        store.forget_and_block("a", "make deploy");
+        store.allow("a", "make deploy");
+        assert!(!store.is_blocked("a", "make deploy"));
+        assert!(store.blocked.is_empty());
+        // Learned again from scratch, not brought back.
+        assert!(store.hosts.is_empty());
+    }
+
+    #[test]
+    fn forgetting_a_host_or_everything_takes_the_blocks_too() {
+        let mut store = HistoryStore::default();
+        store.forget_and_block("a", "one");
+        store.forget_and_block("b", "two");
+        store.forget_host("a");
+        assert!(!store.is_blocked("a", "one"));
+        assert!(store.is_blocked("b", "two"));
+        store.forget_all();
+        assert!(store.blocked.is_empty());
     }
 }

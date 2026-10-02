@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
-import { RefreshCw, Server, Trash2 } from 'lucide-react'
+import { RefreshCw, Server, Trash2, Undo2 } from 'lucide-react'
 import {
+  allowCommandHistory,
+  describeHistoryHost,
   forgetCommandHistory,
   forgetImportedHistory,
   listCommandHistory,
   type HistoryEntry,
   type HostHistory,
 } from '../lib/commandHistory'
+import { listSessions, type SessionProfile } from '../lib/profiles'
 import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
 
@@ -42,6 +45,8 @@ export function CommandHistorySection() {
   const confirm = useConfirm()
   const [hosts, setHosts] = useState<HostHistory[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** Saved sessions by id, so a `profile://` key can be shown by name. */
+  const [profiles, setProfiles] = useState<ReadonlyMap<string, SessionProfile>>(new Map())
   // Sampled once per load rather than per row: a few hundred rows all asking
   // the clock for the same answer is wasted work, and a list whose relative
   // dates disagree by a tick reads as a bug.
@@ -49,7 +54,14 @@ export function CommandHistorySection() {
 
   async function load() {
     try {
-      setHosts(await listCommandHistory())
+      // Names are a nicety: if the session list will not load, the history
+      // still should, headed by its keys.
+      const [listed, sessions] = await Promise.all([
+        listCommandHistory(),
+        listSessions().catch(() => [] as SessionProfile[]),
+      ])
+      setHosts(listed)
+      setProfiles(new Map(sessions.map((p) => [p.id, p])))
       setNow(Date.now())
       setError(null)
     } catch (err) {
@@ -70,13 +82,27 @@ export function CommandHistorySection() {
     }
   }
 
+  async function allow(host: string, command: string) {
+    try {
+      await allowCommandHistory(host, command)
+      await load()
+    } catch (err) {
+      toast.error(String(err))
+    }
+  }
+
   async function forgetHost(host: HostHistory) {
+    const blocks = host.blocked.length
     const ok = await confirm({
-      title: `Forget every command remembered for ${host.host}?`,
+      title: `Forget every command remembered for ${describeHistoryHost(host.host, profiles).title}?`,
       body:
         `All ${host.entries.length} stored command${host.entries.length === 1 ? '' : 's'} for ` +
-        `this host are deleted from this machine. Nothing is sent anywhere and the host's ` +
-        `own shell history is untouched — this only removes what wRusTTY kept.`,
+        `this host are deleted from this machine` +
+        (blocks > 0
+          ? `, and its never-suggest list of ${blocks} is cleared — those can be suggested again. `
+          : '. ') +
+        `Nothing is sent anywhere and the host's own shell history is untouched — this only ` +
+        `removes what wRusTTY kept.`,
       confirmLabel: 'Forget host',
     })
     if (!ok) return
@@ -118,8 +144,9 @@ export function CommandHistorySection() {
       title: 'Forget every remembered command?',
       body:
         `All ${total} stored command${total === 1 ? '' : 's'}, across every host, are deleted ` +
-        `from this machine. Autocomplete starts again from nothing. No remote host is ` +
-        `contacted and no shell history on any server is changed.`,
+        `from this machine, along with every never-suggest list. Autocomplete starts again ` +
+        `from nothing. No remote host is contacted and no shell history on any server is ` +
+        `changed.`,
       confirmLabel: 'Forget everything',
     })
     if (!ok) return
@@ -138,7 +165,8 @@ export function CommandHistorySection() {
           What has been remembered, newest and most-used first. Kept on this machine
           only — never synced, never sent anywhere, and not part of a backup bundle.
           Lines that looked like they carried a password or a token were never stored
-          in the first place.
+          in the first place. Forgetting a command — here, or with Shift+Delete on a
+          suggestion — also stops it coming back, until you allow it again.
         </p>
         <button
           type="button"
@@ -188,8 +216,18 @@ export function CommandHistorySection() {
           <div key={host.host} className="rounded-md border border-chrome/10 bg-black/15 p-2">
             <div className="mb-1.5 flex items-center gap-2">
               <Server size={13} className="shrink-0 text-chrome/40" />
-              <span className="min-w-0 flex-1 truncate font-medium text-chrome/85">
-                {host.host}
+              {/* The raw key stays in the tooltip: it is what tells two
+                  same-named sessions, or a deleted one, apart. */}
+              <span className="min-w-0 flex-1 truncate" title={host.host}>
+                {(() => {
+                  const { title, detail } = describeHistoryHost(host.host, profiles)
+                  return (
+                    <>
+                      <span className="font-medium text-chrome/85">{title}</span>
+                      {detail && <span className="ml-2 text-chrome/35">{detail}</span>}
+                    </>
+                  )
+                })()}
               </span>
               <span className="shrink-0 text-chrome/30">{host.entries.length}</span>
               <button
@@ -219,7 +257,7 @@ export function CommandHistorySection() {
                   <button
                     type="button"
                     onClick={() => void forgetOne(host.host, entry)}
-                    title="Forget this command"
+                    title="Forget this command and never suggest it again"
                     className="flex shrink-0 items-center justify-center rounded p-1 text-chrome/30 transition-colors duration-100 hover:bg-chrome/10 hover:text-red-300"
                   >
                     <Trash2 size={12} />
@@ -233,6 +271,30 @@ export function CommandHistorySection() {
                 </p>
               )}
             </div>
+            {host.blocked.length > 0 && (
+              <div className="mt-2 space-y-1 border-t border-chrome/10 pt-1.5">
+                <p className="text-chrome/40">Never suggested</p>
+                {host.blocked.map((command) => (
+                  <div key={command} className="flex items-center gap-2">
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-chrome/40 line-through decoration-chrome/20"
+                      title={command}
+                    >
+                      {command}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void allow(host.host, command)}
+                      title="Let this command be remembered and suggested again"
+                      className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
+                    >
+                      <Undo2 size={12} />
+                      Allow again
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>
