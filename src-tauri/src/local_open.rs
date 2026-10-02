@@ -24,6 +24,12 @@
 //! - **It has to exist.** Resolution only returns a path that is there, so
 //!   `and/or` in prose is "not found" rather than a picker for a file that
 //!   isn't.
+//!
+//! Windows only, like the panes it serves. Elsewhere `open_local_path`
+//! refuses up front, which leaves everything below it unreached outside the
+//! tests — hence the allow, rather than gating each piece and its tests
+//! separately.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 
@@ -429,6 +435,9 @@ mod tests {
         assert!(to_windows_form(r"C:\x\notes.txt").is_some());
     }
 
+    // The filesystem cases need a drive-absolute temporary directory, which
+    // only Windows has: `resolve` refuses any other base by design.
+    #[cfg(windows)]
     #[test]
     fn resolves_against_the_first_directory_it_exists_in() {
         let a = tempfile::tempdir().unwrap();
@@ -450,6 +459,7 @@ mod tests {
         assert_eq!(resolve("x.txt", &cwds, None), None);
     }
 
+    #[cfg(windows)]
     #[test]
     fn expands_home() {
         let home = tempfile::tempdir().unwrap();
