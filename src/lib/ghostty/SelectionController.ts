@@ -111,7 +111,7 @@ export class SelectionController {
     if (!this.host.hasRenderer()) return
     const row = this.host.readRows(pos.y, pos.y)[0]
     if (!row) return
-    // Only the columns a word actually spans get materialised as strings —
+    // Only the columns a word actually spans get materialized as strings —
     // the scan stops at the first non-word character either side.
     const at2 = (c: number) => columnText(row, c)
     // A wide character's spacer holds no text, so the head it belongs to is one
@@ -197,7 +197,7 @@ export class SelectionController {
   drag(e: MouseEvent): boolean {
     if (!this.selecting || !this.host.hasRenderer() || !this.start) return false
     // A pointer that has not left the starting cell is a click, not a drag.
-    // Rendering start==end as a selection is what left a one-cell grey block
+    // Rendering start==end as a selection is what left a one-cell gray block
     // behind after clicking — most visibly on the click that reactivates the
     // window, where the pointer is still moving into the app as it lands.
     const end = this.host.coords(e)

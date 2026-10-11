@@ -16,7 +16,7 @@
  * (`KeyEncoder.ts`), which decides both what bytes a key produces and which
  * protocol — legacy, `modifyOtherKeys`, or Kitty — it produces them in. The
  * two paths cannot double up: whatever keydown claims, it also cancels, and a
- * cancelled keydown produces no input event.
+ * canceled keydown produces no input event.
  *
  * The encoder decides *whether* it claims a key, too. It answers null for a
  * key that has no sequence, and that null is what lets the browser's text
@@ -220,7 +220,7 @@ export class GhosttyInputHandler {
     const bytes = this.keyEncoder()?.encode(e)
     // No sequence: a bare modifier, a key the encoder has no opinion on, or
     // one whose character the browser is about to deliver as text. Leaving the
-    // event alone is what lets that text arrive — cancelling it here is
+    // event alone is what lets that text arrive — canceling it here is
     // precisely what used to lose composed characters.
     if (!bytes) return
     e.preventDefault()
@@ -235,8 +235,8 @@ export class GhosttyInputHandler {
    * answers null while it is off, so this stays correct through an
    * application setting and clearing it mid-session.
    *
-   * Not cancelled even when it does produce bytes — a release has no default
-   * action worth suppressing, and cancelling one has been known to confuse
+   * Not canceled even when it does produce bytes — a release has no default
+   * action worth suppressing, and canceling one has been known to confuse
    * IMEs.
    */
   private handleKeyUp = (e: KeyboardEvent) => {

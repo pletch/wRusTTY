@@ -21,7 +21,7 @@ const STICKY = 0o1000
  * `0o755` → `rwxr-xr-x`.
  *
  * Setuid, setgid and the sticky bit are folded into the execute column the way
- * `ls` does it — `s`, `s`, `t`, and their capitalised forms when the underlying
+ * `ls` does it — `s`, `s`, `t`, and their capitalized forms when the underlying
  * execute bit is *off*. That capital is not decoration: `rwSr--r--` means
  * setuid is set on a file nobody can execute, which is almost always a mistake,
  * and a renderer that showed it as plain `s` would hide exactly the case worth
@@ -103,7 +103,7 @@ export interface Ownership {
  * `true` is only a weak one: ACLs, immutable bits, read-only mounts, SELinux
  * and NFS root-squash can all refuse a write the bits permit. That asymmetry is
  * the whole design — a predicted refusal routes to sudo up front, and a
- * predicted success is still allowed to fail and offer sudo afterwards.
+ * predicted success is still allowed to fail and offer sudo afterward.
  */
 export function canWrite(entry: Ownership, identity: RemoteIdentity | null): boolean | null {
   return judge(entry, identity, 0o200, 0o020, 0o002)

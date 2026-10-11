@@ -76,7 +76,7 @@ describe('a soft reset (DECSTR)', () => {
     const p = await pane(20, 2)
     p.write('\x1b[1;31mred\x1b[!px')
     const row = p.row0()
-    // What was already written keeps its colour; the next character does not.
+    // What was already written keeps its color; the next character does not.
     expect(row[0].flags & CELL_BOLD).toBe(CELL_BOLD)
     expect(String.fromCodePoint(row[3].codepoint)).toBe('x')
     expect(row[3].flags & CELL_BOLD).toBe(0)

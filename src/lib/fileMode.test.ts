@@ -26,7 +26,7 @@ describe('formatMode', () => {
    * The capital is the useful case: setuid set on something nobody can
    * execute is almost always a mistake, and showing a plain `s` would hide it.
    */
-  it('capitalises a special bit whose execute bit is off', () => {
+  it('capitalizes a special bit whose execute bit is off', () => {
     expect(formatMode(0o4644)).toBe('rwSr--r--')
     expect(formatMode(0o2644)).toBe('rw-r-Sr--')
     expect(formatMode(0o1666)).toBe('rw-rw-rwT')

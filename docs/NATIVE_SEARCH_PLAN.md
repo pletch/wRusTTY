@@ -21,7 +21,7 @@ ghostty's search *thread* into a `terminal.search.TerminalSearch` struct and
 put a C API on it — `src/terminal/c/search.zig` (1,009 lines) plus
 `src/terminal/search/terminal.zig` (655), with `include/ghostty/vt/search.h`
 (501 lines) as the contract. `06178eea` (2026-09-02) followed: a search that
-had already exhausted a `PageList` now picks up history prepended afterwards by
+had already exhausted a `PageList` now picks up history prepended afterward by
 incremental snapshot restore.
 
 Seven exports:
@@ -95,7 +95,7 @@ case-*sensitive* match.
 
 Our find bar has both as live toggles. `Terminal.tsx:686` passes
 `caseSensitive` and `regex` on every call, from `searchCaseSensitive` and
-`searchRegex` state, and `SearchController.search` honours them
+`searchRegex` state, and `SearchController.search` honors them
 (`SearchController.ts:93-94`): non-regex queries are escaped and fed to the
 same `RegExp`, flags `g` plus `i` unless case-sensitive.
 
@@ -212,7 +212,7 @@ not a refactor. Do not make it silently as part of the port.
 
 ## What is deliberately different from the JS path
 
-One behaviour changed, and it is visible: **a fresh query lands on the newest
+One behavior changed, and it is visible: **a fresh query lands on the newest
 match** — the one nearest the prompt — where `SearchController` lands on the
 first match at or after the top of the viewport. The core exposes only
 next/prev stepping from nothing, and reproducing the old rule would mean

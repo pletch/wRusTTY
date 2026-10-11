@@ -38,9 +38,9 @@ pub enum SshError {
 
     /// The user dismissed an interactive authentication prompt. Distinct from
     /// `AuthFailed` because nothing was rejected — reporting "authentication
-    /// failed" for a cancelled dialog sends people hunting for a wrong
+    /// failed" for a canceled dialog sends people hunting for a wrong
     /// password that was never sent.
-    #[error("authentication was cancelled")]
+    #[error("authentication was canceled")]
     AuthCancelled,
 
     /// The server accepted the interactive exchange but wants another method

@@ -4,7 +4,7 @@
  * Not an icon protocol — there isn't one. A program that wants to mark itself
  * in a tab strip has exactly one channel that survives SSH, and that is the
  * title string, so it writes a character the terminal's font happens to draw
- * in colour and the title carries it along. Claude Code leads with `✳`, which
+ * in color and the title carries it along. Claude Code leads with `✳`, which
  * Segoe UI Emoji renders as a white asterisk on a green square; that is the
  * whole of the "custom tab icon" Windows Terminal appears to show, sitting in
  * the title text beside the real profile icon rather than replacing it.
@@ -38,13 +38,13 @@ const BADGE_START =
 /**
  * Carved back out of `Extended_Pictographic`, which is drawn wider than the
  * intent here: `©` and `®` are typographic marks that occur in ordinary text
- * — a title lifted from a page footer or a licence banner can begin with one —
+ * — a title lifted from a page footer or a license banner can begin with one —
  * and neither is used anywhere as a status badge. They are the only two
  * characters in Latin-1 the accepted set reaches, so excluding them is what
  * makes "no badge from an ASCII title" true without qualification.
  *
  * The other pictographics that are technically punctuation stay in: `‼`, `⁉`
- * and `ℹ` are drawn as colour emoji and are only ever put at the front of a
+ * and `ℹ` are drawn as color emoji and are only ever put at the front of a
  * title on purpose, which is exactly the convention this reads.
  */
 const BADGE_EXCLUDE = /^[©®]/
@@ -66,7 +66,7 @@ function firstGrapheme(s: string): string {
 }
 
 /**
- * Asks for the colour form of a character that has one but does not default
+ * Asks for the color form of a character that has one but does not default
  * to it.
  *
  * Most of the marks worth badging — `✳` U+2733 among them — are
@@ -74,19 +74,19 @@ function firstGrapheme(s: string): string {
  * form is a monochrome *text* glyph. Windows Terminal shows `✳` green anyway
  * because DirectWrite's fallback happens to reach Segoe UI Emoji; Blink
  * deliberately prefers a text font for these, so the same character in our own
- * tab strip would come out grey and look nothing like the thing the user
- * recognises from every other terminal. U+FE0F is the standard way to say
- * "the colour one", rather than betting on a fallback chain.
+ * tab strip would come out gray and look nothing like the thing the user
+ * recognizes from every other terminal. U+FE0F is the standard way to say
+ * "the color one", rather than betting on a fallback chain.
  *
- * Only for characters that actually have a colour form. The spinner frames are
- * Geometric Shapes and Braille — not emoji at all, with no colour form to ask
- * for — so they stay text glyphs and take the tab's own colour, which is what
+ * Only for characters that actually have a color form. The spinner frames are
+ * Geometric Shapes and Braille — not emoji at all, with no color form to ask
+ * for — so they stay text glyphs and take the tab's own color, which is what
  * Windows Terminal shows for them too.
  */
 function withEmojiPresentation(grapheme: string): string {
   const cps = [...grapheme]
   // A selector already present is the program's own statement about how it
-  // wants to be drawn — U+FE0F for colour, U+FE0E for text. Neither is ours to
+  // wants to be drawn — U+FE0F for color, U+FE0E for text. Neither is ours to
   // overrule. Multi-codepoint clusters are left alone for the same reason a
   // selector has to sit against its base: appending to the end of a ZWJ
   // sequence would attach it to the wrong character.

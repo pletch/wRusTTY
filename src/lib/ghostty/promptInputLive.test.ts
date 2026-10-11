@@ -91,7 +91,7 @@ describe('reading the prompt line off a live grid', () => {
 
   /**
    * The origin is noted in absolute coordinates precisely so that output
-   * arriving afterwards cannot invalidate it. Here the prompt is pushed up the
+   * arriving afterward cannot invalidate it. Here the prompt is pushed up the
    * screen by a full screenful of earlier output before anything is typed.
    */
   it('keeps its origin as the screen scrolls', async () => {
@@ -113,7 +113,7 @@ describe('reading the prompt line off a live grid', () => {
   /**
    * The property that makes this safe at a password prompt: the bytes were
    * typed, the far end echoed nothing, so the grid holds nothing and the read
-   * is empty. Nothing here has to recognise a password prompt to get this
+   * is empty. Nothing here has to recognize a password prompt to get this
    * right.
    */
   it('reads nothing when the far end echoes nothing', async () => {
@@ -162,7 +162,7 @@ describe('reading the prompt line off a live grid', () => {
    * carries the `B` marker, so that single chunk says "the input starts here"
    * and then keeps drawing. Measuring the origin at the end of the write puts
    * it at the end of the recalled command instead of at the prompt, and every
-   * read afterwards returns a fragment of the line or nothing at all: the
+   * read afterward returns a fragment of the line or nothing at all: the
    * history flicker blinked the tail of a wrapped command, and stopped
    * blinking entirely once the window was widened enough to unwrap it.
    *

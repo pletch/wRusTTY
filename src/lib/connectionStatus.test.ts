@@ -122,7 +122,7 @@ describe('reconnectPolicy', () => {
   })
 
   // The half that would be easy to get backwards. Both sides subtract: the
-  // global switch is the one place someone turns the whole behaviour off, and
+  // global switch is the one place someone turns the whole behavior off, and
   // a profile that could re-enable it there would make that switch useless
   // without auditing every saved session.
   it('does not let a profile re-enable what the global setting turned off', () => {

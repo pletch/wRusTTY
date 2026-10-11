@@ -17,7 +17,7 @@
  * the whole cell packed into one u64 (`cell.cval()`) — so a renderer can take
  * one call per cell and unpack in JS, the way it already unpacks the 16-byte
  * cells of the batched viewport. RAW is per *cell*, not per row: GhosttyCell is
- * a u64 value, not a pointer to the row's cell array, so it cannot amortise the
+ * a u64 value, not a pointer to the row's cell array, so it cannot amortize the
  * boundary crossing. What it can do is take four gets per cell down to one.
  *
  * And it prices the one thing that beats a batched read outright: skipping
@@ -264,7 +264,7 @@ function measureMain(mode) {
     /**
      * Per-cell work, one function per mode so no call site sees more than one
      * shape. `acc` is returned rather than discarded, so the JS-side unpack
-     * cannot be optimised away and credited to RAW as a saving.
+     * cannot be optimized away and credited to RAW as a saving.
      */
     const cellFns = {
       iterate: () => 0,

@@ -4,7 +4,7 @@ import { createPtyResizeSender, PTY_RESIZE_QUIET_MS } from './ptyResize'
 /**
  * What a drag costs the far end.
  *
- * The behaviour under test is not "fewer messages" for its own sake — it is
+ * The behavior under test is not "fewer messages" for its own sake — it is
  * that a program holding a status line at the bottom of the screen redraws it
  * on every SIGWINCH, at the new last row, leaving the previous row behind as
  * text. Measured against a live apt progress bar, a drag across five row
@@ -81,7 +81,7 @@ describe('createPtyResizeSender', () => {
     expect(sent).toEqual(['120x40'])
   })
 
-  it('drops anything pending when cancelled, so a disposed pane sends nothing', () => {
+  it('drops anything pending when canceled, so a disposed pane sends nothing', () => {
     const { sent, sender } = record()
     sender.post(120, 40)
     sender.cancel()

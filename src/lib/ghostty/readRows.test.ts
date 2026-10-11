@@ -251,7 +251,7 @@ describe('readRows, through its three callers', () => {
    * Note what this also pins: the word *stops* at the spacer. Scanning right
    * reads column 3 as empty, `'' || ' '` makes it a space, and a space ends a
    * word — so `ab你cd` double-clicks as `ab你`, not the whole run. That is
-   * pre-existing behaviour, identical before and after the row representation
+   * pre-existing behavior, identical before and after the row representation
    * changed (the old per-cell form stored `''` for a spacer and hit the same
    * `|| ' '`), and it is recorded here rather than fixed because this pass is
    * about what `readRows` allocates, not about what counts as a word.

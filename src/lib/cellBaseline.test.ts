@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest'
 import { cellBaseline, domBaselineShift } from './cellBaseline'
 
 describe('where the baseline sits in a cell', () => {
-  it('centres the ascent and descent box, so a block cursor covers the glyph', () => {
+  it('centers the ascent and descent box, so a block cursor covers the glyph', () => {
     // 17px cell, 13 up and 3 down: 1px of slack, half above the box.
     expect(cellBaseline(13, 3, 17)).toBe(14)
     // The same face measured taller has no slack to give and sits at 14 too.
@@ -23,7 +23,7 @@ describe('where the baseline sits in a cell', () => {
 
   it('gives a taller cell the extra room below the baseline as well as above', () => {
     // Doubling the cell moves the baseline down by half the added height,
-    // not by all of it — the box is centred, not top-aligned. Half of the 17
+    // not by all of it — the box is centered, not top-aligned. Half of the 17
     // added here is 8.5, and the rounding at 17 already took the other half.
     expect(cellBaseline(13, 3, 34) - cellBaseline(13, 3, 17)).toBe(8)
   })

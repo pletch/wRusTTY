@@ -20,7 +20,7 @@
  *
  * This is the cheap half of what moving the parser to a Worker would buy. A
  * Worker takes the parse off the main thread entirely; this only stops it
- * monopolising the thread. Neither makes the parse faster — at ~86 MB/s the
+ * monopolizing the thread. Neither makes the parse faster — at ~86 MB/s the
  * parser is no longer the constraint.
  *
  * Order is never rearranged. The parser is one state machine fed a byte stream,
@@ -44,7 +44,7 @@ const FRAME_BUDGET_MS = 10
  * draining without a budget.
  *
  * WebView2 stops firing animation frames when the window is occluded or
- * minimised. Without this the queue would stall until the window came back.
+ * minimized. Without this the queue would stall until the window came back.
  * Draining freely is the right response rather than a compromise: the budget
  * exists to protect rendering, and nothing is being rendered.
  */

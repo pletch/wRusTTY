@@ -171,7 +171,7 @@ describe('safeSuggestedName', () => {
     expect(safeSuggestedName('a\\b.txt')).toBe('a_b.txt')
   })
 
-  /** Stripped during Windows path normalisation, so the name written would not
+  /** Stripped during Windows path normalization, so the name written would not
    *  be the name shown. */
   it('drops trailing dots and spaces', () => {
     expect(safeSuggestedName('report.txt.')).toBe('report.txt')
@@ -186,7 +186,7 @@ describe('safeSuggestedName', () => {
 })
 
 describe('isPermissionDenied', () => {
-  it('recognises what an SFTP server says when it refuses on permission', () => {
+  it('recognizes what an SFTP server says when it refuses on permission', () => {
     // The wire form: `StatusCode` rendered, then the server's message.
     expect(isPermissionDenied('Permission denied: open failed')).toBe(true)
     expect(isPermissionDenied(new Error('permission denied'))).toBe(true)

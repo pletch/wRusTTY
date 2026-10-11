@@ -400,7 +400,7 @@ impl Vault {
     /// useful the moment the rename lands. In particular the plaintext copy
     /// that v1's "unlock with Windows sign-in" left sitting in the OS
     /// credential store — the weakness this whole format change exists to
-    /// close — is dead weight afterwards instead of a live key to the vault.
+    /// close — is dead weight afterward instead of a live key to the vault.
     fn finish_migration(
         path: PathBuf,
         entries: HashMap<String, VaultSecret>,
@@ -446,9 +446,9 @@ impl Vault {
     }
 
     /// The second half of [`Vault::add_unlock_method`], for callers that need
-    /// to run enrolment *outside* whatever lock guards this vault.
+    /// to run enrollment *outside* whatever lock guards this vault.
     ///
-    /// That separation matters more than it looks: enrolment can sit for as
+    /// That separation matters more than it looks: enrollment can sit for as
     /// long as a user takes to answer a Windows Hello prompt, and holding the
     /// vault's mutex across that stalls every other vault operation behind
     /// it — including the ones the UI uses to notice that anything is
@@ -576,7 +576,7 @@ impl Vault {
 
     fn persist(&self) -> Result<(), VaultError> {
         // The decrypt side of this round-trip is `Zeroizing` for the same
-        // reason: serialised entries are every credential in the clear, and
+        // reason: serialized entries are every credential in the clear, and
         // this buffer outlives the encrypt call that consumes it.
         let plaintext = zeroize::Zeroizing::new(
             serde_json::to_vec(&self.entries).map_err(|e| VaultError::Corrupt(e.to_string()))?,

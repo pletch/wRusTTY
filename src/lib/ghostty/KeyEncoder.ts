@@ -89,7 +89,7 @@ const BUF_BYTES = 128
 const UTF8_BYTES = 16
 
 /**
- * A `code` we don't recognise, or one that produces text through a route
+ * A `code` we don't recognize, or one that produces text through a route
  * keydown cannot see. Encoding these would be worse than declining: the
  * encoder would fall back to the logical key and send *something*, where
  * declining lets the browser's own text path deliver the real character.
@@ -152,7 +152,7 @@ export class KeyEncoder {
     // The one option `setopt_from_terminal` cannot derive, and it resets this
     // to false on every call anyway. Set once for the record: there is no
     // option key on the platform this ships to, and treating a hypothetical
-    // one as Alt is the behaviour a terminal wants.
+    // one as Alt is the behavior a terminal wants.
     const optSlot = ex.ghostty_wasm_alloc(1)
     new Uint8Array(ex.memory.buffer, optSlot, 1)[0] = 0
     ex.ghostty_key_encoder_setopt(this.encoder, KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, optSlot)
@@ -302,7 +302,7 @@ export class KeyEncoder {
  *
  * Caps and Num Lock are included because the Kitty protocol reports them and
  * because `IGNORE_KEYPAD_WITH_NUMLOCK` (DEC 1035) is a mode a far end can set;
- * without Num Lock the encoder cannot honour it.
+ * without Num Lock the encoder cannot honor it.
  */
 export function modsOf(e: KeyboardEvent): number {
   let mods = 0

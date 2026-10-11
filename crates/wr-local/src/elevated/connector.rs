@@ -136,7 +136,7 @@ impl ElevatedConnector {
         // in the pipe was thrown away for a vaguer one. Found by repeating the
         // test for exactly that case; it failed about one run in three.
         //
-        // Cancelling `read_frame` on the timeout loses a partial frame, which
+        // Canceling `read_frame` on the timeout loses a partial frame, which
         // is fine: nothing more is read from this pipe after it.
         drop(exited);
         let first = tokio::select! {

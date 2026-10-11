@@ -13,7 +13,7 @@ import type { CommandActivity } from '../shellIntegration'
  * a real core.
  *
  * `appProgress.test.ts` pins the grammar; this pins that the sequences carrying
- * it are actually recognised as OSC by the scanner and dispatched — which is
+ * it are actually recognized as OSC by the scanner and dispatched — which is
  * not free of assumptions. OSC 9 is the shortest identifier this app handles
  * and OSC 777 the longest, so between them they cover the digit-run parsing,
  * and progress arrives interleaved with an application's normal screen output
@@ -75,7 +75,7 @@ describe('an application reporting its own progress over the wire', () => {
     return { engine, progress, notes, writeInChunks }
   }
 
-  it('delivers a busy-then-done cycle amongst ordinary output', async () => {
+  it('delivers a busy-then-done cycle among ordinary output', async () => {
     const { engine, progress } = await ready()
     // What a full-screen tool actually emits: progress wrapped in the screen
     // painting it is doing anyway, not sitting alone in a chunk.
@@ -97,7 +97,7 @@ describe('an application reporting its own progress over the wire', () => {
 
   /**
    * The whole path for a report the program never clears: the engine
-   * recognising `ESC c` in the stream, the tracker's watch being open at that
+   * recognizing `ESC c` in the stream, the tracker's watch being open at that
    * moment, and the indicator coming down.
    *
    * Worth a live test rather than only the unit ones either side of it,

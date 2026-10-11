@@ -48,23 +48,23 @@ function boot() {
 }
 
 describe('CAN and SUB cancel an OSC in the core', () => {
-  it('drops a title cancelled with CAN', () => {
+  it('drops a title canceled with CAN', () => {
     const t = boot()
     t.write('\x1b]2;kept\x07')
-    t.write('\x1b]2;cancelled\x18')
+    t.write('\x1b]2;canceled\x18')
     expect(t.title()).toBe('kept')
   })
 
-  it('drops a title cancelled with SUB', () => {
+  it('drops a title canceled with SUB', () => {
     const t = boot()
     t.write('\x1b]2;kept\x07')
-    t.write('\x1b]2;cancelled\x1a')
+    t.write('\x1b]2;canceled\x1a')
     expect(t.title()).toBe('kept')
   })
 
-  it('still runs one that ends normally, including after a cancelled one', () => {
+  it('still runs one that ends normally, including after a canceled one', () => {
     const t = boot()
-    t.write('\x1b]2;cancelled\x18\x1b]2;real\x07')
+    t.write('\x1b]2;canceled\x18\x1b]2;real\x07')
     expect(t.title()).toBe('real')
   })
 })

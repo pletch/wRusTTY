@@ -1,6 +1,6 @@
 ---
 name: run-wrustty
-description: Build, run, drive and screenshot wRusTTY — the Tauri terminal app and its Ghostty/WASM engine. Use when asked to run, start, launch, smoke-test, screenshot or visually check the app, a terminal pane, the benchmark harness, or engine/renderer behaviour (colours, attributes, underline styles, cursor shapes, parsing).
+description: Build, run, drive and screenshot wRusTTY — the Tauri terminal app and its Ghostty/WASM engine. Use when asked to run, start, launch, smoke-test, screenshot or visually check the app, a terminal pane, the benchmark harness, or engine/renderer behavior (colors, attributes, underline styles, cursor shapes, parsing).
 ---
 
 # Running wRusTTY
@@ -12,7 +12,7 @@ either, in increasing cost:
 
 | Surface | Needs | Use it for |
 | --- | --- | --- |
-| `driver.mts` | node only | engine + core behaviour. **Start here.** |
+| `driver.mts` | node only | engine + core behavior. **Start here.** |
 | `/visual.html` | vite + a browser | what the renderer actually draws |
 | `/#bench` | vite + a browser | A/B benchmark harness, both engines |
 | full app | Tauri | window chrome, tab strip, dialogs — see `window.ps1` |
@@ -47,13 +47,13 @@ Run through `vite-node`, not `node`: the driver goes through the app's own
 hand-roll the ABI and broke the day the binary became a ghostty `main` build,
 having been a second implementation of the thing it was meant to test.
 
-Exercises colour, bold, all five underline styles, overline, wide characters,
+Exercises color, bold, all five underline styles, overline, wide characters,
 DECSCUSR and reset, then asserts the core agrees. Exit 1 on any mismatch. Output:
 
 ```
  1 | bold                                           bold
  2 | red 256                                        fg#ff5f5f
- 3 | truecolour                                     fg#50c878
+ 3 | truecolor                                      fg#50c878
  6 | ul curly                                       ul:curly
  9 | overline                                       overline
 10 | wide 世界 chars
@@ -128,7 +128,7 @@ $w = '.claude/skills/run-wrustty/window.ps1'
 & $w -Action restore                  # un-maximize between trials
 ```
 
-**Use it rather than dispatching DOM events when the behaviour under test is
+**Use it rather than dispatching DOM events when the behavior under test is
 Tauri's.** Tauri injects its own listeners — the drag-region script maximizes
 the window from a raw `mousedown` with `e.detail === 2` — and `detail` is a
 platform click counter. A `new MouseEvent('mousedown', {detail: 2})` carries
@@ -148,7 +148,7 @@ npm run build      # emits dist/index.html only; visual.html is dev-only
 ```
 
 `src/bench/gridSnapshot.test.ts` is the real gate — it feeds identical bytes
-through Ghostty and xterm.js headlessly and compares glyphs, colours, attributes
+through Ghostty and xterm.js headlessly and compares glyphs, colors, attributes
 and cursor per cell.
 
 ## Gotchas
@@ -170,7 +170,7 @@ and cursor per cell.
   drag-region double-click fix passed a jsdom suite and still maximized the
   real window, because a second listener — React's `onDoubleClick`, on the
   `dblclick` the two presses compose rather than on the presses — was never
-  modelled. When a gesture has more than one listener, prove which one fires by
+  modeled. When a gesture has more than one listener, prove which one fires by
   disabling them one at a time in the running app (see
   `src/hooks/useDragRegionDoubleClickGuard.ts`).
 - **Port 1420 fails silently.** If something already holds it, vite dies with
@@ -197,7 +197,7 @@ and cursor per cell.
 
 Only if you are moving to a different ghostty commit. The engine runs on ghostty
 `main` at the pin in `docs/PORT_GHOSTTY_MAIN.md`, plus one carried fix; the
-recipe, the DWARF strip and the things that must be re-measured afterwards are
+recipe, the DWARF strip and the things that must be re-measured afterward are
 in `src/lib/ghostty/vendor/README.md`. In WSL, under `~` rather than `/mnt/c`:
 
 ```bash
@@ -212,7 +212,7 @@ zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 
 Traps, all hit for real: this WSL image has no `xz`, `python3` or `zstd`, so the
 Zig tarball has to be unpacked from the Windows side — and files written over the
-9p bridge lose the exec bit, so `chmod +x zig` afterwards. Building natively on
+9p bridge lose the exec bit, so `chmod +x zig` afterward. Building natively on
 Windows hits a Zig `ftruncate`/`FileTooBig` bug in the unicode table generator.
 `main` wants Zig **0.16.0**; the old v1.3.1 build wanted 0.15.2 — they are not
 interchangeable. `src/lib/ghostty/vendor-131/` still holds that older build,

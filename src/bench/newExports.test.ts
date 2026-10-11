@@ -105,7 +105,7 @@ describe('ghostty_render_state_get_cursor_style', () => {
   })
 
   it('reports blink separately, so steady and blinking variants differ', () => {
-    // The half of DECSCUSR that was ignored: honouring only the shape made
+    // The half of DECSCUSR that was ignored: honoring only the shape made
     // ESC[1 q and ESC[2 q render identically, because the engine blinked on its
     // own timer regardless.
     const ptr = term(20, 3)

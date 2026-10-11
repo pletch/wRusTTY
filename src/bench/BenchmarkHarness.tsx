@@ -28,12 +28,12 @@ const BLOCK_ROUNDS = 3
  *
  * Two of the renderer's costs scale with cell count and nothing else — the
  * per-cell parse in `updateStaticGrid` and the per-frame viewport buffer — so
- * a baseline measured only at ~80x24 cannot distinguish "this optimisation
+ * a baseline measured only at ~80x24 cannot distinguish "this optimization
  * did nothing" from "this grid was too small for it to matter". 200x60 is
- * about six times the cells, which is also a realistic maximised-window size
+ * about six times the cells, which is also a realistic maximized-window size
  * on a 1440p display.
  *
- * `fit` keeps the old behaviour (whatever the host container measures). Pinned
+ * `fit` keeps the old behavior (whatever the host container measures). Pinned
  * sizes call `resize` without `fit`, so the canvas can exceed its container —
  * the hosts clip, and a benchmark cares about the cell count the renderer
  * processes, not whether all of it is on screen.

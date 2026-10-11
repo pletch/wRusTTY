@@ -24,7 +24,7 @@ export const GHOSTTY_PIN = {
   upstream: 'main',
   commit: 'b1d9492cfa5d0d22c534a00e81bea623957113e7',
   /** Carried on top of the pin — see `patches/ghostty-main-esc-k.patch`. Worth
-   *  showing: it changes parser behaviour, so "ghostty at <commit>" alone would
+   *  showing: it changes parser behavior, so "ghostty at <commit>" alone would
    *  not reproduce what the user is running. */
   patch: 'ghostty-main-esc-k.patch (#176)',
   sha256: '7e4c23a3c3178b73e0766d64da37ec51d0fb83d2ea92101c947252993891d1bc',

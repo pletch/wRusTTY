@@ -1,5 +1,5 @@
 /**
- * Localises the long-SGR regression between two builds.
+ * Localizes the long-SGR regression between two builds.
  *
  * Short SGR (1 param) is at parity while 10-param SGR is ~10% slower, so the
  * cost is per-parameter rather than fixed. These probes separate the three
@@ -9,7 +9,7 @@
  *   digits       more digits at the same parameter count
  *   parameters   both together, the shape the workload actually uses
  *
- * plus a non-SGR parameterised CSI (CUP) to tell a change in the generic CSI
+ * plus a non-SGR parameterized CSI (CUP) to tell a change in the generic CSI
  * parameter machinery from one in the SGR handler specifically.
  *
  * Run: node tools/parse-probes/sgrdiff.mjs <a.wasm> <b.wasm>
@@ -49,7 +49,7 @@ const PROBES = [
   P('sep', 'SGR 5 params, semicolons', semis(5)),
   P('sep', 'SGR 5 params, colons', `\x1b[${Array(5).fill('0').join(':')}m`),
 
-  // Non-SGR parameterised CSI: generic param machinery vs the SGR handler.
+  // Non-SGR parameterized CSI: generic param machinery vs the SGR handler.
   P('non-sgr', 'CUP 0 params  ESC[H', '\x1b[H'),
   P('non-sgr', 'CUP 2 params  ESC[1;1H', '\x1b[1;1H'),
   P('non-sgr', 'CHA 1 param   ESC[0G', '\x1b[0G'),

@@ -23,7 +23,7 @@ pub struct SessionProfile {
     pub port: u16,
     /// `"ssh"`, `"telnet"` or `"serial"`. A discriminator rather than a tagged
     /// enum per protocol: they share everything that matters here (label,
-    /// folder, terminal behaviour) and differ only in which of the fields
+    /// folder, terminal behavior) and differ only in which of the fields
     /// below mean anything, so splitting the type would duplicate far more
     /// than it separated.
     #[serde(default = "default_protocol")]
@@ -146,7 +146,7 @@ pub struct LocalProfile {
     #[serde(default)]
     pub cwd: Option<String>,
     /// Open this shell as administrator, through the elevated host — see
-    /// docs/ELEVATED_TABS_PLAN.md. Only honoured for the shells
+    /// docs/ELEVATED_TABS_PLAN.md. Only honored for the shells
     /// `elevation::ELEVATABLE_SHELLS` allows; `default` so every profile saved
     /// before this existed opens exactly as it did.
     #[serde(default)]

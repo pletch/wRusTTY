@@ -82,7 +82,7 @@ pub enum Slot<S> {
     /// Disconnected while still handshaking. The id is already out of the map;
     /// this marks the slot itself so a handshake that finishes *after* the
     /// `disconnect` learns it is unwanted without the two having to be
-    /// serialised on the map lock — see [`publish_if_wanted`].
+    /// serialized on the map lock — see [`publish_if_wanted`].
     Cancelled,
 }
 
@@ -119,7 +119,7 @@ impl<S> Slot<S> {
 /// the replay as well, on the reasoning that bytes typed during the replay
 /// belong after the bytes being replayed — but that ordering is the *slot*
 /// lock's doing, and `publish` takes it anyway, as does every `write`. What
-/// the wider scope actually bought was serialising every other session of this
+/// the wider scope actually bought was serializing every other session of this
 /// transport behind this one's replay: `lookup`, `write`, `resize`,
 /// `disconnect`, `spawn_connect` and SFTP all take the map lock, and an SSH
 /// `write` against a full channel window blocks until the remote reads. One
@@ -130,9 +130,9 @@ impl<S> Slot<S> {
 ///
 /// Narrowing it reopens the gap the wide lock closed: a `disconnect` landing
 /// between the check and the replay. Queued input reaching a host the user
-/// already cancelled is not a cosmetic bug — if what was typed was a password
+/// already canceled is not a cosmetic bug — if what was typed was a password
 /// meant for the next prompt, it goes to a host they just declined to trust.
-/// [`Slot::Cancelled`] closes it under the slot lock instead: `disconnect`
+/// [`Slot::Canceled`] closes it under the slot lock instead: `disconnect`
 /// marks the slot, `publish` refuses to replay into a marked one, and each
 /// waits for the other because both need that one lock.
 ///
@@ -151,7 +151,7 @@ async fn publish_if_wanted<S: Session>(
     } else {
         Some(session)
     };
-    // Cancelled — either before we looked, or between the look and the slot
+    // Canceled — either before we looked, or between the look and the slot
     // lock. Close it properly rather than letting `Drop` do it: for SSH that
     // is the difference between an `SSH_MSG_DISCONNECT` and the server seeing
     // the connection evaporate.
@@ -163,10 +163,10 @@ async fn publish_if_wanted<S: Session>(
 }
 
 /// Drains whatever arrived during the handshake into the new session, then
-/// publishes it. Returns the session *unpublished* if the slot was cancelled
+/// publishes it. Returns the session *unpublished* if the slot was canceled
 /// while the handshake ran, leaving the caller to close it.
 ///
-/// Its own function so the queue-and-replay behaviour can be tested without an
+/// Its own function so the queue-and-replay behavior can be tested without an
 /// `AppHandle`, a `Channel` or a real transport — it is the part of this
 /// module most worth pinning, since getting it wrong silently drops the first
 /// thing a user typed.
@@ -255,9 +255,9 @@ async fn abandon<S>(slot: &SharedSlot<S>) {
     }
 }
 
-/// How often the pre-connect step is checked for having been cancelled.
+/// How often the pre-connect step is checked for having been canceled.
 ///
-/// Polled rather than signalled because a per-slot notifier would be a channel
+/// Polled rather than signaled because a per-slot notifier would be a channel
 /// on every session for the benefit of the one step slow enough to need it,
 /// and half a second of latency on an abort whose pane is already closed is
 /// not something anyone is waiting on.
@@ -354,7 +354,7 @@ const ELAPSED_SECONDS_RANGE: std::ops::RangeInclusive<u64> = 5..=3600;
 /// Deserialized straight off the IPC boundary, which is why [`Self::sanitized`]
 /// exists: these are loop bounds, and the webview is not a trusted source of
 /// one. Every field is optional on the wire and every absent field falls back
-/// to the default, so a caller that sends nothing gets exactly the behaviour
+/// to the default, so a caller that sends nothing gets exactly the behavior
 /// that shipped before this type existed.
 ///
 /// The *policy* is only ever subtractive. `enabled: false` is the user saying
@@ -571,15 +571,15 @@ impl<C: Connector> SessionRegistry<C> {
 
     /// Removes the session first, then disconnects it. A session that failed
     /// to shut down cleanly is still gone as far as the registry is concerned,
-    /// which is what the three copies did and is the behaviour worth keeping:
+    /// which is what the three copies did and is the behavior worth keeping:
     /// leaving a half-dead session in the map would let the frontend keep
     /// writing to it.
     ///
     /// Disconnecting one that never finished connecting removes the id *and*
-    /// marks the slot [`Slot::Cancelled`]. Removing the id alone is enough
+    /// marks the slot [`Slot::Canceled`]. Removing the id alone is enough
     /// only for a handshake that hasn't checked yet; the mark is what stops
     /// one that already passed the check from replaying queued input into a
-    /// host the user just cancelled — see [`publish_if_wanted`]. Whichever of
+    /// host the user just canceled — see [`publish_if_wanted`]. Whichever of
     /// the two gets the slot lock first, the other sees its result.
     pub async fn disconnect(&self, session_id: &str) -> Result<(), String> {
         let slot = self.sessions.lock().await.remove(session_id);
@@ -780,8 +780,8 @@ impl<C: Connector> SessionRegistry<C> {
 /// invariants [`publish_if_wanted`] documents all have to hold against it too.
 /// The one that matters is the same one layer along: a pane closed while a
 /// reconnect is in flight must not have queued input replayed into the session
-/// that arrives afterwards. It cannot, and for exactly the original reason —
-/// [`SessionRegistry::disconnect`] marks the slot `Cancelled` under the slot
+/// that arrives afterward. It cannot, and for exactly the original reason —
+/// [`SessionRegistry::disconnect`] marks the slot `Canceled` under the slot
 /// lock, [`begin_reconnect`] refuses to leave a marked slot, and `publish`
 /// refuses to fill one. Every loss of the map entry is also re-checked here
 /// rather than assumed, because the pane can close during any of the three
@@ -893,7 +893,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
 
                 // Only after a reconnect: on a first connect there is nothing
                 // yet attached to the connection, and running it there would
-                // mean every transport's step had to recognise and ignore its
+                // mean every transport's step had to recognize and ignore its
                 // own opening move.
                 //
                 // Awaited rather than spawned, so a second drop during the
@@ -1087,7 +1087,7 @@ mod tests {
         match slot {
             Slot::Connecting { .. } => "connecting",
             Slot::Ready { .. } => "ready",
-            Slot::Cancelled => "cancelled",
+            Slot::Cancelled => "canceled",
         }
     }
 
@@ -1125,7 +1125,7 @@ mod tests {
         }
     }
 
-    /// The behaviour the old design got for free by holding a mutex across the
+    /// The behavior the old design got for free by holding a mutex across the
     /// handshake: typing at a pane that is still connecting is not lost.
     #[tokio::test]
     async fn keystrokes_typed_during_the_handshake_are_delivered() {
@@ -1370,7 +1370,7 @@ mod tests {
         // Nothing was published into the orphaned slot...
         assert!(
             slot.lock().await.ready().is_err(),
-            "a cancelled slot must not receive the session"
+            "a canceled slot must not receive the session"
         );
         // ...and the session was closed cleanly rather than dropped.
         assert!(
@@ -1417,10 +1417,10 @@ mod tests {
         };
         let unpublished = publish(&slot, session).await;
 
-        let unpublished = unpublished.expect("a cancelled slot must hand the session back");
+        let unpublished = unpublished.expect("a canceled slot must hand the session back");
         assert!(
             unpublished.writes.is_empty(),
-            "queued input must not reach a host the user cancelled"
+            "queued input must not reach a host the user canceled"
         );
         assert!(slot.lock().await.ready().is_err());
     }
@@ -1460,11 +1460,11 @@ mod tests {
 
         match &*slot.lock().await {
             Slot::Cancelled => {}
-            other => panic!("expected a cancelled slot, was {}", describe(other)),
+            other => panic!("expected a canceled slot, was {}", describe(other)),
         }
         assert!(slot.lock().await.ready().is_err());
         // The id is gone from the map too, so the ordinary path reports it as
-        // no such session rather than as a cancelled one.
+        // no such session rather than as a canceled one.
         assert!(registry.write("fake-0", b"x").await.is_err());
         assert!(registry.resize("fake-0", 80, 24).await.is_err());
     }
@@ -1588,7 +1588,7 @@ mod tests {
     }
 
     /// A field the frontend does not send falls back to the default, so a
-    /// caller that sends nothing gets exactly the behaviour that shipped
+    /// caller that sends nothing gets exactly the behavior that shipped
     /// before the policy existed.
     #[test]
     fn an_absent_field_keeps_the_default() {
@@ -1637,7 +1637,7 @@ mod tests {
 
     /// The hazard the plan calls out one layer along from `publish_if_wanted`:
     /// a pane closed while a reconnect is in flight must not have queued input
-    /// replayed into the session that arrives afterwards.
+    /// replayed into the session that arrives afterward.
     #[tokio::test]
     async fn a_pane_closed_mid_reconnect_never_receives_its_queued_input() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1664,7 +1664,7 @@ mod tests {
         )
         .await;
 
-        let unpublished = unpublished.expect("a cancelled slot must hand the session back");
+        let unpublished = unpublished.expect("a canceled slot must hand the session back");
         assert!(
             unpublished.writes.is_empty(),
             "queued input must not reach a session the user closed the pane on"
@@ -2033,7 +2033,7 @@ mod tests {
         let attempts = script.attempts();
         assert!(
             attempts <= RECONNECT_MAX_ATTEMPTS as u64 + 1,
-            "the attempt bound was not honoured: {attempts} attempts"
+            "the attempt bound was not honored: {attempts} attempts"
         );
         assert!(registry.lookup("fake-0").await.is_err());
 
@@ -2189,7 +2189,7 @@ mod tests {
         );
     }
 
-    /// A shortened attempt bound is honoured end to end, not merely by
+    /// A shortened attempt bound is honored end to end, not merely by
     /// `next_delay` in isolation — the supervisor has two paths into the
     /// backoff (a failed handshake and a factory that will not build) and only
     /// one of them is exercised by asserting on the pure function.

@@ -14,10 +14,10 @@
  * payload here looks like `c;SGVsbG8=`.
  */
 
-/** Targets we honour. `c` is the clipboard proper; `s` is the (X11) select
+/** Targets we honor. `c` is the clipboard proper; `s` is the (X11) select
  *  buffer, which apps also use to mean "the clipboard" on platforms that have
  *  only one; an empty target list means the terminal's configured default.
- *  `p` (X11 primary) is deliberately not honoured — on Windows there is no
+ *  `p` (X11 primary) is deliberately not honored — on Windows there is no
  *  second buffer to put it in, and mapping it onto the clipboard would let a
  *  primary-selection sync overwrite what the user actually copied. */
 const HONOURED = ['c', 's']
@@ -39,7 +39,7 @@ export type Osc52Request =
   /** A read (`Pd` is `?`). Answering hands the remote end the contents of the
    *  user's clipboard, so this is always reported and never answered. */
   | { kind: 'read' }
-  /** Malformed, or a target we don't honour. Ignore it. */
+  /** Malformed, or a target we don't honor. Ignore it. */
   | { kind: 'ignore' }
 
 /**
@@ -108,7 +108,7 @@ export interface Osc52Sink {
 export function applyOsc52(payload: string, sink: Osc52Sink): boolean {
   const req = parseOsc52(payload)
   // Note there is no `read` branch, and adding one would be a bug. A read is
-  // parsed so it can be recognised and dropped; answering it would hand the
+  // parsed so it can be recognized and dropped; answering it would hand the
   // remote end whatever the user last copied. `allowWrite` gates writes only
   // and must never be read as "allow OSC 52".
   if (req.kind === 'write' && sink.allowWrite) {

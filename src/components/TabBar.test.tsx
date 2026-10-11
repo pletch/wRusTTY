@@ -22,7 +22,7 @@ afterEach(cleanup)
  *
  * Hover-gating it on every tab made it intermittently impossible to click, and
  * not for the reason it looks like: an `opacity-0` button still takes clicks.
- * You cannot *aim* at what you cannot see. The reproducible case is cancelling
+ * You cannot *aim* at what you cannot see. The reproducible case is canceling
  * a confirmation — while the dialog is up its overlay owns the pointer, so the
  * tab beneath is not hovered, and the browser does not re-evaluate `:hover`
  * until the pointer moves. Go straight back to the ✕ and it is invisible: hit
@@ -107,7 +107,7 @@ describe('TabBar close button', () => {
 describe('TabBar remote title badge', () => {
   it('shows the symbol a program leads its title with', () => {
     render(bar({ titleByPane: { 't1-pane': '\u2733 Building the renderer' } }))
-    // With the variation selector: the badge asks for the colour form, since
+    // With the variation selector: the badge asks for the color form, since
     // U+2733's default presentation is a monochrome text glyph.
     expect(screen.getByText('\u2733\ufe0f')).toBeTruthy()
   })
@@ -174,7 +174,7 @@ describe('TabBar badge across a split', () => {
         titleByPane: { 't1-a': '\u2733 active one', 't1-b': '\u{1F525} other one' },
       }),
     )
-    // With the variation selector: the badge asks for the colour form, since
+    // With the variation selector: the badge asks for the color form, since
     // U+2733's default presentation is a monochrome text glyph.
     expect(screen.getByText('\u2733\ufe0f')).toBeTruthy()
     expect(screen.queryByText('\u{1F525}')).toBeNull()
@@ -189,7 +189,7 @@ describe('TabBar badge across a split', () => {
         titleByPane: { 't1-a': 'dev@build01: ~/src', 't1-b': '\u2733 Building' },
       }),
     )
-    // With the variation selector: the badge asks for the colour form, since
+    // With the variation selector: the badge asks for the color form, since
     // U+2733's default presentation is a monochrome text glyph.
     expect(screen.getByText('\u2733\ufe0f')).toBeTruthy()
   })
@@ -231,7 +231,7 @@ describe('TabBar badge across a split', () => {
 
 describe('TabBar badge does not move the label', () => {
   it('gives the badge a fixed box rather than one the glyph sizes', () => {
-    // The badge swaps between a colour emoji at rest and a text-font spinner
+    // The badge swaps between a color emoji at rest and a text-font spinner
     // frame while the program works, and the two advance differently. Without
     // a fixed width the box resizes several times a second and slides the
     // label — and the tab, whose width is content-driven — along with it.

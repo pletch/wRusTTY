@@ -100,7 +100,7 @@ touching them: **WASM memory grows in doubling steps, so the heap is a
 staircase against the budget rather than a line.** Every budget from 13 MB to
 28 MB lands on the same ~30.7 MB heap, and one more megabyte doubles it. Each
 tier therefore takes the largest budget that stays inside its step — 4 / 10 /
-24 / 48 MB, labelled 8 / 16 / 32 / 64 MB of *total pane footprint*. Rounding a
+24 / 48 MB, labeled 8 / 16 / 32 / 64 MB of *total pane footprint*. Rounding a
 budget down gives away depth for nothing; nudging one up can double what every
 pane costs. The test floods the real core and asserts the heap stays under the
 label.
@@ -120,7 +120,7 @@ we build. They were right; the measurement above is what settles it.
 `ReleaseSmall` was the original build mode and it costs ~12% of parse
 throughput: measured on the benchmark's own flood payload, 74.1 MB/s against
 83.4 MB/s for `ReleaseFast` (90.4 vs 97.0 MB/s on long printable runs). Size
-is the wrong thing to optimise for here — this is a Tauri desktop app, so the
+is the wrong thing to optimize for here — this is a Tauri desktop app, so the
 binary is bundled on disk rather than fetched over a network.
 
 It is not free, though. Every pane is its own WASM instance, so per-pane
@@ -128,7 +128,7 @@ It is not free, though. Every pane is its own WASM instance, so per-pane
 almost entirely once the compiled `WebAssembly.Module` is cached and shared
 across panes, leaving only a per-pane `WebAssembly.Instance` — measured at
 0.087 ms to instantiate, and identical for both builds. `compileGhosttyWasm`
-does exactly that: it memoises the compile in a module-level promise and evicts
+does exactly that: it memoizes the compile in a module-level promise and evicts
 it on failure, so a pane that fails to start doesn't poison every later one.
 `moduleCache.test.ts` pins both halves — one shared module, never a shared
 instance.

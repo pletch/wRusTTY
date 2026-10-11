@@ -70,7 +70,7 @@ export function groupByHost(entries: KnownHostEntry[]): KnownHostGroup[] {
 }
 
 /**
- * How a host is labelled in the list.
+ * How a host is labeled in the list.
  *
  * The port is shown only when it is not 22, the way every SSH tool writes it:
  * `example.com` and `example.com:2222` are both unambiguous, while

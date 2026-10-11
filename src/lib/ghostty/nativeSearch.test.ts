@@ -133,7 +133,7 @@ describe('native find-in-scrollback', () => {
     expect(t.last().count, 'native matching folds ASCII case').toBe(3)
 
     t.engine.search('needle', { caseSensitive: true })
-    expect(t.last().count, 'the JS path honours the toggle').toBe(1)
+    expect(t.last().count, 'the JS path honors the toggle').toBe(1)
 
     // And the regex toggle really is a regex rather than a literal: the same
     // string finds nothing when the core matches it byte for byte.

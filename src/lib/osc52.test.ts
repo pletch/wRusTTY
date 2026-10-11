@@ -19,11 +19,11 @@ describe('parseOsc52', () => {
     expect(parseOsc52(`;${b64('hi')}`)).toEqual({ kind: 'write', text: 'hi' })
   })
 
-  it('honours the select buffer, which apps use to mean the clipboard', () => {
+  it('honors the select buffer, which apps use to mean the clipboard', () => {
     expect(parseOsc52(`s;${b64('hi')}`)).toEqual({ kind: 'write', text: 'hi' })
   })
 
-  it('honours a target list that includes the clipboard among others', () => {
+  it('honors a target list that includes the clipboard among others', () => {
     expect(parseOsc52(`pc;${b64('hi')}`)).toEqual({ kind: 'write', text: 'hi' })
   })
 

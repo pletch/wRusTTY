@@ -53,7 +53,7 @@ Four things that used to be the expensive part of this feature are done:
   one hit carrying the per-row segments it covers. URL detection wants exactly
   that shape, and the join should be *extracted and shared*, not rewritten —
   see Phase 1.
-- **Underline.** The renderer honours `CELL_UNDERLINE`, folding the style into
+- **Underline.** The renderer honors `CELL_UNDERLINE`, folding the style into
   the atlas key (`WebGLRenderer.ts`, ~line 775). Hover feedback is therefore a
   style bit on the covered cells, not new geometry.
 - **A modal keyboard interaction.** `MarkModeController` is a mode that takes
@@ -75,7 +75,7 @@ export function logicalLines(rows: RowText[], wrapped: boolean[]): LogicalLine[]
 export function segmentsFor(line: LogicalLine, rows: RowText[], start: number, end: number): Segment[]
 ```
 
-Search keeps its behaviour (its tests are the check); URL detection becomes a
+Search keeps its behavior (its tests are the check); URL detection becomes a
 different matcher over the same lines. Doing this first is what stops the
 feature from growing a second, subtly different idea of what a line is.
 
@@ -112,9 +112,9 @@ export function findUrls(line: string): UrlMatch[]
 - Offsets are into the logical line; Phase 1's `segmentsFor` maps them back.
 
 Pure string work with no core and no DOM, so this is the part that's cheap to
-test exhaustively. Table-driven, covering: wrapped, parenthesised, adjacent
+test exhaustively. Table-driven, covering: wrapped, parenthesized, adjacent
 URLs, a URL ending exactly at the right margin, a Cyrillic-homograph host, a
-backtracking-bait line, and a line of ANSI-coloured `ls` output that contains
+backtracking-bait line, and a line of ANSI-colored `ls` output that contains
 no URL at all.
 
 ## Phase 3 — hit-testing
@@ -193,7 +193,7 @@ Resolution order in mousedown:
 
 1. **Ctrl held, pointer on a link** — the link wins, and the program does not
    see the click. This is the case the modifier exists for.
-2. **Ctrl held, no link under the pointer** — unchanged behaviour: the click
+2. **Ctrl held, no link under the pointer** — unchanged behavior: the click
    goes wherever it goes today.
 3. **Shift** — entirely untouched. Bypass and selection-extend keep both of
    their current meanings, and neither has to be reasoned about again.
@@ -256,7 +256,7 @@ this phase adds a mode, a label painter and a key handler, nothing more.
 ## Phase 7 — xterm parity
 
 `lib/xtermEngine.ts` exists as the benchmark harness's comparison engine.
-Whether it needs links at all is a judgement call: if the harness is its only
+Whether it needs links at all is a judgment call: if the harness is its only
 remaining user, skip it and let `onLinkActivate` be optional on the interface,
 the way `toggleMarkMode` and friends already are.
 
@@ -294,7 +294,7 @@ non-negotiable.
   `http` and `https`, checked again immediately before `openUrl`. The opener
   hands the string to the OS, and detection and activation are far enough
   apart in the code that the second check is not redundant. On Windows this
-  matters more than usual: a `file://` or UNC-flavoured target can provoke an
+  matters more than usual: a `file://` or UNC-flavored target can provoke an
   outbound SMB authentication attempt and leak credentials to a host of the
   attacker's choosing. `vbscript:`, `javascript:`, and whatever custom schemes
   other installed software has registered are the same class of problem.

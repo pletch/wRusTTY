@@ -16,7 +16,7 @@
  * the message to the far end waits, and only for as long as the drag is still
  * moving.
  *
- * Two behaviours worth stating, because both are what the trace showed going
+ * Two behaviors worth stating, because both are what the trace showed going
  * wrong:
  *
  * - **The last size always arrives.** This is a trailing debounce, not a

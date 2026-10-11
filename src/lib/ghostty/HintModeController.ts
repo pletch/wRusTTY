@@ -17,7 +17,7 @@ import type { Link, LinkKind } from './LinkController'
  * problem is.
  *
  * Hints are snapshotted on entry, in **absolute** buffer coordinates. That is
- * what lets output keep arriving underneath the mode: a labelled link keeps
+ * what lets output keep arriving underneath the mode: a labeled link keeps
  * pointing at the same text as the screen scrolls, rather than the labels
  * being reshuffled — or the mode dropped — every time a line lands.
  */
@@ -79,7 +79,7 @@ export class HintModeController {
   }
 
   /**
-   * Enters the mode, labelling whatever is on screen.
+   * Enters the mode, labeling whatever is on screen.
    *
    * Deliberately enters even when there is nothing to label: the indicator
    * appearing with no labels under it says "there are no links here", which is
@@ -181,7 +181,7 @@ export class HintModeController {
     const out: Hint[] = []
 
     // More links than two characters of this alphabet can name is not a screen
-    // anyone is picking a link off; the rest simply go unlabelled.
+    // anyone is picking a link off; the rest simply go unlabeled.
     const capacity = width === 1 ? ALPHABET.length : ALPHABET.length * ALPHABET.length
     for (let i = 0; i < links.length && i < capacity; i++) {
       const link = links[i]

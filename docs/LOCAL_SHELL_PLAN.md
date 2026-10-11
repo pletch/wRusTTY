@@ -10,7 +10,7 @@ does. What is left is listed under "What is not done" at the end — none of it
 load-bearing.
 
 What changed on contact with a real pseudoconsole is recorded in the
-"actually did" sections at the end — three ConPTY behaviours, none of which
+"actually did" sections at the end — three ConPTY behaviors, none of which
 this plan predicted.
 
 This document was written against the code as it stood at `7e86358` on
@@ -149,7 +149,7 @@ amending.
 
 **Local PowerShell and CMD: no wRusTTY autocomplete.** The reason the non-goal
 exists still holds — the screen-scraping path (`HistorySource::screen`,
-`command_history.rs:55`) infers commands by recognising a prompt and the echo
+`command_history.rs:55`) infers commands by recognizing a prompt and the echo
 after it, and PowerShell's prompt is arbitrary user code that PSReadLine repaints
 continuously. Pointed at one, it would file fragments of half-redrawn edit
 buffers as commands.
@@ -303,7 +303,7 @@ user wants. Wait on the child on its own thread and map:
 `Connector::retryable` should return `false` for spawn failures whose cause is
 structural — the executable does not exist, the distro is not installed — since
 retrying those unattended is a loop that cannot succeed. That is the same
-judgement its doc comment describes for SSH auth failures, applied to a cheaper
+judgment its doc comment describes for SSH auth failures, applied to a cheaper
 error.
 
 Config is small, and every field is there to serve decision 4:
@@ -433,7 +433,7 @@ presentation-only field belongs.
   generation on a child exit throws away the output that explains the exit.
 - **Screen-harvest autocomplete never runs on a PowerShell or CMD pane** —
   local or remote. That gate belongs where the source is chosen, keyed on the
-  shell family, not filtered afterwards and not keyed on the transport: a local
+  shell family, not filtered afterward and not keyed on the transport: a local
   bash pane must keep harvesting exactly as a remote one does.
 - **The engine keeps answering `ESC [ 6 n`.** A local pane's shell does not
   start until it does — see "What Phase 1 actually did". Nothing should route a
@@ -596,7 +596,7 @@ whatever the code, and a terminal that kept a dead pane around after `exit`
 would surprise anyone coming from the thing it is replacing.
 
 The exit notice therefore serves the case where the setting is off, which is
-what that setting is for. **No code change** — the behaviour already matched.
+what that setting is for. **No code change** — the behavior already matched.
 
 Where a local pane deliberately does *not* match the native console is a shell
 that fails to start: `isCleanDisconnect` (`src/lib/connection.ts:291`) counts
@@ -673,7 +673,7 @@ backend cannot act on.
   that does not.
 - **`retryable` is false for `NotFound` and `Spawn`**, true for `Pty`. A missing
   executable is checked for before the pseudoconsole is opened, which is both
-  cheaper than recovering it from an `anyhow::Error` afterwards and the case a
+  cheaper than recovering it from an `anyhow::Error` afterward and the case a
   stale saved profile actually produces.
 
 ---

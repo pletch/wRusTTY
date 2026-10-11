@@ -8,7 +8,7 @@
 //! What the protocol deliberately cannot say matters more than what it can.
 //! No message names a program, a path, an argument or an environment
 //! variable: the host is told what to run on its command line, at the moment
-//! the UAC prompt is approved, and nothing arriving over the pipe afterwards
+//! the UAC prompt is approved, and nothing arriving over the pipe afterward
 //! can change that. See decision 2 in `docs/ELEVATED_TABS_PLAN.md`.
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

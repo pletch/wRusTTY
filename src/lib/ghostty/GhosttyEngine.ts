@@ -63,7 +63,7 @@ import {
 } from './sessionModes'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
-// `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
+// `wasmBindings.ts` declares — `instantiateGhosttyModule` recognizes that from
 // the binary's exports and wraps it in `main/shim.ts`, so nothing in this file
 // knows which build it is talking to. See vendor/README.md and
 // docs/PORT_GHOSTTY_MAIN.md.
@@ -127,10 +127,10 @@ const SCROLLBACK_BYTES_PER_CELL = 9.2
  * Flooded to saturation, sweeping 80/200/400 columns and three flood shapes —
  * the steps are width-independent and shape-independent:
  *
- *   budget <= 2.5 MB  ->  5.0 MB heap     2.5 MB chosen, labelled 8 MB
- *   budget 2.75-6 MB  ->  9.0 MB heap       6 MB chosen, labelled 16 MB
- *   budget 6.5-12 MB  -> 17.0 MB heap      12 MB chosen, labelled 32 MB
- *   budget 13-26 MB   -> 33.0 MB heap      26 MB chosen, labelled 64 MB
+ *   budget <= 2.5 MB  ->  5.0 MB heap     2.5 MB chosen, labeled 8 MB
+ *   budget 2.75-6 MB  ->  9.0 MB heap       6 MB chosen, labeled 16 MB
+ *   budget 6.5-12 MB  -> 17.0 MB heap      12 MB chosen, labeled 32 MB
+ *   budget 13-26 MB   -> 33.0 MB heap      26 MB chosen, labeled 64 MB
  *
  * Each budget sits inside its step, so the label is an honest ceiling rather
  * than a target the pane creeps past — the renderer's scratch buffers come out
@@ -173,7 +173,7 @@ const MAX_PREREADY_BYTES = 1024 * 1024
  * number into something arbitrary rather than erroring. Anything that is not a
  * known tier (a corrupt or hand-edited `localStorage` entry, `NaN`, a tier
  * retired by a later version) therefore falls back to the smallest tier rather
- * than being arithmetically coerced into some neighbouring value.
+ * than being arithmetically coerced into some neighboring value.
  */
 export function scrollbackBudgetBytesFor(footprintMB: number): number {
   return SCROLLBACK_BUDGET_BY_FOOTPRINT_MB[footprintMB] ?? SCROLLBACK_BUDGET_BY_FOOTPRINT_MB[DEFAULT_FOOTPRINT_MB]
@@ -183,7 +183,7 @@ export function scrollbackBudgetBytesFor(footprintMB: number): number {
  * Roughly how many rows a budget buys at a given width — the number shown in
  * Settings and the status bar.
  *
- * Approximate on purpose, and labelled that way wherever it is rendered. The
+ * Approximate on purpose, and labeled that way wherever it is rendered. The
  * core evicts whole pages, so the true figure lands a little under this;
  * measured against the vendored binary across 80-400 columns the error runs
  * -27% to +8%, and all of the -27% is the smallest tier, where a budget only a
@@ -678,7 +678,7 @@ export class GhosttyEngine implements TerminalEngine {
 
       // Before the buffered writes below: those writes can carry the very
       // sequence that turns the Kitty protocol on, and an encoder made
-      // afterwards would be reading a terminal whose state had already moved.
+      // afterward would be reading a terminal whose state had already moved.
       // (It reads that state per keystroke, so this is belt and braces — but
       // the ordering is free and the alternative is a rule to remember.)
       this.keyEncoder = KeyEncoder.create(this.wasm, this.termPtr)
@@ -716,7 +716,7 @@ export class GhosttyEngine implements TerminalEngine {
       // therefore left mode 12 false while the preference said blink, and since
       // the render loop now takes the blink from the core, the cursor stopped
       // blinking at all. The write is one short sequence per pane; there is
-      // nothing here worth optimising.
+      // nothing here worth optimizing.
       writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
         cursorStyleSequence(this._cursorStyle, this._cursorBlink),
       ))
@@ -815,7 +815,7 @@ export class GhosttyEngine implements TerminalEngine {
     //     first paint.
     //   - the cell metrics. measureText reports the fallback face until the
     //     configured font has actually loaded.
-    // Neither necessarily changes the container's box again afterwards, so
+    // Neither necessarily changes the container's box again afterward, so
     // Terminal.tsx's ResizeObserver may never fire to correct it — which is
     // why the grid stayed stale until the window was resized by hand. Re-fit
     // on the next frame and once fonts are ready to close both windows.
@@ -1008,7 +1008,7 @@ export class GhosttyEngine implements TerminalEngine {
    * than one character (a grapheme cluster) or none at all (the trailing half
    * of a wide character), so search still needs to map an offset back to a
    * column, and `columnText` still answers "what does column `c` show".
-   * Nothing materialises a per-cell string unless it actually needs one, and
+   * Nothing materializes a per-cell string unless it actually needs one, and
    * the two bulk callers no longer need any.
    */
   private readRows(fromAbs: number, toAbs: number): RowText[] {
@@ -1340,7 +1340,7 @@ export class GhosttyEngine implements TerminalEngine {
    *
    * The whole of the history flicker's rendering: the caller toggles this a
    * few times and the recalled command blinks in place, with nothing drawn
-   * over it and no colour introduced that the theme did not already have. See
+   * over it and no color introduced that the theme did not already have. See
    * `WebGLRenderer.hiddenSpans`.
    */
   setHiddenSpans(spans: { row: number; from: number; to: number }[] | null): void {
@@ -1379,7 +1379,7 @@ export class GhosttyEngine implements TerminalEngine {
    * `http`/`https`: this is the last point before the string reaches the
    * platform opener, the two are far apart in the code, and an OSC 8 URI
    * (later) never passes through detection at all. On Windows the cost of
-   * being wrong is not a broken link — a `file://` or UNC-flavoured target can
+   * being wrong is not a broken link — a `file://` or UNC-flavored target can
    * provoke an outbound SMB authentication attempt and leak credentials to a
    * host of the attacker's choosing.
    *
@@ -1519,7 +1519,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.wasm.exports.ghostty_render_state_is_held?.(this.termPtr) !== 1
     ) {
       // update() rebuilds the render snapshot and has to run before the
-      // viewport is read; mark_clean() afterwards resets the damage state.
+      // viewport is read; mark_clean() afterward resets the damage state.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
       const scrollbackCount = this.snapshotScrollbackLength()
       // Read straight after the update, so it is the depth the snapshot below
@@ -1534,7 +1534,7 @@ export class GhosttyEngine implements TerminalEngine {
       const cursorCol = this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr)
       const cursorRow = this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr)
       // DECSCUSR carries blink as well as shape (1/3/5 blink, 2/4/6 are
-      // steady), and honouring only the shape made every steady variant blink
+      // steady), and honoring only the shape made every steady variant blink
       // anyway. The phase is still ours — the core says *whether* to blink, the
       // timer says when — so a steady cursor is simply always on.
       const cursorBlinks =
@@ -1606,7 +1606,7 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.style.display = 'block'
     // A <canvas>, like an <img>, is draggable as an image by default: a click
     // that moves a pixel starts a native image-drag of the pane, which shows the
-    // no-drop cursor and a grey drag-image and steals focus/input until it ends
+    // no-drop cursor and a gray drag-image and steals focus/input until it ends
     // (and WebView2 won't cancel it on Esc). We run our own selection off mouse
     // events, so the native drag is pure harm — turn it off at the source.
     this.canvas.draggable = false
@@ -1949,7 +1949,7 @@ export class GhosttyEngine implements TerminalEngine {
    * Parses `bytes`, dispatching OSC and bell events at the point each one
    * actually occurs in the stream.
    *
-   * The parser is fed in segments split at each recognised sequence, so a
+   * The parser is fed in segments split at each recognized sequence, so a
    * handler runs only once everything preceding it — including that sequence —
    * has been parsed, which is what a real parser callback would give. The
    * previous shape scanned the whole chunk up front and dispatched before
@@ -2020,7 +2020,7 @@ export class GhosttyEngine implements TerminalEngine {
   // applied to output it was never meant to color.
   write(data: Uint8Array | string): void {
     // A dead core cannot be written to, and the parser's state machine is
-    // already desynchronised from the stream by whatever it refused. Dropping
+    // already desynchronized from the stream by whatever it refused. Dropping
     // the rest quietly is fine here *because* the failure was reported once,
     // loudly, at the point it happened.
     if (this.fatalError !== null) return
@@ -2370,7 +2370,7 @@ export class GhosttyEngine implements TerminalEngine {
   // A live theme change can only reach part of the way down. The core resolves
   // each cell's color from the palette it was built with, exposes no setter for
   // it, and rejects the OSC sequences that would otherwise do the job ("OSC 10
-  // requires an allocator, but none was provided"), so recolouring already-
+  // requires an allocator, but none was provided"), so recoloring already-
   // parsed cells is out without recreating the terminal and losing scrollback.
   //
   // What does carry over is the default foreground/background, which is most of
@@ -2430,9 +2430,9 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Colour space to blend glyph coverage in. Unlike the palette, this
+   * Color space to blend glyph coverage in. Unlike the palette, this
    * applies fully and immediately to everything already on screen: it is a
-   * property of how cells are *drawn*, not of what colour the core resolved
+   * property of how cells are *drawn*, not of what color the core resolved
    * them to, so there is no half-updated state to reason about.
    */
   setTextBlending(mode: TextBlending): void {
@@ -2477,7 +2477,7 @@ export class GhosttyEngine implements TerminalEngine {
       this.renderer.dispose()
       this.renderer = new WebGLRenderer(this.canvas, this._cols, this._rows, fonts, fontSize)
       this.renderer.onRestore = this.onRendererRestored
-      // A fresh renderer starts on its own grey-on-black defaults, and those
+      // A fresh renderer starts on its own gray-on-black defaults, and those
       // are what every cell *without* an explicit SGR color renders as. Losing
       // the theme here therefore recolors exactly the default-colored text
       // while explicitly-colored text keeps its palette — which reads as the
@@ -2521,7 +2521,7 @@ export class GhosttyEngine implements TerminalEngine {
       .catch(() => {})
   }
   // The core takes its scrollback limit at construction and exposes no setter,
-  // so a change here only takes effect for panes opened afterwards. Recreating
+  // so a change here only takes effect for panes opened afterward. Recreating
   // the terminal to apply it live would throw away the scrollback it governs.
   //
   // Landing before the terminal exists is the normal case rather than a race:
@@ -2687,7 +2687,7 @@ export class GhosttyEngine implements TerminalEngine {
 
   /** `readRows` under the name the engine interface uses. Public because
    *  prompt-input tracking reads the line being typed straight off the grid
-   *  rather than modelling the remote shell's line editor — see
+   *  rather than modeling the remote shell's line editor — see
    *  lib/promptInput.ts. */
   readRowText(fromAbs: number, toAbs: number): RowText[] {
     return this.readRows(fromAbs, toAbs)
@@ -2821,7 +2821,7 @@ export class GhosttyEngine implements TerminalEngine {
   focus(): void {
     // A programmatic refocus (tab switch, window/app return) is where a stranded
     // IME composition gets cleared — an app switch can leave `composing` stuck
-    // true with no blur/compositionend, dropping all printable input afterwards.
+    // true with no blur/compositionend, dropping all printable input afterward.
     // Plain clicks focus via the input handler directly and skip this, so an
     // in-window click mid-composition is left untouched.
     this.inputHandler?.cancelComposition()
@@ -2902,7 +2902,7 @@ export class GhosttyEngine implements TerminalEngine {
     // Sampled before the sync below, because the gap worth reporting is the one
     // a copy taken right now would have hit: `readRows` splits on whatever
     // snapshot the last frame left behind, while `readWrapFlags` splits on the
-    // live count. Reading them afterwards would only ever prove they agree.
+    // live count. Reading them afterward would only ever prove they agree.
     const liveBefore = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
     const snapshotBefore = this.snapshotScrollback
     // Rebuilt rather than inherited from whenever the last frame happened to
@@ -2966,7 +2966,7 @@ export class GhosttyEngine implements TerminalEngine {
     // seconds of a frozen window to produce it, for a keystroke whose whole
     // point is to be cheap enough to hit the moment something looks wrong.
     // The margin is what makes it more than the selection: a wrongly joined
-    // pair is only recognisable against the rows on either side of it.
+    // pair is only recognizable against the rows on either side of it.
     const MARGIN = 20
     const from = Math.max(0, (sel ? Math.min(sel.start.y, sel.end.y) : this.viewportY) - MARGIN)
     const to = Math.min(

@@ -150,7 +150,7 @@ whole grid redrawn, colors and all:
 RAW is what makes the difference, and it is worth being precise about why: it
 returns `page.Cell.C`, the whole cell bit-cast into one u64, so four calls per
 cell become one and the unpacking happens in JS where it is nearly free. What
-it cannot do is amortise the boundary crossing — `GhosttyCell` is a u64 *value*,
+it cannot do is amortize the boundary crossing — `GhosttyCell` is a u64 *value*,
 not a pointer to the row's cell array — so the model stays at one call per cell
 and RAW alone does not carry resolved colors. Fetching those too is the 1.4x-2.5x
 row, and that is the honest number for a drop-in replacement of today's read.
@@ -200,7 +200,7 @@ Three things decide that, and all three are easy to get wrong:
   instead costs 1.7x, and it is the accessor upstream documents.
 - **`grid_ref` resolution really is O(depth)**, as `terminal.h` warns: 14 ns at
   row 0 rising linearly to 188 ns at row 39,540 (`gridrefdepth.mjs`). One resolve
-  per row amortises that over `cols` cells, which is why the pass stays linear
+  per row amortizes that over `cols` cells, which is why the pass stays linear
   enough to win. One resolve per *cell* does not.
 
 ### The trap that inverted this result

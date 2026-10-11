@@ -169,7 +169,7 @@ run('render-state dirty', () => {
 })
 
 /**
- * The same two behaviours, but asserted *through the shim*, which is what
+ * The same two behaviors, but asserted *through the shim*, which is what
  * actually ships.
  *
  * The block above pins what the engine does. It would pass just as happily with

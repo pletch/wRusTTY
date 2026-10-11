@@ -197,7 +197,7 @@ describe('the "ask each time" auth option', () => {
  * rather than `true`. A stored `true` would read as an override, and it cannot
  * be one — the global switch and the backend's credential rule both still
  * apply — so writing it down would make the profile claim something the app
- * cannot honour.
+ * cannot honor.
  */
 describe('the auto-reconnect opt-out', () => {
   /** Fills in a session, sets the checkbox, saves, and returns the profile. */

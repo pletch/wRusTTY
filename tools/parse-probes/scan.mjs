@@ -5,7 +5,7 @@
  * because the app registers OSC and bell handlers. Its cost is extremely
  * sensitive to content shape — the byte it hunts for determines whether a
  * buffer costs one memchr pass or one call per escape — so a single "typical"
- * payload would hide the thing being optimised.
+ * payload would hide the thing being optimized.
  *
  * `brackets` and `brackets+sgr` are regression guards, not targets: any scheme
  * that searches for ']' rather than ESC gets fast on escape-dense input by

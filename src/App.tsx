@@ -289,7 +289,7 @@ function App() {
   // quick-connect palette, closing the tab in front of it. The window focus
   // listener covers the case with no id change to hang it off: a marker set
   // while the whole window was in the background, where alt-tabbing back is
-  // itself the acknowledgement.
+  // itself the acknowledgment.
   useEffect(() => {
     if (!focusedPaneId) return
     const clear = () => dispatchPaneRuntime({ type: 'attentionCleared', paneId: focusedPaneId })
@@ -420,7 +420,7 @@ function App() {
   //
   // Both together, because they are two halves of one answer: the text tone
   // flips on a light theme, so the surface under it has to move in the same
-  // breath or the two end up the same colour.
+  // breath or the two end up the same color.
   useEffect(() => {
     const theme = findTheme(terminalSettings.themeName)
     document.documentElement.style.setProperty('--chrome-rgb', chromeRgb(theme))
@@ -658,7 +658,7 @@ function App() {
       next.delete(id)
       return next
     })
-    // Closing the active tab can reveal its neighbour, which was hidden (and
+    // Closing the active tab can reveal its neighbor, which was hidden (and
     // so sized 0x0) until now — handled by the layoutSignature-keyed refit
     // effect below rather than a call here, same as every other tree change.
   }
@@ -769,7 +769,7 @@ function App() {
     // there is nothing to unlock, so those panes go straight to their connect
     // forms rather than showing an unlock dialog that can't help.
     if (sessionSnapshot.needsVaultUnlock(workspace.tabs, sessions) && vaultStatus === 'locked') {
-      // The origin has to survive the prompt, or unlocking would materialise
+      // The origin has to survive the prompt, or unlocking would materialize
       // the workspace next to the blank tab instead of over it.
       setModal({ kind: 'workspacePrompt', workspace, originTabId: originTabId ?? activeTabId })
       return
@@ -1163,7 +1163,7 @@ function App() {
   }
 
   // Fire-and-forget by design: a magic packet is a UDP broadcast with no
-  // acknowledgement of any kind, so "sent" is the only thing that can honestly
+  // acknowledgment of any kind, so "sent" is the only thing that can honestly
   // be reported. Whether the machine actually wakes is answered by connecting
   // to it, which is the other half of the feature.
   function wakeSessionProfile(profile: SessionProfile) {
@@ -1408,12 +1408,12 @@ function App() {
   // anything being composited with CSS opacity on every frame.
   const backgroundLayers = effectiveBackgroundLayers(appearance, windowFocused)
   const configuredTheme = findTheme(terminalSettings.themeName)
-  // Unfocused, every surface also changes colour, to the tab strip's: the
+  // Unfocused, every surface also changes color, to the tab strip's: the
   // lighter tone the inactive tabs already sit in. Thinning the background
   // alone only reveals what is behind the window, and under Mica that is a
-  // flat grey Windows picks — about as dark as Tokyo Night itself — so the
+  // flat gray Windows picks — about as dark as Tokyo Night itself — so the
   // fade was invisible there and the strip, losing its wash, went darker.
-  // The colour change reads the same over any wallpaper and any backdrop.
+  // The color change reads the same over any wallpaper and any backdrop.
   const faded = !windowFocused && appearance.unfocusedDimPercent > 0
   const backgroundOverride = faded ? stripColor(configuredTheme) : null
   const paneSettings =
@@ -1442,14 +1442,14 @@ function App() {
        * removing it, and segmenting the line leaves 2px breaks at the gaps
        * between tabs). Dropping it outright is the better answer anyway: the
        * strip's own wash is what separates it from the terminal by tone, and
-       * the active tab, painted in the terminal's own colour, now runs
+       * the active tab, painted in the terminal's own color, now runs
        * straight down into it with nothing crossing the join. */}
       <div
         className="flex h-10 shrink-0 items-stretch"
         // Away from the theme's background rather than a fixed direction —
         // see stripOverlay. A hardcoded bg-black/20 here had nowhere to go on
         // Campbell and left the strip, the quiet tabs and the active tab all
-        // the same colour.
+        // the same color.
         //
         // Dropped while the window is faded. The active tab sits on this wash
         // and is meant to read as the top of the terminal, but it is
@@ -1947,7 +1947,7 @@ function App() {
                   onBell={() => {
                     // Sound fires for every bell, including one from the pane
                     // you're looking at: that's the case where a bell is most
-                    // often deliberate (a script signalling it's done while
+                    // often deliberate (a script signaling it's done while
                     // you read something else on screen), and it's the half
                     // of the bell a terminal has always had.
                     if (terminalSettings.bellSound) playBell()

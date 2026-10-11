@@ -64,7 +64,7 @@ Taken for three core changes, all reachable from ordinary remote output:
   reset does, which includes the cursor style: back to the *configured*
   default, as for RIS. `newExports.test.ts` had a case asserting DECSTR left
   the cursor alone, written while the core ignored it and never checked
-  against an implementation; it now asserts the xterm behaviour.
+  against an implementation; it now asserts the xterm behavior.
 - **`6220a3617`** — with a set like DEC line drawing designated, anything
   above 0xFF printed as a space, and with the emoji's width kept the rest of
   the row shifted a column.
@@ -116,7 +116,7 @@ here was touched, bar the two integrity checks that are meant to fail.
 Taken for two core changes, both reachable from ordinary remote output:
 
 - **`bb20f8e45`** — RIS resets the palette. Measured on the previous binary: a
-  remote OSC 4 recoloured entry 1 and `ESC c` left it recoloured, so a program
+  remote OSC 4 recolored entry 1 and `ESC c` left it recolored, so a program
   that changed the palette kept it changed through `reset`. It goes back to the
   palette's *default*, which is the theme, because the shim sets the theme with
   `T_OPT_COLOR_PALETTE` and that is `changeDefault`, not a write to the current
@@ -132,9 +132,9 @@ previous one.
 
 Also in, smaller: `afded91df` (a saved cursor drifted back a cell when the pane
 was widened twice) and `36953bca8` (OSC 105 is parsed now, but the core still
-stores no special colours, so nothing changes).
+stores no special colors, so nothing changes).
 
-**One behaviour change to watch:** `9a4787d90` makes a same-size
+**One behavior change to watch:** `9a4787d90` makes a same-size
 `ghostty_terminal_resize` stop being a no-op. The grid is left alone, but
 synchronized output is ended and a size report goes out. `GhosttyEngine.resize`
 only reaches the core at the same size when forced, which is a font change, and
@@ -177,7 +177,7 @@ Taken for four core changes, all reachable from ordinary remote output:
 - **`520d8f55a`** — CAN and SUB cancel an OSC in progress. The core ran the
   command anyway, so `ESC ] 2 ; title CAN` set the title. `oscCancel.test.ts`
   pins it against the shipped binary, and fails on the previous one with the
-  cancelled title winning. `oscScanner.ts` had the same hole on our side and
+  canceled title winning. `oscScanner.ts` had the same hole on our side and
   is fixed separately.
 - **`d4f45bee3`** — reverse wraparound could move a restored cursor down to
   the top margin when clearing pending wrap used up the last step left.
@@ -231,7 +231,7 @@ Taken for three things, all reachable:
   gone from scrollback. With the pull off nothing was lost. `Terminal.tsx` turns it
   off for local and elevated panes through a shim-only
   `ghostty_terminal_set_resize_pull_scrollback`; `shim.test.ts` pins both
-  behaviours against the shipped binary, so it runs on CI.
+  behaviors against the shipped binary, so it runs on CI.
 - **`e50779498`** (#14317) — `OPT_RENDER_HOLD`, a callback at the exact byte
   where synchronized output (mode 2026) begins and ends. Before it the core
   only set the mode bit, and we did not read that either, so a redraw split
@@ -377,7 +377,7 @@ Inert here, as before: the large kitty clipboard / paste / drag-and-drop batch
 `94b6dae4` explicitly gates 5522 reports on a clipboard-read callback — which
 sits well with leaving `CLIPBOARD_READ = 38` unset. `dda8e6f3`'s secure-random
 override is a swappable pointer used only by clipboard grants. `ee8095d3` is
-snapshot-only and we call no snapshot API. `8c5bc3d2` SIMD-optimises OSC string
+snapshot-only and we call no snapshot API. `8c5bc3d2` SIMD-optimizes OSC string
 reading, which is the path `oscScanner.ts` runs ahead of; both parse probes were
 re-run and are unchanged.
 
@@ -430,7 +430,7 @@ user's clipboard to whatever is on the far end of the connection.
   replaces reading the slot with a `DataView`. Buffers are now aligned to the
   target's maximum C ABI alignment (16), which several call sites here were
   quietly assuming. This is most of the 201 -> 180 drop.
-- **`16c833c5f`** removed `ghostty_render_state_colors_get` in favour of an
+- **`16c833c5f`** removed `ghostty_render_state_colors_get` in favor of an
   `RS_DATA_COLORS` key, and added `RS_DATA_CURSOR` — a structured cursor read
   that replaces the eight separate gets a renderer needed per frame.
 
@@ -510,7 +510,7 @@ None of these are derivable by reading the headers, and each fails *silently*.
   caller memory, so a row is walked by **mutating `ref.x`** rather than
   re-resolving. This is the difference between 0.8x and 9.1x.
 - **`grid_ref` resolution is O(scrollback depth)** — 14 ns at row 0, 188 ns at
-  row 39,540. One resolve per row amortises it over `cols` cells; one per cell
+  row 39,540. One resolve per row amortizes it over `cols` cells; one per cell
   does not.
 - **`get(state, ROW_ITERATOR, out)` wants the slot holding the handle**, not the
   handle. `render.zig` does `const it = out.* orelse ...`. Otherwise -2.
@@ -523,14 +523,14 @@ None of these are derivable by reading the headers, and each fails *silently*.
   `OPT_SCROLLBACK_MAX_LINES` left 456 rows of a requested 10,000 at 200 cols,
   byte-pruned. Set `OPT_SCROLLBACK_MAX_BYTES` too.
 - **`ghostty_terminal_vt_write` returns `void`**, not a `GhosttyResult`, unlike
-  almost every neighbouring call. Processing failures come back out-of-band via
+  almost every neighboring call. Processing failures come back out-of-band via
   `T_DATA_VT_PROCESSING_ERROR`. Wrapping it in an `expectOk`-style check
   compares `undefined` against 0 and throws on a write that worked.
 - **`row_iterator_next` and `row_cells_next` return bools**, not results, so a
   result check around either inverts it exactly: a successful advance (1) reads
   as failure and an exhausted iterator (0) reads as success.
 - **`GhosttyStyle` is read out of caller memory** — there is no `style_get` —
-  and its 72-byte layout is not what `style.h` reads as: the colour union is
+  and its 72-byte layout is not what `style.h` reads as: the color union is
   8-aligned, putting the booleans at 56-63. `size` is versioned in both
   directions; the callee writes back what it filled.
 - **`GhosttyColorRgb` is 3 packed bytes.** At stride 4 a palette of
@@ -538,16 +538,16 @@ None of these are derivable by reading the headers, and each fails *silently*.
   wrong.
 - **`terminal_set`'s `value` points *at* the data.** For a scalar that is a
   pointer to the scalar; for `OPT_COLOR_PALETTE` it is the array pointer itself.
-  A pointer-to-pointer returns `SUCCESS` and leaves every colour black.
-- **Cells with no explicit colour report `INVALID_VALUE`**, not a colour. Our
+  A pointer-to-pointer returns `SUCCESS` and leaves every color black.
+- **Cells with no explicit color report `INVALID_VALUE`**, not a color. Our
   ABI pre-resolves defaults on the far side of the boundary, so any reader has
   to substitute the configured foreground/background itself.
 - **The packed cell's payload is a union** — a codepoint, *or* a background
-  colour for a cell with no text. Unpacking it unconditionally turns a blank
+  color for a cell with no text. Unpacking it unconditionally turns a blank
   painted by `ED`/`EL` into a control character: a cleared row with background
   `0x445566` reads back as codepoint 1. Check the content tag first.
-- **`grid_ref` has no resolved-colour accessor.** The render iterator's
-  `FG_COLOR`/`BG_COLOR` keys flatten a cell's colour from its three sources;
+- **`grid_ref` has no resolved-color accessor.** The render iterator's
+  `FG_COLOR`/`BG_COLOR` keys flatten a cell's color from its three sources;
   `grid_ref` hands over the raw cell and the style and nothing else, so a reader
   has to reproduce the rule — foreground from the style with palette indices
   resolved, background from the cell's **content tag ahead of** the style. The
@@ -591,7 +591,7 @@ None of these are derivable by reading the headers, and each fails *silently*.
   x/y are explicitly undefined, so "visible" on our side has to mean both.
 - **A default foreground only sticks if a background is set too.** Set
   `OPT_COLOR_FOREGROUND` alone and the *render state* reports plain white
-  forever, while `terminal_get(COLOR_FOREGROUND)` reports the colour that was
+  forever, while `terminal_get(COLOR_FOREGROUND)` reports the color that was
   set — the two disagree, so nothing looks wrong. Set both, in either order,
   and both apply; black counts. This bites through our config, where `0` means
   "let the core pick": a theme whose background is `#000000` packs as 0, the
@@ -664,7 +664,7 @@ split collapses into one path. `ghostty_grid_ref_hyperlink_uri` and
   core holds the default across a reset and the ordering question disappears.
   Setting them needs a cursor style in `TerminalConfig`, which it does not
   carry, so the shim answers both with 0 and `restoreCursorAfterReset` never
-  fires. Tracked in the status list — it is the port's one open behaviour gap.
+  fires. Tracked in the status list — it is the port's one open behavior gap.
 
 ## Native search, and the four types it brought with it
 
@@ -696,7 +696,7 @@ The ABI facts, none of them guessable and all of them now asserted against
 - **`GhosttyString` is `{ ptr, len }`** and the needle's bytes are copied, so
   the buffer they came from is free the moment the call returns.
 
-And three facts about behaviour that cost as much to find as any layout:
+And three facts about behavior that cost as much to find as any layout:
 
 - **A match is only valid until the next terminal write.** Every read here is
   feed, read, convert to plain integers, done — nothing is cached across a
@@ -762,7 +762,7 @@ And three facts about behaviour that cost as much to find as any layout:
       same queries.
 - [x] `#176` extracted as a standalone patch against the pin, and a binary at
       the pin built with it applied — `patches/ghostty-main-esc-k.patch`,
-      `main/vendor-main/`. The parity suite asserts the *behaviour* (an `ESC k`
+      `main/vendor-main/`. The parity suite asserts the *behavior* (an `ESC k`
       payload is swallowed), not `git apply`'s exit code.
 - [x] **The binary swapped.** `vendor/ghostty-vt.wasm` is `main` at the pin,
       stripped: 1,308,136 bytes against 742,403, the port's whole size cost.
@@ -848,5 +848,5 @@ sending, and whether to ask before pasting.
 
 Producing the binary needs **Zig 0.16.0 on Linux/WSL** — it is installed in the
 WSL Debian on this machine; drive it with `wsl.exe -e bash -lc`. The recipe,
-the strip step and what has to be re-measured afterwards are in
+the strip step and what has to be re-measured afterward are in
 `src/lib/ghostty/vendor/README.md`. Build under `~`, not `/mnt/c`.

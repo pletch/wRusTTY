@@ -158,7 +158,7 @@ function authorityIsSafe(authority: string | null): boolean {
   // Percent-encoding, which otherwise smuggles the very homoglyphs the loop
   // below exists to reject: `%D0%B0pple.com` is plain ASCII here and Cyrillic
   // `аpple.com` by the time the browser has decoded it and resolved the IDN.
-  // The raw form is already refused; without this the defence holds only
+  // The raw form is already refused; without this the defense holds only
   // against the spelling of the attack, not the attack.
   if (authority.includes('%')) return false
   for (let i = 0; i < authority.length; i++) {
@@ -189,7 +189,7 @@ export function findUrls(line: string): UrlMatch[] {
  * Checked again immediately before opening, not only at detection: the opener
  * passes the string to the OS, and the two points are far enough apart in the
  * code that this is not the same check twice. On Windows in particular a
- * `file://` or UNC-flavoured target can provoke an outbound SMB authentication
+ * `file://` or UNC-flavored target can provoke an outbound SMB authentication
  * attempt and leak credentials to a host of the attacker's choosing;
  * `vbscript:`, `javascript:` and whatever custom schemes other installed
  * software has registered are the same class of problem.

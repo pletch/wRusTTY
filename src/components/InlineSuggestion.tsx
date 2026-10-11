@@ -31,13 +31,13 @@ import { fitToCells, toCellUnits } from '../lib/cellText'
  * merely unlikely, and is what the terminal itself does. See lib/cellText.ts.
  *
  * Not italic, for the same reason. A monospace family usually has no true
- * italic face, so the browser synthesises an oblique whose metrics differ
+ * italic face, so the browser synthesizes an oblique whose metrics differ
  * again — and once each character is boxed, a slanted glyph leans out of its
  * box and gets clipped. Dimming alone reads clearly enough as "not yet real".
  *
  * **And nudged onto the grid's baseline**, which is the vertical half of the
- * same argument. A line box centres the face's own ascent and descent; the
- * atlas centres a measured box and rounds it. Those agree for some faces and
+ * same argument. A line box centers the face's own ascent and descent; the
+ * atlas centers a measured box and rounds it. Those agree for some faces and
  * not others — in Monaspace Neon and JetBrains Mono the ghost text sat a pixel
  * above the real text, in Fira Code and Consolas it did not. See
  * lib/cellBaseline.ts.
@@ -109,7 +109,7 @@ export function InlineSuggestion({
           style={{
             display: 'inline-block',
             width: unit.cells * cell.width,
-            // Nothing may lean into its neighbour's column.
+            // Nothing may lean into its neighbor's column.
             overflow: 'hidden',
           }}
         >

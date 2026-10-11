@@ -352,7 +352,7 @@ describe('weight', () => {
 })
 
 describe('letter spacing', () => {
-  it('draws the glyph centred in the widened cell rather than against its edge', () => {
+  it('draws the glyph centered in the widened cell rather than against its edge', () => {
     // Cell 12 wide, 4 of which is spacing: 2 either side, measured from the
     // origin of the one-slot scratch surface everything is drawn on.
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
@@ -389,7 +389,7 @@ describe('letter spacing', () => {
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
     ctxStub.fillRect.mockClear()
     atlas.getGlyph(0x2500)
-    // A rule is drawn as two arms from the centre, so what matters is where
+    // A rule is drawn as two arms from the center, so what matters is where
     // the pair starts and ends rather than how wide either one is.
     const lefts = ctxStub.fillRect.mock.calls.map((c) => c[0] as number)
     const rights = ctxStub.fillRect.mock.calls.map((c) => (c[0] as number) + (c[2] as number))
@@ -405,9 +405,9 @@ function rgbaAllocations(gl: WebGL2RenderingContext): number[] {
   return calls.filter((c) => c[2] === 13).map((c) => c[3] as number)
 }
 
-describe('colour glyphs', () => {
+describe('color glyphs', () => {
   /**
-   * A readback where the glyph's pixels carry the face's own colours rather
+   * A readback where the glyph's pixels carry the face's own colors rather
    * than the white everything here is drawn in — which is what a COLR or CBDT
    * emoji produces, and the only signal the atlas uses to tell one apart.
    */
@@ -429,7 +429,7 @@ describe('colour glyphs', () => {
     expect(atlas.getGlyph(65).color).toBe(false)
   })
 
-  it('marks a glyph the face painted in its own colours', () => {
+  it('marks a glyph the face painted in its own colors', () => {
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     paintingInColor()
     expect(atlas.getGlyph(0x1f600, GLYPH_WIDE).color).toBe(true)
@@ -453,7 +453,7 @@ describe('colour glyphs', () => {
     expect(rgbaAllocations(gl)).toEqual([1, 512])
   })
 
-  it('packs colour out of a cursor of its own, spending no coverage slot', () => {
+  it('packs color out of a cursor of its own, spending no coverage slot', () => {
     // The trial draw happens on the coverage canvas because that is what the
     // detection reads back, but the slot is handed back: the next ordinary
     // glyph takes it.
@@ -470,7 +470,7 @@ describe('colour glyphs', () => {
     expect(emoji.color).toBe(true)
   })
 
-  it('normalizes a colour rect against the companion, not the coverage atlas', () => {
+  it('normalizes a color rect against the companion, not the coverage atlas', () => {
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 8, 16)
     paintingInColor()
     const emoji = atlas.getGlyph(0x1f600)
@@ -492,12 +492,12 @@ describe('colour glyphs', () => {
     // Fill the coverage atlas until it doubles.
     for (const cp of [65, 66, 67, 68]) atlas.getGlyph(cp)
     expect(rgbaAllocations(gl)).toEqual([1, 512])
-    // The colour rect's UVs are untouched by a growth that was not its own.
+    // The color rect's UVs are untouched by a growth that was not its own.
     expect(emoji.u1 - emoji.u0).toBeCloseTo(BIG / 512, 6)
     warn.mockRestore()
   })
 
-  it('doubles the companion on its own when colour glyphs fill it', () => {
+  it('doubles the companion on its own when color glyphs fill it', () => {
     const gl = makeGlStub()
     // A cell a quarter of the starting companion: four rows of one slot each.
     const atlas = new GlyphAtlas(gl, FONTS, 14, 512, 128)
@@ -549,7 +549,7 @@ describe('the scratch surface', () => {
     spy.mockRestore()
     warn.mockRestore()
     // Growth is a mirror reallocation now: no canvas to recreate, and so no
-    // context state to re-establish afterwards.
+    // context state to re-establish afterward.
     expect(canvases).toBe(1)
   })
 })
@@ -562,7 +562,7 @@ describe('dispose', () => {
     expect(gl.deleteTexture).toHaveBeenCalledWith(atlas.texture)
   })
 
-  it('deletes the colour companion too, which is a second allocation', () => {
+  it('deletes the color companion too, which is a second allocation', () => {
     const gl = makeGlStub()
     const atlas = new GlyphAtlas(gl, FONTS, 14, 8, 16)
     atlas.dispose()

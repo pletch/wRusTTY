@@ -9,7 +9,7 @@ Rust + [Tauri 2](https://v2.tauri.app/) under a React front end. The installer
 is under 10 MB and it runs on the WebView2 that ships with Windows — there is no
 bundled Chromium, no Node runtime, and no ~200 MB of `app.asar` behind it.
 
-![wRusTTY with a live SSH session, showing true colour, underline styles, box drawing and ligatures](docs/screenshots/terminal.png)
+![wRusTTY with a live SSH session, showing true color, underline styles, box drawing and ligatures](docs/screenshots/terminal.png)
 
 ## Why this exists
 
@@ -35,7 +35,7 @@ curly underlines just work.
   prompts relayed verbatim
 - **Telnet** — full option negotiation (ECHO, SGA, NAWS, TTYPE)
 - **Serial** — COM enumeration with hotplug, baud/parity/stop/flow, DTR/RTS
-  toggles, break signalling for Cisco password recovery and ROMMON, local echo
+  toggles, break signaling for Cisco password recovery and ROMMON, local echo
   and CR/LF/CRLF line-ending control, plus Normal / Local echo / Readline /
   Readline-hex input modes
 - **Local shells** — PowerShell 7, Windows PowerShell, CMD, Git Bash and every
@@ -68,7 +68,7 @@ curly underlines just work.
   and any saved session can opt out
 
 **Terminal**
-- Ghostty VT core + WebGL renderer: 24-bit colour, wide characters and grapheme
+- Ghostty VT core + WebGL renderer: 24-bit color, wide characters and grapheme
   clusters, all five underline styles, overline, DECSCUSR cursor shapes
 - Kitty keyboard protocol, `modifyOtherKeys` and legacy xterm encoding, chosen
   from the modes the far end sets
@@ -108,7 +108,7 @@ curly underlines just work.
   flagged and a guard against binding a key that is ordinary typing
 - Mica/acrylic window material, per-pane background opacity, eleven built-in
   themes, a custom theme editor, and an importer for iTerm2 `.itermcolors` and
-  VS Code colour themes; an unfocused window can fade or turn see-through
+  VS Code color themes; an unfocused window can fade or turn see-through
 - Shell integration (OSC 133/633) for per-command status and a notification when
   a long command finishes in the background — snippets for bash, zsh, fish and
   PowerShell
@@ -188,7 +188,7 @@ renders untrusted remote output. `tauri build` never enables it.
 
 The benchmark harness and the measurement instruments are gated by Vite mode, so
 a release build contains neither — their `import.meta.env` branches are dead and
-no chunk is emitted. `npm run build:instrumented` gives you an optimised build
+no chunk is emitted. `npm run build:instrumented` gives you an optimized build
 that still carries them.
 
 You do **not** need Zig or WSL to build or change anything here; the Ghostty core
@@ -244,10 +244,10 @@ manager and front end are protocol-agnostic.
   defaults to `vt100`, since its remaining users are largely network gear.
 - **Backspace** is per session: `^?` (DEL) by default, `^H` for network gear and
   older Unix. Wrong one = backspace does nothing or echoes `^?`.
-- **24-bit colour** is requested with `COLORTERM=truecolor`, which sshd only
-  forwards if it is in `AcceptEnv`. If colours look limited, add it there or set
+- **24-bit color** is requested with `COLORTERM=truecolor`, which sshd only
+  forwards if it is in `AcceptEnv`. If colors look limited, add it there or set
   the session's terminal type to `xterm-direct`.
-- **Emoji render in colour** where the font has colour glyphs (Segoe UI Emoji
+- **Emoji render in color** where the font has color glyphs (Segoe UI Emoji
   does), from a second texture kept apart from the text atlas.
 - **Agent auth and `MaxAuthTries`**: an agent loaded with many keys can be cut
   off (OpenSSH defaults to 6 attempts) before the right one is reached.

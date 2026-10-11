@@ -241,9 +241,9 @@ fn keepalive_seconds(session: &PuttySession) -> Option<u64> {
 ///
 /// The identity records only the COM name PuTTY had — PuTTY stores no USB
 /// VID/PID, because it never resolved a port by anything else. That means an
-/// imported serial session starts out with exactly PuTTY's own behaviour
+/// imported serial session starts out with exactly PuTTY's own behavior
 /// (find `COM4`, fail if it moved), and gains the stable-across-replug
-/// behaviour once the user re-picks the adapter in the connect form, which
+/// behavior once the user re-picks the adapter in the connect form, which
 /// records its USB identity. Inventing an identity here would be worse: it
 /// would have to guess which attached adapter the session meant.
 fn to_serial_profile(session: &PuttySession, id: String) -> Option<SessionProfile> {

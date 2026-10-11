@@ -60,7 +60,7 @@ export const NEW_FOLDER_SENTINEL = '__new__'
 export const MAC_PATTERN =
   '([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|([0-9A-Fa-f]{4}\\.){2}[0-9A-Fa-f]{4}|[0-9A-Fa-f]{12}'
 
-/** The longest wake wait the backend will honour (wake::MAX_WAIT_SECONDS).
+/** The longest wake wait the backend will honor (wake::MAX_WAIT_SECONDS).
  * Mirrored here so the form's `max` refuses it while the field is still on
  * screen, rather than `save_session` doing it after the dialog has closed. */
 export const MAX_WAKE_WAIT_SECONDS = 600
@@ -69,7 +69,7 @@ export const MAX_WAKE_WAIT_SECONDS = 600
  *
  * Stored canonically rather than as typed so the same address saved from two
  * machines — one copied out of ipconfig with hyphens, one off a switch with
- * dots — reads as the same thing in the form afterwards. */
+ * dots — reads as the same thing in the form afterward. */
 export function normalizeMac(text: string): string | null {
   const hex = text.replace(/[:.\-\s]/g, '')
   if (!/^[0-9A-Fa-f]{12}$/.test(hex)) return null
@@ -258,7 +258,7 @@ export function connectDraftReducer(state: ConnectDraft, action: ConnectDraftAct
       // carries its own) — deliberately overwrites a hand-picked value,
       // since changing protocol is a large enough context switch that
       // carrying the old terminal type across would be the surprising
-      // behaviour, not this.
+      // behavior, not this.
       if (action.hasInitialTermType) {
         return { ...state, protocol: next, port }
       }

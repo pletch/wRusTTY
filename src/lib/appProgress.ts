@@ -54,7 +54,7 @@ export type Osc9Result =
   | { kind: 'ignore' }
 
 /**
- * Text from the far end lands in a toast and in the OS notification centre, so
+ * Text from the far end lands in a toast and in the OS notification center, so
  * it is bounded here rather than trusted. A host that wants to paper over the
  * screen has plenty of ways to do it inside the terminal grid; it does not get
  * one that escapes the grid.
@@ -89,7 +89,7 @@ export function parseOsc9(data: string): Osc9Result {
   // iTerm2 later defined the whole payload as notification text. They are
   // genuinely ambiguous for a message beginning with a digit and a semicolon,
   // and no terminal resolves that — this takes the same line Windows Terminal
-  // does and recognises only the two subcommands anyone emits, treating
+  // does and recognizes only the two subcommands anyone emits, treating
   // everything else as iTerm2 text. A notification that happens to start
   // "4;" or "9;" is the cost, and nothing sends one.
   if (sep !== -1) {
@@ -146,7 +146,7 @@ interface ProgressHandlers {
    * returned handle disposed when it comes down.
    *
    * A subscription rather than a plain flag because watching costs something:
-   * recognising `ESC c` puts a hunt for the letter 'c' through every byte the
+   * recognizing `ESC c` puts a hunt for the letter 'c' through every byte the
    * remote sends, so the tracker holds it open only for as long as there is an
    * indicator that a reset would have to take away. See
    * `GhosttyEngine.registerResetHandler`.

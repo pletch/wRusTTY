@@ -27,7 +27,7 @@
 //! So the privilege is held as **a process rather than a secret**: one channel
 //! per elevated edit, running a small root helper that copies a staged file
 //! over a destination and does nothing else. The password authenticates it
-//! once, at open, and is dropped immediately afterwards. What remains is a
+//! once, at open, and is dropped immediately afterward. What remains is a
 //! channel whose lifetime the user can see (the edit is listed as watched) and
 //! end (stop watching, close the pane, disconnect), and which cannot outlive
 //! the SSH session it rides on.
@@ -262,7 +262,7 @@ fn hopeless_policy(said: &str, code: Option<u32>) -> Option<SudoError> {
 
 /// Reads the answer to `sudo -v`, which authenticates and runs nothing.
 ///
-/// **Anything unrecognised means "ask for a password".** That is the whole
+/// **Anything unrecognized means "ask for a password".** That is the whole
 /// reason this is separate from [`classify`], and it is a correctness fix
 /// rather than a nicety. `-v` executes no command, so the only things it can
 /// fail on are authentication and policy — there is no third category for an
@@ -297,7 +297,7 @@ fn classify_probe(outcome: &ExecOutcome, had_password: bool) -> SudoError {
 /// Turns sudo's own complaint about a *command* into something the user can act
 /// on.
 ///
-/// Unlike [`classify_probe`], an unrecognised message here really can be a
+/// Unlike [`classify_probe`], an unrecognized message here really can be a
 /// third thing: the command under sudo failing on its own terms — no such file,
 /// read-only file system, out of space. So this one keeps the allowlist, and an
 /// unknown message stays an error rather than becoming a password prompt for a
@@ -424,7 +424,7 @@ impl SudoRunner {
     ///
     /// `mktemp` rather than picking a name and creating it over SFTP, for one
     /// reason: it creates the file `0600` in the same step. Writing first and
-    /// tightening the mode afterwards would leave the contents of a file the
+    /// tightening the mode afterward would leave the contents of a file the
     /// user needed root to read sitting world-readable in `/tmp` for a round
     /// trip.
     ///
@@ -456,7 +456,7 @@ impl SudoRunner {
     /// Starts the root helper and waits for it to say it is running.
     ///
     /// The password is used here and nowhere else. On return it can be dropped:
-    /// what authorises every later save is this channel's continued existence,
+    /// what authorizes every later save is this channel's continued existence,
     /// not a remembered secret.
     pub async fn start_writer(
         &self,
@@ -579,7 +579,7 @@ impl SudoWriter {
     /// Copies `staged` over `dest` as root.
     ///
     /// Both paths are sent as lines, so neither may contain one. A newline in a
-    /// filename is legal on POSIX and would desynchronise the helper — the next
+    /// filename is legal on POSIX and would desynchronize the helper — the next
     /// save would be reading this one's answer — so it is refused here rather
     /// than escaped into a framing this deliberately keeps too simple to get
     /// wrong.

@@ -1,5 +1,5 @@
 //! Serial transport: port enumeration, baud/data/parity/stop/flow control,
-//! DTR/RTS toggles, break signalling, local echo, and line-ending
+//! DTR/RTS toggles, break signaling, local echo, and line-ending
 //! translation. Built on `tokio-serial`.
 
 mod config;

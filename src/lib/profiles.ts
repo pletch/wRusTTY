@@ -9,7 +9,7 @@ export interface SessionProfile {
   port: number
   /** Which transport this profile opens. A discriminator rather than a union
    * type: the two share everything that matters (label, folder, host, port,
-   * terminal behaviour) and differ only in whether the auth fields apply. */
+   * terminal behavior) and differ only in whether the auth fields apply. */
   protocol: 'ssh' | 'telnet' | 'serial' | 'local'
   /** SSH only — empty string for telnet. */
   username: string

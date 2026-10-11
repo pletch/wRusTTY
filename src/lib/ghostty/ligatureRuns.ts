@@ -75,7 +75,7 @@ function eligible(cell: WasmCellData): boolean {
  * Marks out the maximal runs in one row.
  *
  * A run breaks on anything that would make one column of it look different
- * from another: the flags and the second attribute byte, the resolved colours,
+ * from another: the flags and the second attribute byte, the resolved colors,
  * the link state, and whatever `brk` marks — the cursor's own cell and any
  * hint label, both of which replace what the cell holds. Breaking under the
  * cursor is what other terminals do, and it means the character you typed is

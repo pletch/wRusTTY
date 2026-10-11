@@ -29,7 +29,7 @@ where it matters):
    `mktemp`. See "Elevated editing" below.
 4. **Auto-reconnect on telnet and serial**, and on a link that goes *silent*
    rather than resetting. SSH is tested against a real drop; the other two are
-   separate judgements and serial is the easiest to test honestly.
+   separate judgments and serial is the easiest to test honestly.
 5. **Rekey under a long-lived session** — still the untested russh corner.
 
 **Features with a plan and no code:**
@@ -130,7 +130,7 @@ reason Chrome and Windows Terminal do it.
 **The "full version" question resolved differently than posed.** It framed the
 choice as the active tab's fill matching the terminal background so the two
 read as continuous — which would have tangled with vibrancy and per-pane
-opacity, since that background is not a fixed colour. The actual fix was the
+opacity, since that background is not a fixed color. The actual fix was the
 other half of the same idea: drop the strip's **bottom hairline** outright, so
 the active fill runs into the terminal rather than being cut off from it. The
 strip's own `black/20` still separates it by tone. Erasing that line under only
@@ -139,12 +139,12 @@ overpainting tints the border rather than removing it.
 
 **And then the half this section rejected shipped after all**, which is the
 correction worth keeping. `9a7506e` gave the active tab the terminal's own
-colour — exactly the "full version" ruled out above. The tangle it predicted
+color — exactly the "full version" ruled out above. The tangle it predicted
 with vibrancy and per-pane opacity never appeared, because the tab is painted
 the *theme's* background rather than the pane's composited result: the strip
-stays an overlay rather than a finished colour, so a translucent window is
+stays an overlay rather than a finished color, so a translucent window is
 still translucent up here. What the objection got right is that it could not
-be done by matching a fixed colour; what it got wrong is concluding that meant
+be done by matching a fixed color; what it got wrong is concluding that meant
 it could not be done.
 
 Three things followed that nothing above anticipated:
@@ -159,10 +159,10 @@ Three things followed that nothing above anticipated:
   separation on every preset instead of tracking how dark the theme is. It also
   no longer depends on what the OS paints behind the window, which mica and
   tabbed tint from the wallpaper.
-- **Once the chrome sits on the terminal's colour, every literal `white/N` in
+- **Once the chrome sits on the terminal's color, every literal `white/N` in
   it is wrong on a light theme** (`ae42c25`). On Light's #ffffff a
   `text-white/45` label is a label nobody can read. The tone is named once
-  instead: a Tailwind `chrome` colour reading `--chrome-rgb`, set from the
+  instead: a Tailwind `chrome` color reading `--chrome-rgb`, set from the
   theme's luma, and 380-odd `white/N` became `chrome/N` mechanically so `/40`,
   `/[0.06]`, `hover:` and `group-hover:` all kept working. Two things not to
   undo — text on a saturated accent fill stays *literally* white, since what it
@@ -173,14 +173,14 @@ Three things followed that nothing above anticipated:
   too.** `ae42c25` named the tone but left every floating surface a literal
   `bg-[#1f2028]`, in twenty-one places, so a light theme drew black labels on a
   near-black dialog — worse than what it replaced, and true of the `Light`
-  preset from the day it shipped. Same treatment: a Tailwind `surface` colour
+  preset from the day it shipped. Same treatment: a Tailwind `surface` color
   reading `--surface-rgb`, set from `surfaceRgb`, which steps ten levels *away
   from* the theme's background — flat, not proportional, for the reason
   `stripOverlay` is. Ten because that is what the literal already was against
   wRusTTY Dark, so the dark presets do not move.
   Three related things went with it. The host-key panel's alarm state was a
   fixed `bg-red-950/80` with the same unreadable outcome, and is now a red wash
-  over the surface. `body`'s colour and the scrollbar thumbs were keyed to
+  over the surface. `body`'s color and the scrollbar thumbs were keyed to
   `prefers-color-scheme`, which is the *OS* — they disagreed with every
   `chrome` class whenever the OS and the theme differed, and now read the same
   variable. And `color-scheme` itself is set from the theme, so the widgets the
@@ -192,12 +192,12 @@ Three things followed that nothing above anticipated:
   the left of the thumb as well — `accent-color`'s other job — so the value
   reaches CSS as a `--range-fill` percentage and the track is one gradient
   with a hard stop at it. The seam between the two halves never shows: it
-  drifts from the thumb's centre by `thumbWidth * (fraction - 0.5)`, which
+  drifts from the thumb's center by `thumbWidth * (fraction - 0.5)`, which
   peaks at half a thumb width at either end and so stays under the thumb.
 - **The active tab's bottom corners flare out into the strip**, the join a
   browser tab makes with its page. `border-radius` cannot draw it — the curve
   is convex from the pane's side and a radius only cuts inwards — so each
-  corner is a square of pane colour with a quarter *masked out* of it
+  corner is a square of pane color with a quarter *masked out* of it
   (`fb833db`). The first attempt painted the strip back over the square
   instead, which puts 8px of opaque strip on top of whatever is actually
   there — and what is there, when the pointer is on the tab next door, is that
@@ -207,18 +207,18 @@ Three things followed that nothing above anticipated:
 **Two gotchas from that work, both cheap to hit again:**
 
 - `background: linear-gradient(…), <color>` is valid CSS that Chrome parses
-  into a gradient and a *transparent* background-color — the colour layer is
+  into a gradient and a *transparent* background-color — the color layer is
   silently dropped. Set as two properties it composes as intended. This is what
   left the hover fill measuring from the strip rather than from the terminal.
 - The corner fillets are positioned outside their tab, and an out-of-flow
-  descendant still counts towards a scroll container's scrollable overflow — so
+  descendant still counts toward a scroll container's scrollable overflow — so
   at the *end* of the strip it added width the container could not show and
   faded a strip that fits exactly, while at the *start* there is no such thing
   and the first tab's fillet was simply clipped. `px-2` answers both ends.
 
 ## Settings not yet exposed
 
-Raised while reorganising settings into a dialog.
+Raised while reorganizing settings into a dialog.
 
 - ~~**Logging: auto-start per session, and a configurable path.**~~ Built: a
   saved session remembers its log box, Settings can log every session, and
@@ -230,7 +230,7 @@ Raised while reorganising settings into a dialog.
 ## Ligatures: shipped, off by default
 
 Recorded because the shape of the solution is not obvious from the code, and
-because the reason it is *off* is a judgement rather than an omission.
+because the reason it is *off* is a judgment rather than an omission.
 
 The atlas used to rasterize **one cell at a time** — a codepoint keyed by
 `codepoint * GLYPH_STYLE_COUNT + style`, or a grapheme cluster keyed by
@@ -262,7 +262,7 @@ Two places instead:
   taking the maximum to five would have let one cache take the whole atlas.
 - Every partial-cell case has to break the run. `computeRuns` breaks on the
   cursor's own cell (which is what other terminals do), on hint labels, on link
-  state, and on any change of flags, second attribute byte or resolved colour.
+  state, and on any change of flags, second attribute byte or resolved color.
   Selection and search highlighting deliberately do *not* break: those only
   tint a background, and each column carries its own in the instance data.
 
@@ -328,7 +328,7 @@ and someone reading the code will otherwise assume they were unavailable.
   1024x1024 holds 1920 slots, or 960 of the double-width ones CJK uses. It now
   doubles to a 4096 ceiling on demand. Cached rects are mutated in place rather
   than replaced, because the renderer holds them across cells within a frame.
-- **Colour glyphs get their own texture.** A colour glyph ignores `fillStyle`
+- **Color glyphs get their own texture.** A color glyph ignores `fillStyle`
   entirely, so an emoji through the single-channel atlas came out as a solid
   block of the cell's foreground. The companion first shared the coverage
   atlas's packing, which meant sharing its dimensions and therefore its every
@@ -424,7 +424,7 @@ that would have sent the next person at the wrong thing.
 
 The conclusion held: the test took an ephemeral port, dropped the listener, and
 assumed the number stayed closed, and that assumption is genuinely violable. The
-*mechanism* did not. This blamed "the neighbouring `wake` tests binding
+*mechanism* did not. This blamed "the neighboring `wake` tests binding
 ephemeral ports of their own in parallel" — there are six of them, and the
 numbers say that cannot be it. Windows hands out ephemeral ports **sequentially**
 (twelve consecutive bind/close cycles measured 56816, 56817, ... 56827), so a
@@ -466,12 +466,12 @@ just the Decision column.
 **The only thing actually undecided is B4**, the `FLUSH_INTERVAL` matrix:
 8/16/24 ms × typing/flood, at `src-tauri/src/coalesce.rs:26`. It resists being
 settled by reasoning because it is a latency-versus-throughput trade rather
-than an optimisation — there is no direction that is just better, so changing
+than an optimization — there is no direction that is just better, so changing
 the constant on argument alone swaps a known-good echo latency for an
 unmeasured throughput gain. A one-line edit and a rebuild per cell.
 
 **The rest of Track B is closed.** B1a and B2 shipped and need no number (both
-are strictly fewer allocations with no behaviour change). B1b and B3 are
+are strictly fewer allocations with no behavior change). B1b and B3 are
 rejected, on evidence that arrived sideways: `tools/parse-probes/iter.mjs`, run
 to justify the ghostty `main` port, measured the worst full redraw at **0.21 ms
 against an 8.3 ms frame**. B3 was deferred pending proof that B1a and B2 left us
@@ -509,7 +509,7 @@ the next person should not start at `Terminal.tsx:786` on the strength of it.
 **The lesson worth keeping:** an input device that reports one gesture as two
 manufactures races in any code path where a *count* changes, and it never looks
 like a hardware fault, because every event the app sees is well-formed. Before
-theorising about a layout race that will not reproduce, check whether the
+theorizing about a layout race that will not reproduce, check whether the
 gesture that triggers it fired once.
 
 ## Wake-on-LAN: the two pieces deliberately left out

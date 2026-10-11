@@ -85,7 +85,7 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
     abi.expectOk(ex.ghostty_terminal_new(0, slot, COLS, ROWS), 'terminal_new')
     const term = new DataView(ex.memory.buffer).getUint32(slot, true)
 
-    // Same palette and defaults as the vendored side, or no colour matches.
+    // Same palette and defaults as the vendored side, or no color matches.
     const pal = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
     const bytes = new Uint8Array(ex.memory.buffer)
     for (let i = 0; i < abi.PALETTE_ENTRIES; i++) {
@@ -155,10 +155,10 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
   it('matches on underline styles and overline', () =>
     identical('underlines', '\x1b[4:1ma\x1b[4:2mb\x1b[4:3mc\x1b[4:4md\x1b[4:5me\x1b[0m\x1b[53mo\x1b[0m'))
 
-  it('matches on palette colours', () =>
+  it('matches on palette colors', () =>
     identical('palette', '\x1b[31mr\x1b[32mg\x1b[44mB\x1b[0m \x1b[38;5;208mx\x1b[48;5;27my\x1b[0m'))
 
-  it('matches on direct rgb colours', () =>
+  it('matches on direct rgb colors', () =>
     identical('rgb', '\x1b[38;2;10;20;30mf\x1b[48;2;40;50;60mb\x1b[0m'))
 
   it('matches on untouched default cells', () => identical('defaults', 'plain, no sgr'))
@@ -172,8 +172,8 @@ run('MainViewportReader against get_viewport, byte for byte', () => {
   it('matches on combining marks', () =>
     identical('graphemes', 'é à ö ñ done'))
 
-  it('matches on cleared regions, where the payload is a colour not a codepoint', () =>
-    // EL/ED with a background set paint blanks whose colour lives in the cell's
+  it('matches on cleared regions, where the payload is a color not a codepoint', () =>
+    // EL/ED with a background set paint blanks whose color lives in the cell's
     // content union. Reading that as a codepoint yields a control character.
     identical('cleared', '\x1b[44mtext\x1b[K\r\n\x1b[41mmore\x1b[K\x1b[0m'))
 

@@ -12,7 +12,7 @@
  * # Provenance
  *
  * The Git and Linux glyphs are Simple Icons renderings (CC0), drawn in the
- * brand colours Simple Icons records for them. CC0 waives copyright in the
+ * brand colors Simple Icons records for them. CC0 waives copyright in the
  * drawing and not trademark, which stays with each owner; both are used
  * referentially, next to the product they identify. The Git logo's CC BY 3.0
  * credit is in THIRD-PARTY-NOTICES.md and the About panel.
@@ -23,8 +23,8 @@ export interface IconProps {
   className?: string
 }
 
-/** Simple Icons are 24x24 and fill-based. The colour is set on the element
- *  itself so it survives being placed inside the tab's dimmed text colour. */
+/** Simple Icons are 24x24 and fill-based. The color is set on the element
+ *  itself so it survives being placed inside the tab's dimmed text color. */
 function BrandIcon({
   size = 12,
   className,
@@ -59,7 +59,7 @@ export function LinuxIcon(props: IconProps) {
 /** `>_`, drawn here. The fallback for the Microsoft shells, whose real icons
  *  come from their own executables — this is what shows until that read
  *  answers, and wherever it cannot. Neutral on purpose: it inherits the tab's
- *  text colour rather than borrowing anyone's. */
+ *  text color rather than borrowing anyone's. */
 export function CommandPromptIcon({ size = 12, className }: IconProps) {
   return (
     <svg

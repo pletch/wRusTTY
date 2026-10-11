@@ -147,7 +147,7 @@ fn force_foreground(hwnd: HWND) {
 /// `AllowSetForegroundWindow(ASFW_ANY)` is the documented way to hand that
 /// right over: the current foreground process voluntarily grants the next
 /// process to ask permission to steal it. The `SetForegroundWindow` first is
-/// not redundant: the grant is only honoured when the process making it
+/// not redundant: the grant is only honored when the process making it
 /// actually holds foreground, which may have lapsed if a prompt from an
 /// earlier attempt is still on screen. A grant made without it fails
 /// silently, which is the whole intermittent bug.
@@ -165,7 +165,7 @@ fn force_foreground(hwnd: HWND) {
 ///
 /// So this call is best-effort and always was. What changed is that it now
 /// says so: it reports whether we ended up holding the foreground, which is
-/// the difference between a grant that will be honoured and one that will be
+/// the difference between a grant that will be honored and one that will be
 /// ignored, and the caller adapts rather than assuming success.
 #[must_use]
 pub(crate) fn allow_broker_foreground(hwnd: HWND) -> bool {
@@ -336,7 +336,7 @@ pub(crate) fn hide_broker_taskbar_button() -> BrokerEscort {
 }
 
 /// Call once a broker-hosted credential prompt has closed, whatever its
-/// outcome — a cancelled prompt strands focus just as thoroughly as a
+/// outcome — a canceled prompt strands focus just as thoroughly as a
 /// successful one.
 pub(crate) fn restore_after_broker_prompt(window: &tauri::WebviewWindow, hwnd: HWND) {
     force_foreground(hwnd);

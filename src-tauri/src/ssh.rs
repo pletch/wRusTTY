@@ -90,7 +90,7 @@ pub struct AuthPromptFieldPayload {
 /// remembers the session whose handshake is parked on it, so closing a pane
 /// can answer its own outstanding prompts — without that owner, an unanswered
 /// prompt leaks its entry and parks the connect task on `rx.await` for the
-/// life of the process, where it can't be cancelled. `T` is what an answer
+/// life of the process, where it can't be canceled. `T` is what an answer
 /// looks like for that kind of prompt.
 type PendingMap<T> = TokioMutex<HashMap<String, (String, oneshot::Sender<T>)>>;
 
@@ -206,7 +206,7 @@ pub struct ForwardInfo {
 /// `SshConnector::connect` (`wr-ssh/src/session.rs`), which is *before*
 /// `supervise` publishes the session and before the restore hook runs — so a
 /// panel refetching on the status change reads the forward list as it stood
-/// before the reconnect touched it, and nothing afterwards tells it to look
+/// before the reconnect touched it, and nothing afterward tells it to look
 /// again. The same race runs the other way at `Lost`. This fires after each
 /// phase has finished writing, so what the panel reads is settled.
 const FORWARDS_CHANGED_EVENT: &str = "ssh-forwards-changed";
@@ -346,7 +346,7 @@ fn known_hosts_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-// The argument list is the IPC contract: `#[tauri::command]` deserialises
+// The argument list is the IPC contract: `#[tauri::command]` deserializes
 // each parameter by name from the invoke payload, so grouping them into a
 // struct to satisfy the lint would change the shape the frontend has to send
 // rather than simplify anything. Allowed here specifically, not workspace-wide.
@@ -433,7 +433,7 @@ fn keeps_no_secret(config: &SshConfig) -> bool {
 /// Connects using a saved session profile's vault-stored credential,
 /// resolved entirely here — the frontend only ever sends a profile id, and
 /// the decrypted secret never crosses back into the webview.
-// The argument list is the IPC contract: `#[tauri::command]` deserialises
+// The argument list is the IPC contract: `#[tauri::command]` deserializes
 // each parameter by name from the invoke payload, so grouping them into a
 // struct to satisfy the lint would change the shape the frontend has to send
 // rather than simplify anything. Allowed here specifically, not workspace-wide.
@@ -572,7 +572,7 @@ async fn resolve_auth(
     // agent holds its key itself, and keyboard-interactive asks the user at
     // connect time. Neither has a stored secret to resolve, so neither has any
     // business being blocked by a locked vault. `authNeedsVault` in
-    // lib/profiles.ts is the frontend's copy of this same judgement.
+    // lib/profiles.ts is the frontend's copy of this same judgment.
     if profile.auth_type == "agent" {
         return Ok(AuthMethod::Agent);
     }
@@ -819,7 +819,7 @@ pub async fn ssh_disconnect(
 
     // Unlike the SFTP equivalent this can't collapse to a single `retain`:
     // `stop()` is async and can't run under the lock. So it removes the
-    // entries in one pass and stops them afterwards, rather than re-acquiring
+    // entries in one pass and stops them afterward, rather than re-acquiring
     // the lock once per forward as it used to.
     let stale: Vec<_> = {
         let mut forwards = state.forwards.lock().await;
@@ -1001,7 +1001,7 @@ async fn reestablish(state: &State<'_, SshState>, forward_id: &str) -> Result<()
 
     // Stopped *before* rebinding, not after. A local or dynamic forward's
     // listener owns its port until its accept task actually stops, and that
-    // port is the one about to be asked for again — so stopping afterwards, or
+    // port is the one about to be asked for again — so stopping afterward, or
     // not waiting for the stop, fails every restore with "address in use".
     // Errors are expected and ignored here: a remote forward's cancel is sent
     // to the connection that just died.
@@ -1111,7 +1111,7 @@ async fn restore_forwards(state: &State<'_, SshState>, session_id: &str) {
         if let Err(message) = reestablish(state, &id).await {
             // Reported on the entry, which is where the panel reads it. Logged
             // as well because the panel may not be open: a forward that did not
-            // come back is worth being able to find afterwards.
+            // come back is worth being able to find afterward.
             log::warn!("could not re-establish forward {id} after reconnect: {message}");
         }
     }

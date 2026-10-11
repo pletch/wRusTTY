@@ -64,12 +64,12 @@ release job publishes it as the GitHub release notes.
 - A session that drops while a program has mouse reporting or the Kitty
   keyboard protocol on no longer leaves them on. After reconnecting, the shell
   used to receive mouse reports as typed text and keys it could not read. A
-  palette the program recoloured is put back to the theme too.
-- `reset` puts back a palette a program recoloured, rather than keeping its
-  colours.
+  palette the program recolored is put back to the theme too.
+- `reset` puts back a palette a program recolored, rather than keeping its
+  colors.
 - After a line fills the pane and the pane is widened, the next character
   continues on that line instead of starting a new one.
-- An OSC sequence cancelled with CAN or SUB is dropped, as the terminal
+- An OSC sequence canceled with CAN or SUB is dropped, as the terminal
   standard requires. It was run anyway, with the output that followed it
   taken as its payload — a window title or a clipboard write.
 - Command history in Settings is headed by the saved session's name rather
@@ -119,7 +119,7 @@ release job publishes it as the GitHub release notes.
 - Nagle's algorithm is off on SSH sockets and port forwards, which cuts
   keystroke latency.
 - Larger scrollbar arrows, and more places to drag the window from.
-- The About panel credits Ghostty under its MIT licence.
+- The About panel credits Ghostty under its MIT license.
 
 ### Fixed
 

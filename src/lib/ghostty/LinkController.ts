@@ -157,7 +157,7 @@ export class LinkController {
 
     // Back to the start of the line the viewport's first row belongs to. If the
     // chase runs out, the window simply starts mid-line — `logicalLines` does
-    // not honour a leading continuation flag, so the partial line is treated as
+    // not honor a leading continuation flag, so the partial line is treated as
     // its own, which is the same thing the user can see.
     let from = viewTop
     while (from > lo && flags[from - lo]) from--

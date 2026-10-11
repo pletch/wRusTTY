@@ -26,7 +26,7 @@ import { useConfirm } from './confirmContext'
  * actually keep", and "1,284 commands" does not answer it.
  */
 
-/** Rendered per host before the rest are summarised. A busy host reaches the
+/** Rendered per host before the rest are summarized. A busy host reaches the
  * store's 5,000-entry cap, and a list that long is neither readable nor
  * cheap to lay out — the ones worth checking are the ones ranked highest,
  * which is the order the backend already returns them in. */

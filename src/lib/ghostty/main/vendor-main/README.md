@@ -6,7 +6,7 @@ automatically, so they run without setting `GHOSTTY_MAIN_WASM`.
 
 It is now the *same build* that ships: `../../vendor/ghostty-vt.wasm` is this
 file with its DWARF stripped (`tools/strip-wasm-debug.mjs`), which changes no
-behaviour. It is kept unstripped and separate because the parity suites are
+behavior. It is kept unstripped and separate because the parity suites are
 allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
@@ -30,7 +30,7 @@ the suite fails loudly if a rebuild skips it.
 The `.wasm` and the three headers are **git-ignored**: 5 MB of comparison
 artifact does not belong in the tree, and unlike `../../vendor/ghostty-vt.wasm`
 this one is never loaded by the app, so no integrity test guards it. The hash
-above is recorded so a stale copy can be recognised, not enforced.
+above is recorded so a stale copy can be recognized, not enforced.
 
 `render.h`, `terminal.h` and `screen.h` are kept beside it because the enum
 values in `../abi.ts` are transcribed from them and there is no other way to

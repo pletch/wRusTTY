@@ -86,7 +86,7 @@ interface Props {
    * to read the credentials it is about to re-encrypt. */
   vaultStatus?: VaultStatus
   /** A bundle import replaces the vault wholesale, so the owner has to
-   * re-read its status — it will be locked afterwards. */
+   * re-read its status — it will be locked afterward. */
   onVaultChanged?: () => void
 }
 
@@ -474,7 +474,7 @@ function FontRangeTable({
     commit(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
 
-  // One border-colour utility, never two. Tailwind settles a conflict by where
+  // One border-color utility, never two. Tailwind settles a conflict by where
   // the rules land in the stylesheet, not by the order the classes appear in
   // the attribute, so appending an amber border to a list already carrying the
   // white one is a coin toss — and it lands on white, which is how this shipped
@@ -552,7 +552,7 @@ function FontRangeTable({
   )
 }
 
-/** A labelled slider with its value beside it — the shape the font size
+/** A labeled slider with its value beside it — the shape the font size
  *  control already had, now that weight and the two cell metrics want it too. */
 /**
  * A range slider whose track this app paints (see `.range` in index.css).
@@ -561,7 +561,7 @@ function FontRangeTable({
  * has to be worked out here — `accent-color` used to do it, and taking the
  * track over to get it onto the theme gave that up with it. The percentage
  * goes to CSS as a custom property rather than into a computed gradient
- * string, so the colours stay in the stylesheet with the rest of them.
+ * string, so the colors stay in the stylesheet with the rest of them.
  */
 function RangeInput({
   min,
@@ -850,7 +850,7 @@ function AdvancedFontSettings({
           and bold mean, and a family with six cuts has no keyword for the one you probably
           want. A family without a face at the weight asked for gets the nearest it has.
           Line height and letter spacing resize the cell rather than the glyph — the grid
-          has no gaps to widen — so a wider cell draws its character centred in the space,
+          has no gaps to widen — so a wider cell draws its character centered in the space,
           and a narrower one condenses it to fit. Both change how many rows and columns a
           pane holds, so open sessions re-fit as you drag them.
         </p>
@@ -1144,7 +1144,7 @@ export function SettingsDialog({
                           as memory per pane because memory is what's actually reserved; the
                           row estimates are for a {cols}-column pane and counted in wrapped
                           rows, so a wider pane or long lines reach the same limit sooner. It
-                          applies to panes opened afterwards. The cursor setting is a starting
+                          applies to panes opened afterward. The cursor setting is a starting
                           point — a program that picks its own cursor, as vim and many TUIs
                           do, overrides it. Ligatures join runs of operators like{' '}
                           <code className="text-chrome/50">=&gt;</code> into one glyph, and need
@@ -1273,8 +1273,8 @@ export function SettingsDialog({
                               }
                             />
                             <p className="mt-1 text-chrome/40">
-                              While another app is active, shifts the background towards the tab
-                              bar's colour and makes it more see-through, so it is obvious this
+                              While another app is active, shifts the background toward the tab
+                              bar's color and makes it more see-through, so it is obvious this
                               window is not the one you are typing into. Text is unaffected.
                             </p>
                           </>
@@ -1318,7 +1318,7 @@ export function SettingsDialog({
                       {/* Three modes rather than a switch and a slider: the
                           correction has no constant in it, so there is
                           nothing left to tune once it is on. Names and
-                          behaviour are ghostty's alpha-blending option. */}
+                          behavior are ghostty's alpha-blending option. */}
                       <div>
                         <span className="text-chrome/85">Text blending</span>
                         <div className="mt-1.5 flex gap-1 rounded-md bg-black/20 p-1">
@@ -1848,7 +1848,7 @@ export function SettingsDialog({
                           </span>
                         </span>
                       </button>
-                      {/* Attribution, and a licence condition rather than a
+                      {/* Attribution, and a license condition rather than a
                           courtesy: the Git logo is CC BY 3.0, which requires
                           the credit to travel with the mark wherever it is
                           distributed — including into a shipped installer,

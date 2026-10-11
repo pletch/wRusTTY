@@ -208,7 +208,7 @@ run('ghostty main ABI, against a build at the pin', () => {
   /**
    * `GhosttyStyle`'s offsets were found by writing one attribute at a time and
    * seeing which byte moved, because the header's apparent layout is wrong —
-   * the colour union is 8-aligned, so the booleans sit 20-odd bytes further
+   * the color union is 8-aligned, so the booleans sit 20-odd bytes further
    * along than a naive reading puts them. These assert the answers.
    */
   describe('GhosttyStyle', () => {
@@ -246,7 +246,7 @@ run('ghostty main ABI, against a build at the pin', () => {
       const { d, p } = styleAfter(seq)
       expect(d.getUint8(p + offset)).toBe(1)
       // Every other boolean must stay clear — an offset that is merely close
-      // would otherwise pass by landing on a neighbour.
+      // would otherwise pass by landing on a neighbor.
       for (const other of [
         abi.STYLE_OFF_BOLD, abi.STYLE_OFF_ITALIC, abi.STYLE_OFF_FAINT, abi.STYLE_OFF_BLINK,
         abi.STYLE_OFF_INVERSE, abi.STYLE_OFF_INVISIBLE, abi.STYLE_OFF_STRIKETHROUGH,
@@ -267,7 +267,7 @@ run('ghostty main ABI, against a build at the pin', () => {
       expect(d.getUint32(p + abi.STYLE_OFF_UNDERLINE_STYLE, true)).toBe(expected)
     })
 
-    it('tags a palette colour apart from an rgb one', () => {
+    it('tags a palette color apart from an rgb one', () => {
       const pal = styleAfter('\x1b[31m')
       expect(pal.d.getUint32(pal.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_PALETTE)
       expect(pal.d.getUint8(pal.p + abi.STYLE_OFF_FG_VALUE)).toBe(1) // red
@@ -295,7 +295,7 @@ run('ghostty main ABI, against a build at the pin', () => {
    * was confirmed to still be needed. It is inverted now because the binary
    * under `vendor-main/` is built **with** `patches/ghostty-main-esc-k.patch`.
    *
-   * So this is the check that the patch actually applied, and it is a behaviour
+   * So this is the check that the patch actually applied, and it is a behavior
    * rather than `git apply`'s exit code. If it fails after a rebuild, the patch
    * was skipped or silently no-op'd; if it fails against a build you believe is
    * unpatched, `#176` has landed upstream and can be dropped from the recipe.

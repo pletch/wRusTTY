@@ -23,7 +23,7 @@ const props = {
   onAnswer: () => {},
 }
 
-/** Filled = carries a background colour; ghost = does not. */
+/** Filled = carries a background color; ghost = does not. */
 const isFilled = (el: HTMLElement) => /\bbg-sky-|\bbg-red-6/.test(el.className)
 
 describe('the host-key dialog on a changed key', () => {

@@ -8,7 +8,7 @@
 //! deliberately left.
 //!
 //! These spawn actual processes, using only what every machine of their
-//! platform already has. Two ConPTY behaviours shape how they are written, and
+//! platform already has. Two ConPTY behaviors shape how they are written, and
 //! both were found by writing them the obvious way first and watching them
 //! fail.
 //!
@@ -79,7 +79,7 @@ fn shell(command: &str) -> LocalConfig {
 /// produced only ConPTY's own init sequences; the same `echo` followed by a
 /// one-second wait produced the text.
 ///
-/// This is ConPTY's behaviour rather than something this crate can fix, and
+/// This is ConPTY's behavior rather than something this crate can fix, and
 /// every Windows terminal has it. It does not reach the app, where a shell
 /// someone is typing at lives for minutes and is painted continuously. It
 /// reaches these tests only because they run commands that would otherwise
@@ -299,7 +299,7 @@ async fn resize_is_accepted_on_a_live_session() {
         .expect("disconnecting a live session should work");
 
     // A pane the user closed has to actually close, so disconnect kills rather
-    // than waiting to see whether EOF was enough — and everything afterwards
+    // than waiting to see whether EOF was enough — and everything afterward
     // has to refuse rather than look alive.
     assert!(
         session.resize(80, 24).await.is_err(),

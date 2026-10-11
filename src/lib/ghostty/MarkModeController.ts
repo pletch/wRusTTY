@@ -92,7 +92,7 @@ export class MarkModeController {
   }
 
   /**
-   * Leaves the mode. `keepSelection` is what separates copying from cancelling:
+   * Leaves the mode. `keepSelection` is what separates copying from canceling:
    * a copy has just put the text somewhere useful and the highlight confirms
    * what was taken, while Escape means the selection was a mistake.
    */
@@ -255,7 +255,7 @@ export class MarkModeController {
     }
   }
 
-  /** One column left or right, wrapping onto the neighbouring row at the ends
+  /** One column left or right, wrapping onto the neighboring row at the ends
    *  — a cursor that stops dead in the corner of a line cannot be walked
    *  through a paragraph. */
   private stepColumn(delta: number): Point {

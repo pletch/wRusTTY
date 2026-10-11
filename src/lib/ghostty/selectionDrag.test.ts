@@ -135,7 +135,7 @@ describe('dragging past the edge of the pane', () => {
   })
 
   // `scrollLines` is signed the way the wheel is: negative goes back into the
-  // scrollback, positive goes forward towards the prompt.
+  // scrollback, positive goes forward toward the prompt.
   it('scrolls back into the scrollback while the pointer is held above it', async () => {
     vi.useFakeTimers()
     const { engine, down, moveOutside } = await mounted()

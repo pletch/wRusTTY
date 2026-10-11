@@ -1,8 +1,8 @@
 /** The audible half of the terminal bell.
  *
- * Synthesised rather than shipped as an audio file: it's one short tone, and
+ * Synthesized rather than shipped as an audio file: it's one short tone, and
  * generating it avoids a binary asset in the bundle, a decode step, and the
- * question of what licence the sample is under. It also can't fail to load.
+ * question of what license the sample is under. It also can't fail to load.
  *
  * Deliberately soft and brief. A terminal bell fires on tab-completion
  * ambiguity in some shells, so it can arrive in bursts — anything sharp

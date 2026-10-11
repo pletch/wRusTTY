@@ -76,5 +76,5 @@ finally {
     # the case that actually matters. This just makes a clean Ctrl-C tidy up
     # without waiting for the process to go.
     [void][Win32.Power]::SetThreadExecutionState($ES_CONTINUOUS)
-    Write-Host 'Released. Normal sleep behaviour restored.'
+    Write-Host 'Released. Normal sleep behavior restored.'
 }

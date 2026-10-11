@@ -127,7 +127,7 @@ export type ShellFamily = 'powershell' | 'cmd' | 'posix'
  * side of it is bash, and it is bash whose prompt and history this has to
  * reason about.
  *
- * Anything unrecognised is posix. That is the direction that *adds* a feature
+ * Anything unrecognized is posix. That is the direction that *adds* a feature
  * rather than removing one, and the cost of being wrong is asymmetric: a
  * PowerShell misread as posix would harvest nonsense into the history, while a
  * posix shell misread as PowerShell merely goes without autocomplete. So the
@@ -144,7 +144,7 @@ export function shellFamily(config: LocalConfig): ShellFamily {
 /** The same question, for a saved profile that carries a detected id.
  *
  * An id is the better source when there is one: `wsl:Ubuntu` says what the
- * session is without anything having to recognise `wsl.exe`.
+ * session is without anything having to recognize `wsl.exe`.
  */
 export function familyForShellId(shellId: string): ShellFamily | null {
   if (!shellId) return null
@@ -180,7 +180,7 @@ export function shellIdFor(config: LocalConfig): string {
  * decision 2 of docs/ELEVATED_TABS_PLAN.md. */
 export const ELEVATABLE_SHELL_IDS: readonly string[] = ['pwsh', 'powershell', 'cmd', 'git-bash']
 
-/** What a tab calls a shell it recognises — the same names detection gives
+/** What a tab calls a shell it recognizes — the same names detection gives
  * the picker (src-tauri/src/local_shells.rs), so the tab says `PowerShell`
  * where the list did rather than the executable's `pwsh`. Null for anything
  * else, which keeps `shellLabel`'s file stem.

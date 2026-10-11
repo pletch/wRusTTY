@@ -3,12 +3,12 @@
  * scenarios — interactive typing, streaming logs, a full-screen TUI, and a
  * large flood) through GhosttyEngine's core and xterm.js's core, headlessly,
  * and assert they agree on what ended up on screen. This is what
- * src/bench/parity.ts's "Glyphs, colours, layout: parity" line rests on —
+ * src/bench/parity.ts's "Glyphs, colors, layout: parity" line rests on —
  * this test is what keeps that claim from silently going stale.
  *
- * Colours and text attributes are compared as well as glyphs. They were not
- * originally, which left the "colours" half of that ledger line as prose: you
- * could break the renderer's default-colour remap outright and every test
+ * Colors and text attributes are compared as well as glyphs. They were not
+ * originally, which left the "colors" half of that ledger line as prose: you
+ * could break the renderer's default-color remap outright and every test
  * here still passed. Both engines are pinned to one palette to make the
  * comparison mean something — see gridPalette.ts.
  */
@@ -54,7 +54,7 @@ async function compareBytes(text: string) {
   return { ghostty, xterm }
 }
 
-/** Renders one row's colours as a readable string so a failure names the row
+/** Renders one row's colors as a readable string so a failure names the row
  * and the column rather than dumping two 1920-element arrays. The glyphs are
  * interleaved because "row 7 differs at column 34" is only actionable
  * alongside what is at column 34. */
@@ -97,7 +97,7 @@ describe('grid-state parity between GhosttyEngine and xterm.js', () => {
     ['typing (interactive keystroke echo)', typing],
     ['streaming (tail -f / build log)', streaming],
     ['tui (htop full-screen redraw)', tui],
-    ['flood (large coloured cat)', flood],
+    ['flood (large colored cat)', flood],
   ]
 
   it.each(workloads)('%s: agree on every row', async (_name, workload) => {
@@ -105,12 +105,12 @@ describe('grid-state parity between GhosttyEngine and xterm.js', () => {
     expect(ghostty.rows).toEqual(xterm.rows)
   }, 20_000)
 
-  it.each(workloads)('%s: agree on every foreground colour', async (_name, workload) => {
+  it.each(workloads)('%s: agree on every foreground color', async (_name, workload) => {
     const { ghostty, xterm } = await compare(workload)
     expectRowwise(ghostty, xterm, (s, y) => colorRow(s, y, 'fg'))
   }, 20_000)
 
-  it.each(workloads)('%s: agree on every background colour', async (_name, workload) => {
+  it.each(workloads)('%s: agree on every background color', async (_name, workload) => {
     const { ghostty, xterm } = await compare(workload)
     expectRowwise(ghostty, xterm, (s, y) => colorRow(s, y, 'bg'))
   }, 20_000)
@@ -132,13 +132,13 @@ describe('grid-state parity between GhosttyEngine and xterm.js', () => {
 })
 
 /**
- * The four workloads are realistic but narrow: between them they use 256-colour
- * foregrounds and nothing else. No background colour, no bold, no inverse, no
- * 24-bit colour, no erase-with-background. These cases exist to exercise the
+ * The four workloads are realistic but narrow: between them they use 256-color
+ * foregrounds and nothing else. No background color, no bold, no inverse, no
+ * 24-bit color, no erase-with-background. These cases exist to exercise the
  * parts of the new comparison the workloads would leave permanently unread —
  * a test that only ever sees `\x1b[38;5;Nm` cannot tell you the bg path works.
  */
-describe('colour and attribute parity on directed SGR cases', () => {
+describe('color and attribute parity on directed SGR cases', () => {
   it('agrees on the 16 ANSI foregrounds and backgrounds', async () => {
     const parts: string[] = []
     for (let i = 0; i < 8; i++) parts.push(`\x1b[3${i}mF${i}\x1b[0m `)
@@ -152,7 +152,7 @@ describe('colour and attribute parity on directed SGR cases', () => {
     expectRowwise(ghostty, xterm, (s, y) => colorRow(s, y, 'bg'))
   })
 
-  it('agrees across the whole 256-colour cube and grey ramp', async () => {
+  it('agrees across the whole 256-color cube and gray ramp', async () => {
     const parts: string[] = []
     for (let i = 0; i < 256; i++) {
       parts.push(`\x1b[38;5;${i}m#\x1b[0m`)
@@ -162,7 +162,7 @@ describe('colour and attribute parity on directed SGR cases', () => {
     expectRowwise(ghostty, xterm, (s, y) => colorRow(s, y, 'fg'))
   })
 
-  it('agrees on 24-bit truecolour', async () => {
+  it('agrees on 24-bit truecolor', async () => {
     const text = '\x1b[38;2;17;34;51m24bit\x1b[48;2;204;170;136mBG\x1b[0m plain'
     const { ghostty, xterm } = await compareBytes(text)
     expectRowwise(ghostty, xterm, (s, y) => colorRow(s, y, 'fg'))
@@ -197,7 +197,7 @@ describe('colour and attribute parity on directed SGR cases', () => {
 
   // Erase-with-background: ED/EL paint the *current* background into the
   // erased cells rather than the default. This is the one place a blank cell's
-  // colour is load-bearing, which is why it gets a directed case even though
+  // color is load-bearing, which is why it gets a directed case even though
   // the snapshot trims trailing blanks elsewhere.
   it('agrees on erase-in-line with a non-default background', async () => {
     const text = '\x1b[44mblue bg\x1b[K\r\nnext line'

@@ -29,7 +29,7 @@ export function blankLeaf(): PaneLeaf {
 }
 
 /** Rebuilds a tree with fresh ids, preserving structure, sources and split
- * sizes. Required when materialising a saved workspace: its stored ids were
+ * sizes. Required when materializing a saved workspace: its stored ids were
  * generated in a previous run and can collide with live panes — including
  * with itself, if the same workspace is opened twice. `generation` resets so
  * the restored panes mount and connect as new sessions. */

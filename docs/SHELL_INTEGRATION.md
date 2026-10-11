@@ -352,7 +352,7 @@ Written for and tested on PowerShell 7 (`pwsh`); Windows PowerShell 5.1 is
 not covered. Add to the file `$PROFILE` names — by default
 `~\Documents\PowerShell\Microsoft.PowerShell_profile.ps1` — and put it **last**,
 after anything that sets a prompt. It wraps whatever `prompt` exists when it
-loads; starship and oh-my-posh *replace* `prompt`, so one loaded afterwards
+loads; starship and oh-my-posh *replace* `prompt`, so one loaded afterward
 takes the reporting with it. Same ordering trap as bash's `PROMPT_COMMAND`,
 for the same reason.
 
@@ -582,7 +582,7 @@ fate isn't knowable from here, and claiming it finished would be a lie.
 
 ### Telling programs the terminal supports it
 
-Programs don't probe for progress support — they recognise terminals by name
+Programs don't probe for progress support — they recognize terminals by name
 from a fixed list, and stay silent for anything they don't know. wRusTTY
 therefore advertises itself as ConEmu-compatible (`ConEmuANSI=ON`) when
 opening an SSH session, since OSC 9;4 is ConEmu's sequence.

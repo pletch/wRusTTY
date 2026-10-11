@@ -42,7 +42,7 @@ layout(location = 1) in vec2 a_cellPos;  // (col, row)
 layout(location = 2) in vec4 a_fgColor;  // (r,g,b,a)
 layout(location = 3) in vec4 a_bgColor;  // (r,g,b,a)
 layout(location = 4) in vec4 a_uv;       // (u0,v0, u1,v1)
-layout(location = 5) in float a_color;   // 0 for coverage; else how much colour the glyph keeps
+layout(location = 5) in float a_color;   // 0 for coverage; else how much color the glyph keeps
 
 uniform vec2 u_resolution; // (cols, rows)
 
@@ -69,9 +69,9 @@ void main() {
 `
 
 // Glyph coverage and cell background resolve in one pass. The alpha channel is
-// mixed along with the colour, so a glyph stays opaque even where it sits on a
+// mixed along with the color, so a glyph stays opaque even where it sits on a
 // translucent default background — that is what lets the pane's opacity reach
-// the clear colour without also fading the text.
+// the clear color without also fading the text.
 const FRAGMENT_SHADER_SRC = `#version 300 es
 // highp rather than the mediump this shader used to declare: the corrected
 // mode divides by the fg/bg luminance difference, and a mediump quotient of
@@ -86,7 +86,7 @@ in vec2 v_uv;
 flat in float v_color;
 
 uniform sampler2D u_atlas;
-// The colour companion, sampled only by the branch below. It shares the
+// The color companion, sampled only by the branch below. It shares the
 // coverage atlas's packing, so v_uv addresses it unchanged.
 uniform sampler2D u_colorAtlas;
 // One of the BLEND_* constants below. A uniform branch, so every fragment in
@@ -97,7 +97,7 @@ out vec4 outColor;
 
 // Mix in the framebuffer's own space. Cheap, and what this renderer always
 // did — but sRGB values are not proportional to light, so the result is not
-// a blend of anything physical, and two cells whose colours differ in hue
+// a blend of anything physical, and two cells whose colors differ in hue
 // darken where their glyph edges meet.
 const int BLEND_NATIVE = 0;
 // Mix in linear light. Correct, and visibly so on contrasting hues — but it
@@ -138,10 +138,10 @@ void main() {
         // Straight source-over onto the cell's background is the whole job.
         //
         // v_color is a scale rather than a flag, because faint is the one
-        // attribute that acts on a colour glyph as well: it darkens the
-        // foreground towards black, and the equivalent here is to darken the
-        // face's own colours by the same factor. Anything above zero means
-        // colour; how far above says how much of it is kept.
+        // attribute that acts on a color glyph as well: it darkens the
+        // foreground toward black, and the equivalent here is to darken the
+        // face's own colors by the same factor. Anything above zero means
+        // color; how far above says how much of it is kept.
         vec4 src = texture(u_colorAtlas, v_uv);
         outColor = vec4(mix(v_bgColor.rgb, src.rgb * v_color, src.a), mix(v_bgColor.a, 1.0, src.a));
         return;
@@ -195,9 +195,9 @@ const INSTANCE_FLOATS = 15
  *  covers, which is two on a wide character and one on everything else. */
 const CURSOR_OVERLAY_CAP = 2
 
-/** How far faint text is darkened towards black. One constant, because the
- *  coverage path applies it to the foreground and the colour path applies it
- *  to the glyph's own colours, and the two have to fade alike. */
+/** How far faint text is darkened toward black. One constant, because the
+ *  coverage path applies it to the foreground and the color path applies it
+ *  to the glyph's own colors, and the two have to fade alike. */
 const FAINT_SCALE = 0.55
 
 /**
@@ -315,7 +315,7 @@ export class WebGLRenderer {
   private defaultBgR = 0
   private defaultBgG = 0
   private defaultBgB = 0
-  /** 0..1. Reaches the clear colour and default-background cells only. */
+  /** 0..1. Reaches the clear color and default-background cells only. */
   private defaultBgA = 1
 
   // Held on the instance rather than only pushed to the uniform, because the
@@ -333,8 +333,8 @@ export class WebGLRenderer {
   /** Per-row run bookkeeping, allocated with the grid. See `computeRuns`. */
   private runs: RunScratch | null = null
 
-  // As measured, before display-scale quantisation. Kept so a scale change
-  // re-quantises from the measurement rather than from an already-rounded value.
+  // As measured, before display-scale quantization. Kept so a scale change
+  // re-quantizes from the measurement rather than from an already-rounded value.
   private baseCellWidth: number
   private baseCellHeight: number
   private cellWidth: number
@@ -402,8 +402,8 @@ export class WebGLRenderer {
    * one, which is what makes a link *discoverable*: underlining only under the
    * pointer means a link is invisible until you happen to hold Ctrl over it,
    * and nobody holds Ctrl over text they have no reason to think is a link.
-   * Two distinct rules rather than a colour change, so nothing here has to
-   * argue with the theme or with whatever colour the program chose for its own
+   * Two distinct rules rather than a color change, so nothing here has to
+   * argue with the theme or with whatever color the program chose for its own
    * output.
    */
   linkRanges: { row: number; from: number; to: number }[] | null = null
@@ -413,18 +413,18 @@ export class WebGLRenderer {
    *
    * Drawn as cells rather than as an overlay: a label is a character in a
    * cell, which is exactly what this loop already draws, so it costs the
-   * colours and nothing else. Absolute rows, so a label stays on its link as
+   * colors and nothing else. Absolute rows, so a label stays on its link as
    * output scrolls the screen underneath it.
    */
   hintLabels: { row: number; col: number; text: string }[] | null = null
 
   /**
-   * Spans whose glyphs are painted in their own background colour, i.e. made
+   * Spans whose glyphs are painted in their own background color, i.e. made
    * to vanish without anything being drawn over them.
    *
    * What makes the history flicker possible (see lib/historyRepeat.ts). The
    * obvious implementation of "flicker the recalled command" is a DOM band
-   * over the canvas in the background colour, and it is wrong here for a
+   * over the canvas in the background color, and it is wrong here for a
    * reason that only shows up on a translucent pane: the cell's background is
    * itself partly transparent, so a second copy of it stacked on top
    * composites to something *more* opaque than its surroundings — a visible
@@ -469,7 +469,7 @@ export class WebGLRenderer {
   // Cached on the same terms as `lineBuffer` above rather than allocated and
   // freed inside updateStaticGrid: at 200x60 that is a 192 KB malloc, a
   // zero-fill and a free every frame, which is the one thing here its two
-  // neighbours were already careful not to do.
+  // neighbors were already careful not to do.
   private viewportPtr = 0
   private viewportCells = 0
 
@@ -491,14 +491,14 @@ export class WebGLRenderer {
 
     // This renderer only repaints on damage, so an idle pane goes many frames
     // without a draw. WebGL formally leaves a composited buffer's contents
-    // undefined unless it is preserved, so an idle pane is relying on behaviour
+    // undefined unless it is preserved, so an idle pane is relying on behavior
     // it isn't promised; preserving costs a copy per frame and makes the buffer
     // mean what it says. The alternative is redrawing every frame, which gives
     // up the zero-cost idle pane this loop is built around.
     //
     // The buffer keeps an alpha channel so the pane's background opacity can
-    // reach the clear colour and let the window's own backdrop through.
-    // `premultipliedAlpha: false` because the colours written here are straight
+    // reach the clear color and let the window's own backdrop through.
+    // `premultipliedAlpha: false` because the colors written here are straight
     // RGBA — declaring them premultiplied would wash out every translucent
     // background by dividing it through by its own alpha at composite time.
     this.gl = canvas.getContext('webgl2', {
@@ -628,7 +628,7 @@ export class WebGLRenderer {
       this.deviceCellWidth,
       this.deviceCellHeight,
       // In device pixels, like everything else the atlas is handed: the cell
-      // it centres a glyph in is the device-pixel one.
+      // it centers a glyph in is the device-pixel one.
       Math.round(this.fonts.letterSpacing * this.dpr),
     )
 
@@ -715,9 +715,9 @@ export class WebGLRenderer {
   /**
    * Queues one column of a cursor shape to be drawn over the finished grid.
    *
-   * The instance is an ordinary one in every respect but its colours: the
+   * The instance is an ordinary one in every respect but its colors: the
    * background carries the cursor's own RGB at **zero alpha**, so the shader's
-   * `mix(bg, fg, coverage)` returns the cursor colour at every coverage value
+   * `mix(bg, fg, coverage)` returns the cursor color at every coverage value
    * and the alpha it returns is the coverage itself. Source-over then composites
    * the shape onto whatever the grid already drew, antialiased edges included,
    * and it does so identically in all three blend modes — the corrected one
@@ -808,7 +808,7 @@ export class WebGLRenderer {
   }
 
   /**
-   * Colour space to blend glyph coverage in, as one of the BLEND_* values.
+   * Color space to blend glyph coverage in, as one of the BLEND_* values.
    *
    * Safe to call before the program links — the value is held and pushed at
    * link time, which is the path a new pane actually takes.
@@ -936,7 +936,7 @@ export class WebGLRenderer {
     const viewportBufPtr = this.viewportBuffer(wasm, cellCount)
 
     // Kept even though the buffer is now cached rather than freshly allocated,
-    // and *because* of it. The vendored PR #142 zero-initialises WASM page
+    // and *because* of it. The vendored PR #142 zero-initializes WASM page
     // buffers, which would make this redundant for a fresh allocation — but a
     // reused buffer is exactly the case that fix does not cover, so without
     // this a shrink (or a short `get_viewport` return) would leave the
@@ -964,11 +964,11 @@ export class WebGLRenderer {
       ? new DataView(wasm.exports.memory.buffer, graphemePtr, GRAPHEME_CAP * 4)
       : null
 
-    // The core has no runtime colour setter, so a pane that outlives a theme
+    // The core has no runtime color setter, so a pane that outlives a theme
     // change would otherwise keep painting default text in the palette it was
     // created with. Its current defaults are queryable and come back on cells
     // byte-for-byte, so cells still sitting on them can be mapped onto the live
-    // theme. Explicitly-coloured text is left alone — remapping that would mean
+    // theme. Explicitly-colored text is left alone — remapping that would mean
     // guessing which palette slot it came from, which the resolved-RGB ABI
     // deliberately no longer tells us.
     const coreFg = wasm.exports.ghostty_render_state_get_fg_color(termPtr)
@@ -976,7 +976,7 @@ export class WebGLRenderer {
     const coreBg = wasm.exports.ghostty_render_state_get_bg_color(termPtr)
     const coreBgR = (coreBg >> 16) & 0xff, coreBgG = (coreBg >> 8) & 0xff, coreBgB = coreBg & 0xff
 
-    // Normalised here so the caller can drag a selection in either direction.
+    // Normalized here so the caller can drag a selection in either direction.
     let selStart = this.selection?.start
     let selEnd = this.selection?.end
     if (selStart && selEnd) {
@@ -1110,7 +1110,7 @@ export class WebGLRenderer {
          * The glyph is to disappear into its own cell — the history flicker's
          * `hiddenSpans`, and the off half of a blink.
          *
-         * Matching the foreground *colour* to the background is only half of
+         * Matching the foreground *color* to the background is only half of
          * that, and the missing half only shows up on a translucent pane. The
          * foreground alpha is otherwise always 255 while a default background
          * carries `defaultBgA`, and the shader mixes the two by coverage — so
@@ -1137,7 +1137,7 @@ export class WebGLRenderer {
           attrs2 = cell.attrs2
           // Already resolved to RGB by the core against the palette and
           // defaults it was configured with, so the only substitution left is
-          // pulling default-coloured cells onto the current theme.
+          // pulling default-colored cells onto the current theme.
           if (cell.fgR === coreFgR && cell.fgG === coreFgG && cell.fgB === coreFgB) {
             finalFgR = this.defaultFgR; finalFgG = this.defaultFgG; finalFgB = this.defaultFgB
           } else {
@@ -1151,7 +1151,7 @@ export class WebGLRenderer {
           }
         }
 
-        // A hint label replaces whatever the cell held, in colours chosen to be
+        // A hint label replaces whatever the cell held, in colors chosen to be
         // unmistakably not the program's output. Applied after the cell is read
         // so it wins outright, and before the glyph is chosen so the label is
         // what gets rasterized. A label never sits on a wide character's
@@ -1185,8 +1185,8 @@ export class WebGLRenderer {
 
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
         // Which atlas those UVs address. Set wherever they are, and from the
-        // same rect, so a colour glyph cannot end up sampled as coverage --
-        // which would draw it as a solid block of the foreground colour.
+        // same rect, so a color glyph cannot end up sampled as coverage --
+        // which would draw it as a solid block of the foreground color.
         let isColor = 0
         if (cellWidth === 0 && pendingWide) {
           // The spacer draws the right half of the glyph the previous column
@@ -1198,7 +1198,7 @@ export class WebGLRenderer {
           isColor = pendingWide.color ? 1 : 0
           pendingWide = null
         } else if (codepoint > 0 && (flags & CELL_INVISIBLE) === 0) {
-          // Invisible keeps the cell's colours — it hides the character, it
+          // Invisible keeps the cell's colors — it hides the character, it
           // does not blank the background — so it skips the glyph only.
           const wide = cellWidth === 2
           let style = wide ? GLYPH_WIDE : 0
@@ -1322,7 +1322,7 @@ export class WebGLRenderer {
         }
 
         if (isSelected) {
-          // Lightened rather than inverted so syntax colouring stays readable
+          // Lightened rather than inverted so syntax coloring stays readable
           // through the highlight, and always opaque — a selection that fades
           // with the pane's transparency is hard to pick out against a desktop.
           finalBgR = (finalBgR * 0.7 + 255 * 0.3) | 0
@@ -1331,8 +1331,8 @@ export class WebGLRenderer {
           bgIsDefault = false
         }
 
-        // Last of the colour rules, so a flickering line still goes dark under
-        // a selection or a search hit: those recolour the background, and this
+        // Last of the color rules, so a flickering line still goes dark under
+        // a selection or a search hit: those recolor the background, and this
         // is about the glyph on top of whatever that ended up being.
         if (rowHidden !== null) {
           for (let i = 0; i < rowHidden.length; i++) {
@@ -1340,23 +1340,23 @@ export class WebGLRenderer {
             if (c < span.from || c >= span.to) continue
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
             glyphHidden = true
-            // A colour glyph does not read the foreground at all, so matching
+            // A color glyph does not read the foreground at all, so matching
             // it to the background hides everything on the line except an
             // emoji — which would then be the one character refusing to
             // flicker. Sending the cell down the coverage path is what hides
             // it, exactly as the blink rule below does: the sample there is a
             // slot no coverage was ever written to, and whatever it returns is
             // mixed between a foreground and a background that are by now the
-            // same colour.
+            // same color.
             isColor = 0
             break
           }
         }
 
         // The cursor is the cell's own background rather than a second draw
-        // call: a block cursor is exactly "this cell, recoloured", so folding
+        // call: a block cursor is exactly "this cell, recolored", so folding
         // it in here keeps the pane at one draw and needs no extra GL state.
-        // The glyph underneath is repainted in the background colour so it
+        // The glyph underneath is repainted in the background color so it
         // stays legible through the block, which is what makes it read as a
         // cursor sitting on the character rather than erasing it.
         // Sitting on a wide character means covering both of its columns —
@@ -1382,7 +1382,7 @@ export class WebGLRenderer {
             // is drawn *over* the cell in a second pass instead of taking the
             // cell's one quad. Substituting the glyph here is what used to
             // erase the character the cursor was sitting on — the cell kept its
-            // colours, but the only thing in it was the bar.
+            // colors, but the only thing in it was the bar.
             // A bar always draws in the leading column, so a wide cell's
             // trailing spacer must not draw one too.
             const spansTwo = shape !== CURSOR_STYLE_BAR && (cellWidth === 2 || cellWidth === 0)
@@ -1408,7 +1408,7 @@ export class WebGLRenderer {
         }
 
         // Applied last, once every other rule has settled what this cell's
-        // colours are. Blink is the pane's own phase, not something the core
+        // colors are. Blink is the pane's own phase, not something the core
         // tracks — it says which cells asked to blink and this decides when
         // they are in their off half — and hiding the text by matching the
         // final background is what keeps it right on a cell that is also
@@ -1418,13 +1418,13 @@ export class WebGLRenderer {
           if (!this.blinkOn) {
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
             glyphHidden = true
-            // A colour glyph does not read the foreground, so matching it to
+            // A color glyph does not read the foreground, so matching it to
             // the background hides everything except an emoji -- which would
             // then be the one character on the row refusing to blink. Sending
             // the cell down the coverage path is what hides it: the sample
             // there is a slot no coverage was ever written to, and whatever it
             // returns is mixed between a foreground and a background that are
-            // by now the same colour.
+            // by now the same color.
             isColor = 0
           }
         }
@@ -1453,9 +1453,9 @@ export class WebGLRenderer {
         this.instanceData[outIdx++] = v0
         this.instanceData[outIdx++] = u1
         this.instanceData[outIdx++] = v1
-        // Faint reaches a colour glyph here rather than through the
+        // Faint reaches a color glyph here rather than through the
         // foreground, which it does not read: same factor, applied to the
-        // face's own colours instead.
+        // face's own colors instead.
         this.instanceData[outIdx++] =
           isColor === 0 ? 0 : (flags & CELL_FAINT) !== 0 ? FAINT_SCALE : 1
       }

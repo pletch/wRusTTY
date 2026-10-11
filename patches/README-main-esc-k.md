@@ -30,7 +30,7 @@ pre-image blob hashes in this patch (`88e7edf` for `Parser.zig`, `01bd569` for
 `parse_table.zig`) are the same ones the v1.3.1 patch carries. So this is the
 1.3.1 hunks with nothing to adapt, only the surrounding comments rewritten.
 
-The state block is modelled on `main`'s own `osc_string`, with one deliberate
+The state block is modeled on `main`'s own `osc_string`, with one deliberate
 addition: `osc_string` terminates on BEL (`0x07`) only, while this also accepts
 the 8-bit ST (`0x9C`). The 7-bit `ESC \` form needs no entry — it leaves through
 the anywhere-ESC transition that already exists.
@@ -40,7 +40,7 @@ the anywhere-ESC transition that already exists.
 `src/lib/ghostty/main/abi.parity.test.ts` carries an `ESC k` case. Against an
 **unpatched** build it asserts `SCREENTITLE` *does* reach the grid; against a
 patched one that assertion must be inverted. If it fails after a rebuild, the
-patch did not apply — which is the point of testing a behaviour rather than
+patch did not apply — which is the point of testing a behavior rather than
 trusting `git apply`'s exit code.
 
 ## Upstreaming

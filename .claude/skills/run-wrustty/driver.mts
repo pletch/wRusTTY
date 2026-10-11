@@ -8,7 +8,7 @@
  * every change here touches, so that is what this drives.
  *
  *   npx vite-node .claude/skills/run-wrustty/driver.mts smoke
- *       Writes a payload exercising colour, wide characters, the underline
+ *       Writes a payload exercising color, wide characters, the underline
  *       styles, overline and DECSCUSR, then prints the grid and asserts the
  *       core agrees. Exit 1 on any mismatch.
  *
@@ -141,7 +141,7 @@ const coloured = (c: Cell) => c.fg.some((v, i) => v !== DEFAULT_FG[i])
 
 function describe(cells: Cell[]) {
   // The first interesting run per row: enough to see that attributes landed,
-  // short enough to read. Colour counts as interesting — a cell can carry a
+  // short enough to read. Color counts as interesting — a cell can carry a
   // foreground and no style bits at all, and an earlier version of this
   // reported such a row as empty.
   const c = cells.find((x) => x.flags !== 0 || x.attrs2 !== 0 || coloured(x))
@@ -178,7 +178,7 @@ async function smoke() {
     ['plain', ''],
     ['bold', `${ESC}[1m`],
     ['red 256', `${ESC}[38;5;203m`],
-    ['truecolour', `${ESC}[38;2;80;200;120m`],
+    ['truecolor', `${ESC}[38;2;80;200;120m`],
     ['ul single', `${ESC}[4:1m`],
     ['ul double', `${ESC}[4:2m`],
     ['ul curly', `${ESC}[4:3m`],
@@ -226,7 +226,7 @@ async function smoke() {
     console.log(`\nFAILED:\n  ${fail.join('\n  ')}`)
     process.exit(1)
   }
-  console.log('\nOK — colour, attributes, wide characters, cursor shape and reset all as expected.')
+  console.log('\nOK — color, attributes, wide characters, cursor shape and reset all as expected.')
 }
 
 async function grid(arg: string | undefined) {

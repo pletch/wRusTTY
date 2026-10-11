@@ -3,7 +3,7 @@ import { findUrls, isOpenableUrl } from './urlDetect'
 
 /**
  * The detector, exhaustively — it is pure string work, so this is the cheap
- * place to pin behaviour that would otherwise only be observable by hovering
+ * place to pin behavior that would otherwise only be observable by hovering
  * a running pane.
  *
  * Three groups matter beyond the obvious: what the surrounding punctuation
@@ -27,10 +27,10 @@ describe('findUrls', () => {
     ['a comma in a list', 'https://a.example/1, https://b.example/2', ['https://a.example/1', 'https://b.example/2']],
     ['other sentence punctuation', 'really? https://x.example/y! yes; https://z.example/w:', ['https://x.example/y', 'https://z.example/w']],
     ['a closing quote', "run 'https://x.example/y'", ['https://x.example/y']],
-    ['a parenthesised aside', '(see https://x.example/y)', ['https://x.example/y']],
+    ['a parenthesized aside', '(see https://x.example/y)', ['https://x.example/y']],
     ['a bracketed link', '[https://x.example/y]', ['https://x.example/y']],
     ['parentheses that belong to the URL', 'https://en.wikipedia.org/wiki/Foo_(bar)', ['https://en.wikipedia.org/wiki/Foo_(bar)']],
-    ['a parenthesised URL that also holds parentheses', '(https://en.wikipedia.org/wiki/Foo_(bar))', ['https://en.wikipedia.org/wiki/Foo_(bar)']],
+    ['a parenthesized URL that also holds parentheses', '(https://en.wikipedia.org/wiki/Foo_(bar))', ['https://en.wikipedia.org/wiki/Foo_(bar)']],
     ['a full stop after a closing parenthesis', 'see https://x.example/a_(b).', ['https://x.example/a_(b)']],
     ['the angle-bracket form', 'mail said <https://x.example/y> today', ['https://x.example/y']],
 
@@ -44,7 +44,7 @@ describe('findUrls', () => {
     ['a non-ASCII host with an ASCII path', 'https://exämple.com/safe', []],
     // The same homograph, percent-encoded: ASCII to every check here and
     // Cyrillic once the browser has decoded it. Refusing only the raw spelling
-    // would be a defence against the example rather than the attack.
+    // would be a defense against the example rather than the attack.
     ['a percent-encoded homograph host', 'go to https://%D0%B0pple.com/id now', []],
     // Userinfo — the link reads as `google.com` and resolves to
     // `evil.example`. All ASCII, so nothing else here catches it.
@@ -98,7 +98,7 @@ describe('isOpenableUrl', () => {
     expect(isOpenableUrl('http://example.com/a?b=1')).toBe(true)
   })
 
-  /** The check that matters on Windows: a UNC-flavoured target can provoke an
+  /** The check that matters on Windows: a UNC-flavored target can provoke an
    *  outbound SMB authentication attempt. */
   it('refuses every other scheme', () => {
     for (const url of [

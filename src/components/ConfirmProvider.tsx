@@ -5,7 +5,7 @@ import { ConfirmContext, type Ask, type ConfirmRequest } from './confirmContext'
 /** Renders the app's own `ConfirmDialog` in answer to an imperative call.
  *
  * The six prompts this replaces used `window.confirm`, which in WebView2 draws
- * browser chrome captioned with the origin — the user sees a grey box titled
+ * browser chrome captioned with the origin — the user sees a gray box titled
  * roughly "tauri.localhost says". Against custom decorations, mica, and a
  * styled dialog already used for pane and tab closes, that reads as a webpage
  * popup rather than part of the app. It is worst on the prompts that matter

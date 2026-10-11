@@ -80,7 +80,7 @@ export function ThemeEditor({
         // `json` covers a VS Code theme and a settings.json alike; `txt`
         // because a scheme downloaded from a browser often arrives as one,
         // and the parser sniffs the content anyway.
-        { name: 'Colour schemes', extensions: ['itermcolors', 'json', 'jsonc', 'txt'] },
+        { name: 'Color schemes', extensions: ['itermcolors', 'json', 'jsonc', 'txt'] },
         { name: 'All files', extensions: ['*'] },
       ],
     })
@@ -95,13 +95,13 @@ export function ThemeEditor({
         themeName: named,
         customThemes: [...settings.customThemes, { ...theme, name: named }],
       })
-      // Which colours were filled in matters: a scheme that named twelve of
+      // Which colors were filled in matters: a scheme that named twelve of
       // nineteen looks like the theme it came from in some places and like
       // the default theme in others, and that is confusing until you know.
       toast.info(
         missing.length === 0
           ? `Imported "${named}" from ${format}`
-          : `Imported "${named}" from ${format} — ${missing.length} colour${missing.length === 1 ? '' : 's'} it didn't set kept the default`,
+          : `Imported "${named}" from ${format} — ${missing.length} color${missing.length === 1 ? '' : 's'} it didn't set kept the default`,
       )
     } catch (err) {
       toast.error(`Couldn't import that theme: ${err instanceof Error ? err.message : err}`)
@@ -274,7 +274,7 @@ function ThemeNameField({
 }
 
 /**
- * One colour: a swatch that opens the OS picker, and the hex beside it for
+ * One color: a swatch that opens the OS picker, and the hex beside it for
  * anyone transcribing a palette from somewhere else.
  *
  * Carries no visible label — which one this is comes from where it sits in
@@ -284,7 +284,7 @@ function ThemeNameField({
  * The text half keeps a draft because a hex is invalid for most of the time
  * it takes to type one — committing per keystroke would repaint every pane
  * with `#f`, then `#f3`, and land on whatever those parsed to. It commits
- * only once the draft is a full six-digit colour, which is also what makes
+ * only once the draft is a full six-digit color, which is also what makes
  * pasting one work.
  */
 function ColorField({
@@ -317,8 +317,8 @@ function ColorField({
           setDraft(e.target.value)
           if (isHexColor(e.target.value)) onChange(e.target.value.toLowerCase())
         }}
-        // Whatever is left half-typed is not a colour, so the field goes
-        // back to showing the colour that is actually in effect.
+        // Whatever is left half-typed is not a color, so the field goes
+        // back to showing the color that is actually in effect.
         onBlur={() => setDraft(value)}
       />
     </span>

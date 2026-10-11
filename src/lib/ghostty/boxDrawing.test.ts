@@ -2,13 +2,13 @@ import { describe, it, expect } from 'vitest'
 import { isBoxGlyph, drawBoxGlyph } from './boxDrawing'
 
 /**
- * A pixel grid that honours the two operations the rect-based characters use —
+ * A pixel grid that honors the two operations the rect-based characters use —
  * `fillRect` and `fillRect` under `destination-out` — so the assertions below
  * can be about geometry (does this arm reach the cell edge, do these two cells
  * tile without a seam) rather than about which calls were made.
  *
  * Stroked shapes (the arcs, the diagonals, the Powerline separators) are not
- * modelled; those are only checked for being handled at all.
+ * modeled; those are only checked for being handled at all.
  */
 function makeGrid(w: number, h: number) {
   const px = new Uint8Array(w * h)
@@ -74,7 +74,7 @@ describe('isBoxGlyph', () => {
     for (const cp of [0x2500, 0x259f, 0xe0b0, 0xe0bf, 0x1fb00, 0x1fb3b, 0x1fb70, 0x1fb8b]) {
       expect(isBoxGlyph(cp)).toBe(true)
     }
-    // The neighbours either side of every range, plus the parts of Legacy
+    // The neighbors either side of every range, plus the parts of Legacy
     // Computing deliberately left to the font: smooth mosaics, shades,
     // diagonals and the segmented digits.
     for (const cp of [
@@ -117,9 +117,9 @@ describe('arms reach the cell edges', () => {
     expect(draw(0x2503).count()).toBeGreaterThan(draw(0x2502).count())
   })
 
-  it('a corner joins its two arms with no hole at the centre', () => {
-    // U+250C: down and right. Every pixel from the centre to the right edge on
-    // the centre row, and from the centre to the bottom on the centre column.
+  it('a corner joins its two arms with no hole at the center', () => {
+    // U+250C: down and right. Every pixel from the center to the right edge on
+    // the center row, and from the center to the bottom on the center column.
     const g = draw(0x250c)
     const cy = Math.round(H / 2 - LIGHT / 2)
     const cx = Math.round(W / 2 - LIGHT / 2)
@@ -142,7 +142,7 @@ describe('arms reach the cell edges', () => {
     expect(g.rowFilled(Math.round(H / 2 - 1))).toBe(true)
   })
 
-  it('a stub starts at the centre, not short of it', () => {
+  it('a stub starts at the center, not short of it', () => {
     // U+2576 draws rightwards only; U+2574 leftwards. Together they should
     // cover the same row a full U+2500 does.
     const right = draw(0x2576)
@@ -189,7 +189,7 @@ describe('double lines', () => {
     for (let x = 0; x < W; x++) expect(g.at(x, 0)).toBe(0)
     for (let y = 0; y < H; y++) expect(g.at(0, y)).toBe(0)
     // Both rules of the pair do reach the right edge: y - 1 and y + 1 either
-    // side of the open gap at the centre.
+    // side of the open gap at the center.
     expect(g.at(W - 1, Math.round(H / 2) - 1)).not.toBe(0)
     expect(g.at(W - 1, Math.round(H / 2) + 1)).not.toBe(0)
   })
@@ -267,7 +267,7 @@ describe('tiling across cells', () => {
     for (let x = 0; x < W; x++) expect(a.colFilled(x)).toBe(b.colFilled(x))
   })
 
-  it('a light and a heavy vertical share a centre, so a weight change is not a jog', () => {
+  it('a light and a heavy vertical share a center, so a weight change is not a jog', () => {
     const light = draw(0x2502, W, H, 1)
     const heavy = draw(0x2503, W, H, 1)
     const centre = Math.round(W / 2 - 0.5)

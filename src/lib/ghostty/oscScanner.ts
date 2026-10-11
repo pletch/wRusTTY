@@ -15,7 +15,7 @@
  * scanning for everything, so this earns its keep until Ghostty's own parser
  * learns the ident. See the OSC-scan findings in `bench/runner.ts`.
  *
- * Grammar recognised (7-bit forms only, which is what shells emit in practice):
+ * Grammar recognized (7-bit forms only, which is what shells emit in practice):
  *
  *   OSC   ESC ] <digits> ; <payload> (BEL | ESC \)
  *   bell  BEL
@@ -25,8 +25,8 @@
  * what an unterminated sequence would otherwise run past.
  *
  * CAN (0x18) and SUB (0x1A) cancel it: the sequence ends, nothing is
- * dispatched, and scanning resumes after the cancelling byte — as the DEC
- * parser, xterm and the core all do. Without that, a cancelled OSC stayed open
+ * dispatched, and scanning resumes after the canceling byte — as the DEC
+ * parser, xterm and the core all do. Without that, a canceled OSC stayed open
  * until the next BEL and was dispatched with the output after it as payload.
  */
 
@@ -94,7 +94,7 @@ const NO_EVENTS: OscScanEvent[] = []
  * @param wantRis also report `ESC c` (RIS). Off by default because it is not
  *                free: 'c' is an ordinary letter, so hunting it costs an
  *                `indexOf` call per occurrence, where ']' costs one scan that
- *                finds nothing. Measured on colour-wrapped prose — the shape
+ *                finds nothing. Measured on color-wrapped prose — the shape
  *                real SSH traffic has — this scan goes from 0.43 to 1.92 ms/MB,
  *                4.4x, which is why it is asked for only while something is
  *                listening. See `GhosttyEngine.registerResetHandler`.
@@ -186,8 +186,8 @@ export function scanOsc(
 
     // Inside an OSC string, run to its terminator before interpreting anything.
     // A BEL in here is the terminator, never a bell — resuming the outer scan
-    // inside an OSC we failed to recognise is what used to ring the bell for
-    // every unrecognised OSC form.
+    // inside an OSC we failed to recognize is what used to ring the bell for
+    // every unrecognized OSC form.
     const contentStart = seqStart + 2
     let k = contentStart
     let contentEnd = -1
@@ -200,7 +200,7 @@ export function scanOsc(
         termEnd = k + 1
         break
       }
-      // Cancelled: resume *after* the CAN/SUB, which unlike an aborting ESC
+      // Canceled: resume *after* the CAN/SUB, which unlike an aborting ESC
       // cannot open anything itself. A BEL further on is then a real bell.
       if (c === CAN || c === SUB) {
         abortedAt = k + 1
@@ -249,13 +249,13 @@ export function scanOsc(
         segEnd: termEnd - base,
       })
     }
-    // Recognised or not, the whole sequence is consumed.
+    // Recognized or not, the whole sequence is consumed.
     i = termEnd
   }
 
   // A chunk ending on a bare ESC may be the first half of an `ESC ]` split
   // across deliveries. The loop hunts ']' and so never sees that ESC; carrying
-  // it is what keeps a title sequence recognisable when the coalescer happens
+  // it is what keeps a title sequence recognizable when the coalescer happens
   // to cut between its two opening bytes. It cannot already have been consumed:
   // every sequence the loop consumes ends on BEL or '\', never on ESC.
   if (unterminatedAt < 0 && scan.length > 0 && scan[scan.length - 1] === ESC) {

@@ -96,7 +96,7 @@ pub struct HistoryStore {
     /// re-records it — either of which would make the delete look broken. A
     /// block is lifted only explicitly ("Allow again"), never by time or use.
     ///
-    /// Exact, normalised command text: the same form `redact` stores, so a
+    /// Exact, normalized command text: the same form `redact` stores, so a
     /// lookup is a string comparison and needs no idea of what a command means.
     #[serde(default)]
     pub blocked: BTreeMap<String, Vec<String>>,
@@ -238,7 +238,7 @@ fn looks_like_token(word: &str) -> bool {
     has_upper && has_lower && has_digit
 }
 
-/// Normalise a command for storage, or refuse it.
+/// Normalize a command for storage, or refuse it.
 ///
 /// `None` means "do not store this line at all" — it was empty, absurdly long,
 /// carried control characters, or looked like it contained a credential. The
@@ -467,7 +467,7 @@ pub fn record(
             existing.cwd = cwd.map(str::to_string).or_else(|| existing.cwd.clone());
             // A command first seen in a harvest and then actually run is no
             // longer merely imported, and must survive "forget imported
-            // history". Provenance only ever moves towards what we witnessed.
+            // history". Provenance only ever moves toward what we witnessed.
             if existing.source == HistorySource::Harvest && source != HistorySource::Harvest {
                 existing.source = source;
             }
@@ -602,7 +602,7 @@ pub async fn command_history_record(
     let now = now_ms();
     state
         .with_store(&app, |store| {
-            // Checked against the normalised form, which is what a block holds.
+            // Checked against the normalized form, which is what a block holds.
             if redact(&command).is_some_and(|c| store.is_blocked(&host, &c)) {
                 return Ok((false, false));
             }
@@ -1013,7 +1013,7 @@ pub async fn command_history_harvest(
     // The saved session's answer wins outright when it has one, which is
     // *unlike* how auto-reconnect resolves its two halves (there, either
     // saying no is no). Deliberate: auto-reconnect's global switch is the one
-    // place someone turns a behaviour off everywhere, so it has to be able to.
+    // place someone turns a behavior off everywhere, so it has to be able to.
     // This one is off by default, so a per-host `true` is the entire point of
     // the override — it is how a read is allowed on your own machine without
     // being allowed on every machine you happen to log into.

@@ -73,7 +73,7 @@ describe('loadSettings', () => {
     expect(loadSettings().clipboardWriteFromRemote).toBe(true)
   })
 
-  it('honours the setting once it has actually been turned off', () => {
+  it('honors the setting once it has actually been turned off', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ clipboardWriteFromRemote: false }))
     expect(loadSettings().clipboardWriteFromRemote).toBe(false)
   })
@@ -89,14 +89,14 @@ describe('loadSettings', () => {
     expect(loadSettings().textBlending).toBe('native')
   })
 
-  it('honours a stored blending choice', () => {
+  it('honors a stored blending choice', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ textBlending: 'linear-corrected' }))
     expect(loadSettings().textBlending).toBe('linear-corrected')
   })
 
   /**
    * The shader switches on this value and has no branch for anything else —
-   * an unrecognised mode would draw nothing rather than degrade. Hand-edited
+   * an unrecognized mode would draw nothing rather than degrade. Hand-edited
    * storage and a mode retired by a later version both land here, as does
    * 'srgb', the name this setting used before it took ghostty's vocabulary.
    */
@@ -137,7 +137,7 @@ describe('loadSettings', () => {
     expect(loadSettings().ligatures).toBe(false)
   })
 
-  it('honours a stored ligature choice, and ignores a non-boolean one', () => {
+  it('honors a stored ligature choice, and ignores a non-boolean one', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ligatures: true }))
     expect(loadSettings().ligatures).toBe(true)
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ligatures: 'yes' }))
@@ -504,7 +504,7 @@ describe('custom themes', () => {
 /**
  * The window's background, asserted in terms of what each *area* looks like —
  * its layers composited — because that is what anyone sees. Earlier versions
- * passed per-layer tests while leaving the pane three different greys.
+ * passed per-layer tests while leaving the pane three different grays.
  */
 describe('effectiveBackgroundLayers', () => {
   const at = (backgroundOpacity: number, unfocusedDimPercent: number) => ({

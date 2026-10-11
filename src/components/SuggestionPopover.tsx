@@ -3,7 +3,7 @@ import { placeSuggestions, type SuggestionView } from '../lib/autocomplete'
 /**
  * The list of recent commands on offer, sitting under the line being typed.
  *
- * A dropdown rather than inline grey ghost-text, for the first version. Ghost
+ * A dropdown rather than inline gray ghost-text, for the first version. Ghost
  * text is the prettier form and reads better once you know the feature is
  * there, but it needs either a second draw path in the WebGL renderer or an
  * absolutely-positioned span that stays pixel-aligned through font changes,

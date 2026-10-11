@@ -32,7 +32,7 @@ const rows: [string, string][] = [
   ['underline  dashed', `${ESC}[4:5m`],
   ['overline', `${ESC}[53m`],
   ['overline + curly', `${ESC}[53;4:3m`],
-  ['curly, coloured', `${ESC}[4:3m${fg(203)}`],
+  ['curly, colored', `${ESC}[4:3m${fg(203)}`],
   ['bold + double under', `${ESC}[1;4:2m`],
   // Italic is here for the styled-face slots: with ?italic= pointing at a
   // family of its own, these two rows are the only place you can see whether
@@ -86,11 +86,11 @@ out += `  sextants \u{1fb00}\u{1fb01}\u{1fb02}\u{1fb03}\u{1fb04}\u{1fb05}\u{1fb0
 // unbroken bars at three heights, which is the tiling claim made visible.
 out += `           \u{1fb02}\u{1fb02}\u{1fb02}\u{1fb02} \u{1fb0b}\u{1fb0b}\u{1fb0b}\u{1fb0b} \u{1fb2d}\u{1fb2d}\u{1fb2d}\u{1fb2d}  corners \u{1fb7c}\u{1fb7d}\u{1fb7e}\u{1fb7f}\r\n`
 
-// Colour glyphs, which are the one thing in this file that is not a coverage
+// Color glyphs, which are the one thing in this file that is not a coverage
 // mask at all. The second copy is drawn with a red foreground on purpose: an
 // emoji that comes out red is one being sampled as coverage and tinted, which
-// is exactly what the colour atlas exists to stop.
-out += `\r\n  colour — an emoji font paints its own colours, so neither copy should be tinted\r\n`
+// is exactly what the color atlas exists to stop.
+out += `\r\n  color — an emoji font paints its own colors, so neither copy should be tinted\r\n`
 out += `  \u{1f600} \u{1f389} \u{1f680} \u{1f41b} \u{1f4e6} \u{1f525}   ${fg(203)}\u{1f600} \u{1f389} \u{1f680} \u{1f41b} \u{1f4e6} \u{1f525}${RESET} on red\r\n`
 
 // Ligatures are off unless asked for, and need a face that has them — so this
@@ -103,7 +103,7 @@ out += `\r\n  ligatures — press l to toggle, ?font= to pick a face that has th
 out += `  -> => <- <= >= != == === !== <=> |> <| :: ++ // /* */ ~= |= &&\r\n`
 out += `  ... .. ?. ?? ?: ;; %% ^= $> \\\\ #? __ www   — the ones a wider alphabet reaches\r\n`
 out += `  <==> <--> !=== ====  <---> ===== <===>   — the ones longer than three cells\r\n`
-out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} coloured\r\n`
+out += `  ${ESC}[1m-> => != ===${RESET} bold  ${fg(203)}-> => != ===${RESET} colored\r\n`
 
 // Parked *on* a character rather than past the end of the line: a bar or an
 // underline that erased the cell it sat on looked perfectly correct on a blank,

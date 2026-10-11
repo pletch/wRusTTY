@@ -59,7 +59,7 @@ pub struct AuthPrompt {
 #[async_trait]
 pub trait AuthPrompter: Send + Sync {
     /// Returns one response per field of `prompt`, in order, or `None` if the
-    /// user cancelled — which abandons authentication rather than retrying it
+    /// user canceled — which abandons authentication rather than retrying it
     /// blind.
     ///
     /// Wrapped in `Zeroizing` for the same reason [`crate::AuthMethod`] is

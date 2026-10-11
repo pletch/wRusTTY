@@ -64,7 +64,7 @@ function boot(cols: number, rows: number) {
 
 describe('the palette a program changed', () => {
   // Upstream `bb20f8e45`. Before it, RIS reset everything but the palette, so
-  // a program that recoloured it (OSC 4) left it that way through `reset`.
+  // a program that recolored it (OSC 4) left it that way through `reset`.
   it('goes back to the theme on RIS', () => {
     const t = boot(40, 4)
     t.setTheme()

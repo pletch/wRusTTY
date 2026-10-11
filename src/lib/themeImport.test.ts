@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { fileStem, parseThemeFile } from './themeImport'
 import { PRESET_THEMES, THEME_COLOR_KEYS, hexToRgb } from './theme'
 
-/** One iTerm colour dict, in the shape and key order iTerm writes. */
+/** One iTerm color dict, in the shape and key order iTerm writes. */
 function itermColor(r: number, g: number, b: number, space = 'sRGB') {
   return `
 	<dict>
@@ -33,7 +33,7 @@ ${body}
 </plist>`
 }
 
-/** A full sixteen-colour plist, so tests that care about one thing do not
+/** A full sixteen-color plist, so tests that care about one thing do not
  *  each have to write out the other eighteen. */
 function fullItermFile(space = 'sRGB') {
   const entries: Record<string, string> = {
@@ -69,7 +69,7 @@ describe('parseThemeFile, iTerm2', () => {
     expect(parseThemeFile(file, 'Solarized Dark').theme.name).toBe('Solarized Dark')
   })
 
-  it('fills the colours the file leaves out, and says which', () => {
+  it('fills the colors the file leaves out, and says which', () => {
     // Real schemes routinely omit the cursor, and iTerm files never carry a
     // slot for anything this app calls a surface.
     const file = itermFile({ 'Background Color': itermColor(0, 0, 0) })
@@ -81,15 +81,15 @@ describe('parseThemeFile, iTerm2', () => {
     expect(missing).toHaveLength(THEME_COLOR_KEYS.length - 1)
   })
 
-  it('leaves a neutral grey exactly itself when converting from P3', () => {
+  it('leaves a neutral gray exactly itself when converting from P3', () => {
     // The one conversion result checkable without a colorimeter: the two
-    // spaces share a white point, so the matrix rows sum to 1 and the greys
+    // spaces share a white point, so the matrix rows sum to 1 and the grays
     // are invariant. A transposed or mistyped matrix breaks this.
     //
     // 0.6 rather than 0.5 deliberately. Half lands on 127.5 exactly, where
     // the last bit of float error in a row that sums to 0.9999999999999997
     // decides which way the channel rounds -- so a correct matrix fails, for
-    // a reason that has nothing to do with colour.
+    // a reason that has nothing to do with color.
     const file = itermFile({ 'Background Color': itermColor(0.6, 0.6, 0.6, 'P3') })
     const [r, g, b] = hexToRgb(parseThemeFile(file, 'Scheme').theme.background)
     expect(r).toBe(g)
@@ -97,9 +97,9 @@ describe('parseThemeFile, iTerm2', () => {
     expect(r).toBe(153)
   })
 
-  it('pushes an in-gamut P3 colour outward rather than passing the numbers through', () => {
+  it('pushes an in-gamut P3 color outward rather than passing the numbers through', () => {
     // The same components read as sRGB would be a flatter green. sRGB has
-    // the smaller gamut, so expressing the same colour in it takes more
+    // the smaller gamut, so expressing the same color in it takes more
     // extreme coordinates -- red down, green up. Checking the direction is
     // what catches a matrix applied backwards, which a single value cannot.
     const asP3 = hexToRgb(
@@ -119,12 +119,12 @@ describe('parseThemeFile, iTerm2', () => {
     // Pure P3 green is outside sRGB entirely, so there is no answer except
     // the nearest edge -- which lands exactly on sRGB's own green. Pinned
     // because it looks like the conversion did nothing, and it is worth
-    // knowing that is the clamp rather than a missed colour space.
+    // knowing that is the clamp rather than a missed color space.
     const file = itermFile({ 'Background Color': itermColor(0, 1, 0, 'P3') })
     expect(parseThemeFile(file, 'S').theme.background).toBe('#00ff00')
   })
 
-  it('treats an unmarked or Calibrated colour as sRGB', () => {
+  it('treats an unmarked or Calibrated color as sRGB', () => {
     const unmarked = itermFile({
       'Background Color': `<dict><key>Red Component</key><real>0.5</real><key>Green Component</key><real>0.5</real><key>Blue Component</key><real>0.5</real></dict>`,
     })
@@ -140,7 +140,7 @@ describe('parseThemeFile, iTerm2', () => {
     expect(parseThemeFile(file, 'S').theme.background).toBe('#ff0000')
   })
 
-  it('skips a colour whose components are missing rather than importing NaN', () => {
+  it('skips a color whose components are missing rather than importing NaN', () => {
     const file = itermFile({
       'Background Color': `<dict><key>Red Component</key><real>1</real></dict>`,
       'Foreground Color': itermColor(1, 1, 1),
@@ -152,7 +152,7 @@ describe('parseThemeFile, iTerm2', () => {
 
   it('rejects XML that is not a plist', () => {
     expect(() => parseThemeFile('<html><body>hi</body></html>', 'S')).toThrow(
-      /isn't an iTerm colour scheme/,
+      /isn't an iTerm color scheme/,
     )
   })
 
@@ -160,9 +160,9 @@ describe('parseThemeFile, iTerm2', () => {
     expect(() => parseThemeFile('<plist><dict>', 'S')).toThrow(/valid XML/)
   })
 
-  it('rejects a plist that names no terminal colours', () => {
+  it('rejects a plist that names no terminal colors', () => {
     const file = itermFile({ 'Selection Color': itermColor(1, 1, 1) })
-    expect(() => parseThemeFile(file, 'S')).toThrow(/doesn't contain any terminal colours/)
+    expect(() => parseThemeFile(file, 'S')).toThrow(/doesn't contain any terminal colors/)
   })
 })
 
@@ -203,18 +203,18 @@ describe('parseThemeFile, VS Code', () => {
     expect(parseThemeFile(file, 'settings').theme.red).toBe('#cd3131')
   })
 
-  it('reads a bare map of colours', () => {
+  it('reads a bare map of colors', () => {
     expect(parseThemeFile(JSON.stringify(colors), 'pasted').theme.red).toBe('#cd3131')
   })
 
-  it('skips an empty `colors` in favour of the customizations that hold something', () => {
+  it('skips an empty `colors` in favor of the customizations that hold something', () => {
     // A settings.json can carry both; taking the first key that *exists*
-    // rather than the first that holds a colour would import nothing.
+    // rather than the first that holds a color would import nothing.
     const file = JSON.stringify({ colors: {}, 'workbench.colorCustomizations': colors })
     expect(parseThemeFile(file, 'settings').theme.red).toBe('#cd3131')
   })
 
-  it("takes the editor's colours when the theme leaves the terminal's out", () => {
+  it("takes the editor's colors when the theme leaves the terminal's out", () => {
     // Most themes do. Without this the import comes back with the default
     // theme's background and looks nothing like the theme it claims to be.
     const file = JSON.stringify({
@@ -231,7 +231,7 @@ describe('parseThemeFile, VS Code', () => {
     expect(theme.cursor).toBe('#528bff')
   })
 
-  it('prefers an explicit terminal colour over the editor fallback', () => {
+  it('prefers an explicit terminal color over the editor fallback', () => {
     const file = JSON.stringify({
       colors: { 'editor.background': '#282c34', 'terminal.background': '#1e1e1e' },
     })
@@ -254,7 +254,7 @@ describe('parseThemeFile, VS Code', () => {
     expect(theme.background).toBe('#abcdef')
   })
 
-  it('ignores a colour that is not a hex string', () => {
+  it('ignores a color that is not a hex string', () => {
     const file = JSON.stringify({
       colors: { 'terminal.ansiRed': 'red', 'terminal.ansiGreen': 42, 'terminal.ansiBlue': '#00f' },
     })
@@ -301,9 +301,9 @@ describe('parseThemeFile, VS Code', () => {
     expect(() => parseThemeFile('[1, 2, 3]', 'T')).toThrow(/isn't a VS Code theme/)
   })
 
-  it('rejects an object naming no terminal colours', () => {
+  it('rejects an object naming no terminal colors', () => {
     const file = JSON.stringify({ name: 'Nothing', colors: { 'statusBar.background': '#000000' } })
-    expect(() => parseThemeFile(file, 'T')).toThrow(/doesn't contain any terminal colours/)
+    expect(() => parseThemeFile(file, 'T')).toThrow(/doesn't contain any terminal colors/)
   })
 })
 

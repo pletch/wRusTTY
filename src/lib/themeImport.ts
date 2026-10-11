@@ -1,7 +1,7 @@
 import { PRESET_THEMES, THEME_COLOR_KEYS, type TerminalTheme, type ThemeColorKey } from './theme'
 
 /**
- * Reading a colour scheme written for iTerm2 or VS Code.
+ * Reading a color scheme written for iTerm2 or VS Code.
  *
  * Pure text in, palette out — no file dialog, no IPC. That is what lets the
  * awkward half of this be tested against real files' shapes rather than
@@ -11,7 +11,7 @@ import { PRESET_THEMES, THEME_COLOR_KEYS, type TerminalTheme, type ThemeColorKey
  *
  * The rule throughout is to take what is there and fill the rest from the
  * default theme, reporting which ones were filled. A scheme that names
- * fourteen of the nineteen colours is a scheme worth importing; refusing it
+ * fourteen of the nineteen colors is a scheme worth importing; refusing it
  * would be refusing most of what people actually have.
  */
 
@@ -21,7 +21,7 @@ export type ThemeFormat = 'iTerm2' | 'VS Code'
 export interface ParsedTheme {
   /** Complete and ready to use — see `missing` for what came from the file. */
   theme: TerminalTheme
-  /** Colours the file did not name, filled from the default theme. */
+  /** Colors the file did not name, filled from the default theme. */
   missing: ThemeColorKey[]
   format: ThemeFormat
 }
@@ -57,12 +57,12 @@ export function parseThemeFile(text: string, fallbackName: string): ParsedTheme 
     : { ...parseVsCodeTheme(trimmed), format: 'VS Code' as const }
 
   const named = THEME_COLOR_KEYS.filter((key) => colors[key] !== undefined)
-  // A file can parse perfectly and still not be a colour scheme -- any XML
+  // A file can parse perfectly and still not be a color scheme -- any XML
   // is a plist to the parser, and any object is a VS Code theme. Having
-  // named no colour at all is what distinguishes the two, and it is worth a
+  // named no color at all is what distinguishes the two, and it is worth a
   // clearer message than nineteen silent fallbacks.
   if (named.length === 0) {
-    throw new Error(`that ${format} file doesn't contain any terminal colours`)
+    throw new Error(`that ${format} file doesn't contain any terminal colors`)
   }
 
   const theme = { name: name?.trim() || fallbackName } as TerminalTheme
@@ -95,7 +95,7 @@ export function fileStem(path: string): string {
  *
  * `Ansi 0`–`15` are the palette in the order every terminal numbers it, so
  * the eight normal slots then the eight bright ones. iTerm files carry a
- * good deal more than this — selection, badge, bold and link colours, and
+ * good deal more than this — selection, badge, bold and link colors, and
  * a second set for light mode — none of which this app has anywhere to put.
  */
 const ITERM_KEYS: ReadonlyArray<readonly [plistKey: string, slot: ThemeColorKey]> = [
@@ -125,10 +125,10 @@ function parseItermColors(text: string): { name?: string; colors: PartialPalette
   // How every DOM XML parser reports a syntax error: no exception, a
   // document containing this element instead.
   if (doc.querySelector('parsererror')) {
-    throw new Error("that file isn't valid XML, so it isn't an iTerm colour scheme")
+    throw new Error("that file isn't valid XML, so it isn't an iTerm color scheme")
   }
   const root = doc.querySelector('plist > dict')
-  if (!root) throw new Error("that XML file isn't an iTerm colour scheme")
+  if (!root) throw new Error("that XML file isn't an iTerm color scheme")
 
   const entries = plistEntries(root)
   const colors: PartialPalette = {}
@@ -157,13 +157,13 @@ function plistEntries(dict: Element): Map<string, Element> {
     const value = children[i + 1]
     const key = children[i].textContent?.trim()
     // A trailing `<key>` with nothing after it is malformed rather than
-    // fatal: skip the pair and let the caller find the colour missing.
+    // fatal: skip the pair and let the caller find the color missing.
     if (key && value) out.set(key, value)
   }
   return out
 }
 
-/** One iTerm colour dict as `#rrggbb`, or null if it is not one. */
+/** One iTerm color dict as `#rrggbb`, or null if it is not one. */
 function plistColor(value: Element): string | null {
   const parts = plistEntries(value)
   const channels = ['Red Component', 'Green Component', 'Blue Component'].map((key) => {
@@ -175,9 +175,9 @@ function plistColor(value: Element): string | null {
   })
   if (channels.some((c) => !Number.isFinite(c))) return null
 
-  // iTerm records the space each colour was authored in. Display P3 numbers
+  // iTerm records the space each color was authored in. Display P3 numbers
   // read as sRGB would come out visibly desaturated -- the same coordinates
-  // cover more colour in the wider space -- so they are converted. Anything
+  // cover more color in the wider space -- so they are converted. Anything
   // else, including the older "Calibrated" (Apple's generic RGB, gamma 1.8),
   // is taken as sRGB: converting that properly needs a different transfer
   // curve and the files that carry it are decades of terminal schemes
@@ -195,7 +195,7 @@ function plistColor(value: Element): string | null {
  * clamped: P3 is the wider space, so its saturated corners have no sRGB
  * equivalent and the nearest edge is the only answer available.
  *
- * Each row of the matrix sums to 1, which is why a neutral grey stays
+ * Each row of the matrix sums to 1, which is why a neutral gray stays
  * exactly itself — the two spaces share a white point. `themeImport.test.ts`
  * pins that, since it is the one result checkable without a colorimeter.
  */
@@ -205,7 +205,7 @@ function p3ToSrgb([r, g, b]: [number, number, number]): [number, number, number]
   // to: a double cannot hold those exactly, and the digits past here are
   // several orders of magnitude below one step of an 8-bit channel. Rounding
   // them also makes the first two rows sum to exactly 1, which is what keeps
-  // a grey a grey rather than a grey plus float dust.
+  // a gray a gray rather than a gray plus float dust.
   return [
     1.22494018 * lr - 0.22494018 * lg,
     -0.04205695 * lr + 1.04205695 * lg,
@@ -232,7 +232,7 @@ function rgbToHex(r: number, g: number, b: number): string {
 
 // --- VS Code ----------------------------------------------------------------
 
-/** Which workbench colour feeds which slot. */
+/** Which workbench color feeds which slot. */
 const VSCODE_KEYS: ReadonlyArray<readonly [colorKey: string, slot: ThemeColorKey]> = [
   ['terminal.background', 'background'],
   ['terminal.foreground', 'foreground'],
@@ -256,7 +256,7 @@ const VSCODE_KEYS: ReadonlyArray<readonly [colorKey: string, slot: ThemeColorKey
 ]
 
 /**
- * Where the terminal colours sit when the theme does not name them
+ * Where the terminal colors sit when the theme does not name them
  * directly. Most VS Code themes leave `terminal.background` out and let the
  * terminal take the editor's, which is what the editor itself does — so a
  * theme imported without this would come back with the default theme's
@@ -286,7 +286,7 @@ function parseVsCodeTheme(text: string): { name?: string; colors: PartialPalette
   // Three shapes reach this. A published theme puts them under `colors`; a
   // user's settings.json puts them under `workbench.colorCustomizations`;
   // and a snippet someone pasted into a file is just the map itself. Taking
-  // the first that actually holds a colour, rather than the first that
+  // the first that actually holds a color, rather than the first that
   // exists, is what makes a settings.json with an empty `colors` key work.
   const candidates = [root.colors, root['workbench.colorCustomizations'], root]
   const source =
@@ -312,7 +312,7 @@ function parseVsCodeTheme(text: string): { name?: string; colors: PartialPalette
 }
 
 /**
- * A VS Code colour as `#rrggbb`.
+ * A VS Code color as `#rrggbb`.
  *
  * All four hex forms it allows, with any alpha dropped rather than blended:
  * these land in a palette slot that has no alpha, and a translucent ANSI red

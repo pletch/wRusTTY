@@ -79,7 +79,7 @@ const protocolIcons: Record<Protocol, typeof TerminalIcon> = {
 }
 
 interface Props {
-  /** `paneOptions` carries terminal-side behaviour that isn't part of any
+  /** `paneOptions` carries terminal-side behavior that isn't part of any
    * protocol's config — see `PaneLeaf.backspaceSendsCtrlH`. */
   onConnect: (
     source: ConnectionSource,
@@ -855,7 +855,7 @@ export function ConnectDialog({
                   </>
                 )}
 
-                {/* Every other field in this form is labelled by its own
+                {/* Every other field in this form is labeled by its own
                     placeholder, which a select can't have — which is how
                     "Jump via" ended up repeated on every row, restating the
                     field on each option and eating the width the session
@@ -902,7 +902,7 @@ export function ConnectDialog({
           </>
         )}
 
-        {/* Terminal behaviour, shared across protocols rather than nested
+        {/* Terminal behavior, shared across protocols rather than nested
             inside the SSH branch where these started.
 
             Terminal type reaches SSH through the PTY request and telnet

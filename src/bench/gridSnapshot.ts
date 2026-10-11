@@ -10,8 +10,8 @@
  * without ever calling `open()` — so both sides run with no canvas, no GL
  * context, and no jsdom.
  *
- * A snapshot covers glyphs, layout, cursor, **per-cell colours and text
- * attributes**. The colours are only meaningful because both engines are
+ * A snapshot covers glyphs, layout, cursor, **per-cell colors and text
+ * attributes**. The colors are only meaningful because both engines are
  * pinned to one palette first — see gridPalette.ts for why that is a
  * precondition rather than a convenience.
  */
@@ -76,11 +76,11 @@ export interface GridSnapshot {
   /** One string per row, trailing whitespace trimmed (the customary way to
    * compare terminal grid content — trailing blank cells aren't meaningful). */
   rows: string[]
-  /** Per-row foreground colours as 0xRRGGBB, index-aligned with `rows`:
-   * `fg[y][i]` is the colour of `rows[y][i]`. A wide glyph contributes one
+  /** Per-row foreground colors as 0xRRGGBB, index-aligned with `rows`:
+   * `fg[y][i]` is the color of `rows[y][i]`. A wide glyph contributes one
    * entry, matching how `rows` folds its continuation cell away, and the row
    * is truncated to the trimmed string's length for the same reason `rows` is
-   * trimmed — a trailing blank cell's colour is not something the two engines
+   * trimmed — a trailing blank cell's color is not something the two engines
    * meaningfully agree or disagree about. */
   fg: number[][]
   bg: number[][]
@@ -111,7 +111,7 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 }
 
 /** Trims a row to its last non-space character and truncates the parallel
- * attribute arrays to match, so every index of `rows[y]` has a colour and a
+ * attribute arrays to match, so every index of `rows[y]` has a color and a
  * flag set at the same index and nothing beyond it does. */
 function trimRow(line: string, fg: number[], bg: number[], flags: number[]) {
   const trimmed = line.replace(/\s+$/, '')
@@ -126,7 +126,7 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
   const wasm = await loadWasm()
   const termPtr = createTerminal(wasm, cols, rows, {
     scrollbackLimit: 1024 * 1024,
-    // Pinned rather than left at the core's own defaults so the colours read
+    // Pinned rather than left at the core's own defaults so the colors read
     // back here are comparable with xterm's — see gridPalette.ts.
     fgColor: DEFAULT_FG,
     bgColor: DEFAULT_BG,
@@ -193,7 +193,7 @@ export async function snapshotViaGhostty(input: SnapshotInput): Promise<GridSnap
   }
 }
 
-/** xterm reports a colour as one of three modes; only the palette case needs
+/** xterm reports a color as one of three modes; only the palette case needs
  * the shared table, and only the default case needs to agree with what
  * ghostty was configured with. */
 function xtermColor(

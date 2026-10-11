@@ -123,7 +123,7 @@ fn windows_powershell(machine: &impl Machine) -> Option<ShellInfo> {
 fn command_prompt(machine: &impl Machine) -> Option<ShellInfo> {
     let mut candidates = Vec::new();
     // `ComSpec` is what every launcher on Windows uses, and it is the value to
-    // honour if something has pointed it elsewhere.
+    // honor if something has pointed it elsewhere.
     if let Some(comspec) = machine.var("ComSpec") {
         candidates.push(comspec);
     }
@@ -308,7 +308,7 @@ mod registry {
 
     /// Where the WSL service records what is installed. Read rather than
     /// running `wsl.exe -l -v`, whose output is UTF-16LE with decorations and
-    /// is localised — parsing it has burned everyone who has tried.
+    /// is localized — parsing it has burned everyone who has tried.
     const LXSS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Lxss";
 
     struct OwnedKey(HKEY);
@@ -414,7 +414,7 @@ mod registry {
             }
 
             let guid = String::from_utf16_lossy(&name_buf[..name_len as usize]);
-            // The subkey is a GUID; the name a human recognises is a value
+            // The subkey is a GUID; the name a human recognizes is a value
             // inside it. An entry mid-install or mid-uninstall can have the
             // key without the value, and is correctly skipped.
             let path = format!("{LXSS_KEY}\\{guid}");
@@ -619,7 +619,7 @@ mod tests {
         );
     }
 
-    /// `ComSpec` is what every other launcher on Windows honours.
+    /// `ComSpec` is what every other launcher on Windows honors.
     #[test]
     fn command_prompt_follows_comspec() {
         let mut machine = FakeMachine::windows();

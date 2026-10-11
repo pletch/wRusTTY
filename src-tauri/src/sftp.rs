@@ -196,7 +196,7 @@ struct EditEntry {
     /// Always present as a cell even when the edit is not elevated, and that is
     /// the whole point of its shape. The file watcher captures this once, when
     /// the watch is created, and goes on using that capture for every save
-    /// afterwards. If elevation were a plain `Option` swapped into the map
+    /// afterward. If elevation were a plain `Option` swapped into the map
     /// later, `sftp_elevate_edit` would elevate an entry the watcher can no
     /// longer see — and the next Ctrl-S would fail exactly the way the
     /// elevation was meant to fix, having reported success.
@@ -368,7 +368,7 @@ async fn browse_client(
 
 /// The SFTP client for bulk transfers, on a channel of its own.
 ///
-/// One client serialises everything asked of it, so a download running for a
+/// One client serializes everything asked of it, so a download running for a
 /// minute would otherwise hold up every directory listing behind it — the
 /// panel would freeze for the length of the transfer it is showing progress
 /// for. Anything with a progress bar comes here; everything else uses
@@ -513,8 +513,8 @@ const INERT_EXTENSIONS: &[&str] = &[
 /// - **Alternate data streams.** `notes.txt:payload` joins to a stream on
 ///   `notes.txt` rather than a file of its own, and nothing in Explorer shows
 ///   it. (The extension check reads `txt:payload` and prompts, so this is
-///   defence in depth rather than the only guard.)
-/// - **Trailing dots and spaces.** Stripped during path normalisation, so the
+///   defense in depth rather than the only guard.)
+/// - **Trailing dots and spaces.** Stripped during path normalization, so the
 ///   path written isn't the name asked for.
 /// - **Characters Windows simply forbids.** `< > " | ? *` are not a hazard —
 ///   the write fails either way — they are here so that it fails with this
@@ -768,7 +768,7 @@ pub async fn sftp_remote_identity(
     Ok(parse_id_output(&String::from_utf8_lossy(&out)))
 }
 
-/// How long a sudo password prompt waits before it counts as cancelled.
+/// How long a sudo password prompt waits before it counts as canceled.
 ///
 /// A bound rather than an ownership map is what keeps this from leaking: the
 /// panel that raised the prompt can be closed, the pane can go away, the
@@ -791,7 +791,7 @@ enum SudoAnswer {
     ///
     /// Worth telling apart from a cancel even though both abandon the open: a
     /// cancel is the user deciding, and this is the dialog never having reached
-    /// them. Reported in those words, because "cancelled" for a prompt nobody
+    /// them. Reported in those words, because "canceled" for a prompt nobody
     /// saw sends the reader looking for a click that never happened.
     Unanswered,
 }
@@ -907,7 +907,7 @@ async fn open_elevated(
                     match ask_sudo_password(sftp_state, channel, remote_path, attempt > 0).await {
                         SudoAnswer::Given(candidate) => candidate,
                         SudoAnswer::Cancelled => {
-                            return Err("opening this file as root was cancelled".to_string())
+                            return Err("opening this file as root was canceled".to_string())
                         }
                         SudoAnswer::Unanswered => {
                             return Err(format!(
@@ -1459,7 +1459,7 @@ pub async fn sftp_save_edit(
 /// the user nothing they have typed: the local copy is untouched, only the way
 /// back to the host changes.
 ///
-/// Does not save. The panel calls `sftp_save_edit` afterwards, which keeps the
+/// Does not save. The panel calls `sftp_save_edit` afterward, which keeps the
 /// mtime conflict check on the same footing it has for every other save — an
 /// elevated write must not become a way to skip past a warning that someone
 /// else changed the file.
@@ -1660,9 +1660,9 @@ pub async fn sftp_rename(
 /// right verb and the right error.
 ///
 /// A non-empty directory is left to the server to refuse. SFTP has no recursive
-/// delete, so honouring one here would mean walking the tree — the same queue
+/// delete, so honoring one here would mean walking the tree — the same queue
 /// recursive transfer needs, and far too sharp an edge to grow implicitly out
-/// of a menu item labelled "Delete".
+/// of a menu item labeled "Delete".
 #[tauri::command]
 pub async fn sftp_remove(
     session_id: String,
@@ -2044,7 +2044,7 @@ fn absorb_listing(
         // local filesystem — and the more important of the two, because these
         // names come from the other side of the connection.
         //
-        // `PathBuf::join` neither normalises nor refuses: a `..` component
+        // `PathBuf::join` neither normalizes nor refuses: a `..` component
         // survives to the OS, so a server answering with `..` walks the
         // download one directory further up per level, and an *absolute* name
         // discards the base path entirely — `local_root.join("C:\\…\\Startup\\
@@ -2207,7 +2207,7 @@ impl AsyncRead for ChunkReader {
                     self.current = chunk;
                     self.pos = 0;
                 }
-                // Every sender dropped: the transfer was finished or cancelled.
+                // Every sender dropped: the transfer was finished or canceled.
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Pending => return Poll::Pending,
             }
@@ -2270,7 +2270,7 @@ fn is_usable_remote_name(name: &str) -> bool {
 struct TransferEntry {
     /// The chunk sender, for an upload whose bytes arrive from the webview.
     /// Dropping it is what tells the reader the file has ended — so finishing
-    /// and cancelling are both "take the entry out of the map", and differ
+    /// and canceling are both "take the entry out of the map", and differ
     /// only in whether the flag was set on the way.
     ///
     /// `None` for every transfer the backend reads for itself: a download, and
@@ -2333,7 +2333,7 @@ const CHUNK_QUEUE: usize = 4;
 ///
 /// **Nothing at the destination is touched until the whole file has arrived.**
 /// The transfer goes to `<name>.wrustty-part` and is renamed into place only on
-/// success, so a cancelled or failed upload — a dropped connection, a full
+/// success, so a canceled or failed upload — a dropped connection, a full
 /// disk, a closed lid — leaves whatever was already there untouched rather
 /// than truncated to however much got through. That is the promise `wr-fs`
 /// makes for local stores, and it matters more here: the file being replaced
@@ -2679,7 +2679,7 @@ async fn run_upload<R>(
         })
         .await;
 
-    // Cancelling drops the sender, which the reader sees as a clean
+    // Canceling drops the sender, which the reader sees as a clean
     // end-of-file — so a cancel that lands between the last chunk and the end
     // arrives as `Complete`. The flag is what tells the two apart, and it has
     // to be read after the transfer rather than only inside the callback.
@@ -3359,8 +3359,8 @@ async fn run_upload_tree(
 /// The one place a transfer's ending becomes an event and lets go of its id.
 ///
 /// Every runner ends the same way and used to say so in its own words, which is
-/// how a cancelled folder transfer came to report differently from a cancelled
-/// file. `cancelled` is read from the flag rather than inferred from the
+/// how a canceled folder transfer came to report differently from a canceled
+/// file. `canceled` is read from the flag rather than inferred from the
 /// outcome because a cancel landing after the last chunk arrives as `Complete`.
 async fn finish_transfer(
     app: &AppHandle,
@@ -3779,7 +3779,7 @@ mod tests {
 
     /// The download walk's trust boundary. Every name in a listing was chosen
     /// by the server, and each becomes a relative path joined onto the local
-    /// directory the user picked — where `join` normalises nothing and drops
+    /// directory the user picked — where `join` normalizes nothing and drops
     /// the base outright for an absolute path. `part_path_for` does not cover
     /// this: it validates the basename, and the escape is in the directory
     /// part.

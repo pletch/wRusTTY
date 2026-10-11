@@ -10,7 +10,7 @@
  * registers "effects": callbacks invoked synchronously during the write.
  *
  * That default is the trap. A port that maps every read and forgets this
- * renders a perfect screen — every glyph, colour and attribute correct — while
+ * renders a perfect screen — every glyph, color and attribute correct — while
  * every device-attributes and status query silently goes unanswered, and the
  * programs that asked wait out their timeouts. There is no error and nothing
  * looks wrong. `effects.test.ts` therefore asserts both that the replies arrive

@@ -100,36 +100,36 @@ describe('titleBadge never fires on ordinary text', () => {
 })
 
 /**
- * Colour presentation.
+ * Color presentation.
  *
  * The marks worth badging are mostly text-presentation by default, so without
- * an explicit request they render as monochrome glyphs in the tab's own colour
- * — nothing like the green square the user recognises. U+FE0F asks for the
- * colour form rather than betting on Blink's font fallback resolving the way
+ * an explicit request they render as monochrome glyphs in the tab's own color
+ * — nothing like the green square the user recognizes. U+FE0F asks for the
+ * color form rather than betting on Blink's font fallback resolving the way
  * DirectWrite's does in Windows Terminal.
  */
-describe('titleBadge colour presentation', () => {
-  it('asks for the colour form of a text-default emoji', () => {
+describe('titleBadge color presentation', () => {
+  it('asks for the color form of a text-default emoji', () => {
     // U+2733 is Extended_Pictographic but Emoji_Presentation: no.
     expect(titleBadge('\u2733 Building')).toBe('\u2733\uFE0F')
     expect(titleBadge('\u2714 done')).toBe('\u2714\uFE0F')
   })
 
-  it('leaves an already-colour emoji alone', () => {
+  it('leaves an already-color emoji alone', () => {
     // Emoji_Presentation: yes — a selector would be noise.
     expect(titleBadge('\u{1F525} hot')).toBe('\u{1F525}')
   })
 
   it('does not overrule a selector the program chose itself', () => {
-    // U+FE0E is an explicit request for the *text* form. Forcing colour over
+    // U+FE0E is an explicit request for the *text* form. Forcing color over
     // it would be overruling a deliberate statement.
     expect(titleBadge('\u2733\uFE0E Building')).toBe('\u2733\uFE0E')
     expect(titleBadge('\u2733\uFE0F Building')).toBe('\u2733\uFE0F')
   })
 
   it('leaves the spinner frames as text glyphs', () => {
-    // Not emoji at all, so there is no colour form to ask for — and a selector
-    // on one would be meaningless. They take the tab's own colour, which is
+    // Not emoji at all, so there is no color form to ask for — and a selector
+    // on one would be meaningless. They take the tab's own color, which is
     // what Windows Terminal shows for them too.
     expect(titleBadge('\u25D0 thinking')).toBe('\u25D0')
     expect(titleBadge('\u280B installing')).toBe('\u280B')

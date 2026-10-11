@@ -14,7 +14,7 @@ use crate::error::LocalError;
 ///
 /// A ConPTY has to be given a size at creation — unlike telnet's NAWS or an
 /// SSH pty-req, there is no "decide later". The registry applies the real size
-/// moments afterwards (`Slot::Connecting` holds it and replays it on publish),
+/// moments afterward (`Slot::Connecting` holds it and replays it on publish),
 /// so this is only ever what the shell sees for its first prompt. 80x24
 /// because a shell that prints a banner before the resize arrives should wrap
 /// it somewhere conventional.
@@ -95,7 +95,7 @@ impl LocalConnector {
 
         // `CommandBuilder` seeds itself from this process's environment
         // (`get_base_env`) and `env` overlays onto that, which is the
-        // "additions, not replacement" behaviour `LocalConfig::env` documents.
+        // "additions, not replacement" behavior `LocalConfig::env` documents.
         // TERM goes down first so a profile can override it like anything
         // else.
         cmd.env("TERM", config.term_type());
@@ -190,7 +190,7 @@ impl LocalConnector {
 /// puts the exit code where the user is already looking, in the scrollback
 /// that explains it, which survives for as long as the dead pane does.
 ///
-/// Dim rather than coloured: it is a footnote about the session, not output
+/// Dim rather than colored: it is a footnote about the session, not output
 /// from the command, and it should not be mistaken for something the shell
 /// printed.
 fn exit_notice(code: u32) -> Vec<u8> {
@@ -281,7 +281,7 @@ pub struct LocalSession {
 ///
 /// `disconnect` already kills the child, and every well-behaved owner calls
 /// it. This is for the owner that doesn't get the chance — an early return,
-/// a panic, a task cancelled mid-await — where the alternative is a shell
+/// a panic, a task canceled mid-await — where the alternative is a shell
 /// left running with nothing attached to it. That matters most for the
 /// elevated host (see `elevated::host`): an administrator shell that outlives
 /// the tab that asked for it is exactly what that design promises cannot

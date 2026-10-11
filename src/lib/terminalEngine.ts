@@ -74,7 +74,7 @@ export interface TerminalEngine {
   paste(text: string): void
   /**
    * Whether `paste` can be called without asking the user first, or null when
-   * the engine cannot say. Optional because it is the vt core's judgement and
+   * the engine cannot say. Optional because it is the vt core's judgment and
    * an engine without one has nothing to answer with — the caller falls back
    * to counting lines, which is the part of the rule that is obvious.
    */
@@ -99,9 +99,9 @@ export interface TerminalEngine {
   onSelectionChange(cb: () => void): IDisposable
 
   /**
-   * Everything the engine sends towards the wire: typing, paste, mouse
+   * Everything the engine sends toward the wire: typing, paste, mouse
    * tracking reports, DEC 1004 focus reports, and the replies the core
-   * generates for host queries (DSR, DA, OSC colour). A single session's
+   * generates for host queries (DSR, DA, OSC color). A single session's
    * writer wants all of it.
    *
    * **Bytes, not a string, and that is load-bearing.** Not all of this is
@@ -109,7 +109,7 @@ export interface TerminalEngine {
    * column 95 it contains a byte that is not valid UTF-8 on its own. Carried
    * as a string it went through `TextDecoder` and came out as U+FFFD, which
    * `TextEncoder` then turned into *three* bytes — destroying the coordinate
-   * and desynchronising the far end's parser for the rest of the report.
+   * and desynchronizing the far end's parser for the rest of the report.
    */
   onData(cb: (data: Uint8Array) => void): IDisposable
   /**
@@ -140,7 +140,7 @@ export interface TerminalEngine {
   scrollLines(amount: number): void
   scrollToLine(line: number): void
 
-  /** `background` replaces the theme's own background colour when given —
+  /** `background` replaces the theme's own background color when given —
    *  the unfocused window's tint, see `TerminalSettings.backgroundOverride`. */
   setTheme(themeName: string, opacity: number, background?: string | null): void
   setFont(fonts: FontSelection, fontSize: number): void
@@ -155,7 +155,7 @@ export interface TerminalEngine {
    *  with its own DECSCUSR. */
   setCursorStyle(style: CursorStyleSetting, blink: boolean): void
   /**
-   * Colour space glyph coverage is blended in. Optional because it describes
+   * Color space glyph coverage is blended in. Optional because it describes
    * *this* renderer's blend step: the xterm engine draws through its own
    * renderer and has no equivalent knob to hand it to.
    */
@@ -204,7 +204,7 @@ export interface TerminalEngine {
    */
   toggleMarkMode?(): void
   /**
-   * Hide these spans' glyphs, painting them in their own background colour, or
+   * Hide these spans' glyphs, painting them in their own background color, or
    * pass null to show them again. The history flicker's whole rendering — see
    * lib/historyFlicker.ts.
    *

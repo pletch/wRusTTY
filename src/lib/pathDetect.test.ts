@@ -17,7 +17,7 @@ describe('findPaths', () => {
     ['a compiler position', 'src/main.rs:42:7: error', ['src/main.rs']],
     ['a grep position', '/var/log/syslog:120:kernel', ['/var/log/syslog']],
     ['a sentence-ending full stop', 'see /etc/hosts.', ['/etc/hosts']],
-    ['a parenthesised aside', '(in /usr/lib)', ['/usr/lib']],
+    ['a parenthesized aside', '(in /usr/lib)', ['/usr/lib']],
     ['a quoted path', "open '/tmp/a b' and \"/tmp/c\"", ['/tmp/a', '/tmp/c']],
     ['an option value', '--config=/etc/app.toml', ['/etc/app.toml']],
     ['a directory with a trailing slash', 'ls /var/www/', ['/var/www/']],
@@ -84,7 +84,7 @@ describe('findPaths on Windows', () => {
 
 describe('resolveRemotePath', () => {
   const home = '/home/tim'
-  it('keeps an absolute path, normalised', () => {
+  it('keeps an absolute path, normalized', () => {
     expect(resolveRemotePath('/etc//nginx/./conf.d/../nginx.conf', null, home)).toBe('/etc/nginx/nginx.conf')
   })
   it('expands home', () => {

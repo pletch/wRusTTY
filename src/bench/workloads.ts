@@ -87,7 +87,7 @@ const FLOOD_NAMES = ['src', 'lib', 'index.ts', 'README.md', 'Cargo.toml', 'main.
 const FLOOD_WORDS = ['deploy', 'commit', 'render', 'buffer', 'context', 'viewport', 'scrollback', 'terminal', 'parser', 'atlas', 'glyph', 'session']
 
 /**
- * One line of the mixed content a real scrollback holds — coloured `ls -l`, a
+ * One line of the mixed content a real scrollback holds — colored `ls -l`, a
  * plain paragraph, an SGR-heavy diagnostic, or a box-drawing/Unicode row — in
  * the proportions a flood actually has, not a pathological best or worst case.
  * The parser meets SGR churn, newlines, wide/Unicode glyphs and long runs. The
@@ -97,19 +97,19 @@ function floodLine(rand: () => number, line: number): string {
   const kind = rand()
   let s: string
   if (kind < 0.4) {
-    // ls -l style: perms, size, coloured name
+    // ls -l style: perms, size, colored name
     const n = FLOOD_NAMES[(rand() * FLOOD_NAMES.length) | 0]
     const dir = rand() < 0.3
     const color = dir ? 34 : n.includes('.') ? 37 : 32
     s = `${FG(244)}-rw-r--r--${RESET}  ${FG(240)}1 tim staff${RESET} ${((rand() * 99999) | 0).toString().padStart(6)} ${FG(240)}Jul 24 10:${((rand() * 59) | 0).toString().padStart(2, '0')}${RESET} ${FG(color)}${n}${RESET}\r\n`
   } else if (kind < 0.7) {
-    // paragraph text, default colours, long runs
+    // paragraph text, default colors, long runs
     const w: string[] = []
     const count = 6 + ((rand() * 12) | 0)
     for (let i = 0; i < count; i++) w.push(FLOOD_WORDS[(rand() * FLOOD_WORDS.length) | 0])
     s = w.join(' ') + '.\r\n'
   } else if (kind < 0.85) {
-    // heavy SGR churn — a coloured build/diagnostic line
+    // heavy SGR churn — a colored build/diagnostic line
     s = `${FG(196)}error${RESET}${FG(240)}[E${((rand() * 999) | 0).toString().padStart(4, '0')}]${RESET}: ${FG(255)}mismatched types${RESET} ${FG(33)}--> ${FLOOD_NAMES[(rand() * FLOOD_NAMES.length) | 0]}:${(rand() * 200) | 0}:${(rand() * 80) | 0}${RESET}\r\n`
   } else {
     // box drawing + a wide/Unicode sprinkle
@@ -155,7 +155,7 @@ function generateFlood(targetBytes: number, seed: number): Uint8Array {
 }
 
 /**
- * Large `cat`: a few MB of mixed coloured output, timed to full presentation.
+ * Large `cat`: a few MB of mixed colored output, timed to full presentation.
  * This is the *throughput* view — how fast each engine drains a modest flood.
  * For the freeze question at scale, see `largeFlood` (mode 'block').
  */
@@ -164,7 +164,7 @@ export const flood: Workload = {
   label: 'Large cat (flood)',
   mode: 'throughput',
   unit: 'MB/s',
-  description: '~3 MB of mixed coloured output written at once; timed to full presentation.',
+  description: '~3 MB of mixed colored output written at once; timed to full presentation.',
   build() {
     const buf = generateFlood(3 * 1024 * 1024, 0x1234)
     return { events: [buf], totalBytes: buf.length }
@@ -272,13 +272,13 @@ export const parseLongSgr: Workload = {
  *
  * so a delivery is always at least the threshold and routinely larger — by
  * however much the read that crossed the line overshot. Feeding the engines
- * exactly the threshold therefore modelled a best case the app never actually
+ * exactly the threshold therefore modeled a best case the app never actually
  * produces, and it mattered: a small delivery parses in well under a frame for
  * either engine, so the stall metric bottomed out at the display's refresh
  * interval and reported the same number no matter how fast the engine was.
  *
  * Mirrors `FLUSH_SIZE_THRESHOLD` in src-tauri/src/coalesce.rs and must be
- * changed with it — a harness modelling a coalescer the app no longer has
+ * changed with it — a harness modeling a coalescer the app no longer has
  * measures nothing useful. It was raised from 32 KB to 256 KB after measuring
  * the real path: at 32 KB the per-message IPC tax was ~40% on top of engine
  * time, paid once per delivery.
@@ -309,7 +309,7 @@ const MAX_READ = 32 * 1024
  * by running its actual accumulate-and-flush loop over simulated reads.
  *
  * Deterministic (seeded) like every other input here, so a run reproduces and
- * both engines are fed the identical sequence. Modelling the algorithm rather
+ * both engines are fed the identical sequence. Modeling the algorithm rather
  * than picking a size distribution is deliberate — the shape of the output
  * falls out of the threshold and the read size, which are both real numbers
  * taken from the Rust, instead of a curve invented to look plausible.

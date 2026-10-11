@@ -57,7 +57,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 /// step up. Measured across the two settings, the IPC cost decomposes into
 /// ~0.61 ms fixed per message plus ~2.9 ms per MB of copy; past this size the
 /// per-byte term dominates and there is little left for a bigger buffer to
-/// amortise. 1 MB would save a further ~6% of wall time while making each
+/// amortize. 1 MB would save a further ~6% of wall time while making each
 /// uninterrupted engine write ~32 ms — visible jank for very little. At
 /// 256 KB the write is ~8 ms, inside a frame, and the measured worst frame
 /// gap moved only 106 -> 121 ms.
@@ -249,7 +249,7 @@ pub fn set_inflight_window(bytes: u64) -> u64 {
 ///
 /// A frontend that never acknowledges — an older build, a wedged page, a
 /// renderer killed by the OS — must not silently freeze the session. Timing out
-/// degrades to the previous unbounded behaviour, which is bad, rather than to a
+/// degrades to the previous unbounded behavior, which is bad, rather than to a
 /// hang, which is worse and much harder to diagnose. A dead webview is caught
 /// separately: `Channel::send` fails and the loop exits.
 const CREDIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -296,7 +296,7 @@ impl FlowControl {
 
     /// Blocks until the webview has caught up enough to take more, or until the
     /// timeout gives up on hearing from it at all. The timeout is a parameter so
-    /// a test can pin the give-up behaviour without waiting the real interval.
+    /// a test can pin the give-up behavior without waiting the real interval.
     async fn wait_for_room(&self, timeout: Duration) {
         while self.inflight.load(Ordering::Relaxed) >= inflight_window() {
             // Registered before the re-check inside `timeout` so an ack landing
@@ -320,7 +320,7 @@ static FLOW: OnceLock<Mutex<HashMap<String, Arc<FlowControl>>>> = OnceLock::new(
 /// This is a process-wide registry on the path every session's output takes,
 /// so a panic anywhere that happened to be holding this lock would otherwise
 /// poison it permanently — turning one fault into a dead output path for every
-/// session, including ones opened afterwards. Nothing guarded here has an
+/// session, including ones opened afterward. Nothing guarded here has an
 /// invariant a panic could leave half-applied: it is a map of session id to a
 /// counter, and the worst a recovered map holds is a stale entry that the next
 /// `remove` clears. `logging.rs` recovers its own file map the same way.
@@ -487,7 +487,7 @@ mod tests {
 
     /// The delivery counters are process-wide, and `cargo test` runs these in
     /// parallel on one process — so every test that flushes bumps the same
-    /// numbers. Each takes this first, which serialises them just enough for
+    /// numbers. Each takes this first, which serializes them just enough for
     /// the counter assertions to mean anything.
     ///
     /// Tokio's mutex rather than `std`'s because the guard is deliberately
@@ -656,7 +656,7 @@ mod tests {
     }
 
     /// A session that never acks — an older frontend, a wedged page — must
-    /// degrade to the old unbounded behaviour rather than hanging, which would
+    /// degrade to the old unbounded behavior rather than hanging, which would
     /// look like a dead connection and be far harder to diagnose.
     #[tokio::test]
     async fn gives_up_waiting_for_credit_rather_than_hanging() {

@@ -45,7 +45,7 @@ pub struct SshConfig {
     pub proxy: Option<ProxyConfig>,
 }
 
-/// What we claim to be when no session overrides it. 256-colour xterm is what
+/// What we claim to be when no session overrides it. 256-color xterm is what
 /// every modern terminal advertises, and what this app's engine implements.
 /// (The `xterm-` prefix is a terminfo name, not a statement about which
 /// engine renders it — that's Ghostty.)

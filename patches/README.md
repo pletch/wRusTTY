@@ -35,12 +35,12 @@ row's packed cells as one borrowed run, taking the per-cell call boundary out
 entirely: **0.1x** of the batched read on codepoints alone (1.9µs vs 14.1µs at
 80x24, 10.3µs vs 90.1µs at 200x60), which is 5.8x-11.4x better than the
 per-cell `RAW` above. `ViewportReader` uses it, though it still pays the cells
-iterator for styles and resolved colours, so it banks less than that headline.
+iterator for styles and resolved colors, so it banks less than that headline.
 
 The rebase itself changed nothing on this side: it landed **byte-identical to
 the previous ghostty-web build at 79 exports, same names**, so `GhosttyEngine.ts`
 and `wasmBindings.ts` needed no changes. The exports under "What we added on
-top" came afterwards, deliberately, and take it to 84.
+top" came afterward, deliberately, and take it to 84.
 
 ## Building
 
@@ -59,7 +59,7 @@ cp zig-out/bin/ghostty-vt.wasm ../src/lib/ghostty/vendor/ghostty-vt.wasm
 
 Verify with `npx vitest run` (421 tests; `gridSnapshot.test.ts` is the real gate —
 it feeds identical bytes through Ghostty and xterm.js and compares glyphs,
-colours, attributes and cursor per cell) and
+colors, attributes and cursor per cell) and
 `node tools/parse-probes/probe.mjs src/lib/ghostty/vendor/ghostty-vt.wasm`.
 
 ## What the patch contains

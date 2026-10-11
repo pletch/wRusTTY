@@ -47,7 +47,7 @@ const PROBES = [
   P('style', 'reset, repeated', '\x1b[0m', 'pen already default'),
   P('style', 'bold, repeated', '\x1b[1m', 'pen already bold'),
   P('style', 'bold/reset alternating', '\x1b[1m\x1b[0m', 'style changes every action'),
-  P('style', '256-colour fg', '\x1b[38;5;196m', 'palette + 3 params'),
+  P('style', '256-color fg', '\x1b[38;5;196m', 'palette + 3 params'),
   P('style', 'truecolor fg', '\x1b[38;2;12;34;56m', 'rgb + 5 params'),
 ]
 

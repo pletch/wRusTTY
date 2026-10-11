@@ -10,14 +10,14 @@
  * Blinking the recalled command reads better for a reason worth writing down:
  * the thing the user is looking at *is* the command, and the question in their
  * head is about that command specifically. Making it move answers exactly
- * there, introduces no colour the theme did not already have, and needs no
+ * there, introduces no color the theme did not already have, and needs no
  * decision about what a highlight should look like against twenty different
  * themes and an arbitrary program's own output.
  *
  * The mechanism is not an overlay. `WebGLRenderer.hiddenSpans` paints the
- * covered cells' glyphs in their own background colour, so the text vanishes
+ * covered cells' glyphs in their own background color, so the text vanishes
  * and reappears with nothing drawn over it — see the note there for why a DOM
- * band in the background colour is wrong on a translucent pane.
+ * band in the background color is wrong on a translucent pane.
  *
  * ## One flash per press, and never more
  *

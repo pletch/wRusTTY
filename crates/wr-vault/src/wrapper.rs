@@ -133,7 +133,7 @@ pub enum WrapperParams {
     /// So an implementation must:
     ///
     /// - require explicit user confirmation of the exact command **at
-    ///   enrolment**, showing what will be run;
+    ///   enrollment**, showing what will be run;
     /// - never execute whatever the file happens to say **at unlock** — unlock
     ///   is not a moment where the user is deciding anything, and a prompt
     ///   there gets clicked through;
@@ -320,7 +320,7 @@ mod tests {
         assert!(unwrap_dek(&kek, &w).is_err());
     }
 
-    /// Relabelling the kind must fail even though the KEK is correct.
+    /// Relabeling the kind must fail even though the KEK is correct.
     #[test]
     fn a_wrapper_relabelled_to_a_different_kind_no_longer_opens() {
         let kek = Kek::random();

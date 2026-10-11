@@ -49,7 +49,7 @@ entry in the server's auth log, and no second Duo push for a host with 2FA at
 connect time. It is `channel_open_session` on the connection that is already
 up, followed by `exec` instead of `shell`. That is the same move
 `get_or_open_transfer_sftp` already makes in `crates/wr-ssh/src/session.rs:123`
-for bulk transfers, for the same reason: one stream serialises everything asked
+for bulk transfers, for the same reason: one stream serializes everything asked
 of it, and the interactive one must not be made to wait behind bulk work.
 
 So the answer to "does it run a parallel connection" is: parallel *channel*,
@@ -371,7 +371,7 @@ cell width, and a DOM text run advances by whatever the font says. The fix is
 to stop laying it out as a run at all — each character is boxed to exactly one
 cell (`lib/cellText.ts`), which is what the terminal itself does, so drift is
 impossible rather than merely small. The italic went with it: a monospace
-family usually has no true italic face, so the browser synthesises an oblique
+family usually has no true italic face, so the browser synthesizes an oblique
 whose metrics differ again, and a slanted glyph leans out of its box and gets
 clipped.
 

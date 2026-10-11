@@ -155,7 +155,7 @@ describe('folderSelected / newFolderCancelled', () => {
     expect(next.isNewFolder).toBe(false)
   })
 
-  it('cancelling new-folder mode restores the original folder', () => {
+  it('canceling new-folder mode restores the original folder', () => {
     const inNewFolderMode: ConnectDraft = { ...base, isNewFolder: true, folder: 'typed so far' }
     const next = connectDraftReducer(inNewFolderMode, { type: 'newFolderCancelled', initialFolder: 'Work' })
     expect(next.isNewFolder).toBe(false)
@@ -238,7 +238,7 @@ describe('wakeOnLanFrom', () => {
   /** The backend refuses a wait past its ceiling, so a form that could
    * produce one would be a save failing for a reason nothing on screen
    * explains. */
-  it('clamps a wait longer than the backend will honour', () => {
+  it('clamps a wait longer than the backend will honor', () => {
     const wake = wakeOnLanFrom(withWake({ wakeMac: 'aa:bb:cc:dd:ee:ff', wakeWait: '31536000' }))
     expect(wake?.waitSeconds).toBe(MAX_WAKE_WAIT_SECONDS)
   })

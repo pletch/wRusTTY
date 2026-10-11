@@ -7,7 +7,7 @@
 //! copy is not an option. Reading the icon that `pwsh.exe` already carries, on
 //! the machine it is installed on, redistributes nothing: the pixels come from
 //! the user's own installation, exactly as Explorer and the taskbar show them.
-//! It is also the only way to be sure the colours match what Windows shows.
+//! It is also the only way to be sure the colors match what Windows shows.
 //!
 //! # Why this takes a shell id rather than a path
 //!
@@ -67,7 +67,7 @@ fn encode_png(rgba: &[u8], size: u32) -> Option<Vec<u8>> {
 /// GDI's 32-bit DIB is BGRA; the PNG wants RGBA.
 ///
 /// `mask` covers icons that predate alpha channels: every alpha byte in the
-/// colour bitmap is then zero, and transparency lives in a separate AND mask
+/// color bitmap is then zero, and transparency lives in a separate AND mask
 /// instead, where a white pixel is see-through and a black one is opaque.
 /// Without this fallback such an icon would encode as fully transparent and
 /// simply not appear.
@@ -160,7 +160,7 @@ fn read_icon_rgba(path: &str, size: u32) -> Option<Vec<u8>> {
     unsafe { GetIconInfo(icon.0, &mut info).ok()? };
     let color = Bitmap(info.hbmColor);
     let mask = Bitmap(info.hbmMask);
-    // A monochrome icon has no colour bitmap at all. None of the shells this
+    // A monochrome icon has no color bitmap at all. None of the shells this
     // is asked about ship one, and a fallback glyph is the right answer if one
     // ever does.
     if color.0.is_invalid() {

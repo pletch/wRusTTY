@@ -104,7 +104,7 @@ describe('PromptInputTracker', () => {
   /**
    * A password prompt echoes nothing, so there is nothing between the origin
    * and the cursor — the read comes back empty without anything having to
-   * recognise the prompt as a password prompt.
+   * recognize the prompt as a password prompt.
    */
   it('reads nothing at a prompt that does not echo', () => {
     const grid = makeGrid(40)

@@ -10,9 +10,9 @@
  * plausible one, and almost every trap found so far (`GhosttyPoint`'s offsets,
  * the palette stride, the blank scrollback reads) produced *plausible* output.
  *
- * Deliberately unoptimised. It fetches per cell with separate calls where the
+ * Deliberately unoptimized. It fetches per cell with separate calls where the
  * real renderer would use `get_multi` and skip clean rows, because a parity
- * oracle that shares the optimisations of the thing it checks cannot catch a
+ * oracle that shares the optimizations of the thing it checks cannot catch a
  * bug in them. Speed is `iter.mjs`'s job.
  *
  * Requires a build at the pin — see `../lib/ghostty/main/vendor-main/README.md`.
@@ -76,7 +76,7 @@ function concat(chunks: Uint8Array[]): Uint8Array {
  * That asymmetry is real and load-bearing here: the vendored snapshot leaves
  * attrs2 at full row width while trimming fg/bg/flags to the trimmed string.
  * Truncating it here too produced arrays that agreed on every value and
- * differed only in length, which reads as a colour/attribute divergence and
+ * differed only in length, which reads as a color/attribute divergence and
  * sends you looking in the wrong place entirely.
  */
 function trimRow(line: string, fg: number[], bg: number[], flags: number[]) {
@@ -103,13 +103,13 @@ export function snapshotViaGhosttyMain(input: SnapshotInput): GridSnapshot {
   abi.expectOk(ex.ghostty_terminal_new(0, termSlot, cols, rows), 'terminal_new')
   const term = slotValue(termSlot)
 
-  // Both engines must be pinned to one palette before any colour is comparable
+  // Both engines must be pinned to one palette before any color is comparable
   // — see gridPalette.ts. The value is the array pointer itself, not a pointer
-  // to it: passing the latter succeeds and leaves every colour black.
+  // to it: passing the latter succeeds and leaves every color black.
   const palPtr = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
   const bytes = new Uint8Array(mem.buffer)
   // The whole 256 table, not the 16 the vendored side is configured with: that
-  // ABI takes 16 and lets the core derive the cube and greys, whereas this one
+  // ABI takes 16 and lets the core derive the cube and grays, whereas this one
   // takes all 256 explicitly. `PALETTE_256` is the table the core would have
   // derived, so the two end up equivalent — cycling the 16 does not, and shows
   // up only once a test uses an index above 15.
@@ -182,8 +182,8 @@ export function snapshotViaGhosttyMain(input: SnapshotInput): GridSnapshot {
       const cp = abi.codepointOf(lo)
       line += cp === 0 ? ' ' : String.fromCodePoint(cp)
 
-      // A cell with no explicit colour reports INVALID_VALUE rather than a
-      // colour, and the caller is expected to substitute its own default. Our
+      // A cell with no explicit color reports INVALID_VALUE rather than a
+      // color, and the caller is expected to substitute its own default. Our
       // ABI pre-resolves that on the other side of the boundary, so this is
       // where the two representations are reconciled.
       const fgRes = ex.ghostty_render_state_row_cells_get(cells, abi.RS_CELLS_FG_COLOR, out)

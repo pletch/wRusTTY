@@ -1,4 +1,4 @@
-//! Reads a colour-scheme file the user picked, for the theme importer.
+//! Reads a color-scheme file the user picked, for the theme importer.
 //!
 //! # Why this is only a reader
 //!
@@ -23,7 +23,7 @@
 
 use std::path::Path;
 
-/// Largest colour scheme this will read.
+/// Largest color scheme this will read.
 ///
 /// Generous by three orders of magnitude for what these files actually are —
 /// an `.itermcolors` is a few KB, and even a full VS Code theme carrying
@@ -42,11 +42,11 @@ fn read_capped(path: &Path, max_bytes: u64) -> Result<String, String> {
     // ordinary mistakes — a path that is gone, or a directory.
     let meta = std::fs::metadata(path).map_err(|e| format!("can't read that file: {e}"))?;
     if meta.is_dir() {
-        return Err("that's a folder, not a colour scheme file".to_string());
+        return Err("that's a folder, not a color scheme file".to_string());
     }
     if meta.len() > max_bytes {
         return Err(format!(
-            "that file is {} MB — colour schemes are a few kilobytes, so this is probably not one",
+            "that file is {} MB — color schemes are a few kilobytes, so this is probably not one",
             meta.len() / (1024 * 1024)
         ));
     }
@@ -56,7 +56,7 @@ fn read_capped(path: &Path, max_bytes: u64) -> Result<String, String> {
     // text by definition, and replacement characters would turn "you picked a
     // binary file" into a parse error further away from the cause.
     let text = String::from_utf8(bytes)
-        .map_err(|_| "that file isn't text, so it isn't a colour scheme".to_string())?;
+        .map_err(|_| "that file isn't text, so it isn't a color scheme".to_string())?;
     // A plist written on macOS often carries one, and it would otherwise be
     // the first character the XML parser sees.
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_string())

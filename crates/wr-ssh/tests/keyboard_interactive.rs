@@ -1,6 +1,6 @@
 //! End-to-end keyboard-interactive auth against a real SSH server.
 //!
-//! The one method here whose behaviour is *not* knowable at connect time: the
+//! The one method here whose behavior is *not* knowable at connect time: the
 //! server decides how many rounds there are, what each asks, and which fields
 //! are secret. None of that can be covered by unit tests on our side of the
 //! wire, so this stands up an actual `russh` server, connects a real
@@ -453,7 +453,7 @@ async fn the_servers_name_and_instructions_reach_the_user() {
     assert!(prompts[0].instructions.contains("Enter a passcode"));
 }
 
-/// Cancelling abandons the connection instead of submitting blanks. Blanks are
+/// Canceling abandons the connection instead of submitting blanks. Blanks are
 /// a *wrong* answer, and would burn one of the server's limited attempts on
 /// the user's behalf.
 #[tokio::test]
@@ -528,7 +528,7 @@ async fn a_wrong_password_in_the_fallback_still_fails() {
     assert_eq!(prompts.len(), 1);
 }
 
-/// Cancelling the fallback prompt abandons the connection, same as cancelling
+/// Canceling the fallback prompt abandons the connection, same as canceling
 /// a server-driven round — it must not fall through to sending a blank.
 #[tokio::test]
 async fn cancelling_the_fallback_prompt_abandons_the_connection() {

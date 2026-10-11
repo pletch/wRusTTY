@@ -167,7 +167,7 @@ mod tests {
         );
     }
 
-    /// The whole point of threading AAD through: a wrapper blob relabelled
+    /// The whole point of threading AAD through: a wrapper blob relabeled
     /// as a different kind, or moved to a different wrapper id, must fail to
     /// open rather than being fed to the wrong derivation path.
     #[test]

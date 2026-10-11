@@ -39,8 +39,8 @@ export function HostKeyPrompt({
           // fixed near-black red, for the reason every other panel here
           // stopped being a fixed dark hex: `text-chrome` turns black on a
           // light theme, and black on red-950 is the warning nobody can
-          // read. As a colour plus a one-stop gradient, not one shorthand —
-          // Chrome keeps the gradient and drops the colour if they are
+          // read. As a color plus a one-stop gradient, not one shorthand —
+          // Chrome keeps the gradient and drops the color if they are
           // written together (see tabHoverWash).
           isAlarm
             ? 'border-red-500/50 bg-surface bg-gradient-to-b from-red-500/20 to-red-500/20'

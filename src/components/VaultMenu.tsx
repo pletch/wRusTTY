@@ -95,7 +95,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
-  // Enrolment raises a Windows Hello prompt and blocks until it's answered.
+  // Enrollment raises a Windows Hello prompt and blocks until it's answered.
   // Without this the checkbox is controlled by state that can't update until
   // that returns, so it silently snaps back and sits there looking broken —
   // which invites exactly the repeated clicking that used to queue up a

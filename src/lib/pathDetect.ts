@@ -212,7 +212,7 @@ export function findPaths(line: string, flavor: PathFlavor = 'posix'): PathMatch
  * `~`-relative (it can come from a window title). `home` is the remote home
  * directory, needed for either kind of `~`.
  *
- * Normalised lexically — `.` dropped, `..` popped — because SFTP resolves
+ * Normalized lexically — `.` dropped, `..` popped — because SFTP resolves
  * neither reliably and because the files panel shows the path it was given.
  * Lexical `..` is not what the kernel does through a symlink, and that is
  * accepted: the result is looked up before anything is done with it, so the

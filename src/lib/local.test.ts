@@ -37,12 +37,12 @@ describe('shellLabel', () => {
  * where a posix shell read as PowerShell merely goes without autocomplete.
  */
 describe('shellFamily', () => {
-  it('recognises both PowerShells', () => {
+  it('recognizes both PowerShells', () => {
     expect(shellFamily(config('C:\\PowerShell\\7\\pwsh.exe'))).toBe('powershell')
     expect(shellFamily(config('C:\\Windows\\System32\\powershell.exe'))).toBe('powershell')
   })
 
-  it('recognises cmd', () => {
+  it('recognizes cmd', () => {
     expect(shellFamily(config('C:\\Windows\\System32\\cmd.exe'))).toBe('cmd')
   })
 
@@ -60,7 +60,7 @@ describe('shellFamily', () => {
     expect(shellFamily(config('C:\\PowerShell\\7\\PWSH.EXE'))).toBe('powershell')
   })
 
-  it('falls through to posix for anything unrecognised', () => {
+  it('falls through to posix for anything unrecognized', () => {
     expect(shellFamily(config('C:\\tools\\zsh.exe'))).toBe('posix')
   })
 })
@@ -113,7 +113,7 @@ describe('shellIdFor', () => {
  * The gate itself, asserted through the function the pane actually calls.
  *
  * Null means "this pane records nothing" and is checked where the key is
- * chosen rather than filtered afterwards — see the "must not regress" list in
+ * chosen rather than filtered afterward — see the "must not regress" list in
  * docs/LOCAL_SHELL_PLAN.md.
  */
 describe('historyKeyForSource, for local shells', () => {
@@ -165,7 +165,7 @@ describe('historyKeyForSource, for local shells', () => {
 })
 
 describe('localTitle', () => {
-  it('names a recognised shell the way the picker does', () => {
+  it('names a recognized shell the way the picker does', () => {
     expect(localTitle(config('C:/Program Files/PowerShell/7/pwsh.exe'))).toBe('PowerShell')
     expect(localTitle(config('C:/Windows/System32/wsl.exe', ['-d', 'Ubuntu']))).toBe('Ubuntu (WSL)')
   })

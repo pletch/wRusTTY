@@ -38,7 +38,7 @@ export type ConnectionSource =
    * docs/ELEVATED_TABS_PLAN.md). Carries a shell *id*, never a path: the
    * elevated host resolves the id itself, so nothing here can choose what runs
    * as administrator. `profileId` is the saved session it was opened from, if
-   * any — for labelling only. */
+   * any — for labeling only. */
   | { protocol: 'elevated'; shellId: string; profileId: string | null }
 
 export type ConnEvent =
@@ -97,7 +97,7 @@ export interface ReconnectPolicy {
  * Both halves subtract and neither adds, which is why this is an `&&` rather
  * than a precedence table: a profile cannot switch reconnect on when the global
  * setting is off, because the global setting is the one place someone turns the
- * whole behaviour off and expecting them to then audit every saved session
+ * whole behavior off and expecting them to then audit every saved session
  * would make it useless.
  *
  * The third subtraction is not here and cannot be: the backend refuses to
@@ -231,7 +231,7 @@ export function connect(
  *
  * The `*Profile` variants differ from their plain counterparts only in how the
  * connection is *established* — once a session id exists, it is an ordinary
- * session of that transport. Centralised because this was three separate
+ * session of that transport. Centralized because this was three separate
  * ternaries defaulting to `ssh_*`, which meant every new source variant
  * silently routed its writes and disconnects to the SSH commands until someone
  * noticed. */
@@ -310,7 +310,7 @@ export function respondHostKey(requestId: string, accept: boolean) {
 }
 
 /** Answers one round of keyboard-interactive auth: one response per field, in
- * order, or `null` to cancel. Cancelling abandons the connection rather than
+ * order, or `null` to cancel. Canceling abandons the connection rather than
  * sending blanks — an empty answer is a wrong answer, and burns one of the
  * server's limited attempts. */
 export function respondAuthPrompt(requestId: string, responses: string[] | null) {
@@ -355,7 +355,7 @@ export function isCleanDisconnect(status: string): boolean {
  * the setting silently switch auto-reconnect off altogether: closing the pane
  * removes the session id, and removing the session id is precisely what stops a
  * reconnect run. Anyone with the box ticked — it is on by default — got none of
- * the reconnect behaviour, and there was no way to have both.
+ * the reconnect behavior, and there was no way to have both.
  *
  * They were never in conflict. The setting's own description is "when a
  * connection ends cleanly (the remote shell exits or the server hangs up)", and

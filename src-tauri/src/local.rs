@@ -49,7 +49,7 @@ impl Default for LocalState {
 }
 
 // Same reason `ssh_connect` allows it: the argument list *is* the IPC
-// contract, since `#[tauri::command]` deserialises each parameter by name from
+// contract, since `#[tauri::command]` deserializes each parameter by name from
 // the invoke payload. Grouping them into a struct to satisfy the lint would
 // change the shape the frontend has to send rather than simplify anything.
 // Allowed here specifically, not workspace-wide.
@@ -111,7 +111,7 @@ pub async fn local_connect(
 /// Turn a saved profile into something runnable, re-resolving the shell.
 ///
 /// The stored path is a fallback, not the answer. A `shell_id` that detection
-/// still recognises wins, because that is what survives the shell being
+/// still recognizes wins, because that is what survives the shell being
 /// upgraded out from under the profile — PowerShell 7 and 8 install side by
 /// side under different directories, so the path saved last year names a
 /// binary that may be gone.

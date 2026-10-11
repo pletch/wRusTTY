@@ -2,7 +2,7 @@
  *
  * Every popover, panel and dialog listens for Escape on `window`, because that
  * is the only way to catch the key wherever focus happens to be. The cost is
- * that they all hear it at once: cancelling a confirmation raised *from* the
+ * that they all hear it at once: canceling a confirmation raised *from* the
  * forwarding panel closed the confirmation and the panel underneath it, losing
  * the form that had just been filled in.
  *

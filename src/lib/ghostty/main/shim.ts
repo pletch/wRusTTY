@@ -9,7 +9,7 @@
  * `ghostty_*` exports across the render loop, search, links, mark mode, mouse
  * reporting and resize, and every one of them would have to move at the same
  * time as the binary. That is a single unreviewable change, and if the screen
- * comes out wrong afterwards there is nothing to bisect.
+ * comes out wrong afterward there is nothing to bisect.
  *
  * So the boundary moves instead of the callers. This presents exactly the
  * `GhosttyExports` object the app already talks to, backed by `main`. Every
@@ -103,7 +103,7 @@ const UNLIMITED_SCROLLBACK_BYTES = 0xffffffff
  * A function rather than a lookup table built at module scope, and that is
  * load-bearing: `wasmBindings` imports this module to select the ABI, so the
  * two form an import cycle, and a table built while `wasmBindings` is still
- * initialising reads its constants in their temporal dead zone. Everything here
+ * initializing reads its constants in their temporal dead zone. Everything here
  * touches the other module only when called.
  */
 function cursorStyleForMain(style: number): number {
@@ -209,7 +209,7 @@ class MainShim {
     this.scratch = ex.ghostty_wasm_alloc(16)
     this.slot = ex.ghostty_wasm_alloc_opaque()
     this.palette = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
-    // Both are far larger than the 16-byte scratch — the colours struct carries
+    // Both are far larger than the 16-byte scratch — the colors struct carries
     // the whole palette inline — so they get buffers of their own rather than
     // growing the one every other read borrows.
     this.cursorBuf = ex.ghostty_wasm_alloc(abi.RS_CURSOR_SIZE)
@@ -408,7 +408,7 @@ class MainShim {
    * skip the ones that are zero. That silently loses the other one: setting a
    * foreground and no background leaves the *render state* reporting plain
    * white, forever, while `terminal_get(COLOR_FOREGROUND)` cheerfully reports
-   * the colour that was set. Setting both — in either order, and black counts —
+   * the color that was set. Setting both — in either order, and black counts —
    * makes both stick. Measured against the pin, not read: the terminal and the
    * render state disagree, so nothing about it looks like an error, and it only
    * shows on a theme whose background is `#000000`, which packs as 0 and so
@@ -428,7 +428,7 @@ class MainShim {
     if (cursor !== 0) this.setColor(term, abi.T_OPT_COLOR_CURSOR, cursor)
   }
 
-  /** What the terminal already holds for a colour, or `fallback`. */
+  /** What the terminal already holds for a color, or `fallback`. */
   private currentColor(term: number, key: number, fallback: number): number {
     if (!this.tGet(term, key)) return fallback
     const d = this.dv()
@@ -436,9 +436,9 @@ class MainShim {
   }
 
   /**
-   * The 16 ANSI colours our config carries, over the 256 `main` takes.
+   * The 16 ANSI colors our config carries, over the 256 `main` takes.
    *
-   * Ours configures 16 and lets the core derive the colour cube and greys from
+   * Ours configures 16 and lets the core derive the color cube and grays from
    * its own defaults; main's option is all 256 at once. So the current table is
    * read back, the first 16 entries overwritten, and the whole thing set again —
    * which leaves the derived 240 exactly as the core would have had them.
@@ -469,7 +469,7 @@ class MainShim {
       w.setUint8(at + 2, rgb & 0xff)
     }
     // The array pointer itself, not a pointer to it: the other form returns
-    // SUCCESS and leaves every colour black.
+    // SUCCESS and leaves every color black.
     this.ex.ghostty_terminal_set(term, abi.T_OPT_COLOR_PALETTE, this.palette)
   }
 
@@ -490,7 +490,7 @@ class MainShim {
   /**
    * Rebuilds the render snapshot, and records the scrollback depth beside it.
    *
-   * The frame boundary, and so the only place the cursor and colour snapshots
+   * The frame boundary, and so the only place the cursor and color snapshots
    * may be invalidated. Anything that re-read them elsewhere would hand the
    * renderer a cursor from a newer grid than its cells.
    */
@@ -556,9 +556,9 @@ class MainShim {
    * and on the case this exists for — a clean screen with one edited row — it
    * is two calls instead of twenty-five.
    *
-   * The `at > y` exit is an optimisation only: without it the loop scans the
+   * The `at > y` exit is an optimization only: without it the loop scans the
    * remaining dirty rows and returns the same answer, just slower. No test
-   * pins it, because there is no behaviour to pin.
+   * pins it, because there is no behavior to pin.
    *
    * Nothing in the app calls this: the renderer redraws the whole viewport and
    * uses `mark_clean` alone. It is implemented rather than stubbed because a
@@ -663,7 +663,7 @@ class MainShim {
           ? cursorStyleForMain(this.dv().getUint32(this.cursorBuf + abi.RS_CURSOR_OFF_VISUAL_STYLE, true))
           : CURSOR_STYLE_BLOCK,
       // Likewise one `RS_DATA_COLORS` read serves both, and would serve the
-      // cursor colour and the palette too if anything asked for them.
+      // cursor color and the palette too if anything asked for them.
       ghostty_render_state_get_fg_color: (term) =>
         this.snapshotColors(term) ? this.rgbAt(this.colorsBuf, abi.RS_COLORS_OFF_FOREGROUND) : 0,
       ghostty_render_state_get_bg_color: (term) =>

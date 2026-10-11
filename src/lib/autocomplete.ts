@@ -226,7 +226,7 @@ export interface SuggestionView {
   items: string[]
   /** Which one Right-arrow would take. */
   index: number
-  /** The text these complete, so a stale view can be recognised. */
+  /** The text these complete, so a stale view can be recognized. */
   typed: string
   /** Where the input starts, in absolute buffer coordinates — what the popover
    * is anchored to. Anchored to the *origin* rather than the cursor so the

@@ -4,7 +4,7 @@ import { RunAborted, type RunOptions } from './runner'
 
 /**
  * A controllable IntersectionObserver. The real one only reports on a real
- * layout, and the behaviour worth pinning here is the bookkeeping — which host
+ * layout, and the behavior worth pinning here is the bookkeeping — which host
  * is hidden, what stays latched, when the latch clears — not the browser's
  * intersection maths.
  */
@@ -55,7 +55,7 @@ describe('observeHosts', () => {
   })
 
   it('treats a hair under full visibility as visible', () => {
-    // A maximised window at a fractional DPR reports this routinely, and xterm
+    // A maximized window at a fractional DPR reports this routinely, and xterm
     // pauses only at ratio 0 — so this band is still rendering normally.
     const { watch, a, observer } = withFakeObserver()
     observer.emit([{ target: a, intersectionRatio: MIN_VISIBLE_RATIO }])

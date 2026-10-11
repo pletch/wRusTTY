@@ -72,10 +72,10 @@ const ARMS: Record<number, Arms> = {
   0x2567: [L, D, N, D], 0x2568: [D, L, N, L], 0x2569: [D, D, N, D],
   0x256a: [L, D, L, D], 0x256b: [D, L, D, L], 0x256c: [D, D, D, D],
 
-  // The stubs: one arm only, from the centre to one edge.
+  // The stubs: one arm only, from the center to one edge.
   0x2574: [N, N, N, L], 0x2575: [L, N, N, N], 0x2576: [N, L, N, N], 0x2577: [N, N, L, N],
   0x2578: [N, N, N, H], 0x2579: [H, N, N, N], 0x257a: [N, H, N, N], 0x257b: [N, N, H, N],
-  // The transitions: a line that changes weight at the centre of the cell.
+  // The transitions: a line that changes weight at the center of the cell.
   0x257c: [N, H, N, L], 0x257d: [L, N, H, N], 0x257e: [N, L, N, H], 0x257f: [H, N, L, N],
 }
 
@@ -164,7 +164,7 @@ export function drawBoxGlyph(
   ctx.save()
   // Everything below is derived from the cell rect and should land inside it,
   // but a stroked arc or a scaled semicircle can round a fraction outside;
-  // the slot's neighbour is not this glyph's to touch.
+  // the slot's neighbor is not this glyph's to touch.
   ctx.beginPath()
   ctx.rect(x, y, w, h)
   ctx.clip()
@@ -191,7 +191,7 @@ function weightPx(weight: number, light: number): number {
 
 /**
  * The arm model. Each arm runs from its own cell edge to a stop near the
- * centre; because all four overlap in the middle, junctions come out solid
+ * center; because all four overlap in the middle, junctions come out solid
  * without any per-character case analysis.
  *
  * Double arms are the exception and are drawn as an *outline*: the union of
@@ -223,7 +223,7 @@ function drawArms(
 
     if (left || right) {
       // With no vertical arm the band is the arm's own width, which puts a
-      // stub like U+2574 at exactly the centre rather than short of it.
+      // stub like U+2574 at exactly the center rather than short of it.
       const m = vThick || hThick
       const a = Math.round(axX - m / 2)
       const b = a + m
@@ -303,7 +303,7 @@ function drawArms(
   }
 
   for (const r of outer) ctx.fillRect(r.x, r.y, r.w, r.h)
-  // Erasing rather than painting a background colour: the atlas keeps only
+  // Erasing rather than painting a background color: the atlas keeps only
   // the alpha channel, so the hole has to be a hole.
   ctx.globalCompositeOperation = 'destination-out'
   for (const r of inner) ctx.fillRect(r.x, r.y, r.w, r.h)
@@ -380,7 +380,7 @@ function drawArc(
   light: number,
 ): void {
   const [down, right] = arc
-  // Centred on the same axis a straight rule would occupy, so U+256D and the
+  // Centered on the same axis a straight rule would occupy, so U+256D and the
   // U+2502 in the column beneath it line up.
   const cx = Math.round(x + w / 2 - light / 2) + light / 2
   const cy = Math.round(y + h / 2 - light / 2) + light / 2
@@ -578,7 +578,7 @@ function drawEighths(
  * to carry them and the ones that do are the Nerd Font patches — which is
  * exactly what is missing on a machine where fonts cannot be installed.
  * Drawn to the cell rect they also meet the cell beside them exactly, which
- * is what a separator between two differently-coloured segments has to do.
+ * is what a separator between two differently-colored segments has to do.
  */
 function drawPowerline(
   ctx: CanvasRenderingContext2D,

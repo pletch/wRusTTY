@@ -9,7 +9,7 @@ pub enum SftpError {
 impl SftpError {
     /// Whether running the same operation again could plausibly succeed.
     ///
-    /// **Conservative on purpose: anything not recognised is permanent.** The
+    /// **Conservative on purpose: anything not recognized is permanent.** The
     /// cost of the two mistakes is not symmetric. Retrying a permission error
     /// three times delays the real message by a second and teaches the user
     /// nothing; failing to retry a genuine hiccup costs one manual click on a
@@ -22,7 +22,7 @@ impl SftpError {
     /// can recover from one, because the session holds its SFTP client in a
     /// `OnceCell` and would hand back the same dead channel on every attempt.
     /// Surviving a reconnect needs reconnection, which this app does not do
-    /// yet; resuming the transfer afterwards is the answer it does have.
+    /// yet; resuming the transfer afterward is the answer it does have.
     pub fn is_transient(&self) -> bool {
         match self {
             SftpError::Sftp(russh_sftp::client::error::Error::Timeout) => true,

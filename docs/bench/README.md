@@ -39,7 +39,7 @@ different reasons:
 - `80×24` is the common case and the one latency claims should rest on.
 - `200×60` is ~6× the cells. The per-cell work in `WebGLRenderer.
   updateStaticGrid` and the per-frame viewport buffer scale with cell count and
-  nothing else, so an optimisation to either is invisible at `80×24` — you
+  nothing else, so an optimization to either is invisible at `80×24` — you
   would be measuring a cost that isn't there yet and concluding it doesn't
   exist.
 
@@ -76,7 +76,7 @@ Same protocol, same grid, same rounds. Name the file after what changed:
 same direction.**
 
 Single-run improvements under 5% are measurement noise on a laptop. Acting on
-them sends you optimising things that don't matter, and — worse — makes the
+them sends you optimizing things that don't matter, and — worse — makes the
 next person believe a number that won't reproduce. A change that clears the
 gate on one workload and not others is a real result about that workload, not a
 general win; say which.

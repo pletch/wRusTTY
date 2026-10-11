@@ -41,7 +41,7 @@ describe('which path an event takes', () => {
     const { sent, press } = harness(() => SEQ)
     const e = press({ key: 'ArrowUp', code: 'ArrowUp' })
     expect(sent).toEqual(['\x1b[A'])
-    // The cancellation is half the mechanism: an uncancelled keydown produces
+    // The cancellation is half the mechanism: an uncanceled keydown produces
     // an `input` event, and the same key would arrive twice.
     expect(e.defaultPrevented).toBe(true)
   })
@@ -50,7 +50,7 @@ describe('which path an event takes', () => {
     const { sent, press } = harness(() => null)
     const e = press({ key: 'a', code: 'KeyA' })
     expect(sent).toEqual([])
-    // Uncancelled on purpose: this is what lets the browser deliver the
+    // Uncanceled on purpose: this is what lets the browser deliver the
     // character through `input`, which is the only path a composed or
     // dead-keyed character has.
     expect(e.defaultPrevented).toBe(false)
@@ -88,7 +88,7 @@ describe('which path an event takes', () => {
     const { sent, press } = harness((e) => (e.type === 'keyup' ? SEQ : null))
     const e = press({ key: 'a', code: 'KeyA' }, 'keyup')
     expect(sent).toEqual(['\x1b[A'])
-    // Not cancelled: a release has no default action worth suppressing.
+    // Not canceled: a release has no default action worth suppressing.
     expect(e.defaultPrevented).toBe(false)
   })
 

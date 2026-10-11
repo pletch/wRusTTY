@@ -19,7 +19,7 @@
  * byte budget (the whole point -- more history per MB), the wasm heap (which
  * only grows, so a smaller peak is the only saving available), and the cost of
  * the calls themselves. Then correctness: a needle written at the very start
- * has to still be findable afterwards, because "accessing compressed history
+ * has to still be findable afterward, because "accessing compressed history
  * restores it transparently" is a claim worth testing rather than trusting.
  *
  * usage: node tools/parse-probes/compress.mjs [main.wasm]

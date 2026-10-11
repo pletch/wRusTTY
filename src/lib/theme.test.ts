@@ -165,10 +165,10 @@ describe('tabHoverWash', () => {
     )
   })
 
-  it('carries no colour of its own, so the caller sets what it sits on', () => {
+  it('carries no color of its own, so the caller sets what it sits on', () => {
     // As one `background` shorthand Chrome keeps the gradient and drops the
-    // colour, which put the wash on the strip rather than on the terminal —
-    // the wrong side of the tab it is meant to be reaching towards.
+    // color, which put the wash on the strip rather than on the terminal —
+    // the wrong side of the tab it is meant to be reaching toward.
     for (const theme of PRESET_THEMES) {
       expect(tabHoverWash(theme)).not.toContain(theme.background)
       const [tone, , , half] = tabHoverWash(theme).match(/[\d.]+/g)!.map(Number)
@@ -196,7 +196,7 @@ describe('PRESET_THEMES', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 
-  it('fills in every colour the editor can reach, as a 6-digit hex', () => {
+  it('fills in every color the editor can reach, as a 6-digit hex', () => {
     // THEME_COLOR_KEYS drives both the editor grid and the loader's
     // validation, so a field missing from it is unreachable in the UI and
     // unvalidated on the way in.
@@ -223,7 +223,7 @@ describe('findTheme with custom themes', () => {
 
   it('lets a preset win over a custom theme claiming its name', () => {
     // sanitizeCustomThemes renames these on the way in, so this is the
-    // second line of defence -- but it is the one that decides that
+    // second line of defense -- but it is the one that decides that
     // "Campbell" means Campbell no matter what is in storage.
     setCustomThemes([customTheme('Campbell', { background: '#ff0000' })])
     expect(findTheme('Campbell').background).toBe('#0c0c0c')
@@ -263,17 +263,17 @@ describe('sanitizeCustomThemes', () => {
     expect(sanitizeCustomThemes([mine])).toEqual([mine])
   })
 
-  it('substitutes the default for a colour that is not one, keeping the rest', () => {
+  it('substitutes the default for a color that is not one, keeping the rest', () => {
     // Per-field rather than dropping the theme: someone whose file lost one
-    // colour should get that colour back, not lose the palette they built.
+    // color should get that color back, not lose the palette they built.
     const [cleaned] = sanitizeCustomThemes([
-      customTheme('Mine', { background: '#123456', red: 'not-a-colour' }),
+      customTheme('Mine', { background: '#123456', red: 'not-a-color' }),
     ])
     expect(cleaned.background).toBe('#123456')
     expect(cleaned.red).toBe(PRESET_THEMES[0].red)
   })
 
-  it('supplies every missing colour', () => {
+  it('supplies every missing color', () => {
     const [cleaned] = sanitizeCustomThemes([{ name: 'Sparse' }])
     for (const key of THEME_COLOR_KEYS) {
       expect(cleaned[key]).toBe(PRESET_THEMES[0][key])
@@ -282,7 +282,7 @@ describe('sanitizeCustomThemes', () => {
 
   it('lower-cases hex so the editor and the stored value agree', () => {
     // <input type="color"> emits lower case; a transcribed palette usually
-    // is not. Two spellings of one colour would make the swatch and the
+    // is not. Two spellings of one color would make the swatch and the
     // text field disagree about whether anything changed.
     const [cleaned] = sanitizeCustomThemes([customTheme('Mine', { blue: '#AABBCC' })])
     expect(cleaned.blue).toBe('#aabbcc')
@@ -341,11 +341,11 @@ describe('copyOfTheme', () => {
 })
 
 describe('the editor grid', () => {
-  it('reaches every colour a theme has, exactly once', () => {
-    // The grid is laid out by hand -- three surface colours, then eight
+  it('reaches every color a theme has, exactly once', () => {
+    // The grid is laid out by hand -- three surface colors, then eight
     // normal/bright pairs -- rather than mapped off THEME_COLOR_KEYS, which
     // is what makes the pairing possible and what makes it possible to
-    // forget a field. A colour missing here is one no user can edit, and
+    // forget a field. A color missing here is one no user can edit, and
     // nothing else would fail.
     const reached = [
       ...SURFACE_FIELDS.map((f) => f.key),
@@ -402,7 +402,7 @@ describe('surfaceRgb', () => {
 
   it('stays inside 0-255 at both extremes', () => {
     // Pure black and pure white are both reachable as a custom theme's
-    // background, and a channel of -10 or 265 is not a colour.
+    // background, and a channel of -10 or 265 is not a color.
     const black = { ...PRESET_THEMES[0], background: '#000000' }
     const white = { ...PRESET_THEMES[0], background: '#ffffff' }
     for (const value of [...surfaceRgb(black).split(' '), ...surfaceRgb(white).split(' ')]) {
@@ -435,8 +435,8 @@ describe('stripColor', () => {
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
   }
 
-  // The unfocused window's colour: lighter than a dark background, darker
-  // than a light one — towards the strip either way, never towards black.
+  // The unfocused window's color: lighter than a dark background, darker
+  // than a light one — toward the strip either way, never toward black.
   it('moves a dark theme lighter and a light theme darker', () => {
     const dark = findTheme('Tokyo Night')
     expect(luma(stripColor(dark))).toBeGreaterThan(luma(dark.background))

@@ -58,7 +58,7 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
   // The status change alone is *not* enough, and relying on it was a real bug:
   // `connected` is emitted from inside the SSH handshake, before the backend
   // has re-established anything, so refetching on it reads the list as it stood
-  // a moment before the reconnect touched it — and nothing afterwards said to
+  // a moment before the reconnect touched it — and nothing afterward said to
   // look again. Kept anyway because it costs one cheap call and covers first
   // mount; the event below is what makes the answer right.
   useEffect(() => {
@@ -109,7 +109,7 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
       return await forward.addForward(sessionId, spec)
     } catch (err) {
       if (String(err) !== forward.NON_LOOPBACK_BIND_ERROR) throw err
-      // Spelled out rather than summarised: this is the one prompt in the app
+      // Spelled out rather than summarized: this is the one prompt in the app
       // where the consequence isn't obvious from the action. "Bind to 0.0.0.0"
       // does not read as "stand up an open proxy", and for a dynamic forward
       // that is exactly what it does — anyone who can reach this machine's

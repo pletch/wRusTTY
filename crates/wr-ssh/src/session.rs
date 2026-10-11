@@ -186,12 +186,12 @@ impl SshSession {
 
     /// The same thing again, on a channel of its own, for bulk transfers.
     ///
-    /// One SFTP client serialises everything asked of it: requests queue behind
+    /// One SFTP client serializes everything asked of it: requests queue behind
     /// whatever is in flight. That is invisible while every operation is a
     /// directory listing or a few-kilobyte config file, and intolerable the
     /// moment a download runs for a minute — the Files panel would stop
     /// responding for the length of the transfer, including the cancel button's
-    /// own refresh afterwards.
+    /// own refresh afterward.
     ///
     /// So browsing and editing keep `get_or_open_sftp`, and anything with a
     /// progress bar comes here. Both are lazy, so a session that never
@@ -398,14 +398,14 @@ impl SshConnector {
         };
 
         let channel = handle.channel_open_session().await?;
-        // Advertise 24-bit colour. The terminal has always rendered it —
+        // Advertise 24-bit color. The terminal has always rendered it —
         // the engine handles `ESC[38;2;R;G;Bm` directly — but remote programs
         // won't *emit* it unless something says the terminal can: vim,
         // neovim, tmux, bat and friends all key off `COLORTERM`, and `TERM`
         // alone can't express it (`xterm-256color` says 256 and means it).
         //
         // Sent with `want_reply: false` because this legitimately fails on
-        // most servers and must not be treated as an error: sshd only honours
+        // most servers and must not be treated as an error: sshd only honors
         // variables listed in `AcceptEnv`, which defaults to `LANG LC_*`. It
         // costs one message to try and silently does nothing when refused;
         // where it matters, the fix is server-side (`AcceptEnv COLORTERM`),
@@ -418,7 +418,7 @@ impl SshConnector {
         // pane's marker while a program works (see lib/appProgress.ts).
         //
         // `ConEmuANSI` rather than a name of our own because programs do not
-        // probe for this capability, they recognise terminals by name from a
+        // probe for this capability, they recognize terminals by name from a
         // fixed list. Claude Code is the concrete case: it emits OSC 9;4 only
         // when it sees `ConEmuANSI`/`ConEmuPID`/`ConEmuTask`, or a
         // `TERM_PROGRAM` of `ghostty` >= 1.2.0 or `iTerm.app` >= 3.6.6 — and
@@ -832,7 +832,7 @@ async fn authenticate_keyboard_interactive(
 ) -> Result<(), SshError> {
     use russh::client::KeyboardInteractiveAuthResponse as Response;
 
-    // No submethod hint: it's a request for a *preferred* flavour that
+    // No submethod hint: it's a request for a *preferred* flavor that
     // servers are free to ignore, and there is nothing to prefer here.
     let mut response = handle
         .authenticate_keyboard_interactive_start(config.username.clone(), None::<String>)
@@ -927,7 +927,7 @@ async fn authenticate_keyboard_interactive(
                 })
                 .await;
             progress.end_prompt();
-            // Cancelling abandons the connection rather than sending blanks:
+            // Canceling abandons the connection rather than sending blanks:
             // an empty answer is a *wrong* answer, and burns one of the
             // server's limited attempts on the user's behalf.
             answered.ok_or(SshError::AuthCancelled)?
@@ -1192,7 +1192,7 @@ mod auth_timeout_tests {
     }
 
     /// ...but only one. A server that goes quiet after the user has answered
-    /// must still be called dead, or a cancelled-looking connection hangs
+    /// must still be called dead, or a canceled-looking connection hangs
     /// forever.
     #[test]
     fn silence_after_an_answer_is_forgiven_once_and_then_fails() {

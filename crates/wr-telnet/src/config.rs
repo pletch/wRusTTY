@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// What we answer with when a server asks for our terminal type and the
 /// session doesn't override it. Matches the SSH default (`wr_ssh`'s
 /// `DEFAULT_TERM_TYPE`) deliberately — the two are separate protocols but the
-/// same terminal, and a user has no reason to expect different behaviour from
+/// same terminal, and a user has no reason to expect different behavior from
 /// the same host reached two ways.
 pub const DEFAULT_TERM_TYPE: &str = "xterm-256color";
 

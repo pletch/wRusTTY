@@ -151,7 +151,7 @@ interface Transfer {
 // A row is created with `id: null` and gets its real one a round trip later.
 // The cancel button has to exist inside that gap — otherwise the first thing a
 // user does with a transfer started by mistake is discover they cannot stop it
-// yet — so the row renders throughout, and cancelling before the id lands is a
+// yet — so the row renders throughout, and canceling before the id lands is a
 // no-op rather than an error.
 
 export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose }: Props) {
@@ -407,10 +407,10 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         case 'transferCancelled':
           setTransfers((list) => {
             const stopped = list.find((t) => t.id === event.transferId)
-            toast.info(`${stopped?.direction === 'down' ? 'Download' : 'Upload'} cancelled`)
+            toast.info(`${stopped?.direction === 'down' ? 'Download' : 'Upload'} canceled`)
             return list.filter((t) => t.id !== event.transferId)
           })
-          // A cancelled folder transfer leaves what it already copied, so the
+          // A canceled folder transfer leaves what it already copied, so the
           // listing is stale in exactly the case the user most wants to check.
           if (cwdRef.current) void load(cwdRef.current)
           break
@@ -482,7 +482,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
 
   useEffect(() => {
     let cancelled = false
-    // `startDir` is read once, at mount. Following it afterwards would yank the
+    // `startDir` is read once, at mount. Following it afterward would yank the
     // listing out from under someone who had navigated elsewhere in the panel,
     // every time they ran `cd` in the terminal behind it — the panel is a place
     // you browse, not a mirror of the prompt.
@@ -1331,7 +1331,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
           <div className="my-1 border-t border-chrome/10" />
 
           {/* The two that change the host, kept below a divider and with the
-              destructive one last and coloured. Everything above is a read. */}
+              destructive one last and colored. Everything above is a read. */}
           <button
             className={menuItem}
             onClick={() =>

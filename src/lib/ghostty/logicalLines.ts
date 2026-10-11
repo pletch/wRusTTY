@@ -53,7 +53,7 @@ export interface LogicalLine {
  * 0; anything reading a window of the buffer passes the window's top, so the
  * rows a caller gets back are absolute either way.
  *
- * A `wrapped[0]` of true is deliberately not honoured — the row above is
+ * A `wrapped[0]` of true is deliberately not honored — the row above is
  * outside what was handed in, so the line has to start here. Callers that care
  * about a line running off the top of their window (link hit-testing does)
  * widen the window before calling rather than asking this to read rows it was

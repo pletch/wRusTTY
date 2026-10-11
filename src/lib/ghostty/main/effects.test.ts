@@ -130,7 +130,7 @@ run('query responses via OPT_WRITE_PTY', () => {
 
   it('answers both forms of DECRQM, in their own namespaces', () => {
     // The ANSI form (`CSI Ps $ p`, no `?`) went unanswered before upstream
-    // #14236 — not "not recognised", nothing at all, so a program asking about
+    // #14236 — not "not recognized", nothing at all, so a program asking about
     // IRM or LNM waited out its timeout. Mode 4 exists in both namespaces
     // (ANSI insert, DEC smooth scroll), so setting one and clearing the other
     // shows the replies are keyed by namespace rather than by number.

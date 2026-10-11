@@ -357,7 +357,7 @@ export function SessionBrowser({
                             grouping level. Folders are what the user chose to
                             mean something ("Datacenter A", a customer); the
                             transport is an attribute of one entry. Grouping by
-                            the attribute would override the organisation they
+                            the attribute would override the organization they
                             actually built — and would split the same device
                             reachable both ways into separate sections, which
                             is precisely when you want them adjacent. */}

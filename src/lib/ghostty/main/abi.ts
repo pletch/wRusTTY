@@ -230,9 +230,9 @@ export const CELL_CONTENT_BG_COLOR_RGB = 3
  * Whether the packed payload is a codepoint at all.
  *
  * The cell's content field is a **union**: a codepoint for a cell with text, or
- * a background colour for one without. `codepointOf` is only meaningful when
+ * a background color for one without. `codepointOf` is only meaningful when
  * this is true — running it over a `BG_COLOR_*` cell yields whatever the low
- * bits of the colour happen to be, which for `0x445566` is a plain `1`. A
+ * bits of the color happen to be, which for `0x445566` is a plain `1`. A
  * cleared row then reads as a row of control characters, and nothing about that
  * looks wrong until the bytes are compared.
  */
@@ -279,7 +279,7 @@ export const ROW_DATA_DIRTY = 8
  *
  * The header declares `{ size_t size; GhosttyStyleColor fg, bg, underline;
  * bool bold..overline; int underline; }`, which looks 4-aligned. It is not:
- * `GhosttyStyleColorValue` carries a `uint64_t`, so every colour is 8-aligned
+ * `GhosttyStyleColorValue` carries a `uint64_t`, so every color is 8-aligned
  * and 16 bytes wide, and the booleans start well past where a naive reading
  * puts them.
  *
@@ -344,7 +344,7 @@ export const RS_DATA_CURSOR_VIEWPORT_WIDE_TAIL = 17
  * Structured reads added upstream in `16c833c5f`. A renderer reconstructing the
  * cursor used to need eight separate `render_state_get` calls, which showed up
  * per frame in wasm profiles; these return the whole thing at once. The same
- * commit removed the dedicated `ghostty_render_state_colors_get` in favour of
+ * commit removed the dedicated `ghostty_render_state_colors_get` in favor of
  * `RS_DATA_COLORS`.
  *
  * Both are **sized structs**: the caller writes the struct's own byte length
@@ -384,10 +384,10 @@ export const RS_CURSOR_OFF_VISUAL_STYLE = 16
  * `GhosttyRenderStateColors`, wasm32. **784 bytes** — it carries the whole
  * 256-entry palette inline, which is most of it.
  *
- * The three colours are `GhosttyColorRgb`, three *packed* bytes each, so they
+ * The three colors are `GhosttyColorRgb`, three *packed* bytes each, so they
  * sit at +4, +7 and +10 with no padding between them. A reader that assumed a
  * 4-byte stride would take the foreground's red as the background's alpha and
- * every colour after it would be shifted by one — plausible-looking and wrong,
+ * every color after it would be shifted by one — plausible-looking and wrong,
  * which is the same trap `PALETTE_BYTES` documents.
  */
 export const RS_COLORS_SIZE = 784
@@ -438,7 +438,7 @@ export const RS_ROW_DATA_SELECTION = 4
  * Measured with `tools/parse-probes/iter.mjs` on this binary, codepoints only:
  * **0.1x** of the v1.3.1 batched `get_viewport` (1.9µs vs 14.1µs at 80x24,
  * 10.3µs vs 90.1µs at 200x60), and 5.8x-11.4x faster than the per-cell
- * `RS_CELLS_RAW`. A consumer that also needs styles or resolved colours still
+ * `RS_CELLS_RAW`. A consumer that also needs styles or resolved colors still
  * pays the per-cell iterator for those — see `ViewportReader`.
  */
 export const RS_ROW_DATA_CELLS_RAW = 5
@@ -612,7 +612,7 @@ export const MODE_SYNC_OUTPUT = 2026
 /**
  * `GhosttyColorRgb` is **3 packed bytes**, no padding, so a 256-entry palette is
  * 768 bytes. Verified: at stride 4 a palette of `rgb(i, 100, 200)` resolved
- * index 7 to `(100, 200, 0)` — shifted by one channel, a plausible colour that
+ * index 7 to `(100, 200, 0)` — shifted by one channel, a plausible color that
  * is simply wrong.
  */
 export const COLOR_RGB_BYTES = 3
@@ -626,7 +626,7 @@ export const PALETTE_BYTES = PALETTE_ENTRIES * COLOR_RGB_BYTES
  * `T_OPT_COLOR_PALETTE`, whose declared input type is already
  * `GhosttyColorRgb[256]*`, it means the array pointer itself and *not* a pointer
  * to it. Passing a pointer-to-pointer there returns GHOSTTY_SUCCESS and leaves
- * every palette colour black.
+ * every palette color black.
  */
 
 /**
@@ -723,7 +723,7 @@ export interface GhosttyMainExports {
   ghostty_terminal_get_multi(term: number, n: number, keys: number, values: number, written: number): number
   ghostty_terminal_set(term: number, key: number, value: number): number
   // `ghostty_terminal_mode_get`/`_mode_set` used to be declared here. Upstream
-  // `cfc19e805` removed them — flagged ABI BREAKING — in favour of the generic
+  // `cfc19e805` removed them — flagged ABI BREAKING — in favor of the generic
   // accessors above under `T_DATA_MODE`, so that mode work can gain fields
   // without breaking the ABI again. `shim.ts` does the in/out struct dance.
   //
@@ -751,7 +751,7 @@ export interface GhosttyMainExports {
   ghostty_render_state_row_iterator_free(iter: number): void
   /**
    * Returns a **bool**, not a `GhosttyResult` — truthy means it advanced. Both
-   * `_next` calls break the convention every neighbouring function follows, so
+   * `_next` calls break the convention every neighboring function follows, so
    * an `expectOk` around either treats a successful advance (1) as a failure
    * and a exhausted iterator (0) as success.
    */
@@ -761,9 +761,9 @@ export interface GhosttyMainExports {
    * to `outY`. Added upstream in `ad6e72ddc`.
    *
    * It writes the y because it *jumps*: unlike the sequential `next`, a caller
-   * cannot keep count itself. Honours the global dirty state — nothing when
+   * cannot keep count itself. Honors the global dirty state — nothing when
    * FALSE, clean rows skipped when PARTIAL, every row when FULL — and clears
-   * nothing, so the caller still has to consume the dirty state afterwards.
+   * nothing, so the caller still has to consume the dirty state afterward.
    *
    * A bool, not a result, with the same inversion hazard as `next`.
    */

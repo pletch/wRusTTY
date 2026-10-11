@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Matches `wr_ssh::DEFAULT_TERM_TYPE` and `wr_telnet::DEFAULT_TERM_TYPE`
 /// deliberately, for the reason telnet's own constant gives: they are separate
 /// transports but the same terminal, and a user has no reason to expect
-/// different behaviour from the same shell reached two ways.
+/// different behavior from the same shell reached two ways.
 ///
 /// It matters unevenly here. A WSL or Git Bash session reads `TERM` and
 /// changes what it emits based on it; PowerShell and CMD ignore it entirely,

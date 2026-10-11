@@ -573,7 +573,7 @@ pub async fn vault_os_unlock_method(app: AppHandle) -> Result<Option<OsUnlockMet
     }))
 }
 
-/// Enrols the strongest passwordless unlock method this machine supports, so
+/// Enrolls the strongest passwordless unlock method this machine supports, so
 /// future launches can skip the master password. Adds a wrapper holding its
 /// own encrypted copy of the vault's data key — the data key itself never
 /// leaves this process.
@@ -589,7 +589,7 @@ pub async fn vault_enable_os_unlock(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    // Enrolment runs with no lock held. It can block for as long as the user
+    // Enrollment runs with no lock held. It can block for as long as the user
     // takes to answer a Hello prompt, and holding the vault mutex across that
     // wedges every other vault command — including the ones the UI polls to
     // show progress. It also turned a slow prompt into a prompt *storm*:
@@ -610,7 +610,7 @@ pub async fn vault_enable_os_unlock(
             .add_enrolled_unlock_method(params, &kek)
             .map_err(|e| e.to_string())?;
         // Only after the Hello wrapper is safely on disk — dropping the old
-        // method first would leave the user with neither if enrolment failed.
+        // method first would leave the user with neither if enrollment failed.
         match vault.remove_unlock_method(WrapperKind::OsKeyring) {
             Ok(()) | Err(VaultError::NoSuchUnlockMethod(_)) => {}
             Err(e) => return Err(e.to_string()),
@@ -681,7 +681,7 @@ pub async fn vault_unlock_with_os(
             // The wrapped key's AEAD tag rejected the KEK we derived. That
             // says the signature was wrong but not why, and the two causes
             // call for opposite advice — so pay for a diagnosis here, where
-            // the user is already stuck, rather than taxing every enrolment.
+            // the user is already stuck, rather than taxing every enrollment.
             Err(VaultError::UnlockFailed(_)) => {
                 return Err(provider.explain_unlock_failure(&meta).await)
             }
@@ -885,7 +885,7 @@ pub async fn vault_export(
 /// strict is an error message, and a bundle carrying a wake target that isn't
 /// one is a bundle to be suspicious of rather than to quietly repair.
 ///
-/// The pattern generalises deliberately. Every field `SessionProfile` grows
+/// The pattern generalizes deliberately. Every field `SessionProfile` grows
 /// that acts on its own belongs here, checked at the boundary, rather than
 /// discovered at use.
 fn validate_sessions(sessions: &[crate::profiles::SessionProfile]) -> Result<(), String> {
@@ -924,7 +924,7 @@ fn validate_sessions(sessions: &[crate::profiles::SessionProfile]) -> Result<(),
 /// host, and connecting to that host would hand it a signature from that key.
 /// Nothing here can distinguish that from a legitimate profile — the import
 /// UI's job is to make clear that the session list is being replaced, so the
-/// user recognises entries they did not create. A signature over the bundle
+/// user recognizes entries they did not create. A signature over the bundle
 /// wouldn't help either: it's a backup that must open on a new machine with
 /// nothing but the master password, so there is no key to have signed it with.
 ///
@@ -984,7 +984,7 @@ pub async fn vault_import(
 mod tests {
     use super::*;
 
-    /// Built by deserialising, because that is how a bundle's sessions
+    /// Built by deserializing, because that is how a bundle's sessions
     /// arrive — a struct literal would skip the `serde(default)` handling the
     /// real path goes through.
     fn session_with_wake(wake: &str) -> crate::profiles::SessionProfile {

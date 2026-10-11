@@ -52,7 +52,7 @@ export function osUnlockMethod() {
   return invoke<OsUnlockMethod | null>('vault_os_unlock_method')
 }
 
-/** Enrols the strongest method the machine supports — TPM-backed Windows
+/** Enrolls the strongest method the machine supports — TPM-backed Windows
  * Hello where available, otherwise a key held in Credential Manager. */
 export function enableOsUnlock() {
   return invoke<void>('vault_enable_os_unlock')

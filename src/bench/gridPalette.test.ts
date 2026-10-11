@@ -7,10 +7,10 @@ describe('grid-parity palette', () => {
     expect(PALETTE_256.slice(0, 16)).toEqual([...PALETTE_16])
   })
 
-  // The whole point of the table is that a colour identifies its slot. If two
+  // The whole point of the table is that a color identifies its slot. If two
   // slots shared a value, a cell reported under the wrong index would compare
   // equal and the parity test would pass on a real divergence.
-  it('maps every index to a distinct colour', () => {
+  it('maps every index to a distinct color', () => {
     const seen = new Map<number, number>()
     for (let i = 0; i < PALETTE_256.length; i++) {
       const prev = seen.get(PALETTE_256[i])
@@ -28,7 +28,7 @@ describe('grid-parity palette', () => {
     expect(DEFAULT_FG).not.toBe(DEFAULT_BG)
   })
 
-  it('builds the cube and grey ramp at the standard xterm-256 values', () => {
+  it('builds the cube and gray ramp at the standard xterm-256 values', () => {
     // Spot checks against the well-known table rather than a reimplementation
     // of the same formula, which would agree with a wrong formula too.
     expect(rgbHex(PALETTE_256[16])).toBe('000000')

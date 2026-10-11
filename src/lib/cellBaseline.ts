@@ -2,11 +2,11 @@
  * Where the baseline sits inside a cell — the one place that is decided, for
  * the grid and for anything drawn as DOM over it.
  *
- * The grid does not put text where CSS would. A line box centres the font's
+ * The grid does not put text where CSS would. A line box centers the font's
  * own ascent + descent (plus whatever leading the face declares) in the line
- * height; the atlas instead centres the *measured* ascent + descent box in the
+ * height; the atlas instead centers the *measured* ascent + descent box in the
  * cell and rounds to a whole pixel, because the block cursor is drawn as the
- * whole cell and any bias reads as the cursor sitting off-centre against the
+ * whole cell and any bias reads as the cursor sitting off-center against the
  * character it covers.
  *
  * Those two answers agree for some fonts and not others, which is exactly how
@@ -33,7 +33,7 @@
  */
 
 /**
- * The atlas's baseline: the ascent + descent box centred in the cell, rounded,
+ * The atlas's baseline: the ascent + descent box centered in the cell, rounded,
  * and never outside it.
  *
  * Exported so `GlyphAtlas` and the DOM side compute the same number from the

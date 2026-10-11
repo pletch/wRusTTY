@@ -45,7 +45,7 @@ pub const DEFAULT_WAIT_SECONDS: u64 = 60;
 /// nothing legitimate is being refused.
 ///
 /// The ceiling exists because the field is a number in a file: `sessions.json`
-/// is editable, and `vault_import`'s plaintext half deserialises straight into
+/// is editable, and `vault_import`'s plaintext half deserializes straight into
 /// `SessionProfile`. Unbounded, it buys two things — a pane stuck "Waking" for
 /// a year while emitting a packet every `RETRY_INTERVAL`, and, at the top of
 /// the range, a panic: `Instant + Duration` is a `checked_add().expect(..)`,
@@ -250,7 +250,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Gap between magic packets while waiting. Each round re-sends rather than
 /// sending once and only polling: the first packet can land while the NIC is
 /// still in a state that ignores it, and a 102-byte broadcast every few
-/// seconds costs nothing worth economising on.
+/// seconds costs nothing worth economizing on.
 const RETRY_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Wakes `host` if it needs waking, and doesn't return until it answers on
@@ -618,7 +618,7 @@ mod tests {
     /// 15,732 allocations before a freed port was handed out again. A test run
     /// on a quiet machine never gets near that, which is why this reproduces
     /// under a browser and a dev server and not on demand. It also corrects the
-    /// note this fix came from, which blamed the neighbouring `wake` tests
+    /// note this fix came from, which blamed the neighboring `wake` tests
     /// racing each other: there are six of them, four orders of magnitude short.
     /// The pool is machine-wide, and so is whatever wraps it.
     ///

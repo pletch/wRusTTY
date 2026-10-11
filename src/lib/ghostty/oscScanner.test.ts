@@ -41,11 +41,11 @@ const parsedText = (log: string[]) =>
 
 describe('scanOsc', () => {
   describe('dispatch', () => {
-    it('recognises a BEL-terminated OSC', () => {
+    it('recognizes a BEL-terminated OSC', () => {
       expect(replay(['\x1b]133;A\x07']).log).toEqual(['parse:\x1b]133;A\x07', 'osc:133:A'])
     })
 
-    it('recognises an ST-terminated OSC', () => {
+    it('recognizes an ST-terminated OSC', () => {
       expect(replay(['\x1b]133;D;0\x1b\\']).log).toEqual([
         'parse:\x1b]133;D;0\x1b\\',
         'osc:133:D;0',
@@ -134,7 +134,7 @@ describe('scanOsc', () => {
     })
   })
 
-  describe('input that is not a recognised OSC', () => {
+  describe('input that is not a recognized OSC', () => {
     it('leaves CSI entirely to the parser', () => {
       const src = '\x1b[31mred\x1b[0m'
       expect(replay([src]).log).toEqual([`parse:${src}`])
@@ -145,7 +145,7 @@ describe('scanOsc', () => {
       expect(replay([src]).log).toEqual([`parse:${src}`])
     })
 
-    // These two guard a bug the old regex scanner had: an unrecognised OSC let
+    // These two guard a bug the old regex scanner had: an unrecognized OSC let
     // scanning resume *inside* the sequence, so its own terminating BEL was
     // reported as the bell. Any OSC form we do not parse would ring it.
     it('does not ring the bell on an OSC with no ident', () => {
@@ -162,34 +162,34 @@ describe('scanOsc', () => {
   // CAN (0x18) and SUB (0x1A) cancel a control string in progress: the command
   // is dropped and what follows is ordinary output (DEC parser; xterm; the core
   // since upstream 520d8f55a, pinned in main/oscCancel.test.ts). The scanner
-  // knew only BEL and ESC, so a cancelled OSC stayed open until the next BEL
+  // knew only BEL and ESC, so a canceled OSC stayed open until the next BEL
   // and was dispatched with the following output as its payload — a title of
   // "evil␘ normal text", or an OSC 52 write with output glued to the base64.
   describe('CAN and SUB cancel an OSC', () => {
-    it('drops an OSC cancelled with CAN, and dispatches nothing for the BEL after it', () => {
+    it('drops an OSC canceled with CAN, and dispatches nothing for the BEL after it', () => {
       const src = '\x1b]2;evil title\x18 normal text\x07'
       // The BEL is a bell now: the string had already ended at the CAN.
       expect(replay([src]).log).toEqual([`parse:${src}`, 'bell'])
     })
 
-    it('drops a clipboard write cancelled with SUB', () => {
+    it('drops a clipboard write canceled with SUB', () => {
       const src = '\x1b]52;c;aGVsbG8=\x1a more output \x1b\\'
       expect(replay([src]).log).toEqual([`parse:${src}`])
     })
 
-    it('still dispatches an OSC that follows a cancelled one', () => {
-      const src = '\x1b]2;cancelled\x18text\x1b]2;real\x07'
+    it('still dispatches an OSC that follows a canceled one', () => {
+      const src = '\x1b]2;canceled\x18text\x1b]2;real\x07'
       expect(replay([src]).log).toEqual([`parse:${src}`, 'osc:2:real'])
     })
 
-    it('drops one cancelled in a later chunk than it opened in', () => {
+    it('drops one canceled in a later chunk than it opened in', () => {
       const { log, pending } = replay(['\x1b]2;split ti', 'tle\x18after', ' more\x07'])
       expect(log.filter((l) => !l.startsWith('parse:'))).toEqual(['bell'])
       expect(parsedText(log)).toBe('\x1b]2;split title\x18after more\x07')
       expect(pending).toBeNull()
     })
 
-    it('carries nothing once the sequence is cancelled', () => {
+    it('carries nothing once the sequence is canceled', () => {
       expect(replay(['\x1b]2;gone\x18']).pending).toBeNull()
     })
   })
@@ -337,12 +337,12 @@ describe('scanOsc', () => {
       expect(replay(['\x1bc']).log).toEqual(['parse:\x1bc'])
     })
 
-    it('recognises a reset and parses it like any other bytes', () => {
+    it('recognizes a reset and parses it like any other bytes', () => {
       expect(replay(['a\x1bcb'], true).log).toEqual(['parse:a\x1bc', 'ris', 'parse:b'])
     })
 
     it('ignores a bare c, which is an ordinary letter', () => {
-      // Coloured, so the buffer holds escapes and the hunt actually runs —
+      // Colored, so the buffer holds escapes and the hunt actually runs —
       // text with no ESC at all never gets as far as looking.
       const text = '\x1b[32mthe quick brown fox, etc.\x1b[0m'
       expect(replay([text], true).log).toEqual([`parse:${text}`])
@@ -357,7 +357,7 @@ describe('scanOsc', () => {
 
     it('sees a reset split across deliveries', () => {
       // The ESC ends one chunk and the 'c' opens the next — the same carried
-      // pending buffer that keeps a split `ESC ]` recognisable.
+      // pending buffer that keeps a split `ESC ]` recognizable.
       // The ESC itself is parsed with the chunk it arrived in; only the 'c'
       // and the event land in the next one.
       const { log } = replay(['done\x1b', 'c'], true)

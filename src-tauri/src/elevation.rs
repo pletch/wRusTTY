@@ -435,7 +435,7 @@ mod smoke {
     use super::RunasLauncher;
 
     /// The Mandatory Label SID for High integrity. Looked for rather than the
-    /// words "High Mandatory Level", which are localised.
+    /// words "High Mandatory Level", which are localized.
     const HIGH_INTEGRITY_SID: &str = "S-1-16-12288";
 
     pub(super) fn main(args: &[String]) -> i32 {

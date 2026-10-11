@@ -64,7 +64,7 @@ run('vendored v1.3.1 vs ghostty main, same bytes', () => {
     expect(neu.attrs2).toEqual(old.attrs2)
   })
 
-  it('agrees on palette colours', async () => {
+  it('agrees on palette colors', async () => {
     const { old, neu } = await both(
       null,
       '\x1b[31mred\x1b[0m \x1b[32mgrn\x1b[0m \x1b[44mbgblue\x1b[0m\r\n' +
@@ -75,7 +75,7 @@ run('vendored v1.3.1 vs ghostty main, same bytes', () => {
     expect(neu.bg).toEqual(old.bg)
   })
 
-  it('agrees on direct rgb colours', async () => {
+  it('agrees on direct rgb colors', async () => {
     const { old, neu } = await both(
       null,
       '\x1b[38;2;10;20;30mfg\x1b[0m \x1b[48;2;40;50;60mbg\x1b[0m',
@@ -84,8 +84,8 @@ run('vendored v1.3.1 vs ghostty main, same bytes', () => {
     expect(neu.bg).toEqual(old.bg)
   })
 
-  it('agrees on default colours, which the two ABIs represent differently', async () => {
-    // Our ABI pre-resolves a cell with no explicit colour to the terminal
+  it('agrees on default colors, which the two ABIs represent differently', async () => {
+    // Our ABI pre-resolves a cell with no explicit color to the terminal
     // default; main reports INVALID_VALUE and leaves the substitution to the
     // caller. This is the case that check exists for.
     const { old, neu } = await both(null, 'plain text, no sgr at all')

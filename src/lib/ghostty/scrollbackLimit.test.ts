@@ -7,7 +7,7 @@ import { SCROLLBACK_FOOTPRINT_TIERS_MB } from '../settings'
 import { instantiateGhosttyModule, createTerminal, writeBytes, type GhosttyWasm } from './wasmBindings'
 
 /**
- * Guards the unit, the range and the labelling of the value handed to the core
+ * Guards the unit, the range and the labeling of the value handed to the core
  * as `scrollbackLimit`.
  *
  * The field is a **byte budget** — it reaches upstream Ghostty's `PageList` as

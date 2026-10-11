@@ -10,7 +10,7 @@
  * build predated upstream's "clear scrolled row cells" fix, so a row scrolled
  * into view kept the cell memory of a previously erased row: new text landed
  * on stale attributes and inherited the *old* row's colors, which is why
- * uncoloured `ls -l` output came out wearing dmesg's palette.
+ * uncolored `ls -l` output came out wearing dmesg's palette.
  *
  * Two ABI differences from that wrapper are load-bearing here:
  *   - Colors arrive **pre-resolved to RGB**. There is no "has explicit color"
@@ -246,7 +246,7 @@ function ghosttyImports(memoryOf: () => WebAssembly.Memory) {
  * `ReleaseFast` build (3 MB, ~12% faster parse) cost nothing at pane open.
  *
  * A rejected compile is evicted rather than cached, so one failed fetch does
- * not permanently poison every pane opened afterwards.
+ * not permanently poison every pane opened afterward.
  */
 let compiling: Promise<WebAssembly.Module> | null = null
 
@@ -432,7 +432,7 @@ export function writeBytes(wasm: GhosttyWasm, termPtr: number, data: Uint8Array)
   // reports the resulting nothing as a very fast parse. That is how the
   // flood-stress rows came to claim 13,000 MB/s. Same rule as a failed
   // allocation — refuse loudly rather than silently drop a write, because a
-  // dropped write desynchronises the parser from the stream regardless.
+  // dropped write desynchronizes the parser from the stream regardless.
   if (termPtr === 0) throw new Error('Ghostty write to a terminal that does not exist (termPtr is 0).')
   // Sub-phases of the single most expensive thing the app does. The parse cost
   // measured invariant to content shape, grid width and scrollback depth —
@@ -450,7 +450,7 @@ export function writeBytes(wasm: GhosttyWasm, termPtr: number, data: Uint8Array)
     return
   }
   // Throws rather than returning on a failed allocation: silently dropping a
-  // write desynchronises the parser's state machine from the byte stream for
+  // write desynchronizes the parser's state machine from the byte stream for
   // the rest of the session, which is worse than stopping.
   const bufPtr = allocBufferOrThrow(wasm, data.length)
   new Uint8Array(wasm.exports.memory.buffer, bufPtr, data.length).set(data)

@@ -36,7 +36,7 @@ same slot, under the same session id**. The id is the key everything else hangs
 off, so keeping it stable means the frontend's engine and scrollback, the
 logging sink, the SFTP edit watchers and the coalescer's credit window all
 survive a reconnect without knowing one happened. The queue-and-replay
-behaviour that `Connecting` exists for — keystrokes typed at a pane mid-
+behavior that `Connecting` exists for — keystrokes typed at a pane mid-
 handshake — is exactly what should happen to keystrokes typed at a pane
 mid-reconnect, for free.
 
@@ -187,7 +187,7 @@ connection and are silently dead without further work.
   - **The panel cannot refetch on a status change.** `Connected` is emitted from
     inside `SshConnector::connect`, *before* `supervise` publishes the session
     and before the hook runs, so a refetch triggered by it reads the list as it
-    stood before the reconnect touched it — and nothing afterwards said to look
+    stood before the reconnect touched it — and nothing afterward said to look
     again. The backend emits `ssh-forwards-changed` once each phase has finished
     writing; that is what the panel actually trusts.
   - **`ForwardHandle::stop` had to start awaiting its aborted accept task.**
@@ -259,7 +259,7 @@ connection and are silently dead without further work.
 ## Phase 3 — policy *(built)*
 
 A global switch, a per-profile opt-out, and the two limits — sitting beside
-`closeOnDisconnect` in Settings, which is the nearest neighbour and where the
+`closeOnDisconnect` in Settings, which is the nearest neighbor and where the
 precedence question was settled.
 
 **The precedence half came first**, and was the urgent half — see "What Phase 1
@@ -288,7 +288,7 @@ worded as an opt-out. A stored `true` would read as an override and cannot be
 one: it could not overrule the global switch without making that switch useless
 to anyone who has not audited every saved session, and it could not overrule
 rule 3 at all. Writing it down would be the profile claiming something the app
-cannot honour in two of the three cases where it appears to mean anything.
+cannot honor in two of the three cases where it appears to mean anything.
 
 The first two are resolved in the frontend, by `reconnectPolicy` in
 `lib/connection.ts`, and arrive as one `enabled` bit. That is a deliberate
@@ -312,7 +312,7 @@ point; the frontend clamp is a display concern.
 **Zero attempts is not a shorter leash.** It is "off", and off is `enabled`.
 Read as a bound it would end every run at the first `schedule_retry` and report
 "could not reconnect after 1 attempts", describing something that never
-happened — so it clamps up to one rather than being honoured.
+happened — so it clamps up to one rather than being honored.
 
 **Both bounds are still needed, and a shortened one must bind.** The delay
 doubles to a 30s ceiling, so an attempt count alone lets a saturated schedule
@@ -341,7 +341,7 @@ cosmetic bug. `Slot::Cancelled` is what closes it.
 Auto-reconnect adds a **second way a slot can leave `Ready`**, and every one of
 those invariants needs re-checking against it. In particular: a pane closed
 while a reconnect is in flight must not have queued input replayed into a
-session that arrives afterwards, which is the same hazard one layer along.
+session that arrives afterward, which is the same hazard one layer along.
 
 The existing tests are a good harness for this. `FakeConnector` and
 `FakeSession` extend naturally to a factory that fails a set number of times
@@ -365,7 +365,7 @@ replay ordering can all be pinned without a transport.
   kinds at once. It does not: a shell that exited and a transport that vanished
   are different events, and the setting was always documented as covering the
   first. See "What Phase 1 actually did" above.
-- **The rekey corner.** `PROJECT_PLAN.md` lists rekey behaviour on a long-lived
+- **The rekey corner.** `PROJECT_PLAN.md` lists rekey behavior on a long-lived
   session as untested, and calls it the same session-lifetime question asked
   earlier. That is right, but this plan does not test it — it only makes the
   answer survivable if rekey turns out to drop the transport.
@@ -440,5 +440,5 @@ reconnect logic is pinned against a scripted fake connector (backoff schedule,
 both bounds, cancellation mid-retry, replay ordering, the auth-failure stop),
 and `status_label` is pinned against the frontend's parser from both sides. What
 no test touches is whether SSH, telnet and serial each classify a real drop
-correctly — that is a judgement about `russh` and the OS, and it needs a live
+correctly — that is a judgment about `russh` and the OS, and it needs a live
 session and an unplugged cable.

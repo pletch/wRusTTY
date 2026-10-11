@@ -37,7 +37,7 @@ export default {
       },
       keyframes: {
         // Indeterminate progress for the tab strip's pane map — a solid block
-        // travelling across the segment of whichever pane is running a
+        // traveling across the segment of whichever pane is running a
         // command. Deliberately a sweep rather than a pulse: "in progress"
         // rather than "wants attention", which is what the amber
         // animate-pulse marker on the same tab already means.

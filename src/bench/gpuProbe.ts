@@ -5,7 +5,7 @@
  * WARP / "Microsoft Basic Render Driver" on Windows, llvmpipe on Linux),
  * especially inside WebView2 with a flaky driver or under remote desktop. A
  * throughput number measured on that path is real but meaningless as a "GPU
- * renderer" result, so the harness refuses to let it pass unlabelled.
+ * renderer" result, so the harness refuses to let it pass unlabeled.
  *
  * A throwaway context is enough: every WebGL2 context in a page shares the same
  * underlying device, so the renderer string a probe reads is the same one the

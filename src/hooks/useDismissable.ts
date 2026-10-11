@@ -42,7 +42,7 @@ export function useDismissable(
     const onKeyDown = (e: KeyboardEvent) => {
       // Every surface listens on `window`, because that is the only way to
       // catch Escape wherever focus is — so without this check they all fire
-      // at once, and cancelling a confirmation raised from a panel would close
+      // at once, and canceling a confirmation raised from a panel would close
       // the panel underneath it too.
       if (e.key === 'Escape' && isTopDismissable(self)) onDismiss()
     }
@@ -79,7 +79,7 @@ export function useDismissable(
       // therefore a click "away" by the selector's reckoning, which closed the
       // panel underneath. Escape has always had the dismiss stack to sort this
       // out; the click path never got the equivalent, and the asymmetry stayed
-      // invisible for as long as no flow needed the panel afterwards.
+      // invisible for as long as no flow needed the panel afterward.
       //
       // One that does: the Files panel asks whether to save a file as root,
       // and the answer arrives on a channel *the panel owns*. With the panel

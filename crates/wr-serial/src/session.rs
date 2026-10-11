@@ -71,7 +71,7 @@ impl SerialSession {
     /// Queued through the same channel as writes rather than touching the
     /// port directly, so it can't interleave with a write in progress — a
     /// break landing mid-character would corrupt that character instead of
-    /// signalling cleanly.
+    /// signaling cleanly.
     pub async fn send_break(&self, duration: Duration) -> Result<(), SerialError> {
         let tx = self.input_tx.as_ref().ok_or(SerialError::NotConnected)?;
         tx.send(WriteCommand::Break(duration))

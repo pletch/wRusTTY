@@ -8,7 +8,7 @@ import { createTerminal, instantiateGhosttyWasm, readResponse, writeString } fro
 /**
  * The shipped core answers a cursor position report.
  *
- * `main/effects.test.ts` already covers this behaviour thoroughly, but against
+ * `main/effects.test.ts` already covers this behavior thoroughly, but against
  * `vendor-main/ghostty-vt.wasm` through the raw ABI. This pins the same thing
  * one layer up — the binary that actually ships, reached the way the engine
  * reaches it — because a *local* shell depends on it in a way no remote

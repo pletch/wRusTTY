@@ -233,7 +233,7 @@ describe('parseOsc777', () => {
 /**
  * The reset watch: what the tracker asks the engine for, and when.
  *
- * The *when* is the whole of it. Recognising `ESC c` costs the output scanner
+ * The *when* is the whole of it. Recognizing `ESC c` costs the output scanner
  * a hunt for the letter 'c' through every byte the remote sends, so a watch
  * left open while nothing is showing is a per-byte tax on every pane for a
  * signal nobody would act on. These pin that it is open exactly across the

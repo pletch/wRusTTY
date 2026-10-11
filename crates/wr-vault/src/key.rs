@@ -19,7 +19,7 @@ macro_rules! secret_key_type {
         /// un-zeroized duplicates at every use site without anyone writing
         /// anything that looks like a copy (which is exactly what the old
         /// `Vault::key_bytes() -> [u8; 32]` did — it leaned on each caller
-        /// remembering to `.zeroize()` its own copy afterwards), and a
+        /// remembering to `.zeroize()` its own copy afterward), and a
         /// derived `Debug` is one stray `dbg!` away from putting key
         /// material in a log file. Copies must be spelled `.clone()`.
         #[derive(Clone, ZeroizeOnDrop)]

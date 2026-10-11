@@ -47,7 +47,7 @@ fn cmd(command: &str) -> LocalConfig {
 }
 
 /// Keeps a command alive past the pseudoconsole's first repaint. See
-/// `tests/spawn.rs`'s `linger` for the ConPTY behaviour this works around.
+/// `tests/spawn.rs`'s `linger` for the ConPTY behavior this works around.
 fn linger(command: &str) -> String {
     format!("{command} & ping -n 2 127.0.0.1 > nul")
 }

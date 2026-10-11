@@ -18,7 +18,7 @@ export interface GlyphRect {
   u1: number
   v1: number
   /**
-   * True when the face drew this glyph in its own colours — an emoji from a
+   * True when the face drew this glyph in its own colors — an emoji from a
    * COLR or CBDT font — and it therefore lives in `colorTexture` rather than
    * in the coverage atlas. The two share one packing, so the UVs above address
    * either; this only says which sampler to read them with.
@@ -94,9 +94,9 @@ const RUN_CACHE_CELL_BUDGET = 1536
 const MAX_ATLAS_SIZE = 4096
 
 /**
- * What the colour companion starts at, against the coverage atlas's 1024.
+ * What the color companion starts at, against the coverage atlas's 1024.
  *
- * Small because colour glyphs are few. A pane is thousands of distinct
+ * Small because color glyphs are few. A pane is thousands of distinct
  * characters and a handful of emoji, and at four bytes a texel the companion
  * is the expensive one per slot -- so it starts at a quarter of the area and
  * doubles from there if that is ever wrong.
@@ -118,7 +118,7 @@ const CURSOR_OUTLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_OUTLINE)
 /**
  * The non-block DECSCUSR shapes, drawn the same way as the outline above: as
  * cached glyphs substituted for the cell's own, so a shaped cursor costs no
- * extra geometry and no second draw call. A block cursor stays a recolour of
+ * extra geometry and no second draw call. A block cursor stays a recolor of
  * the cell, which is what it is.
  */
 export const GLYPH_CURSOR_BAR = 0xfdd1
@@ -149,8 +149,8 @@ export class GlyphAtlas {
   private mirror: Uint8Array
   private gl: WebGL2RenderingContext
   public texture: WebGLTexture
-  /** The colour companion; see the constructor. A 1x1 placeholder until the
-   *  first colour glyph, then a space of its own -- see `COLOR_ATLAS_START`. */
+  /** The color companion; see the constructor. A 1x1 placeholder until the
+   *  first color glyph, then a space of its own -- see `COLOR_ATLAS_START`. */
   public colorTexture: WebGLTexture
   private colorWidth = 0
   private colorHeight = 0
@@ -229,9 +229,9 @@ export class GlyphAtlas {
     // leading the face declares — so the ink lands wherever that happens to
     // put it, biased up or down by an amount that varies per font. The cursor
     // is drawn as the whole cell, so any such bias reads as the block sitting
-    // off-centre against the character it covers.
+    // off-center against the character it covers.
     //
-    // Placing the baseline from measured metrics instead centres the ascent +
+    // Placing the baseline from measured metrics instead centers the ascent +
     // descent box in the cell, which is where a block cursor expects to find
     // the glyph. Older engines omit fontBoundingBox*, hence the fallback.
     this.ctx.textBaseline = 'alphabetic'
@@ -249,11 +249,11 @@ export class GlyphAtlas {
     // glyph in up to sixteen style combinations makes an RGBA atlas four times
     // the texture it needs to be, per pane.
     //
-    // Which is also why colour glyphs get a *second* texture rather than this
-    // one becoming RGBA. An emoji carries its own colours and cannot be a
+    // Which is also why color glyphs get a *second* texture rather than this
+    // one becoming RGBA. An emoji carries its own colors and cannot be a
     // coverage mask, but a pane that never draws one should not pay four bytes
     // a texel for the possibility — so the companion below shares this atlas's
-    // packing and stays 1x1 until the first colour glyph actually arrives.
+    // packing and stays 1x1 until the first color glyph actually arrives.
     this.texture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.atlasWidth, this.atlasHeight, 0, gl.RED, gl.UNSIGNED_BYTE, null)
@@ -420,7 +420,7 @@ export class GlyphAtlas {
    * on both sides at these sizes. The curl is the exception and is stroked,
    * because a wave built from rects reads as a dotted line.
    *
-   * `kind` is a `UNDERLINE_*` value; anything unrecognised (including `none`,
+   * `kind` is a `UNDERLINE_*` value; anything unrecognized (including `none`,
    * which the caller should not have passed) falls back to a plain rule so an
    * underlined cell is never silently un-underlined.
    */
@@ -532,7 +532,7 @@ export class GlyphAtlas {
   /** Re-normalizes every cached rect against the current atlas dimensions. */
   private rescale(): void {
     // Against whichever atlas the rect lives in: the two are packed and grown
-    // independently now, so a colour rect and a coverage rect at the same x
+    // independently now, so a color rect and a coverage rect at the same x
     // are not at the same u.
     const fix = (r: GlyphRect) => {
       const w = r.color ? this.colorWidth : this.atlasWidth
@@ -657,10 +657,10 @@ export class GlyphAtlas {
     // Coverage lives in the alpha channel of the 2D canvas; the atlas stores
     // only that, so it is unpacked here rather than uploaded four-fold.
     //
-    // The same pass answers whether this glyph is a colour one. Everything
+    // The same pass answers whether this glyph is a color one. Everything
     // drawn here is drawn in white — the fill style, the rules, the box
     // geometry — so a pixel that is *not* white can only have come from the
-    // face painting its own colours, which is what a COLR or CBDT emoji does
+    // face painting its own colors, which is what a COLR or CBDT emoji does
     // and what makes `fillStyle` inert for it. No codepoint table, no
     // presentation-selector rules, and no disagreement with whatever font the
     // machine actually resolved: it is a property of the pixels that came out.
@@ -732,14 +732,14 @@ export class GlyphAtlas {
   }
 
   /**
-   * Packs a colour glyph's own texels into the companion, in the companion's
+   * Packs a color glyph's own texels into the companion, in the companion's
    * own coordinate space.
    *
    * Its own space is the point. Sharing the coverage atlas's packing would
    * mean sharing its dimensions -- the UVs are normalized against them -- and
    * so following it through every growth: a pane full of CJK grows coverage to
    * 4096 and would drag a 64MB companion along to hold three emoji. Packed
-   * separately, the companion starts at 512 and grows only when colour glyphs
+   * separately, the companion starts at 512 and grows only when color glyphs
    * actually fill it.
    */
   private packColor(rgba: Uint8ClampedArray, slotWidth: number): GlyphRect {
@@ -754,8 +754,8 @@ export class GlyphAtlas {
       if (!this.warnedColorFull) {
         this.warnedColorFull = true
         console.warn(
-          `GlyphAtlas colour companion full at ${this.colorWidth}x${this.colorHeight};` +
-            ' further colour glyphs will not render.',
+          `GlyphAtlas color companion full at ${this.colorWidth}x${this.colorHeight};` +
+            ' further color glyphs will not render.',
         )
       }
       return (

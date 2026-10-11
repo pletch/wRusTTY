@@ -12,7 +12,7 @@ pub enum VaultError {
     #[error("incorrect master password")]
     WrongPassword,
 
-    /// The non-password analogue of `WrongPassword`. Almost always means the
+    /// The non-password analog of `WrongPassword`. Almost always means the
     /// method's underlying key changed rather than that anyone typed anything
     /// wrong, so it reads differently on purpose.
     #[error("could not unlock with {0} — its key has changed, so unlock another way and set it up again")]

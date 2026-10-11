@@ -12,10 +12,10 @@
  * was a second input path and a second bug surface behind a settings control
  * nobody could evaluate — "switch renderer" is not a choice a user has any
  * basis to make, and the gaps it existed to escape are WASM-build limits
- * (marked `upstream` below) that a user hitting them cannot recognise as such.
+ * (marked `upstream` below) that a user hitting them cannot recognize as such.
  * As an oracle it earns its keep on every test run: `gridSnapshot.
  * test.ts` feeds the same bytes through both cores headlessly and asserts they
- * agree on glyphs, layout, cursor, per-cell colours and text attributes.
+ * agree on glyphs, layout, cursor, per-cell colors and text attributes.
  *
  * **What this cost.** The WebGL-context-loss fallback is gone. A pane whose GL
  * context dies no longer has a second renderer to fall back to; it recovers
@@ -65,13 +65,13 @@ export interface ParityItem {
 
 export const PARITY: ParityItem[] = [
   // Asserted by gridSnapshot.test.ts, per-cell, over the four workloads plus
-  // directed SGR cases (the 16 ANSI colours, the whole 256 cube and grey ramp,
+  // directed SGR cases (the 16 ANSI colors, the whole 256 cube and gray ramp,
   // 24-bit, attribute run boundaries, erase-with-background). Both engines are
   // pinned to one palette to make the comparison meaningful — see
-  // gridPalette.ts. Previously this line covered glyphs only and the "colours"
+  // gridPalette.ts. Previously this line covered glyphs only and the "colors"
   // half of it was unenforced prose.
-  { area: 'Render', item: 'Glyphs, colours, layout', status: 'parity' },
-  { area: 'Render', item: 'Background opacity / transparency', status: 'better', note: 'reaches the clear colour; the xterm WebGL path could not' },
+  { area: 'Render', item: 'Glyphs, colors, layout', status: 'parity' },
+  { area: 'Render', item: 'Background opacity / transparency', status: 'better', note: 'reaches the clear color; the xterm WebGL path could not' },
   { area: 'Render', item: 'Wide (CJK / emoji) characters', status: 'parity' },
   { area: 'Render', item: 'Grapheme clusters (combining marks, ZWJ emoji)', status: 'parity' },
   { area: 'Render', item: 'Text attrs: bold, italic, underline, strikethrough', status: 'parity' },
@@ -89,7 +89,7 @@ export const PARITY: ParityItem[] = [
   // off the same snapshot as the cursor position. Bar and underline draw as
   // substituted glyphs the way the unfocused outline does, so a shaped cursor
   // still costs one quad per cell. Blink is the second half of DECSCUSR and was
-  // briefly missed: honouring only the shape left ESC[1 q and ESC[2 q
+  // briefly missed: honoring only the shape left ESC[1 q and ESC[2 q
   // identical, since the pane blinked on its own timer regardless.
   { area: 'Cursor', item: 'DECSCUSR shapes, steady and blinking', status: 'parity' },
   { area: 'Input', item: 'Keyboard, control & named keys, app-cursor mode', status: 'parity' },
@@ -114,7 +114,7 @@ export const PARITY: ParityItem[] = [
   // engine already drains responses at write time.
   { area: 'Responses', item: 'Primary Device Attributes (ESC[c)', status: 'parity', note: 'verified: replies ESC[?62;22c' },
   { area: 'Multi-pane', item: 'WebGL context budget, context-loss recovery', status: 'parity', note: 'recovers in-engine; the second-renderer fallback is gone — see the header' },
-  { area: 'Theming', item: 'Theme + opacity onto clear colour and blending', status: 'parity' },
+  { area: 'Theming', item: 'Theme + opacity onto clear color and blending', status: 'parity' },
 ]
 
 export function parityTotals(items: ParityItem[] = PARITY) {

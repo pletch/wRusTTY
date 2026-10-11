@@ -15,10 +15,10 @@ export const DEFAULT_FONT_SIZE = 13
 
 export type CursorStyleSetting = 'block' | 'bar' | 'underline'
 
-/** Colour space the renderer mixes glyph coverage in — see `textBlending`.
+/** Color space the renderer mixes glyph coverage in — see `textBlending`.
  *  The three values, and their names, are ghostty's: this is its
  *  `alpha-blending` option, and matching the vocabulary is worth more than
- *  inventing our own for the same three behaviours. */
+ *  inventing our own for the same three behaviors. */
 export type TextBlending = 'native' | 'linear' | 'linear-corrected'
 
 const TEXT_BLENDINGS: readonly TextBlending[] = ['native', 'linear', 'linear-corrected']
@@ -183,9 +183,9 @@ export interface TerminalSettings {
    * Pixels added to each cell's width, on top of what the face measures.
    *
    * Cell width, not glyph spacing: a terminal grid has no gaps to widen, so
-   * this makes the *cells* wider and the glyph is drawn centred in the space.
+   * this makes the *cells* wider and the glyph is drawn centered in the space.
    * Negative tightens, and is honest about it — the glyph is condensed to fit
-   * rather than allowed to touch its neighbour.
+   * rather than allowed to touch its neighbor.
    */
   letterSpacing: number
   /**
@@ -274,7 +274,7 @@ export interface TerminalSettings {
    */
   autocompleteImportRemoteHistory: boolean
   /** Name of the active theme — a preset from lib/theme.ts, or one of
-   * `customThemes` below. A name rather than the colours themselves so that
+   * `customThemes` below. A name rather than the colors themselves so that
    * editing a custom theme repaints every pane already using it, and so a
    * theme that goes away falls back visibly instead of freezing a stale
    * palette into every stored profile. */
@@ -309,14 +309,14 @@ export interface TerminalSettings {
   /** What losing focus does to the window.
    *
    * 'fade' (the default) is `unfocusedDimPercent`: the background shifts
-   * towards the tab strip's colour and thins a little. 'glass' instead makes
+   * toward the tab strip's color and thins a little. 'glass' instead makes
    * the window behave exactly as if the window effect were Off and the
    * background opacity `unfocusedOpacityPercent`, until focus returns — the
    * Xfce terminal's look under a compositor. See `unfocusedAppearance`. */
   unfocusedStyle: UnfocusedStyle
   /** 'glass' only: the background opacity while unfocused, in percent. */
   unfocusedOpacityPercent: number
-  /** Runtime only, never saved: the colour a pane paints its background in
+  /** Runtime only, never saved: the color a pane paints its background in
    * instead of the theme's own, while the window is unfocused. Set by App on
    * the settings it hands the panes, from `stripColor`. */
   backgroundOverride?: string | null
@@ -328,7 +328,7 @@ export interface TerminalSettings {
    * a tab strip (this one's), giving it a subtly different tone. */
   vibrancyMode: VibrancyMode
   /**
-   * Colour space glyph coverage is blended against the cell background in.
+   * Color space glyph coverage is blended against the cell background in.
    *
    * 'native' is what this renderer has always done: mix in sRGB, the space
    * the canvas is already in. Cheap, and wrong — sRGB values are not
@@ -509,7 +509,7 @@ const FONT_STACK_MIGRATIONS: Record<string, string> = {
  *  setting to whatever now sits at that index. */
 function curatedStack(label: string): string {
   const entry = FONT_STACKS.find((f) => f.label === label)
-  if (!entry) throw new Error(`no curated font stack labelled ${label}`)
+  if (!entry) throw new Error(`no curated font stack labeled ${label}`)
   return entry.value
 }
 
@@ -696,7 +696,7 @@ export const FONT_SIZE_RANGE = { min: 8, max: 24 } as const
 /** Capped well short of 100: past about two thirds the pane stops reading as a
  *  window and starts reading as a rendering glitch. */
 // 10 rather than the original 60: with the unfocused window also taking the
-// strip's colour, more than about 10% fade reads as too strong, and the narrow
+// strip's color, more than about 10% fade reads as too strong, and the narrow
 // range is what makes whole-percent steps worth having. A saved value above it
 // clamps to 10 on load.
 export const UNFOCUSED_DIM_RANGE = { min: 0, max: 10 } as const
@@ -774,7 +774,7 @@ export interface BackgroundLayers {
   terminal: number
 }
 
-/** What `layers` stacked copies of one translucent colour look like: each lets
+/** What `layers` stacked copies of one translucent color look like: each lets
  *  through `1 - alpha` of what is behind it, so the stack lets through that
  *  much raised to the number of layers. */
 export function stackedOpacity(alpha: number, layers: number): number {
@@ -808,7 +808,7 @@ export function stackedOpacity(alpha: number, layers: number): number {
  * Terminal.tsx), the active tab, a blank pane — is built to composite to
  * exactly what the terminal content does, focused or not, so the pane reads
  * as one surface. Before, each was a different depth of stack: identical
- * while nearly opaque, and three visibly different greys once faded.
+ * while nearly opaque, and three visibly different grays once faded.
  *
  * Focused, every surface is exactly the configured opacity, so the look while
  * working is untouched. The floor applies to the terminal area, the most
@@ -913,7 +913,7 @@ export function loadSettings(): TerminalSettings {
       defaults.reconnectMaxSeconds,
       RECONNECT_SECONDS_RANGE,
     )
-    // Same argument as the scrollback tier above: an unrecognised value here
+    // Same argument as the scrollback tier above: an unrecognized value here
     // reaches the shader as a blend mode it has no branch for, which draws
     // nothing at all rather than falling back to something sane.
     if (!TEXT_BLENDINGS.includes(merged.textBlending)) {
@@ -943,9 +943,9 @@ export function loadSettings(): TerminalSettings {
       if (typeof merged[key] !== 'string') merged[key] = defaults[key]
     }
     merged.fontRanges = sanitizeRanges(merged.fontRanges)
-    // Straight off disk, so every colour in here is arbitrary text until it
+    // Straight off disk, so every color in here is arbitrary text until it
     // has been through this: `hexToRgb` reads a malformed one as NaN
-    // components, and a NaN reaches the renderer as a colour it will paint a
+    // components, and a NaN reaches the renderer as a color it will paint a
     // whole grid with.
     merged.customThemes = sanitizeCustomThemes(merged.customThemes)
     delete merged.scrollback

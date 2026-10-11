@@ -94,7 +94,7 @@ const ACK_THRESHOLD_BYTES = 1024 * 1024
  * become an unhandled rejection on top of the failure itself.
  */
 /** The theme this pane paints its surroundings from: the configured one, with
- * the unfocused window's background colour in place of its own when App has
+ * the unfocused window's background color in place of its own when App has
  * set one. Shared by every surface the engine does not paint, so they cannot
  * drift from the grid. */
 function paneTheme(settings: TerminalSettings) {
@@ -854,7 +854,7 @@ export function Terminal({
           break
         case 'transferCancelled':
           setTransfer(null)
-          toast.info(`Upload of ${file.name} cancelled`)
+          toast.info(`Upload of ${file.name} canceled`)
           break
         case 'transferFailed':
           setTransfer(null)
@@ -880,7 +880,7 @@ export function Terminal({
       }
       await sftp.uploadFinish(transferId)
     } catch {
-      // A chunk is refused when the transfer is already over — cancelled from
+      // A chunk is refused when the transfer is already over — canceled from
       // the button, or failed on the far side. Both have reported themselves
       // through the channel already, so this only has to stop pushing and
       // make sure nothing is left half-written.
@@ -961,7 +961,7 @@ export function Terminal({
 
     // The theme/font effects above are declared before this one, so on a first
     // mount they run while termRef is still null and their settings never reach
-    // the engine — it was left on its own built-in defaults (grey on black)
+    // the engine — it was left on its own built-in defaults (gray on black)
     // rather than the configured theme. Applying them here is also what gets
     // the palette into the Ghostty core, which resolves every cell's color
     // against it at construction.
@@ -1120,7 +1120,7 @@ export function Terminal({
 
     // Foreground for the thumb/arrows (matching xterm's own default
     // scrollbarSliderBackground behavior) so they stay legible against any
-    // preset theme. There is no background colour to set any more: the
+    // preset theme. There is no background color to set any more: the
     // gutter is covered by the frame, at the pane's own opacity, rather than
     // by an opaque fill here — see the .term-scrollbar comment in index.css.
     function updateScrollbarColors() {
@@ -1324,7 +1324,7 @@ export function Terminal({
       },
     })
     // What a program on the far end last reported through OSC 9;4, so a
-    // repeat can be recognised and dropped before it reaches App. A busy app
+    // repeat can be recognized and dropped before it reaches App. A busy app
     // re-sends the same indeterminate state for as long as it runs, and this
     // handler is on the output hot path.
     const progressTracker = new ProgressTracker({
@@ -1346,7 +1346,7 @@ export function Terminal({
     })
 
     // What is being typed at the prompt right now, read off the grid rather
-    // than modelled from keystrokes — see lib/promptInput.ts for why that is
+    // than modeled from keystrokes — see lib/promptInput.ts for why that is
     // the only version of this that works.
     const promptInput = new PromptInputTracker(term)
     // Feedback for walking the shell's history: an Up that lands on the
@@ -1559,7 +1559,7 @@ export function Terminal({
           noteRemoteCwd(result.cwd)
         }
         // Claimed either way, including the ignored forms: nothing else here
-        // handles OSC 9, and letting an unrecognised subcommand fall through
+        // handles OSC 9, and letting an unrecognized subcommand fall through
         // gains nothing.
         return true
       }),
@@ -1623,7 +1623,7 @@ export function Terminal({
           // The write is the point of the feature, but doing it silently is
           // what makes clipboard poisoning work: the user pastes into a
           // *local* shell believing the contents are their own. A toast costs
-          // nothing when the write was wanted, and is the whole defence when
+          // nothing when the write was wanted, and is the whole defense when
           // it wasn't.
           onWrote: () => toast.info('The remote host set your clipboard'),
           onError: logError,
@@ -1811,7 +1811,7 @@ export function Terminal({
     // tab is `display: none` and therefore legitimately 0x0 for as long as
     // that tab stays hidden, so this can't block on a size that may never
     // arrive. Falling back to connecting anyway just restores the old
-    // behaviour for that case, and the existing ResizeObserver still corrects
+    // behavior for that case, and the existing ResizeObserver still corrects
     // the size once the tab is shown.
     const beginConnect = () => {
       if (disposed) return
@@ -1836,7 +1836,7 @@ export function Terminal({
       // as react-resizable-panels resolves the layout, and it rests on an
       // intermediate width long enough to satisfy a two-frame check — which
       // is how the PTY ended up created at ~38 columns and the server sent a
-      // MOTD truncated to match. Nothing can repair that text afterwards: the
+      // MOTD truncated to match. Nothing can repair that text afterward: the
       // later resize fixes the PTY, but the characters the server already
       // dropped are gone, which is exactly the cropped output that only went
       // away once something forced the shell to redraw.
@@ -1932,7 +1932,7 @@ export function Terminal({
     // The fan-out point, deliberately on `onInput` and not `onData`.
     //
     // `onData` also carries mouse tracking reports, DEC 1004 focus reports and
-    // the core's replies to host queries (DSR, DA, OSC colour). None of those
+    // the core's replies to host queries (DSR, DA, OSC color). None of those
     // may leave this pane: a mouse report carries *this* pane's geometry, so
     // in a differently-sized sibling the click lands on the wrong cell; a
     // focus report tells a pane it gained focus it did not gain; and a reply
@@ -2044,7 +2044,7 @@ export function Terminal({
           // All the clipboard held was a newline; there is nothing left to send.
           if (!text) return
           const lines = countLines(text)
-          // The engine's own judgement where there is one. It refuses the same
+          // The engine's own judgment where there is one. It refuses the same
           // multi-line pastes this used to catch by counting, and one more it
           // could not: a single line carrying a bracketed-paste terminator,
           // which looks perfectly ordinary and is the case that matters.
@@ -2489,15 +2489,15 @@ export function Terminal({
 
           The grid is seen through one more layer than its surroundings — the
           engine paints its cells over this wrapper — so without this the
-          padding composited to a lighter grey than the text area beside it.
-          Invisible while nearly opaque; three distinct greys once the window
+          padding composited to a lighter gray than the text area beside it.
+          Invisible while nearly opaque; three distinct grays once the window
           fades. A border-only box rather than four strips because borders meet
           mitred, so the corners are not painted twice.
 
           Clear of the grid, so it never sits over text, and *under* the
           container below: that container is its own stacking context at
           z-index 0, so the scrollbar's z-20 only ranks inside it. A frame at
-          z-10 here painted the gutter's colour straight over the thumb and
+          z-10 here painted the gutter's color straight over the thumb and
           arrows, leaving them all but invisible. At z-0 and earlier in the
           DOM, the container — transparent wherever it has no controls — paints
           after it. */}
@@ -2527,7 +2527,7 @@ export function Terminal({
             its pane. `placeSuggestions` bounds its height to the space
             actually available, which is what stops it covering the line being
             typed; this is what stops it painting *outside the pane
-            altogether* — over the status bar, or over a neighbouring pane in a
+            altogether* — over the status bar, or over a neighboring pane in a
             split. Without it nothing at all constrains the overlay, because
             the grid is a few pixels shorter than the container that holds it
             and absolutely-positioned children happily paint past both. Belt

@@ -44,7 +44,7 @@ import * as abi from './main/abi'
  *    scrollback is searched, so it is used by tests and probes and never here.
  */
 
-/** What the controller needs from the engine — the same shape of favour the JS
+/** What the controller needs from the engine — the same shape of favor the JS
  *  controller asks for, minus everything to do with reading rows, which is now
  *  the core's job. */
 export interface NativeSearchHost {

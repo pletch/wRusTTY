@@ -201,11 +201,11 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.POINT_COORDINATE_OFF_Y).toBe(field('GhosttyPointCoordinate', 'y').offset)
   })
 
-  it('GhosttyStyle — size, colours and the attribute bytes', () => {
+  it('GhosttyStyle — size, colors and the attribute bytes', () => {
     expect(abi.STYLE_SIZE).toBe(m.GhosttyStyle.size)
     expect(abi.STYLE_OFF_SIZE).toBe(field('GhosttyStyle', 'size').offset)
 
-    // Each colour is a nested GhosttyStyleColor, so our flat tag/value offsets
+    // Each color is a nested GhosttyStyleColor, so our flat tag/value offsets
     // are the member's offset plus the tag/value offsets inside it.
     const tag = field('GhosttyStyleColor', 'tag').offset
     const val = field('GhosttyStyleColor', 'value').offset
@@ -233,7 +233,7 @@ run('abi.ts against ghostty_type_json', () => {
     }
 
     // Named `underline` upstream; ours says UNDERLINE_STYLE to keep it apart
-    // from the colour above, which is the pair most likely to be confused.
+    // from the color above, which is the pair most likely to be confused.
     expect(abi.STYLE_OFF_UNDERLINE_STYLE).toBe(field('GhosttyStyle', 'underline').offset)
   })
 
@@ -270,7 +270,7 @@ run('abi.ts against ghostty_type_json', () => {
     )
   })
 
-  it('GhosttyRenderStateColors — three packed colours, then the palette', () => {
+  it('GhosttyRenderStateColors — three packed colors, then the palette', () => {
     expect(abi.RS_COLORS_SIZE).toBe(m.GhosttyRenderStateColors.size)
     for (const [name, ours] of [
       ['size', abi.RS_COLORS_OFF_SIZE],
@@ -284,7 +284,7 @@ run('abi.ts against ghostty_type_json', () => {
     }
 
     // Packed at a 3-byte stride, not padded to 4. At a 4-byte stride the
-    // foreground's red would be read as part of the background and every colour
+    // foreground's red would be read as part of the background and every color
     // after it would shift — which looks like a theme bug, not a layout one.
     const rgb = m.GhosttyColorRgb.size
     expect(abi.RS_COLORS_OFF_FOREGROUND).toBe(abi.RS_COLORS_OFF_BACKGROUND + rgb)

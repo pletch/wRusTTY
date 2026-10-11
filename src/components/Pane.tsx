@@ -47,7 +47,7 @@ interface Props {
   /** Whether Settings names an outbound proxy — the connect form offers a
    * way past it only when there is one. */
   proxyAvailable: boolean
-  /** The colour a connected terminal paints itself, ready to use as a CSS
+  /** The color a connected terminal paints itself, ready to use as a CSS
    * background. A pane still waiting for a connection paints it too, so the
    * pane doesn't change tone the moment a session opens — and so that it
    * matches its own tab, which is painted from the same value. Only the
@@ -244,7 +244,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
       ) : (
         <div
           // Painted rather than left to show the window's own background: at
-          // less than full background opacity those are not the same colour,
+          // less than full background opacity those are not the same color,
           // since the terminal paints this over the window rather than
           // instead of it. Left bare, a pane lightened while it waited for a
           // connection and settled a shade darker the moment one opened.

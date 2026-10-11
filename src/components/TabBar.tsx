@@ -48,7 +48,7 @@ interface Props {
    * rename what you are looking at — or reflow the strip, since tab width is
    * content-driven. See lib/remoteIdentity.ts. */
   titleByPane: Record<string, string>
-  /** The colour the terminal beneath is painted, ready to use as a CSS
+  /** The color the terminal beneath is painted, ready to use as a CSS
    * background. The active tab takes it exactly, so the tab and the pane it
    * opens onto are one surface and the strip is the only thing separating
    * them — which is the whole point of a tab. Passed in rather than resolved
@@ -102,7 +102,7 @@ const PANE_MAP_SEGMENT_PX = 2
 const PANE_MAP_MAX_ROWS = 4
 
 /** Keeps the quarter of a corner fillet that is nearest the tab and drops
- * the rest — see where it is used. `centre` is the corner of the 8px box
+ * the rest — see where it is used. `center` is the corner of the 8px box
  * the arc is struck from: the top-left for the fillet on the tab's left,
  * the top-right for the one on its right. */
 function filletMask(centre: string): { WebkitMaskImage: string; maskImage: string } {
@@ -120,12 +120,12 @@ function filletMask(centre: string): { WebkitMaskImage: string; maskImage: strin
 const PANE_MAP_TOP_PX = 2
 
 /** Shaved off the clearance the tab's contents keep below the pane map.
- * Centring them strictly under the map is safe but sits them low — the space
+ * Centering them strictly under the map is safe but sits them low — the space
  * beneath reads as bigger than the gap above, because the map is a thin line
  * rather than a solid block. Lifting them raises the row by half this (the
- * remaining height is centred, so it splits the difference), which is enough
+ * remaining height is centered, so it splits the difference), which is enough
  * to look balanced while staying clear of the map. Also returns an unsplit
- * tab to exactly the centring it had before any of this, since its 2px map
+ * tab to exactly the centering it had before any of this, since its 2px map
  * needs no clearance at all. */
 const PANE_MAP_CONTENT_LIFT_PX = 4
 
@@ -185,14 +185,14 @@ function PaneIndicator({
           // Red on the sky-toned bar is the highest-contrast pairing
           // available here, and it stays equally legible over the focused
           // (full sky) and unfocused (30%) tones — a lighter tint of the
-          // bar's own colour washed out against the focused one.
+          // bar's own color washed out against the focused one.
           //
           // Fixed 28px rather than a fraction of the segment: proportional
           // meant the marker changed size with the split layout and the tab
           // title's length, which read as a different indicator each time.
           // max-w-full keeps it inside segments narrower than that (a
           // four-way split on a minimum-width tab), where it simply stops
-          // travelling rather than overflowing.
+          // traveling rather than overflowing.
           //
           // Gradient rather than a solid fill so the edges fall off and it
           // reads as a light passing behind the bar instead of a brick
@@ -204,8 +204,8 @@ function PaneIndicator({
           // The same marker at rest: parked mid-segment, amber, breathing.
           // Deliberately the same shape and size as the running one so the
           // two read as one indicator changing state rather than two
-          // unrelated marks — it stops travelling, settles in the middle and
-          // changes colour, which is legible at a glance without needing a
+          // unrelated marks — it stops traveling, settles in the middle and
+          // changes color, which is legible at a glance without needing a
           // separate widget elsewhere on the tab.
           <span className="animate-pane-glow absolute inset-y-0 left-1/2 w-7 max-w-full -translate-x-1/2 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
         )}
@@ -331,7 +331,7 @@ export function TabBar({
   // Which tab the pointer is over. `:hover` alone can't express the rule the
   // separators need — a divider has to vanish when *either* tab it sits
   // between is hovered, and CSS gives a tab no way to reach its own left-hand
-  // neighbour. Knowing the hovered id outright states the rule directly.
+  // neighbor. Knowing the hovered id outright states the rule directly.
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [paneDragOver, setPaneDragOver] = useState(false)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
@@ -366,16 +366,16 @@ export function TabBar({
   }, [tabs])
 
   // The pane map is a header inside each tab, so the tab's own contents sit
-  // below it and centre in whatever height is left. Without this a four-row
+  // below it and center in whatever height is left. Without this a four-row
   // map (14px of a 40px strip) runs straight into the protocol glyph and the
-  // title, which are otherwise centred in the full height.
+  // title, which are otherwise centered in the full height.
   //
   // Measured once across the whole strip rather than per tab: map height
   // varies with each tab's layout, and letting every tab place its own title
-  // accordingly would leave neighbouring titles on visibly different
+  // accordingly would leave neighboring titles on visibly different
   // baselines. One clearance for the tallest map on screen keeps the row of
   // titles an actual row. The logo and "+" button aren't tabs and have no map
-  // above them, so they stay centred in the full strip.
+  // above them, so they stay centered in the full strip.
   const stripRows = Math.min(
     tabs.reduce((most, t) => Math.max(most, verticalRows(t.root)), 1),
     PANE_MAP_MAX_ROWS,
@@ -440,7 +440,7 @@ export function TabBar({
         // `px-2` reserves the width the first and last tabs' fillets hang
         // into, which they need for opposite reasons. The fillets are
         // absolutely positioned outside their tab, and at the end an
-        // out-of-flow descendant still counts towards a scroll container's
+        // out-of-flow descendant still counts toward a scroll container's
         // scrollable overflow — so on the last tab it added 8px the
         // container could not show, and the check below called a strip that
         // fits exactly overflowing and faded its own last tab. At the start
@@ -482,7 +482,7 @@ export function TabBar({
           // A local pane is named by its *shell*, not by its transport. Five
           // local sessions all showing the same laptop is the case this
           // exists for; the generic icon stays as the fallback for a shell
-          // nothing recognises.
+          // nothing recognizes.
           const src = leaf?.source
           const shellGlyph =
             src?.protocol === 'local'
@@ -604,7 +604,7 @@ export function TabBar({
                 // Both skipped while this tab is the drop target, so the sky
                 // wash marking it as such isn't painted over by an inline
                 // fill. Hover is driven from `hoveredId` rather than a
-                // `hover:` class because what it paints is a colour computed
+                // `hover:` class because what it paints is a color computed
                 // from the theme, not one Tailwind can name.
                 ...(dropTargetId === tab.id
                   ? {}
@@ -631,10 +631,10 @@ export function TabBar({
               // Hovering an inactive tab lends it the same shape and a fill
               // partway to the active one's, so the thing under the pointer is
               // legible as a target without being mistaken for the selection.
-              // Partway *towards* it: this was a white wash, which on a dark
+              // Partway *toward* it: this was a white wash, which on a dark
               // theme moved a hovered tab lighter than the strip while the
               // tab it was reaching for is darker — the wrong direction, and
-              // the reason it needs a computed colour rather than a class.
+              // the reason it needs a computed color rather than a class.
               //
               // `mt-1` drops every tab clear of the window's top edge: a tab
               // whose corner starts in the same pixel row as the frame's has
@@ -665,7 +665,7 @@ export function TabBar({
 
                   A corner CSS cannot round directly — the curve is convex
                   from the pane's side, and border-radius only ever cuts
-                  inwards. So each is a square of pane colour with the
+                  inwards. So each is a square of pane color with the
                   quarter disc nearest the tab's own corner masked out of it,
                   leaving exactly the part that should stay: full height
                   against the tab, nothing at all a radius away.
@@ -675,7 +675,7 @@ export function TabBar({
                   a little more crisply, but it is 8px of opaque strip laid on
                   top of whatever is actually there — which on the tab next
                   door, while the pointer is over it, is its hover fill: a
-                  small wrong-coloured box beside the shoulder. Masking leaves
+                  small wrong-colored box beside the shoulder. Masking leaves
                   that ground untouched.
 
                   The two-pixel ramp either side of the radius is what does
@@ -773,7 +773,7 @@ export function TabBar({
               {/* Decision 5 of docs/ELEVATED_TABS_PLAN.md: the tab running
                   as administrator is never in doubt. Beside the shell's own
                   icon rather than instead of it, and in amber rather than the
-                  quiet chrome grey, because it is the one tab worth noticing
+                  quiet chrome gray, because it is the one tab worth noticing
                   from across the strip. */}
               {elevated && (
                 <span title="Administrator" className="-ml-0.5 shrink-0 text-amber-400">
@@ -781,10 +781,10 @@ export function TabBar({
                 </span>
               )}
               {/* The mark a program put at the front of its own title. Its own
-                  size and colour are whatever the emoji font gives it, so
+                  size and color are whatever the emoji font gives it, so
                   nothing here tints it: `✳` is green because Segoe UI Emoji
-                  draws it green, and a badge recoloured to the chrome grey
-                  would stop being the thing the user recognises from every
+                  draws it green, and a badge recolored to the chrome gray
+                  would stop being the thing the user recognizes from every
                   other terminal they use.
                   `aria-hidden` because the full title is already on the tab's
                   tooltip, where a screen reader gets it as words rather than
@@ -792,12 +792,12 @@ export function TabBar({
               {badge && (
                 // A fixed box rather than one the glyph sizes, because the
                 // badge swaps between kinds of glyph as the program works: the
-                // colour emoji at rest and a text-font spinner frame while it
+                // color emoji at rest and a text-font spinner frame while it
                 // is busy advance differently, so a box that fitted the glyph
                 // resized several times a second and slid the label — and the
                 // tab itself, whose width is content-driven — along with it.
-                // Centred and allowed to overflow rather than clipped: the
-                // width only has to stop the glyph *moving* its neighbours,
+                // Centered and allowed to overflow rather than clipped: the
+                // width only has to stop the glyph *moving* its neighbors,
                 // and a hidden overflow would crop a wide one instead.
                 <span
                   aria-hidden
@@ -812,7 +812,7 @@ export function TabBar({
                * Hover-gating it everywhere made it unreliable to click, and not
                * because of hit-testing — an `opacity-0` button still takes
                * clicks. The problem is that you cannot aim at what you cannot
-               * see. Cancelling a confirmation is the clearest case: while the
+               * see. Canceling a confirmation is the clearest case: while the
                * dialog is up its overlay is what the pointer is over, so the
                * tab beneath is not hovered, and the browser does not re-evaluate
                * `:hover` until the pointer *moves*. Cancel, go straight back to

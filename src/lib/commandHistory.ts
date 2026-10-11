@@ -117,7 +117,7 @@ export function historyKeyForSource(
       return `profile://${source.profileId}`
     // Null means "this pane records nothing", which is decision 2 of
     // docs/LOCAL_SHELL_PLAN.md applied where the source is chosen rather than
-    // filtered afterwards.
+    // filtered afterward.
     //
     // The split is by **shell family, not by transport**. PowerShell and CMD
     // are an autocomplete non-goal (docs/TODO.md:406) because their prompt and

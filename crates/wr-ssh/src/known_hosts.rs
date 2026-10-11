@@ -89,7 +89,7 @@ impl KnownHostsStore {
                         continue;
                     }
                     if let Some((id, key_text)) = line.split_once(' ') {
-                        // Normalising on read rather than only on write means
+                        // Normalizing on read rather than only on write means
                         // entries written before `host_id` lowercased don't
                         // reprompt as `Unknown` on the next connect. The id is
                         // `host:port`, so lowercasing the whole string is the
@@ -447,7 +447,7 @@ mod tests {
         store.learn("Example.COM", 22, &k).unwrap();
         assert_eq!(store.check("example.com", 22, &k), HostKeyStatus::Trusted);
 
-        // And through a reload, so the on-disk id is normalised too.
+        // And through a reload, so the on-disk id is normalized too.
         let reloaded = KnownHostsStore::load(&path).unwrap();
         assert_eq!(
             reloaded.check("EXAMPLE.com", 22, &k),

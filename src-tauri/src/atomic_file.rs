@@ -18,7 +18,7 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
     wr_fs::write_atomic(path, contents).map_err(|e| e.to_string())
 }
 
-/// `write_atomic` for anything serialisable, pretty-printed — the shape every
+/// `write_atomic` for anything serializable, pretty-printed — the shape every
 /// caller here actually wants.
 pub(crate) fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let contents = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;

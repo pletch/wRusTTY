@@ -15,7 +15,7 @@ import { useDragRegionDoubleClickGuard } from './useDragRegionDoubleClickGuard'
  *
  * They are kept apart because the distinction is the whole lesson: suppressing
  * the presses does nothing to the `dblclick` they compose, so an earlier
- * version of this fix passed a suite that only modelled Tauri, and still
+ * version of this fix passed a suite that only modeled Tauri, and still
  * maximized the window in the running app. Both were then confirmed by hand to
  * fire on their own, each with the other disabled.
  */

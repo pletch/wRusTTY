@@ -10,7 +10,7 @@
 //! It is also recoverable offline from a stolen disk given the account
 //! password, since that's what protects the DPAPI master key.
 //!
-//! This provider stores **nothing recoverable at rest**. It enrols an
+//! This provider stores **nothing recoverable at rest**. It enrolls an
 //! asymmetric key credential whose private key lives in the TPM and is gated
 //! by the Hello gesture, keeps a random challenge in the clear next to the
 //! vault, and derives the KEK by signing that challenge:
@@ -38,14 +38,14 @@
 //! this the sole unlock method for a vault.
 //!
 //! Detecting a determinism failure matters because the naive handling is a
-//! *loop*, not an error: enrolment succeeds (one signature is trivially
+//! *loop*, not an error: enrollment succeeds (one signature is trivially
 //! self-consistent), the next unlock fails, its message sensibly says
-//! "re-enrol", and that succeeds and fails again, forever, with nothing
+//! "re-enroll", and that succeeds and fails again, forever, with nothing
 //! naming the cause.
 //!
-//! The check is deferred to the failure path rather than run at enrolment,
+//! The check is deferred to the failure path rather than run at enrollment,
 //! because the wrapped key's AEAD tag *already* detects a wrong signature at
-//! unlock — a second enrolment signature would only be re-deriving something
+//! unlock — a second enrollment signature would only be re-deriving something
 //! the tag tells us anyway. What the tag can't say is *why* the KEK was
 //! wrong, and the two causes need opposite advice: a rotated credential is
 //! fixed by re-enrolling, a non-deterministic signature is made worse by it.
@@ -53,7 +53,7 @@
 //! already failed, and every user who never hits it pays one prompt fewer.
 //!
 //! Every signing operation requires a fresh gesture — that's the design of a
-//! Hello key credential, not an artefact here. Enrolment therefore costs two
+//! Hello key credential, not an artifact here. Enrollment therefore costs two
 //! prompts (create, then sign) and unlock costs exactly one.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -96,7 +96,7 @@ fn status_error(status: KeyCredentialStatus) -> ProviderError {
         }
         // On open: the credential is gone — a reset PIN, a cleared Hello
         // container, a migrated profile. The wrapper is dead and the user
-        // must unlock another way and re-enrol.
+        // must unlock another way and re-enroll.
         KeyCredentialStatus::NotFound => ProviderError::Invalidated(
             "the Windows Hello credential for this vault no longer exists — \
              unlock with your master password and set it up again"
@@ -146,7 +146,7 @@ fn from_ibuffer(buffer: &IBuffer) -> Result<Vec<u8>, ProviderError> {
 /// Hello is enrolled for the user, including on machines with no TPM, where
 /// key credentials fall back to a software key store and the whole
 /// "nothing recoverable at rest" property is lost. Attestation, checked at
-/// enrolment, is what distinguishes the two.
+/// enrollment, is what distinguishes the two.
 pub(crate) async fn is_supported() -> bool {
     tokio::task::spawn_blocking(|| {
         init_com();
@@ -205,7 +205,7 @@ fn sign_challenge_blocking(
     // would destroy the very key we're trying to sign with and hand back a
     // fresh one, whose signature derives a different KEK — turning "the
     // credential rotated" into "the vault silently stopped opening, and the
-    // wrapper is now unrecoverable". Enrolment is the only place a credential
+    // wrapper is now unrecoverable". Enrollment is the only place a credential
     // is created.
     let opened = KeyCredentialManager::OpenAsync(&HSTRING::from(credential_name))
         .and_then(|op| op.join())
@@ -252,9 +252,9 @@ fn create_credential_blocking(credential_name: &str) -> Result<bool, ProviderErr
         ));
     }
 
-    // `ReplaceExisting` rather than `FailIfExists`: enrolment always mints a
+    // `ReplaceExisting` rather than `FailIfExists`: enrollment always mints a
     // fresh challenge and rewraps the DEK anyway, so there is nothing to
-    // preserve, and reusing a credential left over from a previous enrolment
+    // preserve, and reusing a credential left over from a previous enrollment
     // would mean depending on a key whose provenance we no longer know.
     let created = KeyCredentialManager::RequestCreateAsync(
         &HSTRING::from(credential_name),
@@ -273,7 +273,7 @@ fn create_credential_blocking(credential_name: &str) -> Result<bool, ProviderErr
         .map_err(|e| ProviderError::Failed(e.to_string()))?;
 
     // Best-effort: a machine with no TPM still gets a working (software-
-    // backed) credential, and refusing to enrol there would be worse than
+    // backed) credential, and refusing to enroll there would be worse than
     // enrolling and saying so. `TemporarilyUnavailable` is also common on
     // perfectly good hardware — attestation needs a provisioned AIK, which
     // Windows fetches lazily — so a false here means "not proven", not
@@ -347,7 +347,7 @@ impl HelloProvider {
     pub(crate) async fn explain_unlock_failure(&self, meta: &WrapperMeta) -> String {
         const ROTATED: &str = "the Windows Hello credential for this vault was replaced or \
                                removed — unlock with your master password, then switch \
-                               passwordless unlock off and on again to re-enrol it";
+                               passwordless unlock off and on again to re-enroll it";
 
         let Ok(stored) = StoredHello::from_meta(meta) else {
             return "this vault's Windows Hello settings are unreadable — \
@@ -377,7 +377,7 @@ impl HelloProvider {
             // keypair behind the credential changed.
             (Ok(a), Ok(b)) if a == b => ROTATED.to_string(),
             // The assumption this whole method rests on no longer holds here.
-            // Say so plainly, and steer away from the re-enrol loop.
+            // Say so plainly, and steer away from the re-enroll loop.
             (Ok(_), Ok(_)) => "Windows Hello on this machine no longer produces a stable \
                                signature, so it can't derive this vault's key. Use your master \
                                password — re-enrolling will not help."
@@ -517,7 +517,7 @@ mod tests {
 
     /// Runs `f` on the blocking pool but gives up after `secs`, so a WinRT
     /// call that never returns is reported as such instead of hanging the
-    /// test run. The blocking thread is abandoned rather than cancelled —
+    /// test run. The blocking thread is abandoned rather than canceled —
     /// there is no way to interrupt a stuck WinRT call, which is precisely
     /// the property being investigated.
     async fn with_timeout<T: Send + 'static>(
@@ -558,10 +558,10 @@ mod tests {
         eprintln!("OpenAsync status: {opened:?}");
     }
 
-    /// Drives the real enrolment sequence step by step, with a timeout on
+    /// Drives the real enrollment sequence step by step, with a timeout on
     /// each, and reports whether the two signatures actually match on this
     /// hardware. Uses its own credential name so it can't disturb a real
-    /// vault, and deletes it afterwards.
+    /// vault, and deletes it afterward.
     ///
     /// **A timeout here does not mean the call hung.** `cargo test` has no
     /// window and is not the foreground process, so the Hello prompt opens

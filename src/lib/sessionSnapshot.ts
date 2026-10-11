@@ -152,7 +152,7 @@ export function countAwaitingElevation(tabs: Tab[]): number {
 /** Whether connecting this saved profile has to go through the vault.
  *
  * Agent and keyboard-interactive auth don't — see `authNeedsVault`, which owns
- * that judgement. A jump host does count even when the target
+ * that judgment. A jump host does count even when the target
  * itself is agent-authenticated, because `ssh_connect_profile` resolves the
  * jump profile's *own* auth, which may well be a vaulted password. Only one
  * hop is considered, matching that same function ignoring any jump the jump

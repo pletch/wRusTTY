@@ -180,7 +180,7 @@ mod write_pacing_tests {
         assert_eq!(start.elapsed(), Duration::ZERO);
     }
 
-    /// Preserved behaviour rather than a property worth having: the old
+    /// Preserved behavior rather than a property worth having: the old
     /// straight-through write flushed whatever it was handed, empty included.
     #[tokio::test(start_paused = true)]
     async fn an_empty_write_still_flushes() {

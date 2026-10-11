@@ -208,7 +208,7 @@ describe('mouse reporting, from the canvas to the wire', () => {
     // Column 101, row 2, each biased by 32 — so the column byte is 0x85, and
     // 0x85 is not valid UTF-8 on its own. Carried as a string it became
     // U+FFFD and reached the wire as ef bf bd: the column destroyed, and one
-    // byte turned into three, which desynchronises the far end for the rest
+    // byte turned into three, which desynchronizes the far end for the rest
     // of the report. This is the reason the data channel carries bytes.
     expect([...raw[0]]).toEqual([0x1b, 0x5b, 0x4d, 0x20, 0x20 + 101, 0x20 + 2])
     engine.unmount()

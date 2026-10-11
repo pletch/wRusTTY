@@ -45,7 +45,7 @@ pub fn derive_kek_from_ikm(ikm: &[u8], salt: &[u8], info: &[u8]) -> Kek {
 }
 
 /// Fresh random bytes from the OS CSPRNG, for providers that need to mint a
-/// challenge or a KEK of their own at enrolment time.
+/// challenge or a KEK of their own at enrollment time.
 pub fn random_bytes<const N: usize>() -> [u8; N] {
     crypto::random_bytes()
 }

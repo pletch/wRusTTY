@@ -9,7 +9,7 @@ use crate::error::SftpError;
 ///
 /// 32 KiB because that is the packet size the protocol's own read limit is
 /// built around and what servers reliably accept; larger writes are legal but
-/// not universally honoured, and this is the size at which the round trips
+/// not universally honored, and this is the size at which the round trips
 /// stop dominating anyway.
 const UPLOAD_CHUNK: usize = 32 * 1024;
 
@@ -17,7 +17,7 @@ const UPLOAD_CHUNK: usize = 32 * 1024;
 /// reasoning as `UPLOAD_CHUNK`, in the other direction.
 const DOWNLOAD_CHUNK: usize = 32 * 1024;
 
-/// Why a transfer stopped. A cancelled transfer is not an error — the user
+/// Why a transfer stopped. A canceled transfer is not an error — the user
 /// asked — but it is emphatically not a completed one either, and a caller
 /// that cannot tell them apart will leave a partial file lying around
 /// claiming to be the real thing.
@@ -244,7 +244,7 @@ impl SftpClient {
     ///
     /// `progress` is called with the running byte count after each chunk and
     /// returns whether to keep going, which is the whole of the cancellation
-    /// mechanism — a transfer can only stop between chunks, so cancelling is
+    /// mechanism — a transfer can only stop between chunks, so canceling is
     /// bounded by one chunk's round trip rather than by the size of the file.
     pub async fn upload<R>(
         &self,

@@ -177,7 +177,7 @@ describe('activating a link with Ctrl+click', () => {
     engine.unmount()
   })
 
-  /** Ctrl on empty ground is unchanged behaviour: it starts a selection, the
+  /** Ctrl on empty ground is unchanged behavior: it starts a selection, the
    *  same as a plain press does today. */
   it('still begins a selection on a Ctrl+drag that misses the link', async () => {
     const { engine, selection, down, drag } = await mounted()

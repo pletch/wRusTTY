@@ -11,9 +11,9 @@
  * end — the point being that a terminal *can* answer this on its own, for any
  * host, including the appliance whose `~/.bashrc` you will never be allowed to
  * edit. The whole trick is that `PromptInputTracker` already reads the input
- * line off the grid rather than modelling it from keystrokes, so "what does
+ * line off the grid rather than modeling it from keystrokes, so "what does
  * the prompt line say" is a question that can be asked before a keypress and
- * again afterwards. See lib/promptInput.ts.
+ * again afterward. See lib/promptInput.ts.
  *
  * What it produces is the *finding*; the flicker that shows it lives in
  * lib/historyFlicker.ts.
@@ -45,7 +45,7 @@
  *
  *   - **The next press resolves the previous one.** A comparison still pending
  *     when another history key goes out is run immediately instead of being
- *     cancelled — the user's own next keystroke is the proof that enough time
+ *     canceled — the user's own next keystroke is the proof that enough time
  *     has passed, so a burst costs no waiting at all.
  *   - **The deadline is measured, not guessed.** For the last press of a burst
  *     there is nothing to resolve it, so it falls back to a timer — but one
@@ -241,7 +241,7 @@ export class HistoryRepeatWatcher {
     }
     // Another history key while one is outstanding: the user is hunting, and
     // their own keystroke has established that time has passed. Resolve the
-    // previous press now rather than cancelling it — cancelling is what made
+    // previous press now rather than canceling it — canceling is what made
     // a fast walk through history produce no feedback at all until the hand
     // stopped moving.
     if (this.pending !== null) {

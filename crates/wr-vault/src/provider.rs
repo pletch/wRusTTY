@@ -15,26 +15,26 @@ use crate::key::Kek;
 use crate::wrapper::{WrapperKind, WrapperMeta, WrapperParams};
 
 /// Why an unlock method couldn't produce a key. These are separated because
-/// the UI has to react differently to each: a cancelled gesture is not an
-/// error worth surfacing, a rotated Hello credential needs a re-enrolment
+/// the UI has to react differently to each: a canceled gesture is not an
+/// error worth surfacing, a rotated Hello credential needs a re-enrollment
 /// prompt, and an unavailable TPM needs the method hidden entirely. Collapsing
 /// them into a string — as the current Tauri command layer does — makes all
 /// three look like the same failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     /// The user dismissed the prompt. Expected; don't alarm anyone.
-    #[error("cancelled")]
+    #[error("canceled")]
     Cancelled,
 
     /// The method has never been set up on this machine (no Hello enrolled,
-    /// no keyring entry). Offer enrolment.
+    /// no keyring entry). Offer enrollment.
     #[error("{0}")]
     NotEnrolled(String),
 
     /// The method was set up, but its underlying key no longer exists or no
     /// longer produces the same output — a reset PIN, a cleared Hello
     /// container, a moved profile. The wrapper is dead; the user must unlock
-    /// another way and re-enrol this one.
+    /// another way and re-enroll this one.
     #[error("{0}")]
     Invalidated(String),
 
@@ -67,7 +67,7 @@ pub trait KeyProvider: Send + Sync {
     fn kind(&self) -> WrapperKind;
 
     /// Reproduce the KEK for an existing wrapper. `meta.params` is whatever
-    /// this provider wrote at enrolment.
+    /// this provider wrote at enrollment.
     async fn kek_for(&self, meta: &WrapperMeta) -> Result<Kek, ProviderError>;
 
     /// Set the method up and mint a fresh KEK, returning the parameters
@@ -189,7 +189,7 @@ mod tests {
         assert_ne!(enrolled.as_bytes(), other.as_bytes());
     }
 
-    /// Each enrolment draws a fresh salt, so the same password used twice
+    /// Each enrollment draws a fresh salt, so the same password used twice
     /// must not yield the same KEK — otherwise two vaults sharing a password
     /// would share a wrapping key.
     #[tokio::test]

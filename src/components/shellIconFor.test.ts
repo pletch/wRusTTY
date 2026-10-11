@@ -38,7 +38,7 @@ describe('glyphForShellId', () => {
 
   /** Null falls back to the generic local icon. Putting someone's trademark on
    *  a binary this app has not identified is the thing to avoid. */
-  it('declines to mark anything it does not recognise', () => {
+  it('declines to mark anything it does not recognize', () => {
     expect(glyphForShellId('')).toBeNull()
     expect(glyphForShellId('my-shell')).toBeNull()
     // Not a WSL distro — the prefix has to be exact.
@@ -68,7 +68,7 @@ describe('glyphForShell', () => {
   })
 
   /** The distro lives in the arguments, not the path. */
-  it('recognises a WSL launcher by its arguments', () => {
+  it('recognizes a WSL launcher by its arguments', () => {
     expect(
       glyphForShell(config(String.raw`C:\Windows\System32\wsl.exe`, ['-d', 'Debian', '--cd', '~'])),
     ).toEqual({ kind: 'bundled', icon: LinuxIcon })

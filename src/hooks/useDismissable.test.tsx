@@ -138,7 +138,7 @@ function Surface({
 }
 
 describe('useDismissable Escape stacking', () => {
-  /** Cancelling a confirmation raised from a panel must not also close the
+  /** Canceling a confirmation raised from a panel must not also close the
    * panel underneath — the papercut the stack exists to remove. */
   it('Escape reaches only the topmost surface, then the one below', async () => {
     const user = userEvent.setup()

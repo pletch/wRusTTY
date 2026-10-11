@@ -145,7 +145,7 @@ export function editFile(
  * The password goes straight to the backend and authenticates the one `sudo`
  * call that starts this edit's helper. Nothing keeps it: not this module, not
  * the dialog that collected it, and not the backend past that call. Every
- * later save is authorised by the helper still running, not by anyone
+ * later save is authorized by the helper still running, not by anyone
  * remembering what was typed here.
  */
 export function respondSudoPrompt(requestId: string, password: string | null) {
@@ -184,7 +184,7 @@ export function saveEdit(editId: string, force: boolean, channel: Channel<SftpEv
  * touched — the copy in the editor, and everything typed into it, is exactly
  * as it was — only the route back to the host changes.
  *
- * Does not save. Call `saveEdit` afterwards, so the write still goes through
+ * Does not save. Call `saveEdit` afterward, so the write still goes through
  * the same conflict check every other save does.
  */
 export function elevateEdit(editId: string, channel: Channel<SftpEvent>) {
@@ -234,7 +234,7 @@ export function uploadBegin(
  * ordinary command argument would be serialized as a JSON array of numbers —
  * about a megabyte of text per quarter-megabyte chunk, built, sent and parsed.
  *
- * Rejects once the transfer is over, which is how a cancelled upload stops the
+ * Rejects once the transfer is over, which is how a canceled upload stops the
  * loop feeding it.
  */
 export function uploadChunk(transferId: string, chunk: Uint8Array) {

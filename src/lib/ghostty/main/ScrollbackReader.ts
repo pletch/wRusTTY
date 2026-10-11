@@ -11,17 +11,17 @@
  * ## Resolve once per row, then step `ref.x`
  *
  * `GhosttyGridRef` is a plain struct in caller memory, so a row is walked by
- * writing `x` and asking again. This is not a micro-optimisation: resolution is
+ * writing `x` and asking again. This is not a micro-optimization: resolution is
  * O(scrollback depth) — 14 ns at row 0, 188 ns at row 39,540 — so one resolve
- * per row amortises over `cols` cells, while one per cell makes a full search
+ * per row amortizes over `cols` cells, while one per cell makes a full search
  * pass 9x slower than today's. Measured in `tools/parse-probes/search.mjs`,
  * where this shape comes out at **0.8x-0.9x** the row-at-a-time read it
  * replaces, holding to 0.86x at 100k rows.
  *
- * ## Colours have to be flattened here
+ * ## Colors have to be flattened here
  *
  * The render iterator has `FG_COLOR`/`BG_COLOR` keys that flatten a cell's
- * colour from its three possible sources. `grid_ref` has no such accessor — it
+ * color from its three possible sources. `grid_ref` has no such accessor — it
  * gives the raw cell and the style and nothing else — so this reader reproduces
  * that flattening itself:
  *
@@ -29,7 +29,7 @@
  *   the terminal's palette. Bold brightening is deliberately not applied, which
  *   matches what the render path documents.
  * - **background** takes the cell's own content tag first (a blank cell painted
- *   by `ED`/`EL` carries its colour there, not in a style), then the style.
+ *   by `ED`/`EL` carries its color there, not in a style), then the style.
  *
  * Getting that order wrong is invisible on ordinary text and shows up only on
  * cleared regions, which is why the byte-identity test covers them explicitly.
@@ -126,7 +126,7 @@ export class MainScrollbackReader {
     return (d.getUint8(ptr) << 16) | (d.getUint8(ptr + 1) << 8) | d.getUint8(ptr + 2)
   }
 
-  /** Refreshes palette and default colours. Cheap, and done once per row. */
+  /** Refreshes palette and default colors. Cheap, and done once per row. */
   private refreshColors(): void {
     const { ex } = this
     if (ex.ghostty_terminal_get(this.term, abi.T_DATA_COLOR_PALETTE, this.palPtr) === abi.GHOSTTY_SUCCESS) {
@@ -144,7 +144,7 @@ export class MainScrollbackReader {
     return this.rgbAt(this.palPtr + (index & 0xff) * abi.COLOR_RGB_BYTES)
   }
 
-  /** A style colour slot, or -1 for "none". */
+  /** A style color slot, or -1 for "none". */
   private styleColor(tagOff: number, valueOff: number): number {
     const d = this.dv()
     const tag = d.getUint32(this.stylePtr + tagOff, true)
@@ -206,7 +206,7 @@ export class MainScrollbackReader {
     const contentTag = this.dv().getUint32(this.scratch, true)
 
     // The packed cell's payload is a union: a codepoint, *or* a background
-    // colour for a cell with no text. Unpacking it unconditionally turns a
+    // color for a cell with no text. Unpacking it unconditionally turns a
     // blank painted by ED/EL into a control character — a cleared row with
     // bg 0x445566 came back with codepoint 1.
     d = this.dv()
@@ -227,7 +227,7 @@ export class MainScrollbackReader {
     }
 
     // Background: the cell's own content tag wins over the style, because a
-    // blank painted by ED/EL carries its colour there and has no style at all.
+    // blank painted by ED/EL carries its color there and has no style at all.
     let bg = this.defBg
     if (contentTag === abi.CELL_CONTENT_BG_COLOR_PALETTE) {
       abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_COLOR_PALETTE, this.scratch), 'cell_get COLOR_PALETTE')

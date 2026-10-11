@@ -357,7 +357,7 @@ export const SHELL_SNIPPETS: ShellSnippet[] = [
   { id: 'bash', label: 'bash', rcFile: '~/.bashrc', script: BASH },
   { id: 'zsh', label: 'zsh', rcFile: '~/.zshrc', script: ZSH },
   { id: 'fish', label: 'fish', rcFile: '~/.config/fish/config.fish', script: FISH },
-  // Labelled by its command like the others, which also keeps the fourth
+  // Labeled by its command like the others, which also keeps the fourth
   // button the same width as the rest of the row.
   { id: 'powershell', label: 'pwsh', rcFile: '$PROFILE', script: POWERSHELL },
 ]

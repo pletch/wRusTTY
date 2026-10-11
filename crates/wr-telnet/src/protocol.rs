@@ -234,7 +234,7 @@ mod tests {
         // subnegotiation, hence the extra -1).
         assert_eq!(out.data.len(), flood.len() - MAX_SUBNEG_LEN - 1);
 
-        // And the parser is genuinely back to normal afterwards.
+        // And the parser is genuinely back to normal afterward.
         let out = p.feed(b"hello");
         assert_eq!(out.data, b"hello");
     }

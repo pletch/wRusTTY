@@ -128,13 +128,13 @@ describe('finding runs', () => {
 })
 
 describe('what breaks a run', () => {
-  it('a change of foreground colour', () => {
+  it('a change of foreground color', () => {
     expect(
       runsOf([{ ch: '=' }, { ch: '>', fg: [255, 0, 0] }]),
     ).toEqual([])
   })
 
-  it('a change of background colour', () => {
+  it('a change of background color', () => {
     expect(runsOf([{ ch: '=' }, { ch: '>', bg: [255, 0, 0] }])).toEqual([])
   })
 

@@ -27,7 +27,7 @@ use tokio::sync::Mutex;
 pub struct Workspace {
     pub id: String,
     pub name: String,
-    /// The frontend's `Tab[]`, already sanitised. Opaque here by design.
+    /// The frontend's `Tab[]`, already sanitized. Opaque here by design.
     pub tabs: serde_json::Value,
 }
 

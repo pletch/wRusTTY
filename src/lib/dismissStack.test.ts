@@ -19,7 +19,7 @@ describe('dismissStack', () => {
     expect(isTopDismissable(panel)).toBe(false)
   })
 
-  /** The case the whole thing exists for: cancelling a confirmation raised
+  /** The case the whole thing exists for: canceling a confirmation raised
    * from a panel must not also close the panel underneath. */
   it('hands the surface below back to the top once the one above leaves', () => {
     const panel = Symbol('panel')

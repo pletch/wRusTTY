@@ -9,7 +9,7 @@
   scripts handle. Those never reach `driver.mts` or `visual.html`.
 
   Input goes through `SendInput`-style `mouse_event`, not synthesized DOM
-  events, because the behaviour worth testing up here is frequently *not* the
+  events, because the behavior worth testing up here is frequently *not* the
   app's. Tauri's drag-region script maximizes the window from a raw `mousedown`
   whose `detail` is 2, and `detail` is a platform click counter — a dispatched
   MouseEvent carries whatever `detail` you put in the init dict and proves

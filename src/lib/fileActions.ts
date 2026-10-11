@@ -123,7 +123,7 @@ export function describeTree(count: {
  * still pointed at the right file, and reported as a success.
  *
  * The backend refuses these too — it owns the authoritative watch list, and this
- * one is seeded from it. Checked here as well so the menu item can be greyed out
+ * one is seeded from it. Checked here as well so the menu item can be grayed out
  * with the reason attached, rather than offered and then rejected.
  */
 export function verdictForMutation(state: { watched: boolean }): TransferVerdict {
@@ -189,7 +189,7 @@ export function safeSuggestedName(remoteName: string): string {
   const scrubbed = Array.from(remoteName)
     .map((c) => (FORBIDDEN.has(c) || c.codePointAt(0)! < 0x20 ? '_' : c))
     .join('')
-  // Trailing dots and spaces are stripped during Windows path normalisation,
+  // Trailing dots and spaces are stripped during Windows path normalization,
   // so a name ending in one is not the name that would get written.
   const cleaned = scrubbed.replace(/[. ]+$/, '')
   if (!cleaned || cleaned === '.' || cleaned === '..') return 'download'

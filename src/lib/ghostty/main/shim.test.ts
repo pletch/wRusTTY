@@ -90,7 +90,7 @@ run('the main shim, against the ABI it replaces', () => {
     return main
   }
 
-  it('recognises which build it is looking at', async () => {
+  it('recognizes which build it is looking at', async () => {
     const main = await loadMain()
     const old = await loadVendored()
     expect(isMainBuild(main.instance)).toBe(true)
@@ -168,7 +168,7 @@ run('the main shim, against the ABI it replaces', () => {
     }).then((v) => expect(v).toBe(0)))
 
   /**
-   * The renumbering, stated as behaviour rather than as a mapping table: main
+   * The renumbering, stated as behavior rather than as a mapping table: main
    * numbers bar=0/block=1 where ours numbers block=0/bar=1, so a shim that
    * passed the value straight through would answer every DECSCUSR with the
    * other shape and never fail a call.
@@ -194,7 +194,7 @@ run('the main shim, against the ABI it replaces', () => {
       return [blinking, wasm.exports.ghostty_render_state_get_cursor_blinking(term)]
     }).then((b) => expect(b).toEqual([1, 0])))
 
-  it('hands back the configured default colours', () =>
+  it('hands back the configured default colors', () =>
     same((wasm, term) => {
       wasm.exports.ghostty_render_state_update(term)
       return [
@@ -208,8 +208,8 @@ run('the main shim, against the ABI it replaces', () => {
    * takes 0 to mean "let the core pick", and a theme with a black background
    * packs as exactly that. Skipping the background's `set` then loses the
    * *foreground* too — the render state answers white while the terminal
-   * insists it holds the configured colour. Every pane on a `#000000` theme
-   * would have drawn its text in the wrong colour, and no test with a
+   * insists it holds the configured color. Every pane on a `#000000` theme
+   * would have drawn its text in the wrong color, and no test with a
    * non-black background could see it.
    */
   it('keeps the configured foreground when the background is left to the core', () =>
@@ -230,7 +230,7 @@ run('the main shim, against the ABI it replaces', () => {
       { scrollbackLimit: 1024 * 1024, fgColor: 0xcccccc, bgColor: 0, cursorColor: 0 },
     ).then((c) => expect(c).toEqual([0xcccccc, 0xcccccc])))
 
-  it('resolves palette colours from the 16 the config carries', () =>
+  it('resolves palette colors from the 16 the config carries', () =>
     same((wasm, term) => {
       // Index 4 is blue in PALETTE_16; a shim that dropped the palette would
       // answer the core's own blue instead, which is a different blue.
@@ -459,7 +459,7 @@ run('the main shim, against the ABI it replaces', () => {
 
 /**
  * Against the shipped binary rather than the comparison build, so these run on
- * CI: they are about a behaviour the app switches on, not parity with v1.3.1,
+ * CI: they are about a behavior the app switches on, not parity with v1.3.1,
  * which has no such switch.
  */
 describe('resize pulling rows back from scrollback', () => {

@@ -39,7 +39,7 @@ body {
      of background color poking out past them — the OS window itself has
      no shape of its own once decorations are off and transparent is on. */
   background: transparent;
-  /* The base text colour, for anything not carrying a `chrome` class of its
+  /* The base text color, for anything not carrying a `chrome` class of its
      own. Keyed to the terminal theme rather than to the OS: as a
      prefers-color-scheme pair it disagreed with every `chrome` class on the
      page whenever the two did not happen to match -- an OS set to light and
@@ -229,7 +229,7 @@ body {
   appearance: none;
   width: 14px;
   height: 14px;
-  /* Centres the thumb on a 4px track: (4 - 14) / 2. */
+  /* Centers the thumb on a 4px track: (4 - 14) / 2. */
   margin-top: -5px;
   border-radius: 9999px;
   background: theme(colors.sky.400);

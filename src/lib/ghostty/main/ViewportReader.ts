@@ -16,7 +16,7 @@
  * two renderers producing similar-looking screens, and it is asserted directly
  * in `ViewportReader.test.ts`.
  *
- * The cost used to be that this could not amortise anything `get_viewport` does
+ * The cost used to be that this could not amortize anything `get_viewport` does
  * in one call — measured (`tools/parse-probes/iter.mjs`) at 1.4x-2.5x of a
  * 0.21 ms worst case, against an 8.3 ms frame, with skipping clean rows going
  * the other way at 0.05x-0.14x. The handles are held across frames here because
@@ -26,7 +26,7 @@
  * row's packed cells as one borrowed run, so the raw value no longer costs a
  * call per cell. On codepoints alone that mode measures **0.1x** of the batched
  * `get_viewport` — but this reader is not codepoint-only, so it keeps the cells
- * iterator for styles, resolved colours and grapheme lengths and banks one
+ * iterator for styles, resolved colors and grapheme lengths and banks one
  * saved call out of the per-cell handful rather than the full 10x.
  *
  * ## What it cannot carry
@@ -67,7 +67,7 @@ const OFF_ATTRS2 = 15
  * Our `width` byte against main's `GhosttyCellWide`.
  *
  * The packed layout uses width as both a display width and a marker: 0 means
- * "no text of its own", which is how every consumer recognises the trailing
+ * "no text of its own", which is how every consumer recognizes the trailing
  * half of a wide glyph. A spacer *head* — the padding cell at the end of a row
  * too narrow for the wide glyph that follows — is likewise not drawn, so it
  * takes 0 as well.
@@ -126,7 +126,7 @@ export class MainViewportReader implements ViewportSource {
   private readonly term: number
   /**
    * Public because the render state answers far more than the cells: the
-   * dimensions, the cursor and the default colours all come off this handle,
+   * dimensions, the cursor and the default colors all come off this handle,
    * and our ABI exposes them as separate `render_state_get_*` calls that the
    * shim has to satisfy from the same snapshot this reader packed.
    */
@@ -163,7 +163,7 @@ export class MainViewportReader implements ViewportSource {
     return this.view
   }
 
-  /** The terminal's own default colours, for cells that carry none. */
+  /** The terminal's own default colors, for cells that carry none. */
   private defaultColors(): { fg: number; bg: number } {
     const { ex } = this
     let fg = 0xffffff
@@ -216,7 +216,7 @@ export class MainViewportReader implements ViewportSource {
 
       // The row's packed cells in one call, instead of one `CELLS_RAW` get per
       // cell. The cells iterator is still advanced in lockstep below because
-      // styles, resolved colours and grapheme lengths are managed data that
+      // styles, resolved colors and grapheme lengths are managed data that
       // only it can reach — this replaces the *raw* fetch, not the iterator.
       //
       // Borrowed and frame-local: valid only until the next `render_state_update`,
@@ -250,7 +250,7 @@ export class MainViewportReader implements ViewportSource {
    * is 0 when the view did not cover it — in which case the raw value is
    * fetched per cell the old way. Reading it from the view is what makes the
    * bulk path worth having; the fallback keeps a short view from reading
-   * neighbouring memory as cell data.
+   * neighboring memory as cell data.
    */
   private packCell(cells: number, at: number, defFg: number, defBg: number, rawAt: number): void {
     const { ex } = this
@@ -267,7 +267,7 @@ export class MainViewportReader implements ViewportSource {
 
     abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_CONTENT_TAG, this.scratch), 'cell_get CONTENT_TAG')
     d = this.dv()
-    // The payload is a union — a codepoint, or a background colour for a cell
+    // The payload is a union — a codepoint, or a background color for a cell
     // with no text. Unpacking it unconditionally turns a blank painted by
     // ED/EL into a control character.
     const hasText = abi.cellHasText(d.getUint32(this.scratch, true))
@@ -277,7 +277,7 @@ export class MainViewportReader implements ViewportSource {
     d = this.dv()
     d.setUint8(at + OFF_WIDTH, WIDTH_FOR_WIDE[d.getUint32(this.scratch, true) & 0x3])
 
-    // A cell with no explicit colour reports INVALID_VALUE and expects the
+    // A cell with no explicit color reports INVALID_VALUE and expects the
     // caller to supply its own default; our ABI resolves that inside the core,
     // so this is where the two representations are reconciled.
     const fgRes = ex.ghostty_render_state_row_cells_get(cells, abi.RS_CELLS_FG_COLOR, this.scratch)
@@ -317,7 +317,7 @@ export class MainViewportReader implements ViewportSource {
      * the empty case.
      *
      * Consumers only ever test this against zero (`readRows` uses it to decide
-     * whether to fetch the cluster), so an off-by-one is invisible in behaviour
+     * whether to fetch the cluster), so an off-by-one is invisible in behavior
      * and shows up only in a byte comparison. It was caught exactly that way.
      */
     const gLen = d.getUint32(this.scratch, true)

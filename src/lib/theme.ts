@@ -266,13 +266,13 @@ export const PRESET_THEMES: TerminalTheme[] = [
   },
 ]
 
-/** Every colour field of a theme, in the order the editor lays them out:
- * the three that are not palette entries, then the eight ANSI colours, then
+/** Every color field of a theme, in the order the editor lays them out:
+ * the three that are not palette entries, then the eight ANSI colors, then
  * their bright halves.
  *
  * Written out rather than taken from `Object.keys` of a preset, for two
  * reasons: a custom theme parsed back out of storage carries whatever key
- * order it happened to be written with, and `name` is not a colour. This is
+ * order it happened to be written with, and `name` is not a color. This is
  * the list both the editor's grid and the loader's validation walk, so a
  * field added to `TerminalTheme` and forgotten here is a field the editor
  * cannot reach — `theme.test.ts` checks the two agree. */
@@ -300,8 +300,8 @@ export const THEME_COLOR_KEYS = [
 
 export type ThemeColorKey = (typeof THEME_COLOR_KEYS)[number]
 
-/** The three colours that are not palette entries, named for what they
- *  paint rather than for their field: nobody choosing a colour thinks of
+/** The three colors that are not palette entries, named for what they
+ *  paint rather than for their field: nobody choosing a color thinks of
  *  the background as "background" and of black as "black" in the same
  *  breath. */
 export const SURFACE_FIELDS: ReadonlyArray<{ label: string; key: ThemeColorKey }> = [
@@ -311,7 +311,7 @@ export const SURFACE_FIELDS: ReadonlyArray<{ label: string; key: ThemeColorKey }
 ]
 
 /**
- * The palette, as the eight colours it actually is, each with its normal and
+ * The palette, as the eight colors it actually is, each with its normal and
  * bright slot side by side.
  *
  * Laid out this way because the alternative -- one flat list of nineteen
@@ -319,7 +319,7 @@ export const SURFACE_FIELDS: ReadonlyArray<{ label: string; key: ThemeColorKey }
  * that it arrives as "Bright ma...", and "Bright bla..." and "Bright blue"
  * are then the same string. Pairing them says which is which by position and
  * leaves the label as one short word. It is also how a palette is actually
- * organised, so the editor stops fighting the thing it is editing.
+ * organized, so the editor stops fighting the thing it is editing.
  */
 export const PALETTE_ROWS: ReadonlyArray<{
   label: string
@@ -375,7 +375,7 @@ export function findTheme(name: string): TerminalTheme {
 
 /** Whether this is a 6-digit `#rrggbb` string — the only form `hexToRgb`
  * reads, and the only form `<input type="color">` emits. Anything else
- * parses to NaN components (see `hexToRgb`), which is a colour no renderer
+ * parses to NaN components (see `hexToRgb`), which is a color no renderer
  * can do anything sensible with, so the loader substitutes rather than
  * passing it on. */
 export function isHexColor(value: unknown): value is string {
@@ -387,7 +387,7 @@ export function isHexColor(value: unknown): value is string {
  *
  * Hand-edited, half-written and version-skewed blobs all arrive here. The
  * rule is per-field, matching how the rest of `loadSettings` treats a bad
- * value: a colour that is not a colour falls back to the default theme's,
+ * value: a color that is not a color falls back to the default theme's,
  * so a user whose file lost one field gets that field reset rather than the
  * theme they built deleted out from under them. Only an entry with no
  * usable name at all is dropped, since a nameless theme is one the picker
@@ -427,7 +427,7 @@ export function uniqueThemeName(name: string, taken: ReadonlySet<string>): strin
 
 /** An editable copy of `theme` under a name nothing else is using — how
  * every custom theme starts, since building one from a palette that already
- * works is a far shorter road than filling in nineteen colours from black. */
+ * works is a far shorter road than filling in nineteen colors from black. */
 export function copyOfTheme(theme: TerminalTheme, existing: readonly TerminalTheme[]): TerminalTheme {
   const taken = new Set([...PRESET_THEMES, ...existing].map((t) => t.name))
   return { ...theme, name: uniqueThemeName(`${theme.name} copy`, taken) }
@@ -474,27 +474,27 @@ const STRIP_OVERLAY_ALPHA = 0.08
  * On a dark theme this puts the strip *lighter* than the terminal rather
  * than darker, which is the arrangement Windows Terminal uses.
  *
- * Returned as an overlay rather than a finished colour so the strip keeps
+ * Returned as an overlay rather than a finished color so the strip keeps
  * compositing over the window the way it always has, and a translucent
  * window stays translucent up here too. */
 export function stripOverlay(theme: TerminalTheme): string {
   return wash(theme, STRIP_OVERLAY_ALPHA)
 }
 
-/** The layer a quiet tab lays over the terminal's colour while the pointer
+/** The layer a quiet tab lays over the terminal's color while the pointer
  * is over it: half the strip's wash, which puts the tab midway between the
  * strip it sits in and the active tab it would become.
  *
  * Half a wash *over the background* rather than any amount over the strip,
  * because washing the strip further only ever moves away from the active
  * tab — on a dark theme that made hovering a tab lighter when the thing it
- * is reaching towards is darker. Painting the background again underneath
+ * is reaching toward is darker. Painting the background again underneath
  * (the caller sets it as the background-color) hides the strip, and this
  * then measures from the same place the active tab does.
  *
- * An image rather than a finished colour so the two can be set as separate
+ * An image rather than a finished color so the two can be set as separate
  * properties. As one `background` shorthand — `linear-gradient(...), <color>`
- * — Chrome keeps the gradient and silently drops the colour, leaving the
+ * — Chrome keeps the gradient and silently drops the color, leaving the
  * wash sitting on the strip after all, which is the bug this is shaped to
  * avoid. A one-stop gradient is how CSS states a flat layer. */
 export function tabHoverWash(theme: TerminalTheme): string {
@@ -502,11 +502,11 @@ export function tabHoverWash(theme: TerminalTheme): string {
   return `linear-gradient(${half}, ${half})`
 }
 
-/** The tab strip's own colour, as a solid hex: the theme's background with
+/** The tab strip's own color, as a solid hex: the theme's background with
  * the strip's wash already laid over it. What an unfocused window's surfaces
  * are painted in — see `effectiveBackgroundLayers` in settings.ts — so that
- * clicking away moves the window towards the lighter strip and inactive tabs
- * rather than towards whatever happens to be behind it. */
+ * clicking away moves the window toward the lighter strip and inactive tabs
+ * rather than toward whatever happens to be behind it. */
 export function stripColor(theme: TerminalTheme): string {
   const tone = backgroundIsDark(theme) ? 255 : 0
   const mix = (c: number) => Math.round(c + (tone - c) * STRIP_OVERLAY_ALPHA)
@@ -557,7 +557,7 @@ export function chromeRgb(theme: TerminalTheme): string {
  * Ten because that is what the hardcoded #1f2028 already was: against
  * wRusTTY Dark's #16171d it is (9, 9, 11) lighter. Deriving it rather than
  * keeping the literal changes nothing on the dark presets -- the default
- * lands within two levels of the colour it replaces -- and is what lets a
+ * lands within two levels of the color it replaces -- and is what lets a
  * light theme get a light dialog instead of a dark one. */
 const SURFACE_LEVELS = 10
 
@@ -589,7 +589,7 @@ export function surfaceRgb(theme: TerminalTheme): string {
 }
 
 /**
- * What to tell the engine the page's own colour scheme is, so the widgets
+ * What to tell the engine the page's own color scheme is, so the widgets
  * this app does not paint itself follow the theme too.
  *
  * A range track, a `<select>` drop-down and a native scrollbar are drawn by

@@ -27,7 +27,7 @@
  * The same rule is what makes the feature safe at a password prompt. Nothing
  * was echoed, so there is nothing between the origin and the cursor, so there
  * is nothing to read and nothing to store — a property of the design rather
- * than a heuristic that has to recognise what a password prompt looks like.
+ * than a heuristic that has to recognize what a password prompt looks like.
  */
 
 import type { RowText } from './ghostty/rowText'

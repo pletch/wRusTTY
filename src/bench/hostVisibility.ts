@@ -33,7 +33,7 @@
 /**
  * Fraction of a host that must be on screen. Deliberately not 1.0: browsers
  * report intersection ratios a hair under it for elements that are wholly
- * visible but sit on a fractional device-pixel boundary, which a maximised
+ * visible but sit on a fractional device-pixel boundary, which a maximized
  * window at a non-integer DPR does routinely. xterm pauses only at ratio 0, so
  * anything in this band is rendering normally.
  */

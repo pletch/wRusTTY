@@ -193,7 +193,7 @@ unchanged.
     way out of its network, not any one host, so it is set once in Settings →
     Session. A saved session can decline it (`useProxy: false`, stored only as
     the opt-out, like `autoReconnect`); the decision is made backend-side in
-    `resolve_profile_config`, where the profile is, so reconnects honour it.
+    `resolve_profile_config`, where the profile is, so reconnects honor it.
   - **It carries the first socket only.** With a jump host the proxy reaches
     the jump host, and the target is reached from its side of the network.
   - **The proxy resolves the name.** SOCKS5 is sent a domain name rather than an
@@ -288,7 +288,7 @@ unchanged.
   disagrees with the host; and **`-CC` is not the only version of itself**, so
   it wants testing against the tmux that ships on the appliances and LTS
   distributions this app's users actually reach, not just a current one.
-- True colour **(shipped)**, wide characters and grapheme clusters **(shipped —
+- True color **(shipped)**, wide characters and grapheme clusters **(shipped —
   the core's, exercised by `readRows.test.ts`)**, cursor styles **(shipped —
   shape and blink, plus DECSCUSR)**.
 - **Font selection — a stack, not a family string (shipped).** `setFont` takes
@@ -328,7 +328,7 @@ unchanged.
     a failed attempt — the transfer lands under `.wrustty-part` and is renamed
     into place only on success.
   - **Directories and multi-file drops** are refused clearly, pending the
-    recursive upload with a cancellable queue they actually need.
+    recursive upload with a cancelable queue they actually need.
   - **The drop is a DOM event, not Tauri's.** This plan previously assumed the
     window-level `onDragDropEvent`; that path is closed here. Tauri's native
     drag-drop intercepts OS drags on WebView2 and thereby breaks the page's own
@@ -357,7 +357,7 @@ unchanged.
     it returns means the bytes never cross IPC in this direction: the backend
     reads the SFTP stream and writes straight to disk. The same is true of the
     upload picker, which is why it is cheaper than the drop it supplements.
-  - **The remote name is sanitised before it is suggested, and refused if it is
+  - **The remote name is sanitized before it is suggested, and refused if it is
     still not a file.** `safeSuggestedName` opens the dialog on something the
     user can accept; the backend independently rejects what it must, because a
     download saved as `NUL` writes to the null device and reports success.
@@ -367,7 +367,7 @@ unchanged.
     Windows retry ladder isn't reinvented at the one step where every byte has
     already crossed the network.
   - **Folders are refused in both directions**, still pending the recursive
-    queue, and the menu item greys out rather than disappearing — a menu whose
+    queue, and the menu item grays out rather than disappearing — a menu whose
     items move between entries is harder to learn than one where they dim.
 - Session logging to file (timestamped, per-session toggle) — network/serial
   engineers rely on this constantly **(shipped)**. Also shipped: a saved
@@ -378,13 +378,13 @@ unchanged.
   log that cannot start is now reported rather than failing silently.
   Automatic logging starts once, at connect, so stopping it from the toolbar
   stays stopped.
-- Named colour themes **(partial — eleven built in, a custom theme editor, an
+- Named color themes **(partial — eleven built in, a custom theme editor, an
   importer for iTerm2 and VS Code schemes, and a per-pane background opacity;
   following the OS light/dark setting is not built)**. One of the eleven is
   **Campbell**, at Microsoft's published values and pinned by a test: it is the
   palette conhost and Windows Terminal ship, so it is what makes a pane here
   look like the PowerShell window beside it, and it is the one preset whose
-  colours are not ours to taste-tune. Custom themes start as a duplicate of
+  colors are not ours to taste-tune. Custom themes start as a duplicate of
   whatever is active — presets are never edited in place, which is what keeps
   Campbell (and the name every stored session refers to) meaning what it says.
   An imported scheme lands as one of those custom themes rather than as a
@@ -410,7 +410,7 @@ unchanged.
   the application's business, not a preference.
   **Application keypad mode works**, and looks like it does not: DECKPAM on its
   own changes nothing because DEC 1035 defaults to on and disables it, so a
-  program has to clear 1035 too. That is xterm's behaviour as well. Once it
+  program has to clear 1035 too. That is xterm's behavior as well. Once it
   does, the keypad sends the SS3 set (`ESC O q`, `ESC O M`, `ESC O k`, …).
   An earlier note in this file's history called the mode unimplemented on the
   strength of `ESC =` alone doing nothing; the tests now pin it both ways so
@@ -499,7 +499,7 @@ unchanged.
   secret come back connected; the rest return as blank panes, and the prompt
   counts them first.
 - **Unfocused window treatment** — while another app has focus the window
-  either fades towards the tab strip's colour (1–10%) or turns see-through
+  either fades toward the tab strip's color (1–10%) or turns see-through
   (`unfocusedStyle`, `unfocusedDimPercent`, `unfocusedOpacityPercent`)
   **(shipped)**
 - Mica/acrylic window material **(shipped — `window_effects.rs`, chosen per the
@@ -593,7 +593,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - Integration tests against a containerized sshd — **not built**, and now
   partly unnecessary: `wr-ssh/tests/keyboard_interactive.rs` stands a `russh`
   *server* up on a loopback port and drives a real handshake against it, with
-  no container and no sshd. That covers the auth path whose behaviour is
+  no container and no sshd. That covers the auth path whose behavior is
   decided by the server (how many rounds, what each asks, which fields are
   secret) and is the pattern to copy for the rest. Every other SSH path is
   still covered by unit tests and by hand. CI (`ci.yml`, `audit.yml`) does run.
@@ -624,7 +624,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
 - Jump host chains **(shipped)**; outbound proxy, HTTP CONNECT and SOCKS5
   **(shipped)**
 - Font settings, paste protection, scrollback search, session logging
-  **(shipped)**; colour-scheme import **(shipped)** — eleven presets, a palette
+  **(shipped)**; color-scheme import **(shipped)** — eleven presets, a palette
   editor for custom themes, and Import… reads an iTerm2 `.itermcolors` or a
   VS Code theme (`4f6dc85`). An imported theme is a custom theme like any
   other; nothing downstream knows where it came from
@@ -642,7 +642,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   lazily on first use and held for the connection's lifetime
   (`get_or_open_sftp` and `get_or_open_transfer_sftp`, both `OnceCell`s). This
   plan flagged the single-channel design as the structural decision to take
-  early, and it was taken: one client serialises everything asked of it, so a
+  early, and it was taken: one client serializes everything asked of it, so a
   download running for a minute would hold up every directory listing behind
   it — the panel would freeze for exactly as long as the transfer it is showing
   progress for. Browsing and editing use the first; anything with a progress bar
@@ -726,7 +726,7 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
   `/etc/nginx`, open the panel to check it arrived, and be looking at
   `/home/dev`. The reported directory already existed in `cwdByPane` for the
   status bar; the panel simply wasn't given it.
-  - Read **once, at mount**. Following it afterwards would yank the listing out
+  - Read **once, at mount**. Following it afterward would yank the listing out
     from under someone who had navigated elsewhere in the panel, every time they
     ran `cd` in the terminal behind it. The panel is somewhere you browse, not a
     mirror of the prompt.
@@ -747,12 +747,12 @@ integration work (PTY stream ↔ xterm.js performance, russh auth flows).
     aimed at does not list — a report is not a promise, and a guess is even
     less of one.
 - **Mutations: rename, delete, new folder.** Rename and delete live in the
-  context menu below a divider, delete last and coloured; new folder is a
+  context menu below a divider, delete last and colored; new folder is a
   toolbar button. Rename and mkdir share one inline text field, committed on
   Enter or blur and left open on failure, since the usual failure is a name
   collision the user fixes by typing. Four rules carry the feature, all of them
   enforced in the backend and mirrored in `lib/fileActions.ts` so the menu can
-  grey an item out with the reason attached rather than offering it and then
+  gray an item out with the reason attached rather than offering it and then
   refusing:
   - **A rename cannot become a move.** `rename_target` builds the destination
     from the *source's* parent plus a name that is rejected if it carries a
@@ -947,7 +947,7 @@ progress UI to put on the other channel anyway.
   `cat largefile` behave. Kept as a watch item because every one of those
   parts is still load-bearing.
 - **russh coverage** — agent auth and ProxyJump are in and working; rekey
-  behaviour under a long-lived session is still the untested corner. Auto-
+  behavior under a long-lived session is still the untested corner. Auto-
   reconnect does not test it and was never going to; what it does is make the
   answer survivable, since a rekey that drops the transport now looks like any
   other drop and comes back.
@@ -1015,9 +1015,9 @@ progress UI to put on the other channel anyway.
     losing the network it was being driven over. `russh` surfaced it as an
     error rather than a clean close, the registry classified it `Lost`, the
     retry run started, and the session came back under the same id with its
-    scrollback intact. So the judgement about `russh` and the OS holds where it
+    scrollback intact. So the judgment about `russh` and the OS holds where it
     was most doubted.
-    - **Telnet and serial are still untested**, and are separate judgements —
+    - **Telnet and serial are still untested**, and are separate judgments —
       a serial adapter being unplugged is a different event reaching a
       different crate. Serial is the easiest of the three to test honestly and
       the best case the feature has.

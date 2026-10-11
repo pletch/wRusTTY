@@ -27,7 +27,7 @@
  * separately as UTF-8 text.
  *
  * `Unidentified` at index 0 is upstream's own name for "no key", and is the
- * value a `code` we don't recognise maps to.
+ * value a `code` we don't recognize maps to.
  */
 export const KEY_CODES: readonly string[] = [
   'Unidentified', 'Backquote', 'Backslash', 'BracketLeft', 'BracketRight', 'Comma', 'Digit0',

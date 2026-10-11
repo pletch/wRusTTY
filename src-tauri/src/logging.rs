@@ -184,7 +184,7 @@ fn timestamp() -> u64 {
 /// The mode goes on the open rather than on the created file: `create` then
 /// `set_permissions` leaves a window, however brief, in which the file exists
 /// at the default umask and another local user can open it. Once they hold the
-/// descriptor, tightening the mode afterwards doesn't take it back. No-op on
+/// descriptor, tightening the mode afterward doesn't take it back. No-op on
 /// Windows, where the per-user %APPDATA% ACL already covers this.
 fn create_private(path: &std::path::Path) -> Result<std::fs::File, String> {
     let mut opts = std::fs::OpenOptions::new();
@@ -238,7 +238,7 @@ pub async fn session_log_start(
     // The mode goes on the open rather than on the created file: `create`
     // then `set_permissions` leaves a window, however brief, in which the
     // transcript exists at the default umask and another local user can open
-    // it. Once they hold the descriptor, tightening the mode afterwards
+    // it. Once they hold the descriptor, tightening the mode afterward
     // doesn't take it back.
     let file = create_private(&path)?;
     let sink = LogSink {

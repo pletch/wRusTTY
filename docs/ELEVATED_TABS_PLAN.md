@@ -107,7 +107,7 @@ never become a general-purpose way to run something as administrator.
 
 ### 2. The host runs one detected shell, for one tab, and then exits
 
-- **It is told what to run when it is launched, not afterwards.** The shell's
+- **It is told what to run when it is launched, not afterward.** The shell's
   *id* (`pwsh`, `cmd`, …) is on the host's command line, fixed at the moment
   the UAC prompt was approved, and the host resolves it through
   `local_shells::detect` itself. Nothing arriving over the pipe can change what
@@ -256,7 +256,7 @@ is the pipe.
   "Elevated" column, since it cannot be automated.
 - **Ordinary local tabs are untouched.** They never go through the host.
 - **A normal second launch still just focuses the running window.** Host mode
-  is recognised by its argument, and only by its argument.
+  is recognized by its argument, and only by its argument.
 - **The host never runs anything but a detected shell** (decision 2), and the
   protocol has no way to ask it to.
 
@@ -302,14 +302,14 @@ usually the Administrators group, which the tab's filtered token holds only as
 deny-only — while granting read to Everyone. So the defaults would have locked
 out the one client the pipe is for and let everyone else read it. The host now
 creates it with `D:P(A;;GA;;;<current user>)S:(ML;;NW;;;ME)`: full access for
-the current user alone, labelled medium with no-write-up.
+the current user alone, labeled medium with no-write-up.
 
 That needed Win32 security APIs inside `wr-local`, so the crate now depends on
 `windows` — pinned to exactly the version `src-tauri` pins, which resolves to
 the same single copy.
 
 **Dropping a `LocalSession` now kills its shell.** `disconnect` already did,
-but an early return or a cancelled task never reaches it. The host relies on
+but an early return or a canceled task never reaches it. The host relies on
 this for "no administrator shell outlives its tab", and it is a better
 invariant for ordinary local tabs too. The existing suite is unaffected.
 
@@ -395,7 +395,7 @@ from an ordinary terminal, UAC prompt approved:
 - its title became `Administrator: C:\WINDOWS\system32\cmd.exe`;
 - `exit` went through, the pane received `[process exited with code 0]`, and
   the run ended with exit code 0;
-- afterwards no elevated `wrustty.exe`, `cmd.exe` or console host was left
+- afterward no elevated `wrustty.exe`, `cmd.exe` or console host was left
   running.
 
 That closes the question left open since Phase 1: the pipe's descriptor

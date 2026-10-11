@@ -17,7 +17,7 @@ zeroize = { version = "1", features = ["derive"] }
 base64 = "0.22"
 # `KeyProvider::kek_for` has to be async: the Windows Hello implementation
 # blocks on a user gesture, and the external-command one blocks on a child
-# process. Neither can be honestly modelled as a sync call.
+# process. Neither can be honestly modeled as a sync call.
 async-trait = "0.1"
 # Used only to stretch an already-high-entropy input (a TPM signature, an
 # external command's output) into a KEK. Low-entropy inputs — i.e. anything

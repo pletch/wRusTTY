@@ -18,8 +18,8 @@ import { PALETTE_16, PALETTE_256, DEFAULT_FG, DEFAULT_BG } from '../../../bench/
 /**
  * `MainScrollbackReader.readRow` against `get_scrollback_line`, byte for byte.
  *
- * The colour cases carry the weight here. Unlike the render iterator, `grid_ref`
- * has no resolved-colour accessor, so this reader flattens colour itself — style
+ * The color cases carry the weight here. Unlike the render iterator, `grid_ref`
+ * has no resolved-color accessor, so this reader flattens color itself — style
  * for foreground, cell content tag ahead of style for background — and that
  * order is invisible on ordinary text. A cleared region is where it shows.
  */
@@ -173,11 +173,11 @@ run('MainScrollbackReader against get_scrollback_line, byte for byte', () => {
   it('matches on direct rgb in scrollback', () =>
     identical('rgb', filler(FILL_ROWS, (s, i) => `\x1b[38;2;${i % 256};20;30m${s}\x1b[0m`)))
 
-  it('matches on background-coloured rows, where the flattening order shows', () =>
+  it('matches on background-colored rows, where the flattening order shows', () =>
     identical('bg', filler(FILL_ROWS, (s, i) => `\x1b[4${(i % 7) + 1}m${s}\x1b[0m`)))
 
-  it('matches on cleared regions, which carry colour on the cell not the style', () => {
-    // EL with a background set paints blanks whose colour lives in the cell's
+  it('matches on cleared regions, which carry color on the cell not the style', () => {
+    // EL with a background set paints blanks whose color lives in the cell's
     // content tag rather than in any style. Taking the style first would read
     // these as default and look entirely reasonable.
     let s = ''
