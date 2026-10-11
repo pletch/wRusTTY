@@ -166,6 +166,23 @@ Download the latest installer — `.exe` (NSIS) or `.msi`, both x64 — from
 **The installers are not code signed, so expect a SmartScreen warning** the
 first time you run one. Click *More info* → *Run anyway*.
 
+**Microsoft Defender has flagged some builds as `Trojan:Win32/Bearfoos`** and
+removed them. That is a machine-learning verdict (the `!ml` at the end of the
+full name), the kind Defender gives new programs that are unsigned and that few
+machines have seen yet. It is a false positive and has been reported to
+Microsoft. If it happens to you:
+
+1. Check that your download is the real one. Each release lists the SHA-256 of
+   its installers in its notes and in an attached `SHA256SUMS.txt`. In
+   PowerShell, `Get-FileHash .\wRusTTY_<version>_x64-setup.exe` should print
+   the same hash.
+2. In **Windows Security → Virus & threat protection → Protection history**,
+   open the wRusTTY detection and choose **Actions → Allow on device**. That
+   restores the file and allows that one detection only.
+
+There's no need to exclude the install folder from scanning, and please don't:
+allowing the single detection is enough.
+
 Windows is the target. The Linux and macOS Tauri paths are not maintained, and
 several features (DirectWrite font enumeration, Windows Hello, PuTTY registry
 import, Mica) are Windows-only by nature.

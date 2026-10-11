@@ -123,6 +123,42 @@ jobs:
             These are **not code signed**, so expect a SmartScreen warning on
             first run: *More info* → *Run anyway*.
           releaseDraft: false
+      # Checksums of the installers exactly as published: downloaded back from
+      # the release rather than hashed from the bundle directory, so they
+      # describe the bytes a user actually gets. Attached as SHA256SUMS.txt
+      # (`sha256sum -c` format, LF endings) and appended to the notes, so the
+      # README's "check your download" has something to check against.
+      - name: Publish SHA-256 checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $repo = $env:GITHUB_REPOSITORY
+          $dir = Join-Path $env:RUNNER_TEMP 'published'
+          gh release download $tag --repo $repo --pattern '*.exe' --pattern '*.msi' --dir $dir
+          if ($LASTEXITCODE -ne 0) { throw "could not download the installers from $tag" }
+          $files = @(Get-ChildItem $dir -File | Sort-Object Name)
+          if ($files.Count -ne 2) { throw "expected 2 installers on $tag, found $($files.Count)" }
+          $sums = $files | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          }
+          $sumsFile = Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt'
+          [IO.File]::WriteAllText($sumsFile, (($sums -join "`n") + "`n"))
+          gh release upload $tag $sumsFile --repo $repo --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'could not attach SHA256SUMS.txt' }
+          $body = (gh release view $tag --repo $repo --json body --jq .body) -join "`n"
+          $fence = '```'
+          $notes = @(
+            $body.TrimEnd(), '', '### SHA-256', '', $fence, ($sums -join "`n"), $fence, '',
+            'To check a download in PowerShell, run `Get-FileHash <file>` and compare the',
+            'hash with the line above. The same list is attached as `SHA256SUMS.txt`.'
+          ) -join "`n"
+          $notesFile = Join-Path $env:RUNNER_TEMP 'notes.md'
+          [IO.File]::WriteAllText($notesFile, $notes + "`n")
+          gh release edit $tag --repo $repo --notes-file $notesFile
+          if ($LASTEXITCODE -ne 0) { throw 'could not update the release notes' }
       - uses: actions/upload-artifact@v7
         with:
           name: wrustty-windows-installer
