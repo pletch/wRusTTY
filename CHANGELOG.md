@@ -11,6 +11,29 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-11
+
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `b1d9492c`. A soft reset
+  (DECSTR), which `tput init` and `tset` send under xterm-256color, now resets
+  the text style, margins and modes it was meant to; it was ignored before.
+  Like a full reset, it also puts the cursor back to the shape set in
+  Settings.
+
+### Fixed
+
+- A program killed while the shell stayed up (a crash, `kill -9`) no longer
+  leaves mouse reporting, the Kitty keyboard protocol or the alternate screen
+  on at the next prompt, where bash read pointer movement as typed text and
+  ignored the keyboard. The pane turns off what the command turned on when
+  the shell's next prompt arrives. Needs shell integration (OSC 133).
+- Narrowing a pane while a full-screen program showed a wide character (CJK,
+  emoji) at the new edge left half of the character behind, and later erases
+  on that row reached past its end.
+- An emoji printed while DEC line drawing was in effect came out blank and
+  shifted the rest of the row.
+
 ## [0.4.0] - 2026-10-02
 
 ### Added
@@ -115,7 +138,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/pletch/wRusTTY/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/pletch/wRusTTY/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pletch/wRusTTY/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pletch/wRusTTY/releases/tag/v0.2.0
