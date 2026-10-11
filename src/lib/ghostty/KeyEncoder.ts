@@ -228,6 +228,30 @@ export class KeyEncoder {
     return this.run()
   }
 
+  /**
+   * What the keyboard is speaking right now, as the bytes Ctrl+A would send:
+   * `^A` under legacy encoding, a CSI sequence under either `modifyOtherKeys`
+   * or the Kitty protocol. Not a value to interpret — two calls that agree mean
+   * the far end left the protocol where it was, and that comparison is all
+   * `sessionModes.leftoverModeReset` asks of it. (Ctrl+Enter, the obvious
+   * probe, does not do: the core's `modifyOtherKeys` leaves keys without text
+   * alone.)
+   */
+  probeProtocol(): string {
+    const { ex } = this
+    ex.ghostty_key_encoder_setopt_from_terminal(this.encoder, this.term)
+    ex.ghostty_key_event_set_action(this.event, KEY_ACTION_PRESS)
+    ex.ghostty_key_event_set_key(this.event, keyFor('KeyA', 'a'))
+    ex.ghostty_key_event_set_mods(this.event, MODS_CTRL)
+    ex.ghostty_key_event_set_consumed_mods(this.event, 0)
+    ex.ghostty_key_event_set_composing(this.event, 0)
+    new Uint8Array(ex.memory.buffer, this.utf8Buf, 1)[0] = 0x61
+    ex.ghostty_key_event_set_utf8(this.event, this.utf8Buf, 1)
+    ex.ghostty_key_event_set_unshifted_codepoint(this.event, 0x61)
+    const out = this.run()
+    return out ? String.fromCharCode(...out) : ''
+  }
+
   /** `encode`, then the buffer dance the C API asks for. */
   private run(): Uint8Array | null {
     const { ex } = this

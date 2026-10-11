@@ -2,6 +2,7 @@ import type { PathFlavor } from './pathDetect'
 import type { CursorStyleSetting, TextBlending } from './settings'
 import type { FontSelection } from './fontStack'
 import type { RowText } from './ghostty/rowText'
+import type { ModeSnapshot } from './ghostty/sessionModes'
 
 /**
  * Structurally identical to xterm's `IDisposable`, declared here rather than
@@ -60,6 +61,16 @@ export interface TerminalEngine {
    * leaves the modes as they are.
    */
   resetSessionModes?(): void
+  /**
+   * The same cleanup for a program that died with the connection still up:
+   * `captureModes` when the shell starts a command, `resetLeftoverModes` with
+   * what it returned when the shell's next prompt arrives, from inside the
+   * OSC 133 handler that saw it. Only what the command turned on and left on
+   * is turned off — see `sessionModes.leftoverModeReset`. Optional, like the
+   * above; the snapshot is opaque to callers.
+   */
+  captureModes?(): ModeSnapshot | null
+  resetLeftoverModes?(before: ModeSnapshot): void
   paste(text: string): void
   /**
    * Whether `paste` can be called without asking the user first, or null when

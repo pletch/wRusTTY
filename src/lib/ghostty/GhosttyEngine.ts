@@ -54,7 +54,13 @@ import {
 import { GhosttyInputHandler } from './GhosttyInputHandler'
 import { KeyEncoder } from './KeyEncoder'
 import { NativeSearchController } from './NativeSearchController'
-import { sessionModeReset } from './sessionModes'
+import {
+  LEAVE_ALT_SCREEN,
+  SNAPSHOT_MODES,
+  leftoverModeReset,
+  sessionModeReset,
+  type ModeSnapshot,
+} from './sessionModes'
 // A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
 // still carry (#176, `ESC k`). It speaks main's API rather than the one
 // `wasmBindings.ts` declares — `instantiateGhosttyModule` recognises that from
@@ -2078,6 +2084,35 @@ export class GhosttyEngine implements TerminalEngine {
     if (!this.wasm || !this.termPtr) return
     const onAlt = this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
     this.write(sessionModeReset(onAlt))
+  }
+
+  captureModes(): ModeSnapshot | null {
+    if (!this.wasm || !this.termPtr || !this.keyEncoder) return null
+    const ex = this.wasm.exports
+    return {
+      alt: ex.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0,
+      modes: new Map(SNAPSHOT_MODES.map((m) => [m, ex.ghostty_terminal_get_mode(this.termPtr, m, 0) !== 0])),
+      keyboard: this.keyEncoder.probeProtocol(),
+    }
+  }
+
+  /**
+   * Called from inside an OSC handler, mid-chunk, so the reset goes straight to
+   * the parser: through `write` it would be scanned with the chunk's
+   * carried-over bytes and clobber them.
+   */
+  resetLeftoverModes(before: ModeSnapshot): void {
+    let now = this.captureModes()
+    if (!now) return
+    if (now.alt && !before.alt) {
+      this.parseSegment(this.oscEncoder.encode(LEAVE_ALT_SCREEN))
+      now = this.captureModes()
+      if (!now) return
+    }
+    const seq = leftoverModeReset(before, now)
+    if (seq) this.parseSegment(this.oscEncoder.encode(seq))
+    this.needsRedraw = true
+    this.notifyBufferChange()
   }
 
   /**

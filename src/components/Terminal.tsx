@@ -3,6 +3,7 @@ import { SCROLLBAR_GUTTER_PX, type TerminalEngine } from '../lib/terminalEngine'
 import { buildFontSelection } from '../lib/fontStack'
 import type { SessionProfile } from '../lib/profiles'
 import { GhosttyEngine } from '../lib/ghostty/GhosttyEngine'
+import type { ModeSnapshot } from '../lib/ghostty/sessionModes'
 import {
   Search,
   ChevronUp,
@@ -1493,6 +1494,9 @@ export function Terminal({
       }).catch(() => {})
     }
 
+    /** What the core looked like when the command now running started — see
+     *  the `C` case below. */
+    let modesAtCommandStart: ModeSnapshot | null = null
     const oscListeners = [133, 633].map((ident) =>
       term.registerOscHandler(ident, (data) => {
         // A prompt being drawn, or a command reporting its exit, means the
@@ -1505,6 +1509,17 @@ export function Terminal({
         // the shell's signal to own, only the moment that invalidates it.
         const kind = data.split(';')[0]
         if (kind === 'A' || kind === 'D') progressTracker.set(null)
+        // The same proof covers the modes it set. A program killed outright
+        // leaves mouse reporting or the Kitty protocol on, and bash then reads
+        // pointer movement as typed text and ignores the keyboard — what a
+        // dropped link does, with the link still up. Taken at the first `C`
+        // only, since some shells repeat it per pipeline segment and a later
+        // one would count the first segment's modes as the shell's.
+        if (kind === 'C') modesAtCommandStart ??= term.captureModes?.() ?? null
+        else if ((kind === 'A' || kind === 'D') && modesAtCommandStart) {
+          term.resetLeftoverModes?.(modesAtCommandStart)
+          modesAtCommandStart = null
+        }
         // `P;Cwd=` rides in on the same sequence. Read here rather than in
         // `CommandTracker` because it is not part of what the shell is
         // *doing* — it is the same fact OSC 7 carries, arriving by another
@@ -1642,6 +1657,7 @@ export function Terminal({
             // screen — and so a reconnect's new shell isn't handed the mouse
             // and keyboard modes that program never got to turn off.
             term.resetSessionModes?.()
+            modesAtCommandStart = null
             term.writeln(`\r\n[${event.status}]`)
             // Whatever was running went down with the connection. Its real
             // outcome is unknowable from here, so drop it silently rather
