@@ -6,7 +6,7 @@
  * imports from there or is imported by it, so the two can coexist until the
  * read path moves over.
  *
- * Pinned to ghostty-org/ghostty @ f523504ea5c9f41d150d1eb93cc7a748b90f9361.
+ * Pinned to ghostty-org/ghostty @ b1d9492cfa5d0d22c534a00e81bea623957113e7.
  * Every value below is transcribed from that commit's headers and exercised
  * against that commit's binary by `main/abi.parity.test.ts`, and the struct
  * layouts are checked against the binary itself by `main/abi.manifest.test.ts`.
@@ -587,6 +587,18 @@ export const T_OPT_RESIZE_PULL_SCROLLBACK = 40
  * `T_OPT_WRITE_PTY`.
  */
 export const T_OPT_RENDER_HOLD = 41
+
+/**
+ * Answer DECRQCRA (`CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y`) with a checksum of a
+ * screen rectangle. `bool*`, off by default. **Leave it off**, for the same
+ * reason as `T_OPT_TITLE_REPORT`: a program can checksum one cell at a time
+ * and read back everything on screen, including other programs' output, and
+ * on an SSH pane that program is on someone else's machine. Like that one,
+ * this exists to document why it is never set; `effects.test.ts` asserts the
+ * query goes unanswered with the reply callback installed. Upstream
+ * `9272a2f7c`, `7e2d1793d`.
+ */
+export const T_OPT_XT_CHECKSUM_REPORT = 44
 
 /**
  * Sets a mode, taking a `GhosttyTerminalModeConfig*` (see `MODE_CONFIG_*`).

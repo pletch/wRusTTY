@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ f523504ea5c9f41d150d1eb93cc7a748b90f9361
+ghostty-org/ghostty @ b1d9492cfa5d0d22c534a00e81bea623957113e7
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,12 +34,76 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, **190 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, **190 here** — so re-pin only with a reason and re-run
 the checks when you do. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca` and `ghostty_osc_set` at `f9e82709`.
 
-### Moving from `f9e82709` (2026-09-29) to this pin
+### Moving from `f523504e` (2026-10-02) to this pin
+
+89 commits over nine days, a clean fast-forward and **no ABI break**: the
+headers only add (program status, CSI 8 t window-resize reports, the
+DECRQCRA checksum switches, `SIZE_REPORT_CSI_19_T`), no enum value moved,
+and no export was added or removed, so the count holds at 190. The
+allocator header's alignment change is documentation (it was always a bit
+count) and we pass the default allocator everywhere.
+
+Taken for three core changes, all reachable from ordinary remote output:
+
+- **`e6db5b633`** — narrowing without reflow cleared only the columns past
+  the new edge, so a cut two-column character left its first half in the
+  new last column with nothing after it. Confirmed on the previous binary on
+  the alternate screen (which never reflows) and with wraparound off. Upstream
+  reports that erases and inserts on that row then reach past its end, a panic
+  in a debug build; ours is ReleaseFast, so that is an unchecked read and
+  write instead. A full-screen program showing CJK or emoji while a split is
+  narrowed is all it takes.
+- **`f473f3109`** — DECSTR (`CSI ! p`, soft reset) was ignored, and
+  xterm-256color's `is2` and `rs2` both open with it, so `tput init` and
+  `tset` left the pen, margins and modes behind. It resets what xterm's soft
+  reset does, which includes the cursor style: back to the *configured*
+  default, as for RIS. `newExports.test.ts` had a case asserting DECSTR left
+  the cursor alone, written while the core ignored it and never checked
+  against an implementation; it now asserts the xterm behaviour.
+- **`6220a3617`** — with a set like DEC line drawing designated, anything
+  above 0xFF printed as a space, and with the emoji's width kept the rest of
+  the row shifted a column.
+
+`softResetAndWideCut.test.ts` pins all three against the shipped binary;
+all five of its cases fail on the previous one with the answers above.
+
+Also in, smaller: Ctrl+Alt+Shift+Backspace in the legacy key encoding sent a
+bare DEL (`e55c687a4`); buttons 8 and 9 in 1005 mouse reports were invalid
+UTF-8 (`157c44f64`); a single shift followed by a combining mark stayed
+armed (`c706451fe`); clusters widening at the right edge under mode 2027 lost
+their codepoints on wrap (`b10ba7ea2`, `6dae79db9`); and `CSI 19 t` is
+answered (`6104c78f1`).
+
+**Never to be enabled:** `T_OPT_XT_CHECKSUM_REPORT`. DECRQCRA checksums a
+screen rectangle, so a program can read the screen back a cell at a time.
+Upstream defaults it off; `abi.ts` documents it beside `T_OPT_TITLE_REPORT`
+and `effects.test.ts` asserts the query goes unanswered, with a query shape
+confirmed to produce a checksum when the option is on.
+
+Inert here: the selection, copy and formatter fixes (`8d8b1ce00`,
+`13b5ab204`, `23c7a3e5a` — selection and copy are our own JS), prompt-based
+viewport scrolling (`9fa2e3aaf` — we keep our own viewport), CSI 8 t window
+resize (opt-in, and it should stay off), tmux, and kitty PNG decoding.
+
+Worth having later, not taken: OSC 7501, the program status protocol
+(`bae2c3cdb`, `b7207b2ef`): idle, working, done, blocked (on a permission,
+question or authentication) or error, per id. A natural fit for tab badges;
+the spec is new and its adoption unknown. It is also the bulk of the size
+growth below, compiled in whether we use it or not, as the clipboard
+protocol was.
+
+The binary grew **34,610 bytes** (1,146,828 -> 1,181,438), against 8-9 kB
+for the last two. Net code grew 27 kB; the OSC 7501 parser and its
+trampoline are about 11 kB of that, and the rest is spread across the
+stream handler's instantiations. `scrollbackLimit.test.ts` passes unchanged
+and both parse probes sit inside the ranges quoted above.
+
+### Moving from `f9e82709` (2026-09-29) to `f523504e`
 
 51 commits over six days, a clean fast-forward and **no ABI break**. Two
 dozen are macOS, GTK and vouch-list traffic. The headers only add: semantic
@@ -410,7 +474,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout f523504ea5c9f41d150d1eb93cc7a748b90f9361
+cd ghostty && git checkout b1d9492cfa5d0d22c534a00e81bea623957113e7
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
 # -> zig-out/bin/ghostty-vt.wasm

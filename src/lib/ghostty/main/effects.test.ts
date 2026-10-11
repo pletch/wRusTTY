@@ -62,6 +62,20 @@ run('query responses via OPT_WRITE_PTY', () => {
     effects.dispose()
   })
 
+  it('does not checksum the screen for DECRQCRA, even with the callback installed', () => {
+    // DECRQCRA, upstream 9272a2f7c: a checksum of a screen rectangle, which a
+    // program can take one cell at a time to read the whole screen back. Off
+    // unless `T_OPT_XT_CHECKSUM_REPORT` is set, and we never set it — so this
+    // fails if a future pin flips the default or someone opts in.
+    const { ex, term, write } = boot()
+    const effects = new MainEffects({ ex, term })
+    write('secret')
+    effects.takeResponses()
+    write('[1;1;1;1;1;6*y')
+    expect(decode(effects.takeResponses())).toEqual([])
+    effects.dispose()
+  })
+
   it('does not echo the window title back for CSI 21 t, even with the callback installed', () => {
     // The security property from upstream `38e891e6c`. Registering WRITE_PTY
     // used to be enough to make the terminal answer title queries, so a remote

@@ -241,13 +241,17 @@ describe('the cursor a reset returns to', () => {
     expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
   })
 
-  it('is not disturbed by a soft reset, which keeps the cursor as it is', () => {
-    // DECSTR does not touch the cursor style, so it must not behave like a RIS:
-    // the application's bar survives it, rather than falling back to the
-    // configured underline.
+  it('is restored by a soft reset too, as xterm does', () => {
+    // DECSTR was ignored outright until upstream f473f3109, and this case
+    // used to assert that the application's bar survived it — an assumption
+    // nothing had checked. The core now resets what xterm's soft reset does,
+    // beyond the VT510 list, and the cursor style is part of that. What it
+    // returns to is the *configured* default, the same as for RIS: the
+    // preference holds, the application's bar does not.
     const ptr = configured(CURSOR_STYLE_UNDERLINE, false)
     write(ptr, cursorStyleSequence('bar', true))
     write(ptr, '[!p')
-    expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
+    expect(shape(ptr)).toBe(CURSOR_STYLE_UNDERLINE)
+    expect(blinking(ptr)).toBe(false)
   })
 })
