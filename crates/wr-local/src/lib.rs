@@ -2,16 +2,12 @@
 //! pseudoconsole (ConPTY), behind the same `Connector`/`Session` contract
 //! every remote transport implements.
 //!
-//! The shape differs from `wr-ssh`, `wr-telnet` and `wr-serial` in two ways
-//! worth knowing before reading `session.rs`:
+//! Two differences from the other transports:
 //!
-//! - `resize` is real work here. Telnet sends NAWS and serial's is a
-//!   documented no-op; this one calls `ResizePseudoConsole`, and getting it
-//!   wrong is immediately visible because every full-screen program repaints
-//!   against the size it reads back.
-//! - The session ends *by itself*. Every other transport ends because
-//!   something external went away; here the child exits, and its exit code is
-//!   information the user wants rather than noise to swallow.
+//! - `resize` is real work: `ResizePseudoConsole`, which every full-screen
+//!   program reads back.
+//! - The session ends by itself when the child exits, and its exit code
+//!   matters to the user.
 //!
 //! See `docs/LOCAL_SHELL_PLAN.md` for the decisions this crate is built to.
 

@@ -2,15 +2,12 @@ import { invoke } from '@tauri-apps/api/core'
 import type { Tab } from '../types'
 import { sanitizeTabs, countUnsaveable } from './sessionSnapshot'
 
-/** Serial is deliberately excluded from workspaces: a saved arrangement is
- * reopened days or weeks later, and a USB adapter moved to another socket
- * has by then silently become a different COM number pointing at whatever
- * else is plugged in. Serial stays ad-hoc. */
+/** Serial panes are excluded from workspaces: reopened later, a moved USB
+ * adapter may have a different COM number. */
 const WORKSPACE_SANITIZE = { allowSerial: false } as const
 
-/** A named set of tabs and their pane arrangement. `tabs` is the same shape
- * the app already persists for launch restore — the Rust side stores it
- * opaquely and never inspects it. */
+/** A named set of tabs and pane arrangement, in the launch-restore shape;
+ * Rust stores it opaquely. */
 export interface Workspace {
   id: string
   name: string
@@ -29,30 +26,26 @@ export function deleteWorkspace(id: string) {
   return invoke<void>('delete_workspace', { id })
 }
 
-/** Everything a workspace can safely carry: saved SSH sessions and telnet
- * endpoints. Panes using a password typed at connect time are dropped — that
- * secret was never persisted anywhere and never will be. */
+/** Everything a workspace can safely carry. Panes using a password typed at
+ * connect are dropped; that secret was never persisted. */
 export function captureTabs(tabs: Tab[]): Tab[] {
   return sanitizeTabs(tabs, WORKSPACE_SANITIZE)
 }
 
-/** How many open panes a capture would drop, so the user is told before
- * saving rather than discovering it on reopen. */
+/** How many panes a capture would drop, so the user is told before saving. */
 export function countDropped(tabs: Tab[]): number {
   return countUnsaveable(tabs, WORKSPACE_SANITIZE)
 }
 
-/** The workspace `name` would collide with, if any. Matched the way the Rust
- * side matches (trimmed, case-insensitive) so the UI can offer to replace it
- * rather than let the save come back as an "already exists" error. */
+/** The workspace `name` would collide with, matched as Rust does (trimmed,
+ * case-insensitive), so the UI can offer to replace it. */
 export function findByName(saved: Workspace[], name: string): Workspace | undefined {
   const key = name.trim().toLowerCase()
   return key ? saved.find((w) => w.name.trim().toLowerCase() === key) : undefined
 }
 
-/** First unused "Workspace N", for when the name field is left blank.
- * Counting the list wouldn't do: delete one and the count walks back onto a
- * name that's still taken, which is now a hard error rather than a duplicate. */
+/** First unused "Workspace N" for a blank name; counting the list could land
+ * on a name still taken after a delete. */
 export function defaultName(saved: Workspace[]): string {
   for (let n = saved.length + 1; ; n++) {
     const candidate = `Workspace ${n}`

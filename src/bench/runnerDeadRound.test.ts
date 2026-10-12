@@ -3,14 +3,10 @@ import { resultsToMarkdown, roundIsDead, type EngineResult, type WorkloadResult 
 import { summarize } from './stats'
 
 /**
- * A flood round that parses nothing still completes, still reports a duration,
- * and — being milliseconds long — still looks like the best result in the set.
- * That is how a ~3x-too-fast Ghostty figure survived in the exported findings:
- * two of three rounds died and were averaged in as though they were real.
- *
- * These pin the reporting half of the guard. The detection half (`roundIsDead`)
- * runs inside `measureBlock`, which needs a live rAF loop and a real engine, so
- * it is exercised by the harness rather than here.
+ * A flood round that parses nothing still completes in milliseconds and
+ * looks like the best result. These pin the reporting half of the guard; the
+ * detection half (`roundIsDead`, inside `measureBlock`) needs a live rAF loop
+ * and engine, so the harness exercises it.
  */
 
 function engineResult(name: string, over: Partial<EngineResult> = {}): EngineResult {

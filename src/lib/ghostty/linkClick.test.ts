@@ -3,17 +3,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Link } from './LinkController'
 
 /**
- * Activating a link, through the engine's real mouse handlers.
- *
- * The same shape as `selectionDrag.test.ts`, and for the same reason: what is
- * worth pinning here is not any one handler but the order they resolve in.
- * Ctrl+click has to outrank mouse reporting, leave shift's two existing
- * meanings alone, and not fire on the press — a drag that begins on a link
- * must not open a browser.
- *
- * Detection itself is stubbed out. `urlDetect` and `LinkController` have their
- * own tests; what reaches here is "there is a link on row 0, columns 4-9",
- * which is all these handlers know.
+ * Activating a link through the engine's real mouse handlers, pinning the
+ * order they resolve in: Ctrl+click outranks mouse reporting, leaves shift's
+ * meanings alone, and doesn't fire on the press (a drag starting on a link
+ * mustn't open a browser). Detection is stubbed to "a link on row 0, columns
+ * 4-9".
  */
 
 const CELL = { width: 10, height: 20 }
@@ -207,15 +201,13 @@ describe('activating a link while a program has the mouse', () => {
     down(6, 0, { ctrlKey: true })
     up(6, 0, { ctrlKey: true })
     expect(opened).toEqual([URL])
-    // The program sees neither half of the click. Not just the press: a
-    // release reported for a press that never arrived would leave it tracking
-    // a button it was never told about.
+    // The program sees neither half: a lone release would leave it tracking a
+    // button it never saw pressed.
     expect(sent).toEqual([])
     engine.unmount()
   })
 
-  /** The regression this whole design is chosen to avoid: shift keeps both of
-   *  its meanings, on a link as much as anywhere else. */
+  /** Shift keeps both its meanings over a link too. */
   it('leaves shift-to-select untouched over a link', async () => {
     const { engine, opened, selection, down, drag } = await mounted({ mouseTracking: true })
     down(6, 0, { shiftKey: true })
@@ -290,8 +282,8 @@ describe('hover feedback', () => {
     engine.unmount()
   })
 
-  /** And pressing it is the other half: the pointer is already resting on the
-   *  link, and nothing else will fire until it moves. */
+  /** Pressing the modifier with the pointer already resting on a link picks
+   *  it up without a move. */
   it('picks it up when the modifier is pressed without the mouse moving', async () => {
     const { engine, move, key, highlight } = await mounted()
     move(6, 0)

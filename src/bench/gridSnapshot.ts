@@ -1,19 +1,11 @@
 /**
- * Feeds a byte stream through each engine with no DOM/WebGL involved at all,
- * and reads back what ended up on screen — grid *state*, not pixels. Per the
- * plan this is what actually regresses: not "do the two engines draw
- * identical pixels" (out of scope — see WebGLRenderer, untested on purpose)
- * but "do they agree about what the terminal contains" after the same bytes.
+ * Feeds a byte stream through each engine without DOM or WebGL and reads back
+ * grid state, not pixels: whether the engines agree about what the terminal
+ * contains. Ghostty's `ghostty_render_state_*` queries and xterm.js's buffer
+ * both work without a canvas.
  *
- * Ghostty's WASM core exposes render-state queries independent of
- * WebGLRenderer (`ghostty_render_state_*`), and xterm.js's buffer is usable
- * without ever calling `open()` — so both sides run with no canvas, no GL
- * context, and no jsdom.
- *
- * A snapshot covers glyphs, layout, cursor, **per-cell colors and text
- * attributes**. The colors are only meaningful because both engines are
- * pinned to one palette first — see gridPalette.ts for why that is a
- * precondition rather than a convenience.
+ * Snapshots cover glyphs, layout, cursor, per-cell colors and attributes;
+ * colors compare because both engines share one palette (gridPalette.ts).
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

@@ -1,18 +1,11 @@
 //! Reaching an SSH server through an outbound proxy: HTTP `CONNECT` or SOCKS5.
+//! The client side, unlike `socks.rs` (a dynamic forward's server side). Once
+//! the proxy agrees, the socket is a plain pipe and russh handshakes over it
+//! (`client::connect_stream`).
 //!
-//! Not to be confused with `socks.rs`, which is the *server* side of a dynamic
-//! port forward. This is the client side, for a machine that can only get out
-//! through a corporate proxy.
-//!
-//! Both protocols end the same way: once the proxy has agreed, the socket is a
-//! plain byte pipe to the target, and russh runs its handshake over it exactly
-//! as it would over a direct connection (`client::connect_stream`).
-//!
-//! **No proxy authentication.** A corporate HTTP proxy that wants credentials
-//! almost always wants NTLM or Kerberos rather than Basic, which a username and
-//! password field would not satisfy, and storing one would put a second secret
-//! outside the vault. A proxy that demands it is reported as such, rather than
-//! as a generic refusal that sends someone hunting for a wrong host name.
+//! **No proxy authentication.** Corporate proxies wanting credentials usually
+//! want NTLM or Kerberos, not Basic, and storing one would put a secret
+//! outside the vault. A proxy demanding it is reported as such.
 
 use std::net::IpAddr;
 use std::time::Duration;

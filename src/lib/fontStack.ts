@@ -7,34 +7,18 @@ import {
 } from './bundledFonts'
 
 /**
- * Turning the font settings into the four family strings the atlas rasterizes
- * with, plus the range table it consults before them.
+ * Turns the font settings into the four family strings the atlas rasterizes
+ * with, plus the codepoint range table it checks first.
  *
- * The interesting part is `fontFeatures`. Canvas 2D has no API for OpenType
- * feature tags — `fontVariantCaps` and `letterSpacing` exist, arbitrary tags
- * do not — so stylistic sets, character variants and slashed zeros look closed
- * off. They are not: `font-feature-settings` is a valid `@font-face`
- * *descriptor*, and Canvas resolves its font shorthand against document fonts.
- * Declare a face with the features baked in, hand the atlas its generated
- * name, and the features come through `fillText`.
+ * Canvas 2D has no API for OpenType feature tags, but `font-feature-settings`
+ * and `font-variation-settings` are valid `@font-face` descriptors, and Canvas
+ * resolves its font shorthand against document fonts. So a face is declared
+ * with the features baked in and the atlas is handed its generated name.
  *
- * `font-variation-settings` is a descriptor by the same rule, so the width,
- * slant and optical-size axes of a variable font arrive the same way. Weight
- * is an axis too, and has its own setting only because the terminal has to
- * know it: the cell is measured at the weight the body text is drawn in.
- *
- * That was measured rather than assumed, and so were its two edges:
- *
- * - **Bold survives the wrapper.** A face declared `font-weight: 1 1000` and
- *   asked for bold renders pixel-identical to the family's own bold, with the
- *   features applied. So the body font can be wrapped once and cover both.
- * - **Italic does not.** Asking a wrapped face for italic renders the upright
- *   glyph when the wrapper declares `font-style: italic`, and something other
- *   than the family's real italic when it does not. So an *unset* italic slot
- *   is left unwrapped: it keeps rendering exactly as it always did, and the
- *   features simply do not reach it. Naming an italic face explicitly is what
- *   fixes that, because then the slot is a family we can wrap in its own
- *   right and ask for upright — no synthesis involved.
+ * Measured edges: bold survives the wrapper (a face declared
+ * `font-weight: 1 1000` renders the family's real bold), italic doesn't. So an
+ * unset italic slot is left unwrapped (no features, but the real italic); a
+ * named italic face is wrapped in its own right.
  */
 
 /** What the atlas needs to pick a face for a given style and codepoint. */
@@ -44,34 +28,27 @@ export interface FontSelection {
   italic: string
   boldItalic: string
   /**
-   * Whether each styled slot names a face directly. When it does, the CSS
-   * weight/slant keyword must *not* also be emitted — asking a face that is
-   * already italic for italic is what gets you a double slant, or an upright.
+   * Whether each styled slot names a face directly. Then the CSS weight/slant
+   * keyword must not also be emitted (double slant, or upright).
    */
   boldIsFace: boolean
   italicIsFace: boolean
   boldItalicIsFace: boolean
   /**
-   * Whether bold-italic text still needs CSS to embolden it — true when the
-   * bold-italic slot is an italic *face* being borrowed for it, which supplies
-   * the slant and nothing else.
-   *
-   * Stated rather than inferred from the two families being equal: naming the
-   * same face in both slots is a thing someone can do, and it would look
-   * exactly like the borrowed case while meaning the opposite.
+   * Whether bold-italic text still needs CSS to embolden it: true when the slot
+   * borrows the italic face. Stated explicitly, since naming the same face in
+   * both slots looks identical but means the opposite.
    */
   boldItalicNeedsWeight: boolean
-  /** Sorted and non-overlapping, which is what `resolveRangeOverlaps` is for;
-   *  `familyForCodepoint` is a binary search and means nothing otherwise. */
+  /** Sorted and non-overlapping (see `resolveRangeOverlaps`) for
+   *  `familyForCodepoint`'s binary search. */
   ranges: ReadonlyArray<FontRange>
-  /** CSS numeric weights for ordinary and for bold text. Emitted in the font
-   *  shorthand unless the slot already names a face of that weight. */
+  /** CSS numeric weights for regular and bold text, emitted unless the slot
+   *  already names a face of that weight. */
   weight: number
   boldWeight: number
   /** Cell height as a multiple of the font size, and pixels added to the cell
-   *  width. Not face selection, but they arrive by the same route and rebuild
-   *  the same renderer, so they ride along rather than being a second argument
-   *  every caller has to thread. */
+   *  width; they rebuild the same renderer, so they ride along. */
   lineHeight: number
   letterSpacing: number
 }
@@ -92,25 +69,16 @@ export interface FontSettings {
 }
 
 /**
- * Generated faces, keyed by the family and feature string they were built
- * from. Registration is a document-level side effect and the faces are
- * immutable once added, so this is deliberately module scope rather than
- * per-pane: eight broadcast panes on the same font register one face, not
- * eight.
+ * Generated faces, keyed by family, features and axes. Module scope, since
+ * registration is document-wide: panes on the same font share one face.
  */
 const registered = new Map<string, string>()
 let counter = 0
 
 /**
- * Declares `family` again under a generated name, with `features` and `axes`
- * applied.
- *
- * `font-weight: 1 1000` is what keeps real bold reachable through the wrapper.
- * `font-style: normal` is deliberate and load-bearing: it says this face is
- * upright, so the caller must ask for upright and pick an italic *face* when
- * it wants slant, rather than asking this one to lean. A variable font with a
- * `slnt` axis is the exception that proves it: leaning it through the axis is
- * setting a descriptor, not asking a face to synthesize anything.
+ * Declares `family` again under a generated name with `features` and `axes`.
+ * `font-weight: 1 1000` keeps real bold reachable; `font-style: normal` means
+ * italic must come from an italic face, not from this one leaning.
  */
 function faceWithDescriptors(family: string, features: string, axes: string): string {
   const key = `${family}\u0000${features}\u0000${axes}`
@@ -119,26 +87,15 @@ function faceWithDescriptors(family: string, features: string, axes: string): st
 
   const name = `wrustty-feat-${counter++}`
   try {
-    // Only the descriptors that were asked for: an empty string is not the
-    // same as absent to every implementation, and there is no reason to find
-    // out which ones disagree.
+    // Only the descriptors asked for; empty isn't treated as absent everywhere.
     const descriptors: FontFaceDescriptors = { weight: '1 1000', style: 'normal' }
     if (features) descriptors.featureSettings = features
-    // Not in the DOM typings yet, though it has been a descriptor since CSS
-    // Fonts 4 and the browsers this runs on take it.
+    // Not in the DOM typings yet, but supported.
     if (axes) (descriptors as { variationSettings?: string }).variationSettings = axes
 
-    // A bundled family cannot be reached with `local()` — it was never
-    // installed — so the wrapper points at the same files `bundledFonts.ts`
-    // registered the plain family from, and declares each of them at the
-    // weight it actually covers. `url()` names a single file, so the axis a
-    // `local()` wrapper can leave wide open is only as wide as what is
-    // shipped: one entry per weight for a static family, and the real axis
-    // for a variable one.
-    //
-    // Uprights only, for the reason the note at the top of this file gives:
-    // this face declares itself upright, and an italic slot is expected to
-    // name a face of its own rather than ask this one to lean.
+    // A bundled family isn't installed, so `local()` can't reach it; point at
+    // its shipped files instead, one entry per weight (or the real axis for a
+    // variable font). Uprights only, as above.
     const bundled = (bundledFaces(family) ?? []).filter((f) => f.style === 'normal')
     const sources = bundled.length
       ? bundled.map((f) => ({ src: `url(${JSON.stringify(f.url)})`, weight: weightDescriptor(f) }))
@@ -146,29 +103,22 @@ function faceWithDescriptors(family: string, features: string, axes: string): st
 
     for (const source of sources) {
       const face = new FontFace(name, source.src, { ...descriptors, weight: source.weight })
-      // Added before it resolves: `load()` is a promise, the atlas rasterizes
-      // synchronously, and a face that is still loading falls back for a frame
-      // rather than failing. The engine redraws on the next write anyway.
+      // Added before it loads: the atlas rasterizes synchronously, so a loading
+      // face falls back for a frame and the next write redraws.
       void face.load().then(
         (loaded) => document.fonts.add(loaded),
         () => {
-          // A family the machine does not have. The generated name then
-          // resolves to nothing, so fall back to naming the family directly —
-          // features lost, glyphs correct, which is the right way round. For a
-          // bundled family that fallback is the plainly registered face, so
-          // the glyphs are still the shipped ones.
+          // The machine lacks the family: name it directly (features lost,
+          // glyphs correct). A bundled family falls back to its plain face.
           registered.set(key, family)
         },
       )
       document.fonts.add(face)
     }
   } catch {
-    // Not the malformed-descriptor path, which was the assumption here until
-    // it was measured: the constructor takes a descriptor it cannot parse
-    // without complaint and quietly reads back as `normal`. Nothing throws.
-    // This is the guard for the constructor being unavailable or objecting to
-    // something else entirely, and naming the family directly is the right
-    // answer to that -- features lost, glyphs correct.
+    // The constructor doesn't throw on malformed descriptors (they read back
+    // as `normal`); this guards against it being unavailable. Name the family
+    // directly.
     registered.set(key, family)
     return family
   }
@@ -176,24 +126,16 @@ function faceWithDescriptors(family: string, features: string, axes: string): st
   return name
 }
 
-/** The first family in a CSS list, unquoted — what `local()` needs, and what
- *  anything asking whether a stack names a particular face has to compare. */
+/** The first family in a CSS list, unquoted (what `local()` needs). */
 export function headFamily(stack: string): string {
   const named = stack.match(/"([^"]+)"|'([^']+)'|^([^,]+)/)
   return (named?.[1] ?? named?.[2] ?? named?.[3] ?? stack).trim()
 }
 
 /**
- * A family string for one slot: the configured stack, wrapped so features
- * apply when there are any. The wrapper names only the head of the stack —
- * `local()` takes one family — so the *whole* configured stack is kept behind
- * it as fallback.
- *
- * Behind it rather than only its tail, because the generated name resolving to
- * nothing is a real outcome: the face is added before `load()` settles, so a
- * family the machine turns out not to have leaves the atlas holding a name no
- * face answers to. With the original stack still in the list that costs the
- * features and nothing else, instead of dropping to the webview default.
+ * A family string for one slot: the configured stack, preceded by a generated
+ * face when there are features or axes. The whole stack stays behind it as
+ * fallback, since the generated name may resolve to nothing.
  */
 function slot(stack: string, features: string, axes: string): string {
   if (!features.trim() && !axes.trim()) return stack
@@ -205,18 +147,14 @@ function slot(stack: string, features: string, axes: string): string {
 }
 
 export function buildFontSelection(s: FontSettings): FontSelection {
-  // A shipped family may need features before it looks like itself —
-  // Monaspace keeps its ligatures in stylistic sets rather than in `liga`. Its
-  // defaults stand in only for an empty field, so anything typed there is the
-  // whole answer and every one of these tags can be turned back off.
+  // A shipped family's default features (e.g. Monaspace keeps ligatures in
+  // stylistic sets) apply only when the field is empty.
   const features =
     (s.fontFeatures ?? '').trim() || bundledDefaultFeatures(headFamily(s.fontFamily))
   const axes = s.fontVariations ?? ''
 
-  // The one chokepoint every font change flows through, which is why the
-  // bundled fetch is started here: a shipped face is declared at startup but
-  // not loaded, and `fillText` against an unloaded face silently draws the
-  // fallback. Naming one in any slot is what says it is wanted.
+  // Every font change passes here, so start loading any bundled face named;
+  // `fillText` against an unloaded face draws the fallback.
   for (const stack of [s.fontFamily, s.fontFamilyBold, s.fontFamilyItalic, s.fontFamilyBoldItalic]) {
     if (stack.trim()) ensureBundledLoaded(headFamily(stack))
   }
@@ -230,8 +168,7 @@ export function buildFontSelection(s: FontSettings): FontSelection {
   return {
     regular: base,
     bold: boldIsFace ? slot(s.fontFamilyBold, features, axes) : base,
-    // The unwrapped stack when the slot is unset — see the note at the top of
-    // this file. Features are given up rather than italic.
+    // Unset: the unwrapped stack (see the top of this file).
     italic: italicIsFace ? slot(s.fontFamilyItalic, features, axes) : s.fontFamily,
     boldItalic: boldItalicIsFace
       ? slot(s.fontFamilyBoldItalic, features, axes)
@@ -240,9 +177,7 @@ export function buildFontSelection(s: FontSettings): FontSelection {
         : s.fontFamily,
     boldIsFace,
     italicIsFace,
-    // A bold-italic slot is a face; so is falling back to the italic face and
-    // letting CSS supply the weight, which is why this tracks the italic slot
-    // when the bold-italic one is unset.
+    // Falling back to the italic face (with CSS weight) also counts as a face.
     boldItalicIsFace: boldItalicIsFace || italicIsFace,
     boldItalicNeedsWeight: !boldItalicIsFace && italicIsFace,
     ranges: s.fontRanges ?? [],
@@ -254,11 +189,8 @@ export function buildFontSelection(s: FontSettings): FontSelection {
 }
 
 /**
- * The family pinned to this codepoint, or null for "use the style's own".
- *
- * Binary search rather than a scan: this is called once per uncached glyph,
- * which is rare, but the table is user-supplied and nothing stops someone
- * pasting in a hundred ranges.
+ * The family pinned to this codepoint, or null. Binary search, since the table
+ * is user-supplied and could be long.
  */
 export function familyForCodepoint(
   ranges: ReadonlyArray<FontRange>,
@@ -277,21 +209,11 @@ export function familyForCodepoint(
 }
 
 /**
- * The ranges that can actually be looked up, and the entries that cannot.
- *
- * `familyForCodepoint` binary-searches, which only means anything over a table
- * whose entries do not overlap: where two of them claim the same codepoint,
- * which one the search lands on is an accident of where the table happens to
- * split. The same character would then resolve to one face or the other for no
- * reason visible to whoever wrote the table, and adding an unrelated range
- * further down could change the answer.
- *
- * So an entry overlapping one already kept is set aside whole rather than
- * clipped to fit. A range that quietly covers less than it says is the harder
- * thing to notice, and the caller can say out loud that it was ignored.
- *
- * Ordered by where each range starts and then by the wider one first, so which
- * entry wins is a property of the table rather than of the order it was typed.
+ * Splits ranges into those that can be looked up and the indices of those that
+ * can't. Overlapping entries would make the binary search's answer arbitrary,
+ * so an entry overlapping one already kept is ignored whole (not clipped) and
+ * reported. Ordered by start, then wider first, so the result doesn't depend on
+ * typing order.
  */
 export function resolveRangeOverlaps(ranges: ReadonlyArray<FontRange>): {
   kept: FontRange[]
@@ -315,35 +237,25 @@ export function resolveRangeOverlaps(ranges: ReadonlyArray<FontRange>): {
 }
 
 /**
- * Whether the feature string and the ligature toggle are asking for opposite
- * things, and which way round.
+ * Whether the feature string and the ligature toggle conflict. The toggle
+ * decides whether operator runs reach `fillText` together; the features control
+ * substitution inside the face.
  *
- * They can, because they work at different levels and neither can see the
- * other. The toggle decides whether a run of operators is handed to `fillText`
- * in one call — shaping cannot happen at all unless it is. The feature string
- * reaches the face itself, and turning `calt` off there stops the substitution
- * even when the run does arrive whole. So:
+ * - `features-win`: toggle on, but a feature disables the substitution.
+ * - `toggle-wins`: a feature asks for ligatures, but the toggle is off.
  *
- * - `features-win`: the toggle is on and a feature switches the substitution
- *   off. Ligatures do not appear, and the toggle looks broken.
- * - `toggle-wins`: a feature asks for ligatures while the toggle is off. The
- *   run is never assembled, so the feature has nothing to act on.
- *
- * Neither is a bug — each is the lower level doing what it was told — but
- * either one looks like one, which is why the settings dialog says so.
+ * Neither is a bug, but both look like one, so the settings dialog says so.
  */
 export type LigatureConflict = 'features-win' | 'toggle-wins' | null
 
-/** The tags a face forms operator ligatures through. `liga` and `clig` are
- *  the standard ones, `calt` is what the programming faces actually use, and
- *  `dlig` is where a few of them put the more opinionated shapes. */
+/** Tags faces use for operator ligatures (`calt` for most programming fonts). */
 const LIGATURE_TAGS = ['calt', 'liga', 'clig', 'dlig']
 
 export function ligatureConflict(features: string, ligatures: boolean): LigatureConflict {
   let switchedOff = false
   let switchedOn = false
   for (const tag of LIGATURE_TAGS) {
-    // `"calt" 0`, `"calt" off`, and the bare `"calt"` which means on.
+    // `"calt" 0`, `"calt" off`, or bare `"calt"` (on).
     const m = features.match(new RegExp(`["']${tag}["']\\s*(\\d+|on|off)?`, 'i'))
     if (!m) continue
     const value = (m[1] ?? '1').toLowerCase()
@@ -356,27 +268,10 @@ export function ligatureConflict(features: string, ligatures: boolean): Ligature
 }
 
 /**
- * Whether the browser will accept this as a value for `property`, or null
- * when it cannot be asked.
- *
- * Asked of the CSS parser rather than checked against a pattern of our own,
- * because the question is precisely what *this* browser accepts: the tag
- * syntax has grown over time, and a value this one takes is a value the
- * generated face will take.
- *
- * That correspondence was measured, and it is exact. `FontFace` does not
- * reject a descriptor it cannot parse -- it takes it, drops it, and reads
- * back as `normal`, which is why the failure was invisible from in here.
- * Every value `CSS.supports` refuses is a value the descriptor discards, and
- * every value it accepts survives. Including, in both directions, the case
- * that makes this worth reporting at all: one bad tag in a list discards the
- * whole list, so `"ss01" 1, nonsense` loses the working `ss01` too.
- *
- * Empty is valid: it means the setting is unset, not that it failed.
- *
- * Null rather than false when `CSS.supports` is missing, for the reason
- * `hasFamily` answers null — not being able to check is not the same answer
- * as a failed check, and only one of them is worth telling someone about.
+ * Whether this browser accepts `value` for `property`, or null if it can't be
+ * asked. `FontFace` silently drops descriptors it can't parse, and
+ * `CSS.supports` was measured to agree exactly with what survives (including
+ * that one bad tag discards the whole list). Empty is valid (unset).
  */
 export function descriptorIsValid(property: string, value: string): boolean | null {
   if (value.trim() === '') return true
@@ -388,19 +283,14 @@ export function descriptorIsValid(property: string, value: string): boolean | nu
   }
 }
 
-/** A codepoint written the way the Unicode charts write it, which is how
- *  anyone looking a range up will have seen it. */
+/** A codepoint in Unicode chart notation (`U+0041`). */
 export function formatCodepoint(cp: number): string {
   return `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`
 }
 
 /**
- * A codepoint typed by hand, or null if it is not one yet.
- *
- * Always hex, with the `U+` and `0x` prefixes accepted and ignored: every
- * table anyone would copy a range out of is written in hex, and a field that
- * guessed between bases would read `1000` as two different characters
- * depending on how it felt.
+ * A codepoint typed by hand (always hex; `U+` and `0x` prefixes allowed), or
+ * null.
  */
 export function parseCodepoint(text: string): number | null {
   const cleaned = text.trim().replace(/^(?:U\+|0x)/i, '')
@@ -409,9 +299,7 @@ export function parseCodepoint(text: string): number | null {
   return cp <= 0x10ffff ? cp : null
 }
 
-/** Whether two range tables say the same thing. Both are in the order they
- *  were typed, and a reordering is a change, so this compares position by
- *  position rather than as sets. */
+/** Whether two range tables are identical, position by position. */
 export function sameRanges(a: ReadonlyArray<FontRange>, b: ReadonlyArray<FontRange>): boolean {
   return (
     a.length === b.length &&
@@ -419,8 +307,7 @@ export function sameRanges(a: ReadonlyArray<FontRange>, b: ReadonlyArray<FontRan
   )
 }
 
-/** A selection that names one stack for everything — the shape every caller
- *  had before per-style faces existed, and what the bench engine still wants. */
+/** A selection naming one stack for everything (used by the bench engine). */
 export function plainSelection(family: string): FontSelection {
   return {
     regular: family,

@@ -1,42 +1,20 @@
 /**
  * Fills the renderer's packed cell buffer from ghostty `main`'s row/cell
- * iterator, in the exact 16-byte layout `parseCellInto` already reads.
+ * iterator, in the 16-byte layout `parseCellInto` reads.
  *
- * ## Why this shape rather than rewriting the renderer
+ * The packed buffer, not `get_viewport`, is the contract the renderer, search,
+ * links, selection and mark mode consume, so only its filler changes. Two
+ * fillers producing identical bytes is asserted in `ViewportReader.test.ts`.
  *
- * `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows` do not consume
- * the ABI — they consume a packed buffer of `CELL_BYTES` cells and a `DataView`
- * over it. That buffer, not `get_viewport`, is the real contract. Keeping it and
- * swapping only who fills it means the renderer, the search path, links,
- * selection and mark mode are all untouched by the port, and the switch between
- * ABIs is one call site rather than a rewrite of everything downstream.
+ * Handles are held across frames, since per-frame allocation would cost more
+ * than the read. `RS_ROW_DATA_CELLS_RAW` returns a row's raw cells as one
+ * borrowed run; the cells iterator is still needed for styles, resolved colors
+ * and grapheme lengths.
  *
- * It also makes the port checkable in a way a rewrite would not be: two fillers
- * producing the same bytes for the same input is a far stronger statement than
- * two renderers producing similar-looking screens, and it is asserted directly
- * in `ViewportReader.test.ts`.
- *
- * The cost used to be that this could not amortize anything `get_viewport` does
- * in one call — measured (`tools/parse-probes/iter.mjs`) at 1.4x-2.5x of a
- * 0.21 ms worst case, against an 8.3 ms frame, with skipping clean rows going
- * the other way at 0.05x-0.14x. The handles are held across frames here because
- * allocating them per frame would cost more than the difference.
- *
- * **The `6b22215c` pin narrows that.** `RS_ROW_DATA_CELLS_RAW` hands back the
- * row's packed cells as one borrowed run, so the raw value no longer costs a
- * call per cell. On codepoints alone that mode measures **0.1x** of the batched
- * `get_viewport` — but this reader is not codepoint-only, so it keeps the cells
- * iterator for styles, resolved colors and grapheme lengths and banks one
- * saved call out of the per-cell handful rather than the full 10x.
- *
- * ## What it cannot carry
- *
- * `hyperlinkId` (bytes 12-13) is always written as 0. Our ABI packs a real id;
- * main's render path exposes only a `HAS_HYPERLINK` bool, with the URI reachable
- * through `grid_ref` rather than the iterator. Nothing outside `wasmBindings.ts`
- * reads the field today — `LinkController` works off `readRows` text — so this
- * is recorded rather than solved. It is the one place the two fillers are
- * allowed to differ, and the parity test excludes exactly those two bytes.
+ * `hyperlinkId` (bytes 12-13) is always 0: main's render path exposes only a
+ * `HAS_HYPERLINK` bool. Nothing outside `wasmBindings.ts` reads it
+ * (`LinkController` works off `readRows` text), and the parity test excludes
+ * those two bytes.
  */
 import * as abi from './abi'
 import {
@@ -64,13 +42,9 @@ const OFF_GRAPHEME_LEN = 14
 const OFF_ATTRS2 = 15
 
 /**
- * Our `width` byte against main's `GhosttyCellWide`.
- *
- * The packed layout uses width as both a display width and a marker: 0 means
- * "no text of its own", which is how every consumer recognizes the trailing
- * half of a wide glyph. A spacer *head* — the padding cell at the end of a row
- * too narrow for the wide glyph that follows — is likewise not drawn, so it
- * takes 0 as well.
+ * Our `width` byte against main's `GhosttyCellWide`. Width 0 marks "no text of
+ * its own": the trailing half of a wide glyph, and a spacer head (the padding
+ * at the end of a row too narrow for the wide glyph that follows).
  */
 const WIDTH_FOR_WIDE = new Uint8Array(4)
 WIDTH_FOR_WIDE[abi.CELL_WIDE_NARROW] = 1
@@ -84,27 +58,14 @@ export interface ViewportReaderHandles {
 }
 
 /**
- * What the renderer and `readRows` actually depend on, stated once.
- *
- * `WebGLRenderer.updateStaticGrid` and `GhosttyEngine.readRows` reach for
- * `ghostty_render_state_get_viewport`, and neither had to change: `main/shim.ts`
- * answers that call by driving this reader —
- *
- *   ghostty_render_state_get_viewport(term, buf, cols * rows)
- *   -> source.update() once a frame, then source.read(buf, cols, rows)
- *
- * — which is why the port reached the renderer as a swapped binary rather than
- * as a diff. `update` is separate from `read` because our ABI separates them:
- * the cells, the dimensions and the cursor all come off one snapshot, and
- * `readRows` reads that snapshot again mid-frame without rebuilding it.
+ * What the renderer and `readRows` depend on. `main/shim.ts` answers
+ * `ghostty_render_state_get_viewport` by calling `update()` once a frame, then
+ * `read(buf, cols, rows)`.
  */
 export interface ViewportSource {
   /**
-   * Rebuilds the snapshot. Separate from `read` because our ABI separates them
-   * — `render_state_update` is called once a frame, and the cursor position,
-   * the dimensions and the cells are then all read off that one snapshot. A
-   * reader that updated on every read would answer a mid-frame `readRows` from
-   * a newer grid than the cursor drawn beside it.
+   * Rebuilds the snapshot, once a frame. Separate from `read` so a mid-frame
+   * `readRows` sees the same grid as the cursor drawn beside it.
    */
   update(): void
   /** Packs `cols * rows` cells into `bufPtr` from the last `update`; returns
@@ -114,21 +75,16 @@ export interface ViewportSource {
 }
 
 /**
- * Holds the render state and the two iterators across frames.
- *
- * They are stateful handles, not values: `render_state_update` refreshes the
- * state in place and the iterators are re-seeded from it each frame, so
- * creating them once is both correct and the only way the per-frame cost stays
- * near the batched read's.
+ * Holds the render state and the two iterators across frames. They're
+ * stateful handles: `render_state_update` refreshes the state in place and
+ * the iterators are re-seeded from it each frame.
  */
 export class MainViewportReader implements ViewportSource {
   private readonly ex: abi.GhosttyMainExports
   private readonly term: number
   /**
-   * Public because the render state answers far more than the cells: the
-   * dimensions, the cursor and the default colors all come off this handle,
-   * and our ABI exposes them as separate `render_state_get_*` calls that the
-   * shim has to satisfy from the same snapshot this reader packed.
+   * Public because the shim answers our ABI's separate `render_state_get_*`
+   * calls (dimensions, cursor, default colors) from this same snapshot.
    */
   readonly state: number
   private readonly iterSlot: number
@@ -185,14 +141,9 @@ export class MainViewportReader implements ViewportSource {
   }
 
   /**
-   * Packs the whole viewport into `bufPtr`, from the last `update`.
-   *
-   * `bufPtr` must have room for `cols * rows` cells. The caller zeroes it, the
-   * same way `updateStaticGrid` already does — a short read must leave blanks
-   * rather than the previous frame's cells, and that is the caller's business
-   * because it owns the buffer's lifetime.
-   *
-   * Returns the number of cells written.
+   * Packs the whole viewport into `bufPtr` (room for `cols * rows` cells) from
+   * the last `update`. The caller zeroes the buffer, so a short read leaves
+   * blanks. Returns the number of cells written.
    */
   read(bufPtr: number, cols: number, rows: number): number {
     const { ex } = this
@@ -214,13 +165,10 @@ export class MainViewportReader implements ViewportSource {
       )
       const cells = this.dv().getUint32(this.cellsSlot, true)
 
-      // The row's packed cells in one call, instead of one `CELLS_RAW` get per
-      // cell. The cells iterator is still advanced in lockstep below because
-      // styles, resolved colors and grapheme lengths are managed data that
-      // only it can reach — this replaces the *raw* fetch, not the iterator.
-      //
-      // Borrowed and frame-local: valid only until the next `render_state_update`,
-      // which is why it is re-fetched per row per frame rather than cached.
+      // The row's raw cells in one call. The cells iterator still advances in
+      // lockstep for the managed data only it reaches (styles, resolved colors,
+      // grapheme lengths). Borrowed until the next `render_state_update`, so
+      // re-fetched per row per frame.
       abi.expectOk(
         ex.ghostty_render_state_row_get(iter, abi.RS_ROW_DATA_CELLS_RAW, this.scratch),
         'row_get CELLS_RAW',
@@ -232,8 +180,7 @@ export class MainViewportReader implements ViewportSource {
       let x = 0
       while (x < cols && ex.ghostty_render_state_row_cells_next(cells)) {
         const at = bufPtr + (y * cols + x) * CELL_BYTES
-        // Guard rather than trust: a view shorter than the row would otherwise
-        // read whatever follows it in linear memory as cell data.
+        // A view shorter than the row would otherwise read neighboring memory.
         this.packCell(cells, at, defFg, defBg, x < rawLen ? rawPtr + x * abi.CELL_U64_BYTES : 0)
         x++
         written++
@@ -244,13 +191,9 @@ export class MainViewportReader implements ViewportSource {
   }
 
   /**
-   * One cell, into the 16 bytes at `at`.
-   *
-   * `rawAt` addresses this cell inside the row's borrowed `CELLS_RAW` view, or
-   * is 0 when the view did not cover it — in which case the raw value is
-   * fetched per cell the old way. Reading it from the view is what makes the
-   * bulk path worth having; the fallback keeps a short view from reading
-   * neighboring memory as cell data.
+   * One cell, into the 16 bytes at `at`. `rawAt` addresses this cell in the
+   * row's borrowed `CELLS_RAW` view, or is 0 when the view didn't cover it, in
+   * which case the raw value is fetched per cell.
    */
   private packCell(cells: number, at: number, defFg: number, defBg: number, rawAt: number): void {
     const { ex } = this
@@ -267,9 +210,8 @@ export class MainViewportReader implements ViewportSource {
 
     abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_CONTENT_TAG, this.scratch), 'cell_get CONTENT_TAG')
     d = this.dv()
-    // The payload is a union — a codepoint, or a background color for a cell
-    // with no text. Unpacking it unconditionally turns a blank painted by
-    // ED/EL into a control character.
+    // The payload is a union: a codepoint, or a background color for a cell with
+    // no text (otherwise an ED/EL blank becomes a control character).
     const hasText = abi.cellHasText(d.getUint32(this.scratch, true))
     d.setUint32(at + OFF_CODEPOINT, hasText ? abi.codepointOf(lo) : 0, true)
 
@@ -277,9 +219,8 @@ export class MainViewportReader implements ViewportSource {
     d = this.dv()
     d.setUint8(at + OFF_WIDTH, WIDTH_FOR_WIDE[d.getUint32(this.scratch, true) & 0x3])
 
-    // A cell with no explicit color reports INVALID_VALUE and expects the
-    // caller to supply its own default; our ABI resolves that inside the core,
-    // so this is where the two representations are reconciled.
+    // A cell with no explicit color reports INVALID_VALUE; our ABI resolved
+    // defaults in the core, so reconcile here.
     const fgRes = ex.ghostty_render_state_row_cells_get(cells, abi.RS_CELLS_FG_COLOR, this.scratch)
     d = this.dv()
     if (fgRes === abi.GHOSTTY_SUCCESS) {
@@ -310,15 +251,9 @@ export class MainViewportReader implements ViewportSource {
     )
     d = this.dv()
     /**
-     * Our field counts the codepoints *beyond* the base; main's `GRAPHEMES_LEN`
-     * includes the base, and reports 0 for a cell with no text at all. So a
-     * plain `a` is 1 there and 0 here, and `e`+combining-acute is 2 there and 1
-     * here — hence the subtract, floored rather than allowed to go negative on
-     * the empty case.
-     *
-     * Consumers only ever test this against zero (`readRows` uses it to decide
-     * whether to fetch the cluster), so an off-by-one is invisible in behavior
-     * and shows up only in a byte comparison. It was caught exactly that way.
+     * Our field counts codepoints beyond the base; main's `GRAPHEMES_LEN`
+     * includes the base (and is 0 for no text). Hence the floored subtract.
+     * Consumers only test it against zero.
      */
     const gLen = d.getUint32(this.scratch, true)
     d.setUint8(at + OFF_GRAPHEME_LEN, gLen > 0 ? Math.min(gLen - 1, 0xff) : 0)
@@ -346,7 +281,7 @@ export class MainViewportReader implements ViewportSource {
     if (d.getUint8(p + abi.STYLE_OFF_OVERLINE)) attrs2 |= CELL2_OVERLINE
     d.setUint8(at + OFF_ATTRS2, attrs2)
 
-    // Not available from the iterator — see the header.
+    // Not available from the iterator; see the header.
     d.setUint16(at + OFF_HYPERLINK, 0, true)
   }
 

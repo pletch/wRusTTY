@@ -12,20 +12,11 @@ import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
 
 /**
- * The host-key trust store, listed and removable.
- *
- * Reading this store is the half that was missing. The prompt that writes it
- * has always existed, so trust could be granted and never withdrawn — and the
- * case that matters is not exotic: a host gets rebuilt, offers a new key, and
- * the prompt correctly says the key changed and this may be an attack. With no
- * way to remove the old entry, the only fix was hand-editing `known_hosts`,
- * which is exactly when a user learns to click through the warning instead.
- *
- * Deliberately blunt about what it does. Forgetting a key is *safe* — the worst
- * outcome is being asked to confirm the fingerprint again on the next connect —
- * and saying so is what stops the confirmation dialogs reading as though the
- * dangerous direction were this one. The dangerous direction is accepting a
- * changed key, and that prompt lives elsewhere.
+ * The host-key trust store, listed and removable, so a rebuilt host's old
+ * key can be dropped without hand-editing `known_hosts`. Forgetting a key is
+ * the safe direction (at worst, a fingerprint prompt next time), and the
+ * copy says so; accepting a changed key is the dangerous one, handled
+ * elsewhere.
  */
 export function KnownHostsSection() {
   const confirm = useConfirm()

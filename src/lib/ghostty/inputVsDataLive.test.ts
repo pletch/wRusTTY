@@ -4,18 +4,11 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 /**
- * The line between what a *person* sent and what the *engine* sent, through a
- * real core.
- *
- * `onData` is everything headed for the wire — typing, paste, mouse reports,
- * focus reports, and the core's own replies to host queries. `onInput` is the
- * first two only. Anything that redirects input elsewhere — broadcast is the
- * one that exists — has to read `onInput`, because a reply belongs to the host
- * that asked for it and a mouse report describes this pane's geometry alone.
- *
- * Pinned against a live core rather than a stub because the interesting half
- * is a reply the core generates by itself: nothing in the app decides that a
- * DSR gets answered, so nothing in the app can be mocked into forgetting to.
+ * What a person sent versus what the engine sent, through a real core.
+ * `onData` is everything for the wire (typing, paste, mouse and focus
+ * reports, the core's query replies); `onInput` is typing and paste only.
+ * Redirecting input (broadcast) must use `onInput`: replies and mouse reports
+ * belong to this pane. Live, since the core answers DSR on its own.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

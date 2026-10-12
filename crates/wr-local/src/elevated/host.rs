@@ -1,21 +1,19 @@
-//! The elevated end: a pipe server that runs one shell for one tab.
+//! The elevated end: a pipe server that runs one shell for one tab, keeping
+//! the promises in `docs/ELEVATED_TABS_PLAN.md`:
 //!
-//! Everything here serves the promises in `docs/ELEVATED_TABS_PLAN.md`:
+//! - **It runs only what it was launched with**: a [`LocalConfig`] resolved
+//!   from a detected shell id on the host's command line; no message can
+//!   change it.
+//! - **It serves exactly one client**, the wRusTTY that launched it: the first
+//!   and only instance of its pipe name, no remote clients, current user only,
+//!   and the client must have the expected process id and the same
+//!   executable.
+//! - **It never outlives its tab**: when the pipe closes for any reason the
+//!   shell is killed and the host returns (`LocalSession`'s `Drop` covers
+//!   early returns).
 //!
-//! - **It runs only what it was launched with.** The shell arrives as a
-//!   [`LocalConfig`] from the caller — resolved from a detected shell id on the
-//!   host's command line — and the protocol has no message that could change
-//!   it.
-//! - **It serves exactly one client**, the wRusTTY that launched it: the pipe
-//!   is created as the first and only instance of its name, rejects remote
-//!   clients, is open to the current user alone, and the one process that
-//!   connects must have the expected process id and be the same executable.
-//! - **It never outlives its tab.** When the pipe closes for any reason —
-//!   the tab closed, wRusTTY crashed — the shell is killed and the host
-//!   returns. `LocalSession`'s `Drop` covers any path that returns early.
-//!
-//! Nothing here asks for elevation. The host runs as whatever started it, which
-//! is what lets `tests/elevated_host.rs` exercise all of it unelevated.
+//! Nothing here asks for elevation, so `tests/elevated_host.rs` runs it all
+//! unelevated.
 
 use std::time::Duration;
 
@@ -214,12 +212,9 @@ mod verify {
 
     use super::{HostError, NamedPipeServer};
 
-    /// The client must be the expected process, running the same executable as
-    /// this host.
-    ///
-    /// The process id alone would do while that process is alive — ids are not
-    /// reused until it exits — but checking the image too means a host launched
-    /// with a stale or wrong id cannot end up serving an unrelated program.
+    /// The client must be the expected process running this host's executable.
+    /// The pid alone suffices while that process lives; checking the image stops
+    /// a stale pid from serving an unrelated program.
     pub(super) fn client(server: &NamedPipeServer, expected_pid: u32) -> Result<(), HostError> {
         let handle = HANDLE(server.as_raw_handle());
         let mut pid = 0u32;
@@ -299,21 +294,15 @@ mod security {
 
     use super::HostError;
 
-    /// Attributes for a pipe that only the current user can open, and that a
-    /// normal (medium-integrity) process can write to.
+    /// A pipe only the current user can open, and a medium-integrity process
+    /// can write to. An elevated creator's defaults would give it a high
+    /// integrity label (no-write-up blocks the tab) and grant the Administrators
+    /// group (deny-only in the tab's token) while letting Everyone read.
     ///
-    /// Both halves are needed because of who creates the pipe. An elevated
-    /// process's objects default to a *high* integrity label, and Windows'
-    /// no-write-up rule then stops the unelevated tab from writing to its own
-    /// pipe. Their default permissions also go to the elevated token's owner —
-    /// usually the Administrators group, which the tab's filtered token only
-    /// holds as deny-only. So the defaults would lock out the one client this
-    /// pipe exists for, while granting read access to Everyone.
-    ///
-    /// `D:P(A;;GA;;;<you>)` — a protected DACL giving full access to the
-    /// current user and no one else. `S:(ML;;NW;;;ME)` — a medium mandatory
-    /// label with no-write-up, so a medium process may write and a low one may
-    /// not. Lowering an object's label below the creator's own is allowed.
+    /// `D:P(A;;GA;;;<you>)`: a protected DACL, full access for the current user
+    /// only. `S:(ML;;NW;;;ME)`: a medium label with no-write-up, so medium
+    /// processes may write and low ones may not. Lowering below the creator's
+    /// own label is allowed.
     pub(super) struct PipeSecurity {
         attrs: SECURITY_ATTRIBUTES,
         descriptor: PSECURITY_DESCRIPTOR,

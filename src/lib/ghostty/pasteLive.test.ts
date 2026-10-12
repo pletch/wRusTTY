@@ -5,14 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
- * Paste through the engine, which is where the mode is read and the two
- * handler sets are fed.
- *
- * `pasteEncode.test.ts` covers what a paste encodes to. This covers the parts
- * around it: that DEC 2004 is what decides bracketing, that the encoded bytes
- * (not the raw text) are what reaches the wire, and that `onInput` sees the
- * same thing `onData` does — a paste is user input, and anything redirecting
- * input has to receive it.
+ * Paste through the engine: DEC 2004 decides bracketing, the encoded bytes
+ * (not raw text) reach the wire, and `onInput` sees what `onData` does.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -79,7 +73,7 @@ describe('paste, through the engine', () => {
   it('turns a newline into a carriage return when nothing is bracketing', async () => {
     const { engine, data } = await mounted()
     engine.paste('one\ntwo')
-    // Raw newlines are what this used to send, and not what a PTY wants.
+    // A PTY wants carriage returns, not raw newlines.
     expect(data).toEqual(['one\rtwo'])
     engine.unmount()
   })
@@ -88,7 +82,7 @@ describe('paste, through the engine', () => {
     const { engine, data } = await mounted()
     engine.write('\x1b[?2004h')
     engine.paste(`safe${END}rm -rf /`)
-    // Everything after the terminator used to arrive as typing.
+    // The embedded terminator is defused.
     expect(data).toEqual([`${START}safe [201~rm -rf /${END}`])
     engine.unmount()
   })
@@ -125,8 +119,8 @@ describe('paste, through the engine', () => {
     it('leaves a pasted DEL alone, because the encoder already handled it', async () => {
       const { engine, data } = await mounted()
       engine.setBackspaceSendsCtrlH(true)
-      // The paste encoder replaces DEL with a space before this could ever
-      // see it, so a paste is never a route for the translation to reach.
+      // The paste encoder turns DEL into a space first, so a paste never reaches
+      // the backspace translation.
       engine.paste('a\x7fb')
       expect(data).toEqual(['a b'])
       engine.unmount()

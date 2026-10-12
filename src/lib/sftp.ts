@@ -9,85 +9,60 @@ export interface RemoteEntry {
   isSymlink: boolean
   size: number
   modified: number | null
-  /** Permission bits alone (`0o755`), never the raw mode — the type is already
-   *  in `isDir`/`isSymlink`. Null if the server reported none, which some
-   *  appliance SFTP servers do. */
+  /** Permission bits only (`0o755`); null if the server reported none (some
+   *  appliances). */
   mode: number | null
-  /** Owner and group *names*, when the server sends them.
-   *
-   *  In practice always null: SFTP v3, which is what OpenSSH speaks, carries no
-   *  names in its attributes at all. Use `uid`/`gid` for anything that has to
-   *  decide something. */
+  /** Owner and group names. Always null in practice (SFTP v3 carries none);
+   *  use `uid`/`gid`. */
   owner: string | null
   group: string | null
-  /** Numeric owner and group, which SFTP v3 does carry. */
+  /** Numeric owner and group, which SFTP v3 carries. */
   uid: number | null
   gid: number | null
 }
 
 export type SftpEvent =
-  // An edit being saved: no progress and nothing to cancel, keyed by the edit.
+  // Saving an edit: no progress, nothing to cancel.
   | { type: 'uploading'; editId: string; remotePath: string }
   | { type: 'uploaded'; editId: string; remotePath: string }
   | { type: 'uploadFailed'; editId: string; remotePath: string; error: string }
-  // An editor this app launched has exited. Only ever sent when `externalEditor`
-  // is set — the OS handler returns instantly and has nothing to report.
-  // `stillWatching` means the command came back too fast to be believed (it is
-  // missing its wait flag), so the watch was deliberately left alone.
+  // An editor this app launched exited (only with `externalEditor` set).
+  // `stillWatching`: it returned too fast (missing its wait flag), so the
+  // watch was kept.
   | { type: 'editorExited'; editId: string; remotePath: string; stillWatching: boolean }
-  // The remote file changed under an edit and the save was *not* made. Nothing
-  // has been written when this arrives; `saveEdit(editId, true)` is how the
-  // user says to overwrite anyway.
+  // The remote file changed under an edit and the save was not made;
+  // `saveEdit(editId, true)` overwrites anyway.
   | {
       type: 'uploadConflict'
       editId: string
       remotePath: string
       remoteModified: number | null
     }
-  // An explicit transfer, in either direction: a dropped file, a picked file,
-  // a download. Direction is not on the wire — whatever started the transfer
-  // already knows which way it goes, and it holds the id.
-  //
-  // `transferStarted` arrives only when the *backend* is the one that learned
-  // the total: a download, or an upload from a local path. A dropped file is
-  // sized by the webview before the transfer exists.
+  // An explicit transfer in either direction; the caller knows which.
+  // `transferStarted` arrives only when the backend learned the total (a
+  // download, or an upload from a local path).
   | { type: 'transferStarted'; transferId: string; remotePath: string; total: number }
   | { type: 'transferProgress'; transferId: string; transferred: number }
-  // Which file a *folder* transfer is on. Never sent for a single file, which
-  // `transferStarted` already named. `index` is 1-based: it is shown as "3 of 57".
+  // Which file a folder transfer is on (1-based `index`).
   | { type: 'transferFile'; transferId: string; name: string; index: number; count: number }
-  // Something worth knowing about a transfer that still succeeded — so far only
-  // the symlinks a recursive copy passed over.
+  // A note about a transfer that still succeeded (e.g. skipped symlinks).
   | { type: 'transferNote'; transferId: string; note: string }
   | { type: 'transferDone'; transferId: string; remotePath: string }
   | { type: 'transferCancelled'; transferId: string }
   | { type: 'transferFailed'; transferId: string; remotePath: string; error: string }
-  /** The connection dropped under this transfer and it is waiting for the
-   *  session to come back. Not a failure: nothing is being asked of the user,
-   *  and the transfer resumes by itself. See `TransferInterrupted` in sftp.rs. */
+  /** The connection dropped and the transfer is waiting to resume; not a
+   *  failure. See `TransferInterrupted` in sftp.rs. */
   | { type: 'transferInterrupted'; transferId: string }
-  /** The session came back and the transfer is running again from where it got
-   *  to, under the same id — so the row carries on rather than being replaced. */
+  /** The session came back and the transfer resumed under the same id. */
   | { type: 'transferResumed'; transferId: string }
-  /** Opening a file as root needs the sudo password for the remote host.
-   *
-   *  Not the SSH credential: the session is already authenticated, and this is
-   *  a second secret that may well be a different one. Answered exactly once,
-   *  with `respondSudoPrompt`; nothing is written and nothing is read until it
-   *  is. */
+  /** Opening a file as root needs the host's sudo password (not the SSH
+   *  credential). Answer once with `respondSudoPrompt`. */
   | { type: 'sudoPrompt'; requestId: string; remotePath: string; retry: boolean }
 
 /**
- * Who the host says this session is connected as.
- *
- * Asked once per session and cached by the caller — it cannot change under a
- * connection that stays authenticated as the same user. Its only job is to let
- * the panel tell, before trying, that a write would be refused, so a file that
- * plainly needs root goes straight to the sudo prompt instead of failing first.
- *
- * A host that will not answer (a restricted shell, an appliance CLI, a
- * `ForceCommand`) leaves every field empty, and the panel then predicts
- * nothing — which is exactly how it behaved before this existed.
+ * Who the host says this session is connected as; cache it per session. Lets
+ * the panel send files that clearly need root straight to sudo. A host that
+ * won't answer returns empty fields, and nothing is predicted.
  */
 export function remoteIdentity(sessionId: string) {
   return invoke<RemoteIdentity>('sftp_remote_identity', { sessionId })
@@ -104,24 +79,20 @@ export function canonicalize(sessionId: string, path: string) {
 export interface ActiveEdit {
   editId: string
   remotePath: string
-  /** A privileged helper is running on the host for this edit, and stays up
-   *  until the watch ends. Shown, because standing privilege the user cannot
-   *  see is privilege they cannot decide to give up. */
+  /** A root helper is running on the host for this edit until the watch ends;
+   *  shown so the user knows. */
   elevated: boolean
 }
 
 /**
  * Downloads a remote file to a temp copy, opens it, and watches it for saves.
  *
- * `editorCommand` is the `externalEditor` setting. Empty hands the file to
- * Windows, which returns immediately and can never say when the user is done —
- * so the watch has to be dismissed by hand. A command that blocks
- * (`code --wait`) reports back through `editorExited`, and the watch ends
- * itself.
+ * `editorCommand` is the `externalEditor` setting. Empty uses the OS handler,
+ * whose watch must be dismissed by hand; a blocking command (`code --wait`)
+ * ends the watch itself via `editorExited`.
  *
- * `elevate` opens the file as root. Only ever passed after an ordinary open has
- * been refused and the user has said yes to a prompt about it — never
- * speculatively, and never because the mode bits merely looked unwritable.
+ * `elevate` opens the file as root, once the mode bits or an actual refusal
+ * show it's needed.
  */
 export function editFile(
   sessionId: string,
@@ -140,52 +111,32 @@ export function editFile(
 }
 
 /**
- * Answers a `sudoPrompt`, or cancels it with `null`.
- *
- * The password goes straight to the backend and authenticates the one `sudo`
- * call that starts this edit's helper. Nothing keeps it: not this module, not
- * the dialog that collected it, and not the backend past that call. Every
- * later save is authorized by the helper still running, not by anyone
- * remembering what was typed here.
+ * Answers a `sudoPrompt`, or cancels with `null`. The password authenticates
+ * the one `sudo` call that starts the edit's helper and isn't kept anywhere.
  */
 export function respondSudoPrompt(requestId: string, password: string | null) {
   return invoke<void>('sftp_respond_sudo_prompt', { requestId, password })
 }
 
-/** Every edit still being watched for this session, authoritative. Watches
- * outlive the panel that opened them, so this is what the "watching" markers
- * have to be rendered from — the panel's own memory of what it opened
- * forgets watches that are still running (and still uploading on save). */
+/** Every edit still being watched for this session. Watches outlive the panel,
+ * so render the "watching" markers from this. */
 export function listEdits(sessionId: string) {
   return invoke<ActiveEdit[]>('sftp_list_edits', { sessionId })
 }
 
 /**
- * Saves a watched edit on demand — the answer to a conflict prompt.
- *
- * `force` is the user saying "overwrite it anyway" having been told what they
- * would be overwriting. Without it this re-runs the same mtime check the
- * watcher does, which makes it a plain "try that save again" after a failure.
- *
- * Takes a channel because watches outlive the panel that started them: the
- * panel asking is not necessarily the one that opened the file, and the reply
- * has to reach whoever is listening now.
+ * Saves a watched edit on demand: `force` overwrites after a conflict;
+ * otherwise it re-runs the conflict check (a retry). Takes a channel because
+ * watches outlive the panel that started them.
  */
 export function saveEdit(editId: string, force: boolean, channel: Channel<SftpEvent>) {
   return invoke<void>('sftp_save_edit', { editId, force, channel })
 }
 
 /**
- * Turns an edit that is already open into one whose saves go through root.
- *
- * The answer to a save refused for permission, which is the ordinary shape of
- * this problem: a file under `/etc` is usually readable by anyone and writable
- * only by root, so the open works and the save is what fails. Nothing local is
- * touched — the copy in the editor, and everything typed into it, is exactly
- * as it was — only the route back to the host changes.
- *
- * Does not save. Call `saveEdit` afterward, so the write still goes through
- * the same conflict check every other save does.
+ * Makes an open edit save through root (e.g. an `/etc` file that opened fine
+ * but whose save was refused). The local copy is untouched. Doesn't save: call
+ * `saveEdit` afterward so the conflict check still runs.
  */
 export function elevateEdit(editId: string, channel: Channel<SftpEvent>) {
   return invoke<void>('sftp_elevate_edit', { editId, channel })
@@ -195,27 +146,17 @@ export function stopWatching(editId: string) {
   return invoke<void>('sftp_stop_watching', { editId })
 }
 
-/** Whether something is already at `path`. Advisory — it is stale the moment
- *  it is answered, and `upload` re-checks under its own `overwrite` flag. It
- *  exists so the question can be asked *before* a transfer spends a minute
- *  pushing bytes, not after. */
+/** Whether something exists at `path`, to ask before a transfer starts.
+ *  Advisory; `upload` re-checks. */
 export function exists(sessionId: string, path: string) {
   return invoke<boolean>('sftp_exists', { sessionId, path })
 }
 
 /**
- * Starts an upload into `remoteDir` and returns its transfer id.
- *
- * The bytes follow in `uploadChunk` calls rather than being handed over here:
- * a dropped file reaches the webview as a `File` with no path on it — Tauri's
- * native drag-drop, which would give a path, is off because it breaks the
- * HTML5 drag events tab dragging uses — so the only route to the backend is
- * IPC, and streaming it keeps a large file from being held whole on either
- * side.
- *
- * Nothing at the destination is touched until the whole file has arrived: the
- * transfer lands under a `.wrustty-part` name and is renamed into place only
- * on success.
+ * Starts an upload of a dropped file into `remoteDir`; the bytes follow via
+ * `uploadChunk` (a dropped `File` has no path, since Tauri's native drag-drop
+ * is off). The file lands under a `.wrustty-part` name and is renamed into
+ * place only on success.
  */
 export function uploadBegin(
   sessionId: string,
@@ -228,36 +169,23 @@ export function uploadBegin(
 }
 
 /**
- * One slice of the file.
- *
- * Sent as the request's raw body with the transfer id in a header, because an
- * ordinary command argument would be serialized as a JSON array of numbers —
- * about a megabyte of text per quarter-megabyte chunk, built, sent and parsed.
- *
- * Rejects once the transfer is over, which is how a canceled upload stops the
- * loop feeding it.
+ * One slice of the file, as the raw request body with the transfer id in a
+ * header (a JSON number array would be ~4x larger). Rejects once the transfer
+ * is over, which stops the feeding loop on cancel.
  */
 export function uploadChunk(transferId: string, chunk: Uint8Array) {
   return invoke<void>('sftp_upload_chunk', chunk, { headers: { 'transfer-id': transferId } })
 }
 
-/** No more chunks. The backend closes the file and reports the outcome on the
- *  channel. */
+/** No more chunks; the outcome arrives on the channel. */
 export function uploadFinish(transferId: string) {
   return invoke<void>('sftp_upload_finish', { transferId })
 }
 
 /**
- * Uploads a file the user picked from a dialog, by path.
- *
- * The route for anyone who would rather not drag — and the cheaper one. A
- * dropped file arrives as a `File` with no path on it, so `uploadBegin` has to
- * push its bytes through IPC a chunk at a time; a picked file has a path, so
- * the backend opens it and the webview never touches a byte. Same destination
- * guarantees either way.
- *
- * The remote name comes from the path's own basename, so ask `exists` about
- * that before calling this with `overwrite`.
+ * Uploads a file or folder picked in a dialog, by path; the backend reads it
+ * directly. Same staging as `uploadBegin`. The remote name is the path's
+ * basename, so check `exists` for that before passing `overwrite`.
  */
 export function uploadPath(
   sessionId: string,
@@ -278,25 +206,12 @@ export function uploadPath(
 }
 
 /**
- * Streams a remote file to `localPath` and returns the transfer id.
+ * Streams a remote file or folder to `localPath` and returns the transfer id.
+ * The backend writes straight to disk, staged as `.wrustty-part` and renamed
+ * into place on success.
  *
- * Asymmetric with the drop upload on purpose: a save dialog hands over a real
- * local path, so nothing crosses IPC in this direction — the backend reads the
- * SFTP stream and writes straight to disk. There is no chunk call to make.
- *
- * `localPath` is not written until the whole file has arrived: the download
- * lands beside it under `.wrustty-part` and is renamed over it only on success,
- * so a failed download over an existing file costs nothing.
- *
- * `resume` skips destination files that already look copied — same size, and
- * not older than the source. Only meaningful for a folder, and set by the Retry
- * button so a transfer that died on file 400 of 500 costs the remaining hundred
- * rather than all five hundred. It is a heuristic, not a comparison: the
- * transfer reports how many files it left alone.
- *
- * Total size arrives on the channel as `transferStarted` — only the backend can
- * know it, and it comes before the first chunk so a progress bar never has to
- * begin life as a spinner.
+ * `resume` skips destination files that already look copied (same size, not
+ * older); folders only, set by Retry. The total arrives as `transferStarted`.
  */
 export function downloadBegin(
   sessionId: string,
@@ -314,47 +229,34 @@ export function downloadBegin(
   })
 }
 
-/** Asks a running transfer to stop, either direction. It stops between chunks,
- *  so this is bounded by one round trip rather than by what is left of the
- *  file. */
+/** Asks a running transfer to stop (between chunks). */
 export function cancelTransfer(transferId: string) {
   return invoke<void>('sftp_cancel_transfer', { transferId })
 }
 
 /**
- * Renames an entry within its own directory, returning the new full path.
- *
- * Cannot move anything: the destination is built from the source's parent plus
- * `newName`, which is rejected if it carries a separator. A rename that quietly
- * turns out to be a move is how a user loses track of a file.
- *
- * Rejects if something is already called `newName`, because SFTP v3's rename
- * does not replace and servers report that badly.
+ * Renames an entry within its own directory, returning the new full path. Never
+ * a move (separators are rejected). Rejects if `newName` exists, since SFTP v3
+ * rename doesn't replace.
  */
 export function rename(sessionId: string, path: string, newName: string) {
   return invoke<string>('sftp_rename', { sessionId, path, newName })
 }
 
 /**
- * Deletes a file, or an empty directory.
- *
- * Whether it is a directory is decided by the backend, not by what the listing
- * last said. A non-empty directory is refused — SFTP has no recursive delete,
- * and growing one implicitly out of a menu item is far too sharp an edge.
+ * Deletes a file or directory (the backend checks which). Without `recursive`,
+ * a non-empty directory is refused.
  */
 export function remove(sessionId: string, path: string, recursive = false) {
   return invoke<void>('sftp_remove', { sessionId, path, recursive })
 }
 
-/** What a directory holds, so a delete confirmation can say what it is about to
- *  remove. "Are you sure" is worth almost nothing; "341 files in 27
- *  directories" is worth a great deal — but only before the user answers. */
+/** What a directory holds, for a specific delete confirmation. */
 export interface TreeCount {
   files: number
   dirs: number
   bytes: number
-  /** Symlinks, which a recursive copy skips and a recursive delete unlinks
-   *  without following. */
+  /** Symlinks: skipped by recursive copy, unlinked (not followed) by delete. */
   links: number
 }
 
@@ -362,8 +264,8 @@ export function countTree(sessionId: string, path: string) {
   return invoke<TreeCount>('sftp_count_tree', { sessionId, path })
 }
 
-/** Sets the permission bits on a remote path. `mode` is a number — parse the
- *  user's octal with `parseOctal` so display and input agree on what a mode is. */
+/** Sets the permission bits on a remote path; parse octal input with
+ *  `parseOctal`. */
 export function chmod(sessionId: string, path: string, mode: number) {
   return invoke<void>('sftp_chmod', { sessionId, path, mode })
 }

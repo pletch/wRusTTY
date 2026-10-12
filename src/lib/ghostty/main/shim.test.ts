@@ -24,16 +24,12 @@ import {
 import { PALETTE_16, DEFAULT_FG, DEFAULT_BG } from '../../../bench/gridPalette'
 
 /**
- * The shim answering our ABI, checked against the vendored build answering the
- * same calls — the same input, the same call sequence, the same expectations.
- *
- * The readers underneath are already asserted byte-identical one at a time
- * (`ViewportReader.test.ts`, `ScrollbackReader.test.ts`, `effects.test.ts`).
- * What this covers is everything the shim itself invents: which render state
- * belongs to which terminal, when the snapshot is rebuilt, the config struct
- * unpacked into `set` calls, the cursor style renumbering, and the reply queue
- * rebuilt over a callback. Each of those is a place where both builds return a
- * plausible number and only one of them is right.
+ * The shim answering our ABI, checked against the vendored build answering
+ * the same calls. The readers underneath are pinned elsewhere
+ * (`ViewportReader.test.ts`, `ScrollbackReader.test.ts`, `effects.test.ts`);
+ * this covers what the shim invents: render state per terminal, snapshot
+ * timing, config unpacked into `set` calls, cursor style renumbering, and the
+ * reply queue over a callback.
  *
  * Skips without a comparison build; see `vendor-main/README.md`.
  */
@@ -204,13 +200,8 @@ run('the main shim, against the ABI it replaces', () => {
     }).then((c) => expect(c).toEqual([DEFAULT_FG, DEFAULT_BG])))
 
   /**
-   * The shape that broke, and the reason it is a case of its own: our config
-   * takes 0 to mean "let the core pick", and a theme with a black background
-   * packs as exactly that. Skipping the background's `set` then loses the
-   * *foreground* too — the render state answers white while the terminal
-   * insists it holds the configured color. Every pane on a `#000000` theme
-   * would have drawn its text in the wrong color, and no test with a
-   * non-black background could see it.
+   * A black background packs as 0 ("let the core pick"); skipping its `set`
+   * must not lose the configured foreground too.
    */
   it('keeps the configured foreground when the background is left to the core', () =>
     same(
@@ -458,9 +449,7 @@ run('the main shim, against the ABI it replaces', () => {
 })
 
 /**
- * Against the shipped binary rather than the comparison build, so these run on
- * CI: they are about a behavior the app switches on, not parity with v1.3.1,
- * which has no such switch.
+ * Against the shipped binary, so these run on CI: v1.3.1 has no such switch.
  */
 describe('resize pulling rows back from scrollback', () => {
   const SHIPPED = join(here, '../vendor/ghostty-vt.wasm')

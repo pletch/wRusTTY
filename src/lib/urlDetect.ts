@@ -1,21 +1,15 @@
 /**
- * Finding URLs in a line of terminal output.
+ * Finding URLs in a line of terminal output. Pure string work over one
+ * logical line (wrapped rows joined; see `ghostty/logicalLines.ts`), returning
+ * offsets into it.
  *
- * Pure string work: no core, no DOM, no knowledge of rows or columns. What it
- * is handed is one *logical* line — wrapped rows already joined, see
- * `ghostty/logicalLines.ts` — and what it hands back is offsets into that
- * line, which the caller maps to screen positions.
- *
- * Every line it sees is attacker-supplied. The far end of an SSH or serial
- * connection is untrusted by construction (the same boundary `remoteIdentity`
- * and `osc52` document), so two properties are load-bearing rather than nice
- * to have: the scan is linear in the length of the line, and a host that does
- * not read as what it is does not become a link at all.
+ * Every line is attacker-supplied, so two properties are load-bearing: the
+ * scan is linear in the line's length, and a host that doesn't read as what
+ * it is never becomes a link.
  */
 
-/** One detected URL. `[start, end)` is half-open, so `line.slice(start, end)`
- *  is the matched text — which is not necessarily `url`, since trailing
- *  punctuation is trimmed off the end of the match. */
+/** One detected URL. `[start, end)` is half-open; the matched text can differ
+ *  from `url`, since trailing punctuation is trimmed. */
 export interface UrlMatch {
   start: number
   end: number
@@ -23,28 +17,16 @@ export interface UrlMatch {
 }
 
 /**
- * The scan.
+ * The scan. `https` and `http` only, since the scheme is handed to the OS
+ * opener; bare `www.` isn't matched (it fires on log hostnames).
  *
- * `https` and `http` only, until there is a reason for more: a scheme this
- * hands to the OS opener is a scheme an attacker chose. Bare `www.` is
- * deliberately not matched — it fires on hostnames in ordinary log output.
+ * Linear on purpose: one character class under one quantifier, nothing that
+ * can backtrack, so hostile output can't hang a frame. Keep that shape.
  *
- * **The pattern is linear on purpose.** One character class under one
- * quantifier: no nested repeat, no alternation inside a repeat, nothing that
- * can backtrack. A pattern that backtracks catastrophically turns `cat` of a
- * hostile file into a hung frame, which is a denial of service delivered as
- * ordinary output. Anything added here must preserve that shape.
- *
- * The excluded characters are the ones that reliably delimit a URL in text
- * rather than appear in one: whitespace, the angle brackets of the `<url>`
- * form, quotes that shells and prose wrap URLs in, and the characters RFC 3986
- * excludes outright. Square brackets stay in for IPv6 literals
- * (`https://[::1]:8080/`); a stray one from `[https://x]` is dealt with below.
- *
- * Control characters are not excluded because a line assembled from terminal
- * cells cannot contain one — the core has already turned them into cursor
- * movement or dropped them. `isOpenableUrl` rejects them anyway, which is
- * where a URI that did not come from cells (OSC 8, later) would be caught.
+ * Excluded are characters that delimit URLs in text: whitespace, `<>`,
+ * quotes, and RFC 3986's excluded set. Square brackets stay for IPv6
+ * literals. Control characters can't come from cells; `isOpenableUrl`
+ * rejects them anyway.
  */
 const URL_RE = /https?:\/\/[^\s<>"`^{}|\\]+/gi
 
@@ -55,9 +37,7 @@ const TRAILING_PUNCT = '.,;:!?\'"'
 const CLOSERS: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
 
 /**
- * A scheme cannot begin in the middle of a word. Without this,
- * `xhttps://evil.example` — or any identifier that happens to end in `http` —
- * produces a link over text that reads as something else entirely.
+ * A scheme can't begin mid-word (`xhttps://evil.example`).
  */
 function isBoundary(line: string, at: number): boolean {
   if (at === 0) return true
@@ -68,18 +48,11 @@ function isBoundary(line: string, at: number): boolean {
 }
 
 /**
- * Drops the punctuation the surrounding text owns.
- *
- * This is the whole difficulty of detection. `(see https://x/y)` and
- * `https://x/y.` must not swallow the closer or the full stop, while
- * `https://en.wikipedia.org/wiki/Foo_(bar)` must keep its parentheses — so a
- * closer is dropped only when the match holds no opener to match it against.
- *
- * The bracket counts are computed once and maintained as characters come off
- * the end, rather than recounted per character: a line ending in a few
- * thousand `)` is exactly the kind of input this has to survive, and
- * recounting would make it quadratic — the same failure the regex is shaped to
- * avoid, arrived at from the other side.
+ * Drops punctuation the surrounding text owns: `(see https://x/y)` and
+ * `https://x/y.` lose the closer and full stop, while
+ * `https://en.wikipedia.org/wiki/Foo_(bar)` keeps its parentheses. A closer is
+ * dropped only when unmatched. Bracket counts are maintained incrementally so
+ * a long run of `)` stays linear.
  */
 function trimTrailing(match: string): string {
   const counts = new Map<string, number>()
@@ -112,10 +85,7 @@ function trimTrailing(match: string): string {
   return match.slice(0, end)
 }
 
-/**
- * The authority component — userinfo, host and port — or null if there is
- * none.
- */
+/** The authority (userinfo, host, port), or null if there's none. */
 function authorityOf(url: string): string | null {
   const at = url.indexOf('://')
   if (at < 0) return null
@@ -132,34 +102,19 @@ function authorityOf(url: string): string | null {
 }
 
 /**
- * Whether the host reads as what it is.
- *
- * `https://аpple.com` with a Cyrillic `а` is a different site than it appears
- * to be, and this app already strips the format characters that play the same
- * trick out of the status bar's remote text (`remoteIdentity.ts`). A URL whose
- * authority is not plain ASCII is not offered as a link at all — the text
- * still sits in the buffer to be read and copied, which is the honest outcome
- * for a destination we cannot render unambiguously. Punycode (`xn--…`) reaches
- * here as ASCII and is offered, which is the same trade every browser makes.
- *
- * The two rejections above the loop are the ways an all-ASCII authority still
- * reads as somewhere it isn't — see each.
+ * Whether the host reads as what it is. A non-ASCII authority
+ * (`https://аpple.com` with a Cyrillic `а`) isn't linked; the text stays
+ * readable and copyable. Punycode (`xn--`) is ASCII and offered, as browsers
+ * do. The checks before the loop catch all-ASCII authorities that still
+ * mislead.
  */
 function authorityIsSafe(authority: string | null): boolean {
   if (authority === null || authority.length === 0) return false
-  // Userinfo. `https://google.com@evil.example/login` is a link to
-  // `evil.example` whose first sixteen characters say otherwise, and reading
-  // past the `@` is precisely the thing nobody does — it is the oldest URL
-  // phishing trick there is. Showing the full URL in the link menu does not
-  // help, because the full URL is the misleading string. Userinfo is
-  // deprecated in http/https and every browser discards it, so refusing to
-  // linkify costs nothing that works anyway.
+  // Userinfo: `https://google.com@evil.example/login` goes to `evil.example`.
+  // Deprecated in http(s) and discarded by browsers, so refusing costs nothing.
   if (authority.includes('@')) return false
-  // Percent-encoding, which otherwise smuggles the very homoglyphs the loop
-  // below exists to reject: `%D0%B0pple.com` is plain ASCII here and Cyrillic
-  // `аpple.com` by the time the browser has decoded it and resolved the IDN.
-  // The raw form is already refused; without this the defense holds only
-  // against the spelling of the attack, not the attack.
+  // Percent-encoding would smuggle the homoglyphs rejected below
+  // (`%D0%B0pple.com` decodes to Cyrillic).
   if (authority.includes('%')) return false
   for (let i = 0; i < authority.length; i++) {
     if (authority.charCodeAt(i) > 0x7e || authority.charCodeAt(i) < 0x21) return false
@@ -184,26 +139,16 @@ export function findUrls(line: string): UrlMatch[] {
 }
 
 /**
- * Whether a URL may be handed to the system opener.
- *
- * Checked again immediately before opening, not only at detection: the opener
- * passes the string to the OS, and the two points are far enough apart in the
- * code that this is not the same check twice. On Windows in particular a
- * `file://` or UNC-flavored target can provoke an outbound SMB authentication
- * attempt and leak credentials to a host of the attacker's choosing;
- * `vbscript:`, `javascript:` and whatever custom schemes other installed
- * software has registered are the same class of problem.
- *
- * Also the gate an OSC 8 URI has to pass when that arrives — there the URI is
- * whatever the program declared rather than something this file matched, so
- * this is the only check it ever sees.
+ * Whether a URL may be handed to the system opener. Checked again right
+ * before opening. On Windows a `file://` or UNC target can leak credentials
+ * via SMB authentication, and `vbscript:`, `javascript:` and custom schemes
+ * are the same class of problem. Also the only gate for OSC 8 URIs.
  */
 export function isOpenableUrl(url: string): boolean {
   const scheme = /^(https?):\/\//i.exec(url)
   if (!scheme) return false
   if (!authorityIsSafe(authorityOf(url))) return false
-  // A control character anywhere would be invisible in whatever the OS shows
-  // the user before it acts on this.
+  // A control character would be invisible in whatever the OS shows.
   for (let i = 0; i < url.length; i++) {
     const c = url.charCodeAt(i)
     if (c < 0x20 || c === 0x7f) return false

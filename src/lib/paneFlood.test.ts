@@ -4,19 +4,9 @@ import { formatFloodReport } from './paneFlood'
 const info = { bytes: 100 * 1048576, cols: 174, rows: 38, wallMs: 4110 }
 
 /**
- * The check that the measurement itself is sound.
- *
- * V8 runs WebAssembly in a debuggable tier while DevTools is open, which cost
- * 2.75x on this build — 11.14 ms/MB closed against 30.65 open, one page,
- * nothing else changed. Both recorders used to be reachable only from the
- * console, so every production figure taken during the Phase 7 investigation
- * was measured in that tier, and the resulting "the live pane is 2.7x slower
- * than the harness" gap was chased through the workload, the grid, the
- * scrollback, the transport, the backend and the page state before anyone
- * suspected the instrument.
- *
- * So the report says it itself, and it says it before the numbers rather than
- * after them.
+ * The measurement's own soundness check: V8 runs WebAssembly in a debuggable
+ * tier while DevTools is open (2.75x slower here), so the report warns before
+ * the numbers.
  */
 describe('pane flood report', () => {
   it('stays quiet at the rate a healthy run produces', () => {
@@ -38,9 +28,8 @@ describe('pane flood report', () => {
   })
 
   /**
-   * The threshold sits between the two observed modes rather than just above
-   * the good one, so ordinary run-to-run variation cannot trip it and a genuine
-   * 2.75x cannot slip under it.
+   * The threshold sits between the two observed modes, so normal variation
+   * can't trip it and a real 2.75x can't slip under.
    */
   it('separates the two observed modes with room either side', () => {
     expect(formatFloodReport(info, 15, '').includes('!!')).toBe(false)

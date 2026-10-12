@@ -61,12 +61,9 @@ import {
   sessionModeReset,
   type ModeSnapshot,
 } from './sessionModes'
-// A locally-built binary: ghostty `main` at the port's pin, plus the one fix we
-// still carry (#176, `ESC k`). It speaks main's API rather than the one
-// `wasmBindings.ts` declares — `instantiateGhosttyModule` recognizes that from
-// the binary's exports and wraps it in `main/shim.ts`, so nothing in this file
-// knows which build it is talking to. See vendor/README.md and
-// docs/PORT_GHOSTTY_MAIN.md.
+// ghostty `main` plus the `ESC k` fix (#176). `instantiateGhosttyModule`
+// detects its API from the exports and wraps it in `main/shim.ts`. See
+// vendor/README.md and docs/PORT_GHOSTTY_MAIN.md.
 import ghosttyWasmUrl from './vendor/ghostty-vt.wasm?url'
 
 /** The cursor preference as the core's own numbering, for the config struct. */
@@ -80,68 +77,24 @@ const CONFIG_CURSOR_STYLE: Record<CursorStyleSetting, number> = {
 const CURSOR_BLINK_MS = 530
 
 /**
- * `scrollbackLimit` in the core's config is a **byte budget**, not a row count
- * — the name reads like xterm's `scrollback` and it is not. It reaches upstream
- * Ghostty's `PageList` as `max_size`, which is in bytes, so a row-shaped value
- * lands far below the core's ~530 KB minimum page and every setting collapses
- * to the same two-page floor. That is exactly how a row count behaved when it
- * was tried: measured against this build, 1000 / 5000 / 10000 / 50000 / 100000
- * all retained ~1100 rows at 80 columns, ~250 at 200, with the WASM heap pinned
- * at its initial 6.6 MB because the core never had a reason to grow.
- *
- * The unit is settled by sweeping the raw field against this binary: retention
- * tracks `value / (cols * 9.2)`. That constant is a property of the *core*, not
- * arithmetic, and it moved with the port — the v1.3.1 build delivered 12.65
- * bytes per cell, ghostty `main` delivers 8.5-9.7 from 80 to 400 columns and
- * across every budget from 6 MB up, so the same budget now buys ~37% more
- * depth. Below ~3 MB the figure degrades to 10.5-12.6 because whole-page
- * eviction dominates when a budget is only a few pages wide; that is why the
- * band around the smallest tier in `scrollbackLimit.test.ts` is wider than the
- * others. Note `vendor/README.md` used to assert the opposite and dismiss
- * `ghostty-web`'s "it's bytes" docs (their PR #151); they were right.
- *
- * Rows are therefore not a quantity this side can promise — they fall out of
- * the budget and the width, and widening a pane trades depth for columns out
- * of the same budget, which is how Ghostty itself behaves. That is why the
- * *setting* is the budget rather than a row count: a row count is a promise
- * whose truth depends on how wide the user later drags the pane, and it was
- * offered and broken twice before this. `estimateScrollbackRows` derives the
- * rows for display, which is the honest direction to convert in.
+ * The core's `scrollbackLimit` is a byte budget, not a row count. Retention
+ * tracks `value / (cols * 9.2)` for this binary; rows fall out of the budget and
+ * the width, which is why the setting is the budget. Re-measure after
+ * rebuilding the vendored binary (see docs/DEV_HISTORY.md).
  */
 const SCROLLBACK_BYTES_PER_CELL = 9.2
 
 /**
- * Per-pane memory tiers, keyed by the figure shown in Settings.
+ * Per-pane memory tiers: key is the pane's total WASM footprint in MB as shown
+ * in Settings, value is the scrollback budget. WASM memory grows in doubling
+ * steps, so each budget is the largest that stays inside its step:
  *
- * **The key is the pane's total WASM footprint, not the scrollback budget** —
- * those differ by more than a factor of two and the user is choosing what the
- * pane costs, so the label has to be the cost. The values are the budgets that
- * buy the most scrollback without pushing the heap past the label.
+ *   budget <= 2.5 MB  ->  5.0 MB heap   (8 MB tier)
+ *   budget 2.75-6 MB  ->  9.0 MB heap   (16 MB tier)
+ *   budget 6.5-12 MB  -> 17.0 MB heap   (32 MB tier)
+ *   budget 13-26 MB   -> 33.0 MB heap   (64 MB tier)
  *
- * They look arbitrary because they are measured, not derived. WASM memory grows
- * in doubling steps, so the heap is a staircase against the budget rather than
- * a line: every budget from 13 MB to 26 MB lands on the same 33 MB heap, and
- * one more megabyte doubles it. **Re-measured for the move to ghostty `main`**,
- * which shifted every step: its binary is 1.3 MB against 742 kB and carries
- * more static data, so each budget now lands one doubling higher than it did.
- * Flooded to saturation, sweeping 80/200/400 columns and three flood shapes —
- * the steps are width-independent and shape-independent:
- *
- *   budget <= 2.5 MB  ->  5.0 MB heap     2.5 MB chosen, labeled 8 MB
- *   budget 2.75-6 MB  ->  9.0 MB heap       6 MB chosen, labeled 16 MB
- *   budget 6.5-12 MB  -> 17.0 MB heap      12 MB chosen, labeled 32 MB
- *   budget 13-26 MB   -> 33.0 MB heap      26 MB chosen, labeled 64 MB
- *
- * Each budget sits inside its step, so the label is an honest ceiling rather
- * than a target the pane creeps past — the renderer's scratch buffers come out
- * of the same linear memory and are not in the measurement above. Picking the
- * *top* of each step is the point: 6.5 MB and 12 MB cost the same 17 MB heap
- * but differ by ~2x in depth, so rounding the budget down would give away rows
- * for nothing. The tiers still buy more depth than they did before the port
- * despite the smaller budgets, because a row costs less.
- *
- * Re-measure before changing any of this, and after any rebuild of the
- * vendored binary; it is a property of that binary, not arithmetic.
+ * Measured, not derived: re-measure after any rebuild of the vendored binary.
  */
 const SCROLLBACK_BUDGET_BY_FOOTPRINT_MB: Record<number, number> = {
   8: 2.5 * 1024 * 1024,
@@ -150,47 +103,27 @@ const SCROLLBACK_BUDGET_BY_FOOTPRINT_MB: Record<number, number> = {
   64: 26 * 1024 * 1024,
 }
 
-/** Tier used when a setting is missing, corrupt, or not one of the tiers. The
- *  smallest, so an unreadable value can never cost more memory than the user
- *  last agreed to. */
+/** Tier used when a setting is missing or invalid; the smallest, so a bad
+ *  value never costs more memory than the user chose. */
 const DEFAULT_FOOTPRINT_MB = 8
 
-/** How much output may pile up waiting for the core to load before the engine
- *  gives up and says so. See parseSegment — the unbounded version of this hid a
- *  never-loading core behind a blank pane and a lying throughput figure. */
+/** Output buffered before the core loads, beyond which the engine reports a
+ *  failure instead of waiting. */
 const MAX_PREREADY_BYTES = 1024 * 1024
 
 /**
- * Bytes of scrollback to ask the core for, given the footprint tier the user
- * chose.
- *
- * Unlike the row-count version this replaces, the width is not an input: the
- * budget *is* the setting, and width only decides how many rows it buys.
- *
- * Every return path has to be a positive integer inside u32. Zero is not a
- * small budget to this core — `newWithConfig` reads it as *unlimited* — and the
- * value is written with `setUint32`, which turns a fractional or out-of-range
- * number into something arbitrary rather than erroring. Anything that is not a
- * known tier (a corrupt or hand-edited `localStorage` entry, `NaN`, a tier
- * retired by a later version) therefore falls back to the smallest tier rather
- * than being arithmetically coerced into some neighboring value.
+ * Scrollback bytes for a footprint tier. Unknown tiers fall back to the
+ * smallest: zero means *unlimited* to the core, and `setUint32` silently
+ * mangles fractional or out-of-range values.
  */
 export function scrollbackBudgetBytesFor(footprintMB: number): number {
   return SCROLLBACK_BUDGET_BY_FOOTPRINT_MB[footprintMB] ?? SCROLLBACK_BUDGET_BY_FOOTPRINT_MB[DEFAULT_FOOTPRINT_MB]
 }
 
 /**
- * Roughly how many rows a budget buys at a given width — the number shown in
- * Settings and the status bar.
- *
- * Approximate on purpose, and labeled that way wherever it is rendered. The
- * core evicts whole pages, so the true figure lands a little under this;
- * measured against the vendored binary across 80-400 columns the error runs
- * -27% to +8%, and all of the -27% is the smallest tier, where a budget only a
- * few pages wide makes page granularity the dominant term. From the 16 MB tier
- * up it is within -5% to +8%. Good enough to size a
- * decision by, which is all it is for — the exact depth of a live pane is
- * `scrollbackLength`, which is measured rather than estimated.
+ * Approximate rows a budget buys at a given width, for display. The core evicts
+ * whole pages, so the real figure is a little lower; `scrollbackLength` is the
+ * measured depth of a live pane.
  */
 export function estimateScrollbackRows(budgetBytes: number, cols: number): number {
   const safeCols = Number.isFinite(cols) ? Math.max(1, cols) : 1
@@ -199,21 +132,8 @@ export function estimateScrollbackRows(budgetBytes: number, cols: number): numbe
 }
 
 /**
- * Grid that fits a container box, in cells.
- *
- * The gutter is the whole subtlety. The custom scrollbar is an overlay
- * anchored to the container's right edge and painted over the canvas
- * (`.term-scrollbar`, z-index 20), not a sibling the layout makes room for —
- * so a grid derived from the *full* width runs underneath it. What was left
- * between the canvas's right edge and the container's was only
- * `width % cellWidth`, and whenever that remainder came out under the
- * scrollbar's width the overlay covered the last column and clipped its
- * glyph. Which widths that hit depended on the font size and the pane's exact
- * pixel width, so the last character on a row appeared to vanish only
- * sometimes. Reserving the gutter here is what xterm's FitAddon does for its
- * own scrollbar.
- *
- * Pure, so the arithmetic can be tested without a DOM, a renderer or a core.
+ * Grid that fits a container box, in cells. Reserves `gutterPx` because the
+ * scrollbar overlays the canvas rather than taking layout space.
  */
 export function fitGrid(
   box: { width: number; height: number },
@@ -227,9 +147,7 @@ export function fitGrid(
   }
 }
 
-/** The setting's vocabulary, mapped onto the renderer's uniform values.
- *  Exhaustive by type, so a new mode cannot be added to the setting without
- *  being given a blend here. */
+/** Text-blending setting mapped to renderer uniforms. */
 const BLEND_MODES: Record<TextBlending, number> = {
   native: BLEND_NATIVE,
   linear: BLEND_LINEAR,
@@ -247,66 +165,41 @@ export class GhosttyEngine implements TerminalEngine {
   private fonts: FontSelection = plainSelection('Consolas, monospace')
   private fontSize = 14
   
-  /**
-   * Whether this session's host wants `^H` for Backspace rather than `^?`.
-   *
-   * Applied to keystrokes as they leave (see `mount`), not to the pane's whole
-   * output — see the note there for what that cost.
-   */
+  /** Whether the host wants `^H` for Backspace; applied to keystrokes in `mount`. */
   private backspaceSendsCtrlH = false
   /**
-   * Whether growing the pane may pull rows back out of scrollback. False for a
-   * ConPTY session — see `setResizePullsScrollback`. Kept here as well as in
-   * the core because the terminal may not exist yet when the pane says so.
+   * Whether growing the pane may pull rows back out of scrollback (false for
+   * ConPTY). Kept here too because the terminal may not exist yet.
    */
   private resizePullsScrollback = true
 
   private onDataHandlers = new Set<(data: Uint8Array) => void>()
-  /** Fired from the two sites a human is behind — key input and paste — and
-   *  nowhere else. Kept as a separate set rather than a flag threaded through
-   *  `onData` so the distinction is made where the data originates, by the
-   *  code that knows what it is, instead of being guessed at downstream. */
+  /** Fired only for key input and paste, i.e. data a human typed. */
   private onInputHandlers = new Set<(data: Uint8Array) => void>()
   private onResizeHandlers = new Set<(size: { cols: number; rows: number }) => void>()
   private inputHandler: GhosttyInputHandler | null = null
-  /**
-   * Ghostty's own key encoder, over this pane's terminal. Made with the
-   * terminal and freed with it, because it holds a pointer to it — and it is
-   * the terminal it reads the active keyboard protocol from on every
-   * keystroke, so the two cannot outlive each other.
-   */
+  /** Ghostty's key encoder; holds a pointer to the terminal, so it lives and dies
+   *  with it. */
   private keyEncoder: KeyEncoder | null = null
   /**
-   * The core's own find-in-scrollback, when the loaded binary has it.
-   *
-   * Null on a v1.3.1 build, and unused for regex or case-sensitive queries,
-   * which it cannot express — see `NativeSearchController` and
-   * `docs/NATIVE_SEARCH_PLAN.md`. Both paths write to the same renderer
-   * highlights and the same `onSearchResult` handlers, so only one of them may
-   * hold the view at a time; `search` below is what enforces that.
+   * The core's native find-in-scrollback, when the binary has it. Not used for
+   * regex or case-sensitive queries; `search` ensures only one search path owns
+   * the highlights at a time. See `docs/NATIVE_SEARCH_PLAN.md`.
    */
   private nativeSearch: NativeSearchController | null = null
 
-  /**
-   * Ghostty's own mouse encoder, on the same terms as the key one: made with
-   * the terminal, freed with it, and reading the tracking mode and wire format
-   * from it on every event. Unlike the key encoder it also needs the rendered
-   * geometry, which is not terminal state — see `syncMouseSurface`.
-   */
+  /** Ghostty's mouse encoder; lives with the terminal and also needs the
+   *  rendered geometry (see `syncMouseSurface`). */
   private mouseEncoder: MouseEncoder | null = null
 
-  /** Writes that arrived before the core finished loading. Bytes only: every
-   *  write is converted to bytes up front (see write). */
+  /** Writes received before the core finished loading, as bytes. */
   private writeBuffer: Uint8Array[] = []
   private writeBufferBytes = 0
-  /** Whether the render loop may re-fit this engine to its container. Off while
-   *  a caller has pinned the grid on purpose — see the poll in the render loop
-   *  and `setAutoFit`. */
+  /** Whether the render loop may re-fit to the container; see `setAutoFit`. */
   private autoFit = true
   private renderLoopId = 0
   private needsRedraw = true
-  // The deferred re-fits below outlive a pane that's torn down while its WASM
-  // is still loading, so they have to know not to touch a dead engine.
+  // Deferred re-fits can outlive a pane disposed while WASM is still loading.
   private disposed = false
   
   get cols(): number { return this._cols }
@@ -321,15 +214,12 @@ export class GhosttyEngine implements TerminalEngine {
 
   private _cols = 80
   private _rows = 24
-  /** Per-pane memory tier, as chosen in Settings. Resolved to a byte budget
-   *  when the terminal is built, and fixed from then on. */
+  /** Per-pane memory tier; resolved to a byte budget when the terminal is built. */
   private _scrollbackFootprintMB = DEFAULT_FOOTPRINT_MB
   /** The configured default cursor, resent to the core whenever one is built. */
   private _cursorStyle: CursorStyleSetting = 'block'
   private _cursorBlink = true
-  // Mirrors the setting of the same name. Held here because the renderer is
-  // thrown away and rebuilt on a font change, and a fresh one starts on the
-  // native path — the same hazard the theme has.
+  // Kept here because the renderer is rebuilt on a font change.
   private _textBlending: TextBlending = 'native'
   private _ligatures = false
   private _themeName: string | null = null
@@ -338,82 +228,58 @@ export class GhosttyEngine implements TerminalEngine {
   private _viewportOffset = 0
   private onScrollHandlers = new Set<(newPos: number) => void>()
   private onWriteParsedHandlers = new Set<() => void>()
-  /**
-   * Fired after a frame is actually drawn (not on damage-free frames). Only the
-   * benchmark harness (src/bench) subscribes; it needs a "a frame was painted"
-   * signal to stop its clock at presentation. Kept off the `TerminalEngine`
-   * contract for that reason.
-   */
+  /** Fired after a frame is drawn. Only the benchmark harness subscribes. */
   private onRenderHandlers = new Set<() => void>()
   
-  /** Mouse selection: drag state, word/line picking, autoscroll, and turning
-   *  a selection into text. Assigned in the constructor. */
+  /** Mouse selection; assigned in the constructor. */
   private readonly selection: SelectionController
   private onSelectionChangeHandlers = new Set<() => void>()
-  /** Keyboard selection. Off unless the user asks for it; while on it takes
-   *  the arrow keys, which otherwise belong to the program. */
+  /** Keyboard selection; takes the arrow keys while active. */
   private readonly markMode: MarkModeController
   private onMarkModeHandlers = new Set<(active: boolean) => void>()
   /** URLs in the buffer: what is under a cell, and what is on screen. */
   private readonly links: LinkController
-  /** Opening a link from the keyboard. Off unless the user asks for it; the
-   *  path that works when a program has grabbed the mouse. */
+  /** Opening a link from the keyboard, for when a program has the mouse. */
   private readonly hintMode: HintModeController
   private onHintModeHandlers = new Set<(active: boolean) => void>()
   private onLinkActivateHandlers = new Set<(url: string) => void>()
   private onPathActivateHandlers = new Set<(path: string) => void>()
-  /** Whether file paths are links too, and in which syntax. Off until the
-   *  frontend says the pane has somewhere to send one — see `setPathLinks`. */
+  /** Whether file paths are links, and in which syntax; see `setPathLinks`. */
   private pathLinks: PathFlavor | null = null
-  /** Where the pointer last was, so the hit test can be redone when the
-   *  modifier is pressed or released without the mouse having moved. */
+  /** Last pointer position, to redo the hit test when a modifier changes. */
   private hoverPointer: { clientX: number; clientY: number } | null = null
   /** The link currently underlined, or null. */
   private hoveredLink: Link | null = null
-  /** What the current hover answer was computed against: cell, modifier,
-   *  buffer generation and viewport. Recomputing only when this changes is
-   *  what keeps detection off the per-mousemove path — the events arrive at
-   *  pointer resolution and the answer only changes at cell resolution. */
+  /** Cell, modifier, buffer generation and viewport of the current hover result,
+   *  so detection only reruns when one changes. */
   private hoverSig = ''
-  /** What the painted set of link underlines was computed against — buffer
-   *  generation, viewport and width, the same key the hit test caches on. */
+  /** Cache key for the painted link underlines. */
   private linkRangesSig = ''
-  /** A Ctrl+press that landed on a link, waiting for the release that decides
-   *  whether it was a click or the start of a drag. */
+  /** A Ctrl+press on a link, pending the release that decides click vs drag. */
   private pendingLink: { url: string; kind: LinkKind; at: { x: number; y: number } } | null = null
   private onCopyRequestHandlers = new Set<(text: string) => void>()
-  /** Bytes of an OSC that began in an earlier chunk and has not terminated.
-   *  Already parsed; retained only to match the pattern across the boundary. */
+  /** Unterminated OSC bytes from the previous chunk, kept to match across the
+   *  boundary. */
   private oscPending: Uint8Array | null = null
   private oscDecoder = new TextDecoder()
   private oscEncoder = new TextEncoder()
   private oscHandlers = new Map<number, ((data: string) => boolean | Promise<boolean>)[]>()
   private onBellHandlers = new Set<() => void>()
-  /** See `registerResetHandler`. Kept separate from the bell handlers because
-   *  its presence, not just its contents, changes what the scanner hunts for. */
+  /** See `registerResetHandler`. Separate because its presence changes what the
+   *  scanner looks for. */
   private onResetHandlers = new Set<() => void>()
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
   private lastIsAlternate = false
 
   /**
-   * Why the engine is dead, or null while it is alive. Retained (not just
-   * dispatched) so a handler registered after the failure still hears about it:
-   * `initWasm` is kicked off by the constructor, so nothing can subscribe
-   * before it begins, and a silent engine is exactly the failure mode this
-   * exists to make visible.
-   *
-   * Covers both never-started and died-later. The second case used to have no
-   * representation at all — an out-of-memory core kept returning null pointers,
-   * every call site did nothing about it, and the pane simply stopped
-   * responding with no error anywhere.
+   * Why the engine is dead (failed to start or died later), or null. Retained so
+   * handlers registered after the failure still hear about it.
    */
   private fatalError: string | null = null
   private onInitErrorHandlers = new Set<(message: string) => void>()
 
   private onSearchResultHandlers = new Set<(result: SearchResult) => void>()
-  /** Find-in-scrollback and its four fields of cache state, which only ever
-   *  talked to each other. Assigned in the constructor because its host object
-   *  closes over `this`. */
+  /** Find-in-scrollback; assigned in the constructor. */
   private readonly searchController: SearchController
   /** Bumped whenever the buffer changes, so a cached search knows it is stale. */
   private bufferGen = 0
@@ -423,66 +289,26 @@ export class GhosttyEngine implements TerminalEngine {
   private cursorBlinkTimer: ReturnType<typeof setInterval> | null = null
   private focused = false
 
-  /** Mouse reporting: which button is held, the last reported cell, and the
-   *  report encoding. Assigned in the constructor — its host closes over
-   *  `this`. */
+  /** Mouse reporting; assigned in the constructor. */
   private readonly mouse: MouseReporter
   /** Scrollback depth as of the last frame, for keeping a scrolled view still. */
   private lastScrollbackCount = 0
   /**
-   * Scrollback depth at the moment the render snapshot was last rebuilt, and
-   * the only count `readRows` may map an absolute row through.
-   *
-   * The snapshot holds the active screen as it was at the last
-   * `ghostty_render_state_update` — once a frame, or on an explicit
-   * `syncReadState`. A live `get_scrollback_length` does not belong beside it:
-   * output processed since that update has already grown the live count, so
-   * `abs - live` indexes the snapshot's grid by however many rows have scrolled
-   * in the meantime. Copy reads the tail of a selection off that grid, which is
-   * how a selection came back correct through its scrollback rows and then
-   * shifted — or blank, where the index ran past the grid — through the rows
-   * still on the active screen.
-   *
-   * -1 until the first snapshot, which is the one case where falling back to
-   * the live count is right: there is no snapshot to be out of step with.
+   * Scrollback depth when the render snapshot was last rebuilt, the only count
+   * `readRows` may map absolute rows through: the live count has already grown by
+   * output processed since. -1 before the first snapshot.
    */
   private snapshotScrollback = -1
 
   /**
-   * Absolute rows whose scrollback read failed during the last `readRows`.
-   *
-   * `ghostty_terminal_get_scrollback_line` can answer "no" — the shim returns 0
-   * when `grid_ref` will not resolve the row — and when it does it leaves the
-   * caller's buffer exactly as it found it. Discarding that answer, which this
-   * function did, turns the miss into a row of spaces on the first read and a
-   * duplicate of the previous row on every one after, and copy then reports
-   * either as the buffer's contents. That is the same fault the
-   * `allocBufferOrThrow` above refuses to commit for a failed allocation, and
-   * it was going unrecorded three lines below it.
-   *
-   * Kept rather than thrown because a blank row is still the right thing to
-   * hand back — absolute numbering has to survive, or every caller indexing
-   * `out` by offset reads the wrong row — but silently is the wrong way to hand
-   * it back. `dumpState` reports this, so a copy that came out short says so
-   * instead of leaving the reader to infer it from the shape of the damage.
-   *
-   * Every blank this function invents is recorded, not just the refused read,
-   * and each says which of the three it was. Recording only one of them would
-   * be worse than recording none: a dump that says "all rows came back" while
-   * holding blanks from a path that does not report is a dead end dressed up
-   * as an answer, and the next reader would rule out the wrong thing.
-   *
-   * `abs < 0` is deliberately not here. That is a caller asking about a row
-   * above the buffer — mark mode walking off the top does it routinely — and
-   * a blank is the honest answer rather than a failure to report.
+   * Absolute rows `readRows` returned as blanks during its last call, and why
+   * (e.g. a refused scrollback read). Reported by `dumpState`. Rows above the
+   * buffer (`abs < 0`) are not failures and aren't recorded.
    */
   private rowReadFailures: { row: number; why: string }[] = []
 
   constructor() {
-    // Narrow by design: reads of buffer state, plus requests to move or
-    // repaint the view. Searching is not allowed to do anything else.
-    // All arrow functions, so `this` needs no aliasing and the three reads
-    // below stay live rather than being snapshotted here.
+    // Narrow by design: reads of buffer state plus requests to move or repaint.
     this.mouse = new MouseReporter({
       tracking: () => this.mouseTracking(),
       at: (e) => this.pointerAt(e),
@@ -574,28 +400,15 @@ export class GhosttyEngine implements TerminalEngine {
       },
     })
     GhosttyEngine.contexts.add(this)
-    // Registered here rather than at module scope so importing the engine has
-    // no side effect: if something constructed one, there is state worth
-    // reporting. Idempotent — every engine re-registers the same function.
+    // Registered here rather than at module scope so importing has no side effect.
     phases.setContext(GhosttyEngine.formatDiagnostics)
     this.initWasm()
   }
 
   /**
-   * What this page is holding: engines alive, terminals allocated, and the WASM
-   * linear memory they hold between them.
-   *
-   * Each engine gets its own `Instance` and therefore its own linear memory
-   * (the module is shared, the instance never is — see moduleCache), so these
-   * sum rather than coincide.
-   *
-   * Reported alongside every throughput figure because of a result neither the
-   * workload nor the terminal state explains: the same WASM parses ~2.6x faster
-   * in one page session than another, stable within each, while the pure-JS
-   * pass over the same bytes barely moves. Two candidates remain — engines
-   * accumulating across hot reloads (each with its own memory, spreading the
-   * working set) and V8's WASM tier being fixed early — and these numbers tell
-   * them apart: the first shows here, the second does not.
+   * Engines alive, terminals allocated, and their combined WASM linear memory
+   * (each engine has its own instance, so these sum). Reported alongside
+   * throughput figures to diagnose session-to-session speed differences.
    */
   static diagnostics(): { engines: number; terminals: number; wasmBytes: number } {
     let wasmBytes = 0
@@ -607,11 +420,7 @@ export class GhosttyEngine implements TerminalEngine {
     return { engines: GhosttyEngine.contexts.size, terminals, wasmBytes }
   }
 
-  /**
-   * The engine most recently on screen — the pane a devtools-driven flood
-   * should target. Ranked by the same `lastVisibleAt` the context budget uses,
-   * so "the one you are looking at" wins without the caller needing a handle.
-   */
+  /** The engine most recently on screen, by the context budget's `lastVisibleAt`. */
   static activeEngine(): GhosttyEngine | null {
     let best: GhosttyEngine | null = null
     for (const e of GhosttyEngine.contexts.all()) {
@@ -622,13 +431,7 @@ export class GhosttyEngine implements TerminalEngine {
     return best
   }
 
-  /**
-   * Row-read failures as one line: a count and a sample of rows per reason.
-   *
-   * Shared by the console warning and the dump so the two never drift into
-   * describing the same event differently, which is the sort of thing that
-   * costs an afternoon when the two are being read side by side.
-   */
+  /** Row-read failures as one line, shared by the console warning and the dump. */
   private static summariseRowFailures(failures: { row: number; why: string }[]): string {
     const byReason = new Map<string, number[]>()
     for (const f of failures) {
@@ -651,21 +454,14 @@ export class GhosttyEngine implements TerminalEngine {
 
   private async initWasm() {
     try {
-      // Compiled once for the whole app, instantiated per pane — see
-      // compileGhosttyWasm. Fetching and compiling here instead put the cost of
-      // the entire binary on every pane opened.
+      // Compiled once for the app, instantiated per pane; see compileGhosttyWasm.
       this.wasm = await instantiateGhosttyModule(await compileGhosttyWasm(ghosttyWasmUrl))
 
-      // Colors go in at construction so the core resolves every cell against
-      // this theme's palette and defaults, and hands back finished RGB. The
-      // renderer therefore never has to know what "color 4" means.
+      // Colors go in at construction so the core resolves every cell to RGB.
       this.termPtr = createTerminal(this.wasm, this._cols, this._rows, {
         scrollbackLimit: this.scrollbackBudgetBytes,
         ...this.themeConfigColors(),
-        // The cursor a RIS returns to. Only the `main` ABI acts on it, where it
-        // replaces the reset/DECSCUSR tick comparison in
-        // `restoreCursorAfterReset` outright — the core simply keeps the
-        // preference across the reset instead of the host putting it back.
+        // The cursor a RIS returns to. Only the `main` ABI acts on it.
         cursorStyle: CONFIG_CURSOR_STYLE[this._cursorStyle],
         cursorBlink: this._cursorBlink,
       })
@@ -676,15 +472,9 @@ export class GhosttyEngine implements TerminalEngine {
       // Before the first resize can happen, which is the only thing it governs.
       if (!this.resizePullsScrollback) this.applyResizePull()
 
-      // Before the buffered writes below: those writes can carry the very
-      // sequence that turns the Kitty protocol on, and an encoder made
-      // afterward would be reading a terminal whose state had already moved.
-      // (It reads that state per keystroke, so this is belt and braces — but
-      // the ordering is free and the alternative is a rule to remember.)
+      // Before the buffered writes, which may turn on the Kitty protocol.
       this.keyEncoder = KeyEncoder.create(this.wasm, this.termPtr)
-      // Cheap to make (it reads no terminal contents) and it registers with the
-      // terminal so the two can be freed in either order, so it is built once
-      // here rather than on the first keystroke in the find bar.
+      // Cheap and order-independent to free, so built eagerly.
       this.nativeSearch = NativeSearchController.create(this.wasm, this.termPtr, {
         setHighlights: (byRow) => {
           if (this.renderer) this.renderer.searchHighlights = byRow
@@ -700,30 +490,18 @@ export class GhosttyEngine implements TerminalEngine {
         rows: () => this._rows,
       })
       this.mouseEncoder = MouseEncoder.create(this.wasm, this.termPtr)
-      // The renderer may already be up (mount runs before this when the module
-      // is warm), in which case the geometry is knowable now; if it is not,
-      // setupRenderer does this instead.
+      // Mount may already have run if the module was warm; otherwise
+      // setupRenderer does this.
       this.syncMouseSurface()
 
-      // Before the buffered writes below, so a shape the connection itself sets
-      // in its first bytes wins over the preference rather than being undone by
-      // it.
-      //
-      // Written unconditionally. An earlier version skipped this when the
-      // preference matched what looked like the core's default, on the
-      // assumption that a fresh terminal is a blinking block. It is not: the
-      // core leaves DEC mode 12 off, so a fresh cursor is *steady*. Skipping
-      // therefore left mode 12 false while the preference said blink, and since
-      // the render loop now takes the blink from the core, the cursor stopped
-      // blinking at all. The write is one short sequence per pane; there is
-      // nothing here worth optimizing.
+      // Before the buffered writes, so a cursor shape set by the connection's first
+      // bytes wins. Written unconditionally: a fresh core has DEC mode 12 off (steady
+      // cursor), not a blinking block.
       writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
         cursorStyleSequence(this._cursorStyle, this._cursorBlink),
       ))
 
-      // Flush buffered writes. Both branches have to stay synchronous: the
-      // parser is a single state machine fed in byte order, so deferring one
-      // kind of write by even a microtask replays this buffer out of order.
+      // Flush buffered writes synchronously: the parser must see bytes in order.
       for (const data of this.writeBuffer) {
         writeBytes(this.wasm, this.termPtr, data)
       }
@@ -739,12 +517,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Record why the engine is dead and tell anyone listening. Without this the
-   * pane just stays blank: every method below no-ops on a null `wasm`, so a
-   * failed init is indistinguishable from a terminal with nothing on it yet.
-   *
-   * Idempotent, because the second report of a dead engine is noise — an OOM
-   * core will refuse the very next allocation too.
+   * Record why the engine is dead and notify listeners; otherwise a failed init
+   * is just a blank pane. Idempotent.
    */
   private failInit(message: string) {
     if (this.fatalError !== null) return
@@ -754,12 +528,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * The core has failed part-way through a session rather than at startup.
-   *
-   * Reported down the same channel as a failed init because it means the same
-   * thing to everyone above: this pane is finished, here is why. The render
-   * loop stops after this — with the error on screen, which is the difference
-   * between a terminal that says it died and one that merely appears hung.
+   * The core failed mid-session. Reported like a failed init; the render loop
+   * stops with the error on screen.
    */
   private failFatal(e: unknown) {
     this.failInit(
@@ -770,9 +540,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Fires if the engine can't start. Fires immediately on registration when it
-   * already has — see `initError`. Not part of `TerminalEngine` as a required
-   * member: xterm has no comparable asynchronous startup to fail at.
+   * Fires if the engine can't start or dies, immediately if it already has.
+   * Optional on `TerminalEngine`: xterm has no asynchronous startup.
    */
   onInitError(cb: (message: string) => void): IDisposable {
     this.onInitErrorHandlers.add(cb)
@@ -781,11 +550,7 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   private setupRenderer() {
-    // StrictMode mounts every pane twice in dev, so a pane can be disposed
-    // while its WASM fetch is still in flight. Without this the dead engine
-    // still builds a renderer, starts a render loop that nothing will ever
-    // cancel (its unmount already ran), and re-registers the debug hook —
-    // which then reports on a terminal that isn't the one on screen.
+    // StrictMode double-mounts in dev, so the pane may already be disposed.
     if (this.disposed || !this.canvas || !this.wasm) return
     
     this.renderer = new WebGLRenderer(
@@ -802,32 +567,18 @@ export class GhosttyEngine implements TerminalEngine {
     }
     this.applyTextBlendingToRenderer()
 
-    // Force a fit now that the renderer is available!
-    // This fixes the issue where the terminal doesn't fill the screen on first load
-    // because the ResizeObserver fired before WASM finished compiling.
+    // Fit now that the renderer exists.
     this.fit(true)
 
-    // ...but this fit still races two things that settle *after* the WASM
-    // fetch that got us here, and the canvas is only ever sized while a
-    // renderer exists, so an early measurement sticks:
-    //   - the pane's width. The container is `h-full w-full`, so it inherits
-    //     whatever react-resizable-panels computes, and that lands after the
-    //     first paint.
-    //   - the cell metrics. measureText reports the fallback face until the
-    //     configured font has actually loaded.
-    // Neither necessarily changes the container's box again afterward, so
-    // Terminal.tsx's ResizeObserver may never fire to correct it — which is
-    // why the grid stayed stale until the window was resized by hand. Re-fit
-    // on the next frame and once fonts are ready to close both windows.
+    // Fit again next frame and once fonts load: the panel width and
+    // the cell metrics can both settle after this point without resizing the
+    // container, so the ResizeObserver wouldn't fire.
     requestAnimationFrame(() => {
       if (!this.disposed) this.fit(true)
     })
     document.fonts?.ready
       .then(() => {
-        // Re-fitting isn't enough here: the renderer cached its cell metrics
-        // (and rasterized its atlas) against whatever face was resolved when
-        // it was built. If that was the fallback, those metrics are simply
-        // wrong now, so rebuild against the real one.
+        // The renderer's metrics and atlas may be from the fallback face; rebuild.
         if (!this.disposed) this.setFont(this.fonts, this.fontSize)
       })
       .catch(() => {})
@@ -840,8 +591,7 @@ export class GhosttyEngine implements TerminalEngine {
   private pollCounter = 0
   private restoreRequested = false
 
-  /** Every mounted pane, so the context budget can be shared across them.
-   *  See `ContextManager` for why panes give contexts up at all. */
+  /** Every mounted pane, sharing one context budget; see `ContextManager`. */
   private static readonly contexts = new ContextManager<GhosttyEngine>()
 
   private getCoords(e: MouseEvent): {x: number, y: number} {
@@ -857,10 +607,7 @@ export class GhosttyEngine implements TerminalEngine {
     return { x: clampedX, y: absY }
   }
 
-  // A restored context comes back with an empty instance buffer and an empty
-  // glyph atlas, so nothing is on screen until something asks for a repaint.
-  // The pane may well be idle at that moment, which is exactly when it would
-  // otherwise stay blank indefinitely.
+  // A restored context starts empty; repaint so an idle pane isn't left blank.
   private onRendererRestored = () => {
     this.needsRedraw = true
     this.restoreRequested = false
@@ -868,11 +615,7 @@ export class GhosttyEngine implements TerminalEngine {
 
 
 
-  /**
-   * Reclaims a context. Also covers one the browser took by itself: whatever
-   * the reason a pane that should have a context doesn't, asking for it back is
-   * the answer.
-   */
+  /** Reclaims a context, including one the browser dropped on its own. */
   ensureContext(): void {
     if (!this.renderer || !this.renderer.isContextLost || this.restoreRequested) return
     this.restoreRequested = true
@@ -886,13 +629,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * One timer for both blinks. The cursor only blinks in a focused pane, and
-   * blinking text runs at half that rate — roughly the cadence a terminal has
-   * always used for the attribute, and slow enough not to be a strobe.
-   *
-   * A tick only forces a repaint when there is something whose appearance
-   * depends on it. Otherwise every pane in the window would redraw twice a
-   * second forever, which is the opposite of the damage-driven loop's point.
+   * One timer for cursor blink (focused pane only) and text blink (half rate).
+   * Only repaints when something on screen depends on it.
    */
   private onBlinkTick = () => {
     let changed = false
@@ -907,11 +645,7 @@ export class GhosttyEngine implements TerminalEngine {
     if (changed) this.needsRedraw = true
   }
 
-  /**
-   * DEC mode 1004. A program that turned it on wants to know when it has the
-   * keyboard — editors use it to re-read a file that changed underneath them,
-   * and shells to redraw a prompt.
-   */
+  /** DEC mode 1004 focus reporting. */
   private reportFocus(focused: boolean) {
     if (!this.mouseMode(MODE_FOCUS_REPORTING)) return
     const seq = this.oscEncoder.encode(focused ? '\x1b[I' : '\x1b[O')
@@ -929,31 +663,21 @@ export class GhosttyEngine implements TerminalEngine {
   private onBlur = () => {
     this.focused = false
     this.needsRedraw = true
-    // A button or drag released outside the window never reaches us (the window
-    // mouseup that would end it fires while another window has focus). Left set,
-    // a stuck "still held" keeps reporting drags on the next hover, and a stuck
-    // "still selecting" leaves the pane in a selection that swallows clicks and
-    // typing until something else clears it — the wedge after a native prompt.
+    // A release outside the window never reaches us; clear held-button and
+    // selection state so the pane doesn't wedge.
     this.mouse.forgetButton()
     this.selection.cancel()
     this.stopDragTracking()
-    // The modifier's release will be delivered to whatever has focus now, not
-    // here, so an armed hover would stay armed for as long as the pane is
-    // untouched.
+    // The modifier release will go elsewhere, so disarm the hover now.
     this.clearLinkHover()
     this.pendingLink = null
     this.reportFocus(false)
   }
 
   /**
-   * Keeps a scrolled-back view looking at the same text as output arrives.
-   *
-   * The offset is measured up from the bottom, so every row that lands pushes
-   * what you were reading off the top of the pane — the view creeps forward on
-   * its own while you are trying to read it. Growing the offset by however much
-   * the scrollback grew holds the content still. Once the buffer is full it
-   * stops growing and the oldest rows start falling off instead, at which point
-   * nothing can hold a position that is itself being discarded.
+   * Keeps a scrolled-back view on the same text as output arrives by growing the
+   * offset with the scrollback. Once the buffer is full the oldest rows are
+   * discarded and the view can no longer hold still.
    */
   private pinViewport(scrollbackCount: number) {
     const grew = scrollbackCount - this.lastScrollbackCount
@@ -972,16 +696,10 @@ export class GhosttyEngine implements TerminalEngine {
     for (const h of this.onScrollHandlers) h(this.viewportY)
   }
 
-  /**
-   * Hands back whatever the terminal owes the host — cursor position reports,
-   * device attributes, and the rest of the queries a shell or TUI makes on
-   * startup. Nothing drained these before, so every such query went unanswered
-   * and the program waited out its timeout instead.
-   */
+  /** Sends the host whatever the terminal owes it (CPR, DA, and other replies). */
   private drainResponses() {
     if (!this.wasm || !this.termPtr) return
-    // Bounded because a reply is itself sent as input: a far end that answers
-    // one query with another could otherwise keep this loop fed forever.
+    // Bounded: a far end answering each reply with a query could loop forever.
     for (let i = 0; i < 64; i++) {
       const out = readResponse(this.wasm, this.termPtr)
       if (!out || out.length === 0) return
@@ -990,40 +708,19 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Text for a range of absolute buffer rows — scrollback rows first, then the
-   * active screen, the same numbering the renderer draws from.
-   *
-   * Copy, word selection and search all need exactly this, and each had (or
-   * would have had) its own partial version of the cell walk — including the
-   * spacer and grapheme handling that made copied text wrong.
-   *
-   * This used to return `string[][]`, one JS string per cell. A full-scrollback
-   * search at 10,000 rows x 200 columns allocated ~2M short strings plus 10k
-   * arrays, and every caller then joined them straight back together — a GC
-   * event on the first keystroke of a search, sitting oddly next to the
-   * single-allocation buffer strategy in the rest of this function.
-   *
-   * A row is now its joined text plus an index of where each column starts in
-   * it. That's strictly more useful than a bare string: a column can hold more
-   * than one character (a grapheme cluster) or none at all (the trailing half
-   * of a wide character), so search still needs to map an offset back to a
-   * column, and `columnText` still answers "what does column `c` show".
-   * Nothing materializes a per-cell string unless it actually needs one, and
-   * the two bulk callers no longer need any.
+   * Text for a range of absolute buffer rows (scrollback first, then the active
+   * screen), as joined text plus each column's start offset. A column may hold
+   * a grapheme cluster or nothing (the trailing half of a wide character).
    */
   private readRows(fromAbs: number, toAbs: number): RowText[] {
     const out: RowText[] = []
-    // Per call, not cumulative: the question a reader ever asks is "did the
-    // rows I am looking at right now come back whole".
+    // Per call: callers want to know whether *these* rows came back whole.
     this.rowReadFailures = []
     if (!this.wasm || !this.termPtr) return out
     const wasm = this.wasm
     const wasmCols = wasm.exports.ghostty_render_state_get_cols(this.termPtr)
     const wasmRows = wasm.exports.ghostty_render_state_get_rows(this.termPtr)
-    // The snapshot's own depth, not the core's current one — see
-    // `snapshotScrollback`. Rows that scrolled off since the snapshot are read
-    // from its screen rather than from live scrollback, which holds the same
-    // text either way; what matters is that the split and the cells agree.
+    // The snapshot's depth, not the live one; see `snapshotScrollback`.
     const liveScrollback = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
     const scrollbackCount = this.snapshotScrollback >= 0 ? this.snapshotScrollback : liveScrollback
     if (wasmCols <= 0) return out
@@ -1031,36 +728,27 @@ export class GhosttyEngine implements TerminalEngine {
     const cellCount = wasmCols * wasmRows
     const viewSize = cellCount * CELL_BYTES
     const lineSize = wasmCols * CELL_BYTES
-    // Grapheme clusters run to a handful of codepoints in practice; anything
-    // longer is truncated rather than grown for, since the cost is one buffer
-    // held for the whole walk.
+    // Longer grapheme clusters are truncated.
     const gCap = 16
-    // One scratch cell for the whole walk. Not per-frame like the renderer's,
-    // but a scrollback-wide search still walks hundreds of thousands of cells
-    // in one go, and the object never escapes the loop body.
+    // One scratch cell for the whole walk.
     const cell = emptyCell()
 
-    // Raising beats the old `return out` on a null pointer: that handed copy
-    // and search a page of blanks and called it the buffer's contents.
+    // Throw rather than hand back a page of blanks as if it were the buffer.
     const viewPtr = allocBufferOrThrow(wasm, viewSize)
     wasm.exports.ghostty_render_state_get_viewport(this.termPtr, viewPtr, cellCount)
     const linePtr = allocBufferOrThrow(wasm, lineSize)
     const gPtr = allocBufferOrThrow(wasm, gCap * 4)
 
-    // Every view is built after the last allocation: growing WASM memory
-    // detaches the buffer any earlier one was made against.
+    // Views after the last allocation: growing memory detaches older buffers.
     const viewV = new DataView(wasm.exports.memory.buffer, viewPtr, viewSize)
     const lineV = linePtr !== 0 ? new DataView(wasm.exports.memory.buffer, linePtr, lineSize) : null
     const gV = gPtr !== 0 ? new DataView(wasm.exports.memory.buffer, gPtr, gCap * 4) : null
 
     for (let abs = fromAbs; abs <= toAbs; abs++) {
-      // `colStart` has one more entry than there are columns, so column `c`
-      // always spans `[colStart[c], colStart[c + 1])` with no special case for
-      // the last one.
+      // One extra entry so column `c` always spans `[colStart[c], colStart[c + 1])`.
       const colStart = new Int32Array(this._cols + 1)
       let text = ''
-      // A row that can't be read stays blank rather than absent, so absolute
-      // row numbering survives — callers index `out` by offset from `fromAbs`.
+      // Unreadable rows stay as blanks so callers can index by offset.
       const blank = (): RowText => {
         let s = ''
         for (let c = 0; c < this._cols; c++) {
@@ -1083,9 +771,7 @@ export class GhosttyEngine implements TerminalEngine {
           out.push(blank())
           continue
         }
-        // Answered, not assumed: on a miss the buffer still holds the previous
-        // row, so trusting this would copy that row's text under this row's
-        // number. See `rowReadFailures`.
+        // On a miss the buffer still holds the previous row.
         if (wasm.exports.ghostty_terminal_get_scrollback_line(this.termPtr, abs, linePtr, wasmCols) === 0) {
           this.rowReadFailures.push({ row: abs, why: 'refused by the core' })
           out.push(blank())
@@ -1095,11 +781,7 @@ export class GhosttyEngine implements TerminalEngine {
       } else {
         activeRow = abs - scrollbackCount
         if (activeRow >= wasmRows) {
-          // The snapshot's screen is `wasmRows` tall and starts at
-          // `scrollbackCount`; a row past that is one this snapshot cannot
-          // answer for, which happens when output has landed since the frame
-          // the snapshot was taken at. Silent, it looks exactly like a refused
-          // read — hence the separate reason.
+          // Output landed after the snapshot; this row is beyond its screen.
           this.rowReadFailures.push({ row: abs, why: 'past the snapshot screen' })
           out.push(blank())
           continue
@@ -1113,8 +795,7 @@ export class GhosttyEngine implements TerminalEngine {
         const offset = isScrollback ? c * CELL_BYTES : (activeRow * wasmCols + c) * CELL_BYTES
         parseCellInto(view, offset, cell)
         if (cell.width === 0) {
-          // Trailing half of a wide character: it has no text of its own, so
-          // its span is empty and the next column starts at the same offset.
+          // Trailing half of a wide character: an empty span.
           continue
         }
         if (cell.graphemeLen > 0 && gV) {
@@ -1128,9 +809,7 @@ export class GhosttyEngine implements TerminalEngine {
         }
         text += cell.codepoint > 0 ? String.fromCodePoint(cell.codepoint) : ' '
       }
-      // Columns past what the core reports still exist as far as every caller
-      // is concerned — they're the blank right-hand edge — so they get a space
-      // each, exactly as the `.fill(' ')` this replaces gave them.
+      // Columns past the core's width are blank.
       for (; c < this._cols; c++) {
         colStart[c] = text.length
         text += ' '
@@ -1140,8 +819,7 @@ export class GhosttyEngine implements TerminalEngine {
     }
 
     if (this.rowReadFailures.length > 0) {
-      // Loud, because this should not happen and every consumer of `readRows`
-      // — copy, search, links — quietly produces a wrong answer when it does.
+      // Loud: copy, search and links all silently go wrong when this happens.
       console.error(
         `Ghostty: ${this.rowReadFailures.length} row(s) could not be read and are blank — ` +
           GhosttyEngine.summariseRowFailures(this.rowReadFailures),
@@ -1163,30 +841,11 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Where the pointer is, for mouse reporting: surface pixels, plus the cell
-   * they fall in.
-   *
-   * The pixels are clamped into the surface rather than passed through. A
-   * drag that has left the pane still reports — against the edge cell, which
-   * is what every terminal does and what the selection code alongside this
-   * already assumes — and an unclamped position outside the surface encodes
-   * to nothing at all, so the drag would simply go quiet.
-   *
-   * The canvas is the whole surface here: it is sized to the grid, so there
-   * is no padding to describe and the two origins coincide.
-   */
-  /**
-   * Hands the encoder the rendered geometry it converts pixel positions
-   * against. Called wherever that geometry can change — the core coming up,
-   * the renderer being set up, and every resize.
-   *
-   * No padding: the canvas is sized to the grid, so the surface and the grid
-   * share an origin. If a pane ever grows a gutter, that is the number to fill
-   * in here rather than to subtract at the call sites.
+   * Gives the encoder the rendered geometry for pixel-to-cell conversion; call
+   * whenever it can change. No padding: the canvas is sized to the grid.
    */
   private syncMouseSurface(): void {
-    // Whatever the geometry became, the cell the reporter last named was
-    // measured against the old one.
+    // The reporter's last cell was measured against the old geometry.
     this.mouse.forgetLastCell()
     if (!this.mouseEncoder || !this.renderer) return
     const cell = this.renderer.getCellSize()
@@ -1198,6 +857,8 @@ export class GhosttyEngine implements TerminalEngine {
     })
   }
 
+  /** Pointer position for mouse reporting, clamped to the surface so a drag
+   *  that leaves the pane keeps reporting against the edge cell. */
   private pointerAt(e: MouseEvent): MousePoint | null {
     if (!this.canvas || !this.renderer) return null
     const rect = this.canvas.getBoundingClientRect()
@@ -1213,10 +874,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   private onMouseUp = (e: MouseEvent) => {
-    // Before anything else clears its state: a Ctrl+press that landed on a
-    // link opens it *here*, not on the press. Opening on mousedown would mean
-    // a Ctrl+drag that happens to begin on a link launches a browser, and
-    // Ctrl+drag has to keep doing what it does today.
+    // A Ctrl+press on a link opens on release, so a Ctrl+drag starting on a link
+    // still selects.
     const pending = this.pendingLink
     this.pendingLink = null
     if (pending && this.withinCanvas(e)) {
@@ -1234,9 +893,7 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  /** Whether the pointer is over the grid. `getCoords` clamps to it, so a
-   *  release well outside would otherwise resolve to an edge cell and could
-   *  match the cell a press began on. */
+  /** Whether the pointer is over the grid (`getCoords` clamps). */
   private withinCanvas(e: MouseEvent): boolean {
     if (!this.canvas) return false
     const rect = this.canvas.getBoundingClientRect()
@@ -1246,27 +903,16 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * The modifier that makes the pointer a link pointer.
-   *
-   * Ctrl, and Meta so the same gesture reads as Cmd+click on a Mac. Not
-   * Shift: shift already means "this click is the terminal's, not the
-   * program's" and, separately, "extend the selection", and a third meaning
-   * cannot be resolved against those two without one of them feeling broken.
-   * Every terminal that ships this — Windows Terminal, VTE, WezTerm, VS Code,
-   * Ghostty itself — uses Ctrl or Cmd for exactly that reason.
+   * The link modifier: Ctrl, or Cmd on a Mac. Not Shift, which already means
+   * "bypass mouse reporting" and "extend selection".
    */
   private static linkModifier(e: { ctrlKey: boolean; metaKey: boolean }): boolean {
     return e.ctrlKey || e.metaKey
   }
 
   /**
-   * Recomputes what the pointer is over, if anything about the answer could
-   * have changed.
-   *
-   * The signature is the gate: mousemove arrives at pointer resolution and the
-   * answer only changes at cell resolution, so an ordinary sweep across a link
-   * costs one hit test per cell rather than one per event. An ordinary session
-   * never holds the modifier over the grid and never pays anything at all.
+   * Recomputes what the pointer is over when the cell, buffer or viewport has
+   * changed since the last check.
    */
   private refreshLinkHover(armed: boolean): void {
     if (!armed || !this.hoverPointer || !this.renderer) {
@@ -1282,36 +928,21 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Keeps the dotted underline over every link on screen up to date.
-   *
-   * This is the one part of the feature that is *not* on demand, and it is
-   * deliberate: a link nobody can see is a link nobody will ever hold Ctrl
-   * over, so hover-only feedback makes the whole gesture undiscoverable. The
-   * cost is bounded by the same cache the hit test uses — the signature below
-   * is the controller's own key, so a still buffer costs one string
-   * comparison per frame and a changing one costs a single viewport parse per
-   * generation, not per frame and never per cell.
-   *
-   * Detection still does not run on the parse path: `write()` is untouched,
-   * and its only coupling to this is the `bufferGen` counter that was already
-   * there for search.
+   * Keeps the dotted underline over every visible URL current, so links are
+   * discoverable. Cached on the same key as the hit test.
    */
   private refreshLinkRanges(): void {
     if (!this.renderer) return
     const sig = `${this.bufferGen}:${this.viewportY}:${this._cols}`
     if (sig === this.linkRangesSig) return
     this.linkRangesSig = sig
-    // URLs only. A path is a link on demand — under a held Ctrl, or in hint
-    // mode — but not an underline at rest: compiler output, `find` and `ls -l`
-    // of absolute paths would otherwise be underlined wall to wall, and a URL
-    // is rare enough in output that marking every one still means something.
+    // URLs only; paths are links on demand (Ctrl or hint mode), otherwise
+    // compiler output and `ls` listings would be underlined wall to wall.
     const ranges = this.links
       .linksInViewport()
       .filter((l) => l.kind === 'url')
       .flatMap((l) => l.segments)
-    // An empty screen keeps `null` rather than an empty array, so the
-    // renderer's per-row filter is skipped entirely on the common case of a
-    // pane with no links in it.
+    // `null` lets the renderer skip its per-row filter.
     this.renderer.linkRanges = ranges.length > 0 ? ranges : null
     this.needsRedraw = true
   }
@@ -1330,31 +961,23 @@ export class GhosttyEngine implements TerminalEngine {
     if (same) return
     if (this.renderer) this.renderer.linkHighlight = link ? link.segments : null
     this.needsRedraw = true
-    // Cleared to the empty string rather than a name, so the stylesheet's own
-    // cursor for the canvas comes back.
+    // Empty string restores the stylesheet's cursor.
     if (this.canvas) this.canvas.style.cursor = link ? 'pointer' : ''
   }
 
   /**
-   * Hide these spans' glyphs, or pass null to show them again.
-   *
-   * The whole of the history flicker's rendering: the caller toggles this a
-   * few times and the recalled command blinks in place, with nothing drawn
-   * over it and no color introduced that the theme did not already have. See
-   * `WebGLRenderer.hiddenSpans`.
+   * Hide these spans' glyphs, or pass null to show them again. Used for the
+   * history-recall flicker; see `WebGLRenderer.hiddenSpans`.
    */
   setHiddenSpans(spans: { row: number; from: number; to: number }[] | null): void {
     if (!this.renderer) return
-    // Cheap, but it runs on a timer per pane and the common case is going from
-    // nothing to nothing while a flicker finishes elsewhere.
+    // Runs on a timer per pane; skip the common nothing-to-nothing case.
     if (this.renderer.hiddenSpans === null && spans === null) return
     this.renderer.hiddenSpans = spans
     this.needsRedraw = true
   }
 
-  /** Pointer gone, or focus gone: the underline and the pointer cursor must go
-   *  with it, or a pane the mouse has left keeps claiming to have a link
-   *  under it. */
+  /** Clears the underline and pointer cursor when the pointer or focus leaves. */
   private clearLinkHover(): void {
     this.hoverPointer = null
     this.hoverSig = ''
@@ -1364,33 +987,20 @@ export class GhosttyEngine implements TerminalEngine {
   /** A stable reference, so mount and unmount add and remove the same one. */
   private clearLinkHoverListener = () => this.clearLinkHover()
 
-  /** Modifier pressed or released without the mouse moving. The keys are
-   *  otherwise none of this handler's business — it reads the modifier state
-   *  off whatever key event arrives and does nothing when nothing changed. */
+  /** Re-tests the hover when a modifier changes without the mouse moving. */
   private onHoverModifierKey = (e: KeyboardEvent) => {
     if (!this.hoverPointer) return
     this.refreshLinkHover(GhosttyEngine.linkModifier(e))
   }
 
   /**
-   * Hands a URL to whatever is hosting this engine.
-   *
-   * The scheme is checked again here even though detection only ever produced
-   * `http`/`https`: this is the last point before the string reaches the
-   * platform opener, the two are far apart in the code, and an OSC 8 URI
-   * (later) never passes through detection at all. On Windows the cost of
-   * being wrong is not a broken link — a `file://` or UNC-flavored target can
-   * provoke an outbound SMB authentication attempt and leak credentials to a
-   * host of the attacker's choosing.
-   *
-   * The engine does not open it itself: every other platform interaction is
-   * the frontend's, and the engine has no platform dependency today.
+   * Hands a URL to the host. The scheme is re-checked here, the last point
+   * before the platform opener: on Windows a `file://` or UNC target can trigger
+   * outbound SMB authentication and leak credentials.
    */
   private activateLink(url: string, kind: LinkKind = 'url'): void {
-    // A path goes to its own handlers, which never reach the platform opener:
-    // the frontend resolves it on the remote host. It is not put through
-    // `isOpenableUrl` because it is not a URL — and it must not be put through
-    // the URL handlers, whose whole job is to hand a string to the OS.
+    // Paths are resolved by the frontend on the remote host and never reach the
+    // platform opener.
     if (kind === 'path') {
       for (const h of this.onPathActivateHandlers) h(url)
       return
@@ -1400,19 +1010,9 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Carries a drag on past the edges of the pane.
-   *
-   * The canvas stops delivering `mousemove` the moment the pointer leaves it,
-   * and "the pointer is outside the canvas" is the exact condition the
-   * selection's autoscroll waits for — so bound to the canvas alone the
-   * autoscroll could never arm, and a drag could only ever cover what was
-   * already on screen. Listening on the window for the length of the drag is
-   * what lets the pointer get far enough out to be measured.
-   *
-   * Bound and unbound rather than left on permanently, so a pane that isn't
-   * being dragged in does no work per mouse move. Both calls are idempotent —
-   * the same function reference registers once and unregisters whether or not
-   * it was there — which is why neither needs a flag guarding it.
+   * Listens on the window for the length of a drag: the canvas stops getting
+   * `mousemove` once the pointer leaves it, which is exactly when selection
+   * autoscroll needs it.
    */
   private startDragTracking(): void {
     window.addEventListener('mousemove', this.onWindowMouseMove)
@@ -1423,14 +1023,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * A key one of the modes claimed is a key nothing else may see: one that
-   * both moved the mark cursor and reached the shell would be doing two
-   * contradictory things at once.
-   *
-   * Hint mode is offered the key first, because it is the shorter-lived of the
-   * two — it is a mode you are in for the length of one label. Only one can be
-   * active at a time in practice (each cancels the other on entry), so the
-   * order is about intent rather than arbitration.
+   * Keys claimed by hint mode or mark mode go nowhere else. Hint mode is offered
+   * the key first; only one is active at a time.
    */
   private onMarkModeKey = (e: KeyboardEvent) => {
     if (!this.hintMode.handleKey(e) && !this.markMode.handleKey(e)) return
@@ -1439,11 +1033,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   private onWindowMouseMove = (e: MouseEvent) => {
-    // A button released outside the window never delivers mouseup here, and a
-    // selection left believing it is still being dragged keeps the autoscroll
-    // timer running — the pane scrolls on its own and cannot be stopped.
-    // `buttons` is the live state rather than an event history, so it catches
-    // exactly that.
+    // A release outside the window never arrives, which would leave autoscroll
+    // running; `buttons` is the live state.
     if (e.buttons === 0) {
       this.onMouseUp(e)
       return
@@ -1452,91 +1043,54 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * One frame's work, split out so the loop below can own the error handling.
-   *
-   * Everything in here can throw now that a refused allocation raises instead
-   * of returning a null pointer, and this used to run inline in the loop with
-   * the `requestAnimationFrame` reschedule as its last statement — so a single
-   * throw skipped the reschedule and the pane never painted again, silently,
-   * for the rest of its life.
+   * One frame's work, split out so the loop can own error handling (a throw must
+   * not skip the reschedule).
    */
   private renderFrame() {
     if (!this.wasm || !this.renderer) return
 
-    // Safety net for the initial sizing race. The ResizeObserver in
-    // Terminal.tsx is supposed to catch the pane settling to its real width,
-    // but it demonstrably doesn't for the first layout, and a grid that misses
-    // that moment stays cropped until the window is resized by hand. Sampling
-    // the container here can't miss a settle whenever it happens. Throttled to
-    // roughly every 6th frame, and it only measures — the fit below runs solely
-    // when the box actually changed, so a steady pane costs nothing.
+    // Safety net for initial sizing: the ResizeObserver misses the first layout
+    // settle. Measures every 6th frame and only fits when the box changed.
     if (this.container && ++this.pollCounter % 6 === 0) {
       const w = this.container.clientWidth
       const h = this.container.clientHeight
       if ((w !== this.lastSeenW || h !== this.lastSeenH) && w > 0 && h > 0) {
         this.lastSeenW = w
         this.lastSeenH = h
-        // Skipped when the grid was pinned deliberately. Pinning to a size
-        // larger than the container makes the canvas overflow, which relays out
-        // the page, which changes the container box — so this poll would
-        // measure the consequence of the pin and undo it on the next frame. A
-        // benchmark asking for 200x60 silently ran at 5x18 that way, and the
-        // resulting "geometry does not matter" reading was measured entirely
-        // below 2,000 cells while a real pane runs ~10,000.
+        // Skipped when the grid is pinned: a pin larger than the container relays
+        // out the page and this would undo it.
         if (this.autoFit) this.fit()
       }
       GhosttyEngine.contexts.noteVisibility(this, w > 0 && h > 0)
     }
 
-    // Feeding is how the core's search learns the terminal moved at all — an
-    // un-fed search reports stale counts while output keeps arriving — and it
-    // is also what refreshes the viewport match list after a scroll. A no-op
-    // while nothing is being searched for.
+    // Keeps the core's search current with new output and scrolling.
     this.nativeSearch?.onFrame()
 
-    // Which cells are links at all, for the dotted underline that makes them
-    // discoverable without holding a modifier over them first.
+    // Which cells are links, for the at-rest underline.
     this.refreshLinkRanges()
 
-    // An underlined link can be scrolled away or overwritten under a pointer
-    // that never moved, and the underline would sit on whatever took its
-    // place. Only checked while something is actually underlined, so a pane
-    // nobody is hovering pays nothing — and the hit test behind it is cached
-    // per buffer generation and viewport, so a still buffer costs one string
-    // comparison.
+    // An underlined link can scroll away under a still pointer.
     if (this.hoveredLink) this.refreshLinkHover(true)
 
-    // A pane with no context has nowhere to draw, and the snapshot work below
-    // is the bulk of a frame. Leaving needsRedraw set means the pane repaints
-    // in full the moment it gets a context back.
-    //
-    // A held frame is the same: the program is mid-redraw under synchronized
-    // output, the finished frame before it is already on screen, and
-    // needsRedraw stays set so the frame after the hold ends draws at once.
+    // Skip with no context (repaints in full when it returns) or while
+    // synchronized output holds the frame.
     if (
       this.needsRedraw &&
       !this.renderer.isContextLost &&
       this.wasm.exports.ghostty_render_state_is_held?.(this.termPtr) !== 1
     ) {
-      // update() rebuilds the render snapshot and has to run before the
-      // viewport is read; mark_clean() afterward resets the damage state.
+      // update() rebuilds the snapshot; mark_clean() resets damage afterward.
       this.wasm.exports.ghostty_render_state_update(this.termPtr)
       const scrollbackCount = this.snapshotScrollbackLength()
-      // Read straight after the update, so it is the depth the snapshot below
-      // was taken at rather than whatever the core has reached by the time
-      // something reads a row. See the field.
+      // The depth the snapshot was taken at; see the field.
       this.snapshotScrollback = scrollbackCount
       this.pinViewport(scrollbackCount)
-      // Read after update() and before the viewport, same as the cells: these
-      // come off the same snapshot, and sampling them either side of it puts
-      // the cursor a frame away from the text it's sitting in.
+      // Cursor state comes off the same snapshot as the cells.
       const cursorVisible = this.wasm.exports.ghostty_render_state_get_cursor_visible(this.termPtr) !== 0
       const cursorCol = this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr)
       const cursorRow = this.wasm.exports.ghostty_render_state_get_cursor_y(this.termPtr)
-      // DECSCUSR carries blink as well as shape (1/3/5 blink, 2/4/6 are
-      // steady), and honoring only the shape made every steady variant blink
-      // anyway. The phase is still ours — the core says *whether* to blink, the
-      // timer says when — so a steady cursor is simply always on.
+      // DECSCUSR blink: the core says whether to blink, our timer says when.
       const cursorBlinks =
         this.wasm.exports.ghostty_render_state_get_cursor_blinking(this.termPtr) !== 0
       this.renderer.cursor = cursorVisible
@@ -1545,9 +1099,7 @@ export class GhosttyEngine implements TerminalEngine {
             row: cursorRow,
             on: cursorBlinks ? this.cursorBlinkOn : true,
             focused: this.focused,
-            // DECSCUSR. Read off the same snapshot as the position above, for
-            // the same reason: a shape sampled either side of update() belongs
-            // to a different frame than the cell it is drawn on.
+            // DECSCUSR shape.
             shape: this.wasm.exports.ghostty_render_state_get_cursor_style(this.termPtr),
           }
         : null
@@ -1558,14 +1110,10 @@ export class GhosttyEngine implements TerminalEngine {
       }
       this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
-      // Still pending if that was the frame captured when a hold began. The
-      // hold can end with no further output — the timeout is exactly that
-      // case — and only a pending redraw makes the next frame ask `is_held`,
-      // which is where the timeout is checked. Skipped frames cost that one
-      // call each.
+      // Stay pending while held, so the next frame re-checks `is_held` (which is
+      // where the hold timeout is enforced).
       this.needsRedraw = this.wasm.exports.ghostty_render_state_is_held?.(this.termPtr) === 1
-      // After the draw this frame, so the harness's present clock sees exactly
-      // the frames that changed the canvas. Skipped on idle frames above.
+      // Only frames that changed the canvas.
       if (this.onRenderHandlers.size > 0) {
         for (const h of this.onRenderHandlers) h()
       }
@@ -1573,19 +1121,13 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   private startRenderLoop = () => {
-    // Nothing left to draw with, or into: end the loop rather than spin on it.
-    // This guard was the first line of the frame body before the two were
-    // split, and it has to stay a *loop* condition — an unmounted pane whose
-    // rAF still reschedules is a leak that outlives the pane.
+    // Must stay a loop condition: a rescheduling rAF would outlive the pane.
     if (!this.wasm || !this.renderer) return
     try {
       this.renderFrame()
     } catch (e) {
-      // An exhausted core will refuse the next frame's allocation too, so
-      // there is nothing to come back for: report it and let the loop end,
-      // with the pane showing why. Anything else is treated as transient —
-      // one bad frame shouldn't cost the pane its render loop — so it is
-      // logged and the loop carries on below.
+      // An exhausted core will fail every frame, so stop. Anything else is
+      // treated as transient.
       if (e instanceof GhosttyOutOfMemoryError) {
         this.failFatal(e)
         return
@@ -1604,11 +1146,8 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.style.left = '0'
     this.canvas.style.outline = 'none'
     this.canvas.style.display = 'block'
-    // A <canvas>, like an <img>, is draggable as an image by default: a click
-    // that moves a pixel starts a native image-drag of the pane, which shows the
-    // no-drop cursor and a gray drag-image and steals focus/input until it ends
-    // (and WebView2 won't cancel it on Esc). We run our own selection off mouse
-    // events, so the native drag is pure harm — turn it off at the source.
+    // Canvas is draggable as an image by default, which steals input until
+    // the drag ends (WebView2 won't cancel it on Esc). We do our own selection.
     this.canvas.draggable = false
     this.canvas.style.userSelect = 'none'
     this.canvas.style.setProperty('-webkit-user-select', 'none')
@@ -1617,13 +1156,10 @@ export class GhosttyEngine implements TerminalEngine {
     this.container.appendChild(this.canvas)
 
     this.canvas.addEventListener('wheel', (e) => {
-      // A program that asked for mouse reporting gets the wheel as buttons 4/5,
-      // which is how less and htop page without a scrollback of their own.
+      // Programs with mouse reporting get the wheel as buttons 4/5.
       if (this.mouse.tracking() && !e.shiftKey) {
         e.preventDefault()
-        // Whichever axis the gesture is mostly on. A trackpad reports both at
-        // once, and a program that asked for the mouse is entitled to the
-        // horizontal one — the encoder has had buttons for it all along.
+        // Report whichever axis dominates.
         if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
           this.mouse.reportWheelHorizontal(e, e.deltaX < 0)
         } else {
@@ -1631,9 +1167,7 @@ export class GhosttyEngine implements TerminalEngine {
         }
         return
       }
-      // There is no scrollback to move through on the alternate screen, so the
-      // event is left alone there rather than swallowed — preventDefault with
-      // no scroll of our own is how the wheel ends up doing nothing at all.
+      // The alternate screen has no scrollback; leave the event alone.
       const isAlt = this.wasm && this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
       if (isAlt) return
       e.preventDefault()
@@ -1648,26 +1182,15 @@ export class GhosttyEngine implements TerminalEngine {
 
     window.addEventListener('mouseup', this.onMouseUp)
 
-    // Capture, on the container: the input element is a child of it, so this
-    // sees a key before the handler that would turn it into a sequence on the
-    // wire. Mark mode is the only thing here that can consume a key, and it
-    // consumes none at all while it is off.
+    // Capture phase, so mark mode sees keys before they're encoded.
     this.container.addEventListener('keydown', this.onMarkModeKey, true)
 
-    // Only a focused pane blinks. A wall of panes all blinking out of phase is
-    // noise, and it also means an idle background pane never wakes the loop.
+    // Only the focused pane blinks; idle background panes don't wake the loop.
     this.cursorBlinkTimer = setInterval(this.onBlinkTick, CURSOR_BLINK_MS)
 
     this.canvas.addEventListener('mousedown', (e) => {
-      // A Ctrl+press on a link is the one case that outranks mouse reporting:
-      // it is what the modifier exists for, and the program does not see the
-      // click. Everything else about this handler is untouched — in
-      // particular shift keeps both of its current meanings, and a Ctrl+press
-      // that is *not* on a link falls through to whatever it does today.
-      //
-      // Only the first click of a run arms it: a Ctrl+double-click already
-      // opened the link on the first release, and the second would open it
-      // again while also selecting a word.
+      // Ctrl+press on a link outranks mouse reporting. Only the first click of a
+      // run arms it, so Ctrl+double-click doesn't open the link twice.
       if (e.button === 0 && e.detail === 1 && GhosttyEngine.linkModifier(e)) {
         const at = this.getCoords(e)
         const link = this.links.linkAt(at)
@@ -1675,41 +1198,28 @@ export class GhosttyEngine implements TerminalEngine {
           this.pendingLink = { url: link.url, kind: link.kind, at }
           e.preventDefault()
           this.inputHandler?.focus()
-          // Under mouse reporting there is no selection to begin, so the press
-          // stops here rather than falling through to code that would report
-          // it. With the mouse free it falls through, so a Ctrl+drag from a
-          // link still selects exactly as it does today.
+          // Under mouse reporting there's nothing to select, so stop here.
           if (this.mouse.tracking()) return
         }
       }
-      // Holding shift is the long-standing way to reach the terminal's own
-      // selection while a full-screen program is grabbing the mouse.
+      // Shift bypasses mouse reporting to reach our own selection.
       if (this.mouse.tracking() && !e.shiftKey) {
         e.preventDefault()
         this.inputHandler?.focus()
         this.mouse.reportPress(e)
         return
       }
-      // Keep the keyboard on the input element. A plain mousedown on the
-      // (non-focusable) canvas otherwise lets the browser move focus off the
-      // invisible textarea — which is why clicking a pane that already had focus
-      // wedged it (no keystrokes, no blink) until a tab switch refocused it, and
-      // how a right-click-to-paste used to lose typing. preventDefault stops that
-      // focus shift (and any native selection/drag we handle ourselves); the
-      // explicit focus() is what actually holds the keyboard. Both are needed.
+      // Keep focus on the hidden textarea: a mousedown on the canvas would
+      // otherwise move focus away and wedge the pane. preventDefault stops the
+      // shift; focus() holds the keyboard.
       e.preventDefault()
       this.inputHandler?.focus()
       if (e.button !== 0) return // Only handle left-click for selection
 
-      // The mouse is taking the selection over, so the keyboard has to let go
-      // of it — otherwise the arrow keys stay captured while pointing at a
-      // selection the drag has already replaced. Hint mode goes for the same
-      // reason: a press means the pointer is the tool being used, and its
-      // labels are painted over the text the drag is about to select.
+      // The mouse takes over selection, so release the keyboard modes.
       this.markMode.cancel()
       this.hintMode.cancel()
-      // `detail` counts clicks in a run, which is how the platform already
-      // decides what a double-click is — no timing to reimplement here.
+      // `detail` counts clicks in a run.
       if (e.detail === 2) {
         this.selection.selectWordAt(this.getCoords(e))
         return
@@ -1718,19 +1228,9 @@ export class GhosttyEngine implements TerminalEngine {
         this.selection.selectLineAt(this.getCoords(e))
         return
       }
-      // Shift extends the existing selection from its anchor rather than
-      // starting a new one — the same gesture every text surface uses.
-      //
-      // Only while the program is leaving the mouse alone, though. Under mouse
-      // reporting, shift is already spoken for: it is what takes this drag off
-      // the program and gives it to the terminal (see the top of this handler),
-      // so it cannot also carry "extend" — and reading it that way meant that
-      // once any selection existed, every later shift-drag was anchored to that
-      // first selection's start instead of to where the button went down. There
-      // was no gesture left that could begin a new selection, which is what made
-      // selecting under a full-screen program feel like it had stopped working.
-      // Losing extend-by-shift-click there is the right trade: a fresh drag is
-      // the gesture that has to work.
+      // Shift extends the selection, but only without mouse reporting: there,
+      // shift already means "give this drag to the terminal", and a fresh drag has
+      // to keep working.
       if (e.shiftKey && !this.mouse.tracking() && this.renderer?.selection && this.selection.hasAnchor()) {
         this.selection.extendFromAnchor(e)
         this.startDragTracking()
@@ -1743,35 +1243,24 @@ export class GhosttyEngine implements TerminalEngine {
     this.canvas.addEventListener('mousemove', (e) => {
       this.hoverPointer = { clientX: e.clientX, clientY: e.clientY }
       this.refreshLinkHover(GhosttyEngine.linkModifier(e))
-      // A shift-drag is the user talking to the terminal, not to the program,
-      // so a selection in progress suppresses reporting entirely.
+      // A selection in progress suppresses reporting.
       if (this.mouse.tracking() && !this.selection.isSelecting()) {
         this.mouse.reportMotion(e)
       }
-      // Extending a drag is not handled here: it runs off the window listener
-      // for as long as the button is down, so that it keeps going once the
-      // pointer leaves the canvas. This handler would only ever see the part of
-      // the gesture that is already on screen.
+      // Drag extension runs off the window listener so it continues off-canvas.
     })
 
     this.canvas.addEventListener('mouseleave', this.clearLinkHoverListener)
-    // On the window rather than the container: the modifier can be released
-    // while the pointer rests over this pane but the keyboard is elsewhere,
-    // and a pointer cursor left behind by a release nobody heard is exactly
-    // the state that makes the feature feel stuck.
+    // On the window: the modifier can be released while the keyboard is
+    // elsewhere.
     window.addEventListener('keydown', this.onHoverModifierKey)
     window.addEventListener('keyup', this.onHoverModifierKey)
 
     this.inputHandler = new GhosttyInputHandler(this.container, (data) => {
-      // Typing while scrolled up otherwise sends keystrokes to a prompt that
-      // isn't on screen.
+      // Typing while scrolled up should show the prompt.
       this.scrollToBottom()
-      // Here, on the keystroke path, and deliberately not on everything the
-      // pane sends. ^?/^H is a *keyboard* setting, and the merged output
-      // channel also carries mouse reports and query replies — where a 0x7f
-      // is a coordinate, not a backspace. The legacy mouse format encodes
-      // each field as `32 + n`, so column 95 is exactly 0x7f: translating the
-      // whole channel reported a click there as column 8.
+      // Keystrokes only, not the whole output channel: in the legacy mouse
+      // format column 95 encodes as 0x7f.
       const out = translateBackspace(data, this.backspaceSendsCtrlH)
       for (const handler of this.onDataHandlers) {
         handler(out)
@@ -1780,8 +1269,7 @@ export class GhosttyEngine implements TerminalEngine {
         handler(out)
       }
     }, () => this.keyEncoder)
-    // Focus now lives on the input handler's element, so that is what the pane
-    // has to watch to know whether it is the one being typed into.
+    // Focus lives on the input handler's element.
     this.inputHandler.element.addEventListener('focus', this.onFocus)
     this.inputHandler.element.addEventListener('blur', this.onBlur)
 
@@ -1820,20 +1308,14 @@ export class GhosttyEngine implements TerminalEngine {
     this.disposed = true
     GhosttyEngine.contexts.remove(this)
     this.unmount()
-    // Every pane is its own WASM instance; leaving this unfreed leaked the
-    // core's page memory for the terminal's whole scrollback budget on every
-    // closed pane.
+    // Each pane is its own WASM instance; free the terminal's pages.
     if (this.wasm && this.termPtr) {
-      // The encoder first: it holds this terminal's pointer, and freeing the
-      // terminal out from under it would leave a live object pointing at
-      // released memory.
+      // Encoders first: they hold the terminal's pointer.
       this.mouseEncoder?.dispose()
       this.mouseEncoder = null
       this.keyEncoder?.dispose()
       this.keyEncoder = null
-      // Frees the tracked state the search holds *inside* the terminal. The
-      // core detaches rather than dangling if this were left until after the
-      // terminal went, but doing it in order costs nothing.
+      // Frees the search state held inside the terminal.
       this.nativeSearch?.dispose()
       this.nativeSearch = null
       this.wasm.exports.ghostty_terminal_free(this.termPtr)
@@ -1853,15 +1335,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Whether the render loop is allowed to re-fit this engine to its container.
-   *
-   * A pane wants this on: the container is the truth and the grid should follow
-   * it. A benchmark pinning a grid wants it off, because a pinned size larger
-   * than the container is deliberate — the canvas is expected to overflow and
-   * the host to clip, and re-fitting would silently replace the size under
-   * measurement with whatever the resulting layout happened to produce.
-   *
-   * Explicit `fit()` calls are unaffected; this governs only the automatic poll.
+   * Whether the render loop may re-fit to the container. Benchmarks turn it off
+   * to pin a grid larger than the container. Explicit `fit()` is unaffected.
    */
   setAutoFit(on: boolean): void {
     this.autoFit = on
@@ -1875,15 +1350,13 @@ export class GhosttyEngine implements TerminalEngine {
     
     if (this.wasm && this.termPtr) {
       this.wasm.exports.ghostty_terminal_resize(this.termPtr, cols, rows)
-      // A resize can itself provoke a reply from modes the program set up.
+      // A resize can provoke replies.
       this.drainResponses()
     }
     if (this.renderer) {
       this.renderer.resize(cols, rows, force)
     }
-    // After the renderer, whose cell size is what this reads. A stale surface
-    // reports the wrong cell for every event, which is the kind of wrong that
-    // looks like the program misbehaving rather than the terminal.
+    // After the renderer, whose cell size this reads.
     this.syncMouseSurface()
 
     for (const handler of this.onResizeHandlers) {
@@ -1891,32 +1364,13 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  // A second pass over every byte, in JavaScript, to recover the two events the
-  // core doesn't surface yet (OSC dispatch and the bell). That cost is the
-  // opposite of what this engine exists for, so it is skipped outright unless
-  // something is actually listening — an un-integrated shell registers no OSC
-  // handlers and pays nothing. Not deletable by exporting the events the core
-  // already parses: OSC 633 has no ident in Ghostty's parser at all, so it would
-  // have to be taught one first — see the header of `oscScanner.ts`.
   /** Hands one run of bytes to the parser, or queues it if the core is still
    *  loading. Buffered slices are copied: they outlive the caller's chunk. */
   private parseSegment(seg: Uint8Array): void {
     if (seg.length === 0) return
     if (!this.wasm) {
-      // The core is still loading, so hold the bytes for initWasm to replay.
-      //
-      // Bounded, and fatal past the bound, because the unbounded version failed
-      // silently and expensively. A core that never resolves leaves `wasm` null
-      // and `fatalError` null forever, so every write lands here: the pane stays
-      // blank, each write returns promptly having parsed nothing, and a copy of
-      // every byte is retained. A benchmark run in that state fed 300 MB into
-      // this array and reported the fastest parse ever recorded, because the
-      // instrument counted bytes handed to `write` and no phase timer was ever
-      // entered. Nothing logged, and it survived for weeks.
-      //
-      // A pane legitimately buffers only what arrives before the core is up —
-      // a shell banner, at most a burst — so a megabyte here already means the
-      // core is not coming, and saying so beats accumulating quietly.
+      // Core still loading: hold the bytes for initWasm. Bounded, because a core
+      // that never loads would otherwise buffer forever behind a blank pane.
       phases.recordUnparsed(seg.length)
       this.writeBufferBytes += seg.length
       if (this.writeBufferBytes > MAX_PREREADY_BYTES) {
@@ -1946,31 +1400,12 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Parses `bytes`, dispatching OSC and bell events at the point each one
-   * actually occurs in the stream.
-   *
-   * The parser is fed in segments split at each recognized sequence, so a
-   * handler runs only once everything preceding it — including that sequence —
-   * has been parsed, which is what a real parser callback would give. The
-   * previous shape scanned the whole chunk up front and dispatched before
-   * parsing any of it, handing every handler a terminal state from *before* the
-   * chunk: anything correlating a sequence with screen state was silently wrong
-   * (see the note on registerOscHandler).
-   *
-   * The scan itself is a pure function (see oscScanner) so its grammar and
-   * cross-chunk bookkeeping can be tested without a core or a DOM. Scanning
-   * bytes rather than a decoded string is what makes the split safe — the
-   * offsets it returns are byte offsets into this exact buffer, so segments can
-   * be sliced without a bytes→string→bytes round trip (which would mangle
-   * invalid UTF-8) and without mapping char indices back onto bytes. It also
-   * drops the full-chunk decode the old scanner did on every write; only
-   * payloads, which are short, are decoded now.
+   * Parses `bytes` in segments split at each OSC/bell/RIS event, dispatching each
+   * handler once everything before it (including its sequence) has been parsed.
+   * Offsets are byte offsets, so no string round trip is needed. See oscScanner.
    */
   private parseAndDispatch(bytes: Uint8Array): void {
-    // Timed apart from the parse it feeds: this is a full JS pass over every
-    // byte, taken only because a handler is registered, and the harness — which
-    // registers none — never pays it. That asymmetry is the first suspect for
-    // the harness/production throughput gap.
+    // Timed separately: a full JS pass, only paid when handlers are registered.
     const { events, pending } = phases.time('scan', () =>
       scanOsc(bytes, this.oscPending, this.oscDecoder, this.onResetHandlers.size > 0),
     )
@@ -1982,8 +1417,7 @@ export class GhosttyEngine implements TerminalEngine {
         this.parseSegment(bytes.subarray(cursor, ev.segEnd))
         cursor = ev.segEnd
       }
-      // Screen state has to be current before a handler runs — the whole point
-      // of splitting the parse here.
+      // Screen state must be current before a handler runs.
       phases.time('bufferChange', () => this.notifyBufferChange())
       if (ev.kind === 'bell') {
         phases.time('handlers', () => {
@@ -2001,9 +1435,7 @@ export class GhosttyEngine implements TerminalEngine {
       if (!handlers) continue
       phases.time('handlers', () => {
         for (const h of handlers) {
-          // A handler claiming the sequence stops the others for this ident. It
-          // cannot stop the core, which parses the bytes regardless — see
-          // registerOscHandler.
+          // Claiming stops other handlers; the core still parses the bytes.
           if (h(ev.payload) === true) break
         }
       })
@@ -2012,35 +1444,19 @@ export class GhosttyEngine implements TerminalEngine {
     if (cursor < bytes.length) this.parseSegment(bytes.subarray(cursor))
   }
 
-  // Every write has to reach the parser synchronously and in call order. PTY
-  // output arrives here as bytes and local messages (writeln, the line editor)
-  // as strings; routing the string case through a dynamic `import()` put it a
-  // microtask behind every byte write issued after it, so a status line could
-  // land in the middle of a later chunk and leave that chunk's SGR state
-  // applied to output it was never meant to color.
+  // Every write must reach the parser synchronously and in call order.
   write(data: Uint8Array | string): void {
-    // A dead core cannot be written to, and the parser's state machine is
-    // already desynchronized from the stream by whatever it refused. Dropping
-    // the rest quietly is fine here *because* the failure was reported once,
-    // loudly, at the point it happened.
+    // A dead core: the failure was already reported.
     if (this.fatalError !== null) return
     this.needsRedraw = true
     this.bufferGen++
 
-    // Strings (writeln, the line editor) and PTY bytes take one path:
-    // writeString is itself writeBytes(encode(str)), so unifying costs nothing
-    // and lets a single byte-level scanner serve both without a second pending
-    // buffer for the string case.
+    // Strings and PTY bytes share one path.
     const bytes = typeof data === 'string' ? this.oscEncoder.encode(data) : data
-    // Whole-write span, so the phases below can be stated as shares of it and
-    // anything they fail to account for shows up as unattributed rather than
-    // silently vanishing.
+    // Whole-write span, so unattributed time shows up.
     const startedAt = phases.now()
 
-    // The core can refuse to allocate anywhere in here. Caught rather than
-    // propagated because the caller is a PTY data callback with nowhere to put
-    // an exception; the failure is recorded and reported instead, and the guard
-    // at the top of this method makes every later write a no-op.
+    // Caught: the caller is a PTY data callback with nowhere to put an exception.
     try {
       if (
         this.oscHandlers.size > 0 ||
@@ -2052,19 +1468,14 @@ export class GhosttyEngine implements TerminalEngine {
         this.parseSegment(bytes)
       }
 
-      // Drained here rather than on the frame: a reply is only correct for the
-      // state that provoked it, and a cursor-position report that waits for the
-      // next repaint can describe a cursor that has already moved on.
+      // Drained per write: a reply must describe the state that provoked it.
       phases.time('drain', () => this.drainResponses())
     } catch (e) {
       this.failFatal(e)
       phases.recordWrite(bytes.length, phases.now() - startedAt)
       return
     }
-    // Checked on the write that could have caused it rather than per frame:
-    // switching screens is a parse-time event, and an idle pane shouldn't be
-    // asking the core about it sixty times a second. parseAndDispatch already
-    // checks between segments; this catches a change in the trailing one.
+    // Catches a screen switch in the trailing segment.
     phases.time('bufferChange', () => this.notifyBufferChange())
     phases.time('handlers', () => {
       for (const h of this.onWriteParsedHandlers) h()
@@ -2076,10 +1487,8 @@ export class GhosttyEngine implements TerminalEngine {
     this.write(data + '\r\n')
   }
 
-  /** Turns off what a program left on when its session died under it — see
-   *  `sessionModes.ts`. Written through the parser like anything else, so the
-   *  encoders, which read their modes from the core, follow without being
-   *  told. */
+  /** Turns off modes a program left on when its session died; see
+   *  `sessionModes.ts`. */
   resetSessionModes(): void {
     if (!this.wasm || !this.termPtr) return
     const onAlt = this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
@@ -2097,9 +1506,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Called from inside an OSC handler, mid-chunk, so the reset goes straight to
-   * the parser: through `write` it would be scanned with the chunk's
-   * carried-over bytes and clobber them.
+   * Called from inside an OSC handler mid-chunk, so this bypasses `write` to
+   * avoid clobbering the chunk's carried-over bytes.
    */
   resetLeftoverModes(before: ModeSnapshot): void {
     let now = this.captureModes()
@@ -2116,11 +1524,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Benchmark-only counterpart to xterm's async `parse`. Ghostty parses
-   * synchronously inside `write`, so the work is already done by the time this
-   * returns; it is chunked purely to avoid a single multi-megabyte WASM
-   * allocation (which fragments the heap and slows successive rounds), and it
-   * deliberately does not yield — the point is to time an uninterrupted parse.
+   * Benchmark-only counterpart to xterm's async `parse`. Parsing is synchronous;
+   * chunked only to avoid one huge WASM allocation, and never yields.
    */
   parse(data: Uint8Array | string): Promise<void> {
     const CHUNK = 131072
@@ -2134,16 +1539,7 @@ export class GhosttyEngine implements TerminalEngine {
     return Promise.resolve()
   }
 
-  /**
-   * Whether the text can go straight to the wire, or whether the user should
-   * be asked first. See `pasteIsSafe` — it catches an embedded
-   * bracketed-paste terminator, which counting lines cannot.
-   *
-   * Null when there is no core to ask, which leaves the decision to the
-   * caller rather than guessing "safe" on its behalf.
-   */
-  /** See the field. Null and undefined both mean `^?`, which is what modern
-   *  Unix expects and what a session that never said gets. */
+  /** Null and undefined both mean `^?`. */
   setBackspaceSendsCtrlH(enabled: boolean | null | undefined): void {
     this.backspaceSendsCtrlH = enabled === true
   }
@@ -2163,6 +1559,8 @@ export class GhosttyEngine implements TerminalEngine {
     )
   }
 
+  /** Whether the text can be pasted without asking (see `pasteIsSafe`), or null
+   *  without a core. */
   isPasteSafe(text: string): boolean | null {
     if (!this.wasm || !hasPasteEncoder(this.wasm)) return null
     return pasteIsSafe(this.wasm, text)
@@ -2170,20 +1568,14 @@ export class GhosttyEngine implements TerminalEngine {
 
   paste(text: string): void {
     if (!this.wasm) return
-    // Paste can arrive from a menu or a shortcut handled above this engine, and
-    // whatever served it may have taken the keyboard on the way. Text landing
-    // in a pane that then ignores every keystroke reads as the terminal having
-    // hung.
+    // A menu or shortcut above the engine may have taken the keyboard.
     this.inputHandler?.focus()
     this.scrollToBottom()
-    // The one piece of terminal state the encoder does not read for itself.
+    // Bracketed paste is the one mode the encoder doesn't read itself.
     const bracketed =
       this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_BRACKETED_PASTE, 0) !== 0
-    // Concatenating the brackets by hand is what this replaced: it pasted an
-    // embedded terminator straight through, which ends the bracket early and
-    // delivers the rest as typing.
+    // The encoder neutralizes an embedded bracket terminator.
     const payload = encodePaste(this.wasm, text, bracketed)
-    // Fire it as input data to be sent to the backend PTY
     for (const handler of this.onDataHandlers) {
       handler(payload)
     }
@@ -2225,18 +1617,9 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * `ESC c` — RIS, a full terminal reset — seen in the stream.
-   *
-   * Register only while something actually depends on it, and dispose as soon
-   * as it does not. Unlike the other handlers here this one has a cost even
-   * when it never fires: the scanner hunts ']' because an OSC cannot open
-   * without one and escape-dense output contains none, while RIS ends in an
-   * ordinary 'c', so watching for it puts an `indexOf` call on every letter 'c'
-   * the remote sends. See the hunting note in `oscScanner.ts`.
-   *
-   * The core resets itself from the same bytes regardless — this is only for
-   * host-side state that the core knows nothing about, of which a progress
-   * report is currently the only case.
+   * `ESC c` (RIS) seen in the stream, for host-side state the core doesn't know
+   * about. Register only while needed: watching for RIS makes the scanner check
+   * every 'c' in the output. See `oscScanner.ts`.
    */
   registerResetHandler(cb: () => void): IDisposable {
     this.onResetHandlers.add(cb)
@@ -2249,23 +1632,13 @@ export class GhosttyEngine implements TerminalEngine {
   }
   
   /**
-   * Subscribe to an OSC ident.
+   * Subscribe to an OSC ident. Unlike the xterm engine, OSC is recovered by
+   * scanning the byte stream:
    *
-   * Two differences from the xterm engine's version, both because this engine
-   * recovers OSC by scanning the byte stream rather than from parser callbacks
-   * the core does not expose yet:
-   *
-   * - Returning `true` stops the remaining handlers for this ident, but does
-   *   *not* consume the sequence: the bytes still reach the core, which may act
-   *   on them as well. There is no way to suppress that from here. (A promise is
-   *   never treated as a claim — async consumption isn't supported.)
-   * - The handler runs at the point the sequence occurs in the stream, with
-   *   everything before it already parsed, so reading engine state is sound.
-   *   That was *not* true before: handlers used to be dispatched for a whole
-   *   chunk before any of it was parsed, so state read here lagged by a chunk.
-   *   Prefer correlating with a dedicated event (onBufferChange) over reading
-   *   state in a handler anyway — it survives the eventual move to core
-   *   callbacks, whose dispatch point may differ again.
+   * - Returning `true` stops the remaining handlers but does not consume the
+   *   sequence; the core still parses it. Promises never count as a claim.
+   * - The handler runs with everything before the sequence already parsed. Prefer
+   *   a dedicated event (onBufferChange) over reading state here.
    */
   registerOscHandler(ident: number, cb: (data: string) => boolean | Promise<boolean>): IDisposable {
     let handlers = this.oscHandlers.get(ident)
@@ -2289,13 +1662,8 @@ export class GhosttyEngine implements TerminalEngine {
   fit(force = false): void {
     if (!this.container || this.disposed) return
 
-    // The renderer sizes the canvas as `cols * its own cellWidth`, so cols has
-    // to be derived from that same width. Measuring independently here let the
-    // two drift apart — the renderer caches its metrics at construction, which
-    // for a font that hasn't resolved yet means the fallback face — and once
-    // they disagree no amount of re-fitting or window-resizing can make the
-    // canvas fill the container. Measure directly only as a fallback, so a
-    // pane can still fit itself before WASM has produced a renderer.
+    // Derive cols from the renderer's own cell width, which sizes the canvas;
+    // measure directly only before a renderer exists.
     let cellWidth: number
     let cellHeight: number
     if (this.renderer) {
@@ -2367,17 +1735,10 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  // A live theme change can only reach part of the way down. The core resolves
-  // each cell's color from the palette it was built with, exposes no setter for
-  // it, and rejects the OSC sequences that would otherwise do the job ("OSC 10
-  // requires an allocator, but none was provided"), so recoloring already-
-  // parsed cells is out without recreating the terminal and losing scrollback.
-  //
-  // What does carry over is the default foreground/background, which is most of
-  // a typical screen: the renderer maps cells still sitting on the core's
-  // default onto the current theme (see updateStaticGrid). Text explicitly
-  // painted from the ANSI palette keeps the palette this pane was opened with
-  // until it scrolls away; new panes pick the theme up in full.
+  // Live theme changes only reach the default foreground/background: the core
+  // resolves palette colors at parse time and has no setter (and rejects OSC 10
+  // without an allocator). Palette-colored text keeps the old colors until it
+  // scrolls away; new panes get the theme in full.
   setTheme(themeName: string, opacity: number, background?: string | null): void {
     this._themeName = themeName
     this._opacity = opacity
@@ -2385,43 +1746,29 @@ export class GhosttyEngine implements TerminalEngine {
 
     if (this.renderer) {
       this.applyThemeToRenderer(themeName)
-      // The grid is only rebuilt on damage, so without this an idle pane keeps
-      // its old palette until the next byte arrives.
+      // The grid only rebuilds on damage.
       this.needsRedraw = true
     }
   }
 
-  // Opacity rides along with the colors rather than having its own setter: the
-  // two are re-applied together every time a renderer is built, and splitting
-  // them meant a font change (which builds a fresh renderer) silently reset the
-  // pane to fully opaque.
+  // Opacity is applied with the colors so a renderer rebuild (e.g. a font
+  // change) restores both.
   private applyThemeToRenderer(themeName: string) {
     if (!this.renderer) return
     const theme = findTheme(themeName)
     const [fr, fg, fb] = hexToRgb(theme.foreground)
-    // Only the renderer's backdrop takes the override. The core keeps the
-    // theme's real background, which is what an application asking for it
-    // (OSC 11) should be told whether or not the window has focus.
+    // Only the backdrop takes the override; OSC 11 should still report the
+    // theme's real background.
     const [br, bg, bb] = hexToRgb(this._background ?? theme.background)
     this.renderer.setTheme(fr, fg, fb, br, bg, bb, this._opacity)
     const [cr, cg, cb] = hexToRgb(theme.cursor)
     this.renderer.setCursorColor(cr, cg, cb)
   }
   /**
-   * The cursor a pane shows until the remote application says otherwise.
-   *
-   * Written into the terminal as DECSCUSR rather than held beside it, so the
-   * core stays the single source of truth for what the cursor is and an
-   * application that sets its own shape simply overwrites this — which is the
-   * precedence a preference should have.
-   *
-   * Reapplied by the caller on a settings change. A reset does not need it:
-   * the core is told this preference at construction
-   * (`TerminalConfig.cursorStyle`) and returns to it after a RIS by itself,
-   * which is what replaced the reset/DECSCUSR tick comparison the host used to
-   * do here. A preference changed *after* a pane opens therefore reaches the
-   * live cursor immediately but not that pane's reset default, which is the one
-   * seam left in this.
+   * The default cursor, written into the core as DECSCUSR so an application's
+   * own shape simply overrides it. The core also gets it at construction
+   * (`TerminalConfig.cursorStyle`) and restores it after RIS; a change made after
+   * a pane opens doesn't update that pane's reset default.
    */
   setCursorStyle(style: CursorStyleSetting, blink: boolean): void {
     this._cursorStyle = style
@@ -2429,12 +1776,7 @@ export class GhosttyEngine implements TerminalEngine {
     if (this.termPtr) this.write(cursorStyleSequence(style, blink))
   }
 
-  /**
-   * Color space to blend glyph coverage in. Unlike the palette, this
-   * applies fully and immediately to everything already on screen: it is a
-   * property of how cells are *drawn*, not of what color the core resolved
-   * them to, so there is no half-updated state to reason about.
-   */
+  /** Color space to blend glyph coverage in; applies to everything on screen. */
   setTextBlending(mode: TextBlending): void {
     this._textBlending = mode
     this.applyTextBlendingToRenderer()
@@ -2443,18 +1785,12 @@ export class GhosttyEngine implements TerminalEngine {
 
   private applyTextBlendingToRenderer(): void {
     this.renderer?.setTextBlending(BLEND_MODES[this._textBlending])
-    // Carried alongside it because both are renderer state that a rebuild
-    // resets, and both are pushed from the same three places.
+    // Also renderer state that a rebuild resets.
     this.renderer?.setLigatures(this._ligatures)
   }
 
-  /**
-   * Whether to shape runs of operators together. Like the blend mode, this is
-   * a property of how cells are drawn rather than of what the core resolved,
-   * so it applies to everything on screen at once with no half-updated state
-   * — the atlas slots already taken stay valid either way, since a run slot is
-   * only ever reached through a run.
-   */
+  /** Whether to shape runs of operators together; applies to everything on
+   *  screen. */
   setLigatures(on: boolean): void {
     this._ligatures = on
     this.renderer?.setLigatures(on)
@@ -2462,13 +1798,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * The faces and the size to rasterize with.
-   *
-   * Every font-shaped setting arrives through here -- the per-style faces, the
-   * OpenType features, the codepoint ranges -- and every one of them rebuilds
-   * the renderer, which is what makes the atlas's three caches safe to leave
-   * alone. A glyph cached under the old configuration cannot outlive it,
-   * because the atlas holding it does not.
+   * The faces and size to rasterize with. Every font setting comes through here
+   * and rebuilds the renderer, so the atlas caches never outlive their config.
    */
   setFont(fonts: FontSelection, fontSize: number): void {
     this.fonts = fonts
@@ -2477,36 +1808,18 @@ export class GhosttyEngine implements TerminalEngine {
       this.renderer.dispose()
       this.renderer = new WebGLRenderer(this.canvas, this._cols, this._rows, fonts, fontSize)
       this.renderer.onRestore = this.onRendererRestored
-      // A fresh renderer starts on its own gray-on-black defaults, and those
-      // are what every cell *without* an explicit SGR color renders as. Losing
-      // the theme here therefore recolors exactly the default-colored text
-      // while explicitly-colored text keeps its palette — which reads as the
-      // terminal's colors shifting on their own.
+      // A fresh renderer starts on its own defaults; reapply the theme and blend.
       if (this._themeName) this.applyThemeToRenderer(this._themeName)
-      // Same argument, for the same reason — a rebuilt renderer is back on
-      // the shader's defaults until something says otherwise.
       this.applyTextBlendingToRenderer()
-      // The replacement renderer starts with an empty instance buffer, so an
-      // idle pane would sit blank until its next write without this.
+      // The new renderer starts with an empty instance buffer.
       this.needsRedraw = true
-      // A new face means new cell metrics, so the grid that fit the old ones
-      // no longer fills the container.
+      // New face, new cell metrics.
       this.fit(true)
     }
 
-    // Everything above measured the cell and built the atlas against whatever
-    // face resolved *now*. For an installed family that is the final answer —
-    // it is on the machine, so it is available the moment it is named. A
-    // family that ships in the app arrives over a fetch, and until it does,
-    // the measurement is of the fallback: the columns come out at one face's
-    // advance with the other face's glyphs in them, which is visible as
-    // spacing that is plainly wrong and then silently corrects itself the
-    // next time anything rebuilds the renderer.
-    //
-    // So re-apply once, when the fetch lands. It resolves false — and this
-    // does nothing at all — for every configuration naming no bundled family,
-    // and for every later call once one has arrived, which is what stops the
-    // re-application from re-applying itself.
+    // A bundled family loads over a fetch, so the first measurement may be of
+    // the fallback face. Re-apply once it lands; resolves false (no-op) when
+    // nothing was pending.
     void bundledSettled([
       headFamily(fonts.regular),
       headFamily(fonts.bold),
@@ -2520,47 +1833,29 @@ export class GhosttyEngine implements TerminalEngine {
       })
       .catch(() => {})
   }
-  // The core takes its scrollback limit at construction and exposes no setter,
-  // so a change here only takes effect for panes opened afterward. Recreating
-  // the terminal to apply it live would throw away the scrollback it governs.
-  //
-  // Landing before the terminal exists is the normal case rather than a race:
-  // Terminal.tsx calls this synchronously on the new engine, and the terminal
-  // isn't built until the WASM fetch resolves.
+  /** Applies to panes opened afterward: the core takes the limit at
+   *  construction and has no setter. */
   setScrollbackBudget(footprintMB: number): void {
     this._scrollbackFootprintMB = footprintMB
   }
 
-  /** The byte budget this pane was built with — the *engine's* figure, not the
-   *  current setting. The status bar derives its row estimate from this
-   *  precisely because they diverge: changing the setting leaves open panes on
-   *  the budget they were constructed with, and deriving from the setting would
-   *  show a depth those panes will never reach. */
+  /** The budget this pane was built with, which may differ from the current
+   *  setting. */
   get scrollbackBudgetBytes(): number {
     return scrollbackBudgetBytesFor(this._scrollbackFootprintMB)
   }
   rebuildWebglRenderer(): void {}
 
   /**
-   * xterm's SearchAddon came free; this is the replacement. It scans the whole
-   * buffer — scrollback and active screen — one row at a time.
-   *
-   * Matches are found per visual row rather than per logical line, so a hit
-   * straddling a wrap point is missed. Reassembling wrapped rows needs
-   * `is_row_wrapped`, which is only answerable for the active screen and not
-   * for scrollback, so the honest choice was to search what is on screen the
-   * way it is on screen.
+   * Find in the whole buffer. Plain case-insensitive queries go to the core's
+   * native search; regex and case-sensitive ones use `SearchController`.
    */
   search(query: string, options?: SearchOptions): void {
-    // The core's matcher is byte-exact except for ASCII case, so a regex or a
-    // case-sensitive query has to stay on the JS path. Everything else — which
-    // is nearly every real query — goes to the core, where the result survives
-    // resizes, screen switches and pruning that `SearchController` has no way
-    // to notice.
+    // The core's matcher is byte-exact except for ASCII case. Its results
+    // survive resizes, screen switches and pruning.
     const native = this.nativeSearch
     if (native && !options?.regex && !options?.caseSensitive) {
-      // Whichever path ran last owns the highlights, so hand them over rather
-      // than leaving two sets of decorations on the same rows.
+      // Only one path may own the highlights.
       this.searchController.clear()
       native.search(query, options)
       return
@@ -2569,24 +1864,13 @@ export class GhosttyEngine implements TerminalEngine {
     this.searchController.search(query, options)
   }
 
-  /**
-   * Which of the absolute rows `fromAbs..toAbs` continue the row above them.
-   *
-   * One call per row, which sounds worse than it is: search already reads
-   * every row it asks about, and caches the answer behind the same
-   * query/buffer signature its matches are cached behind. Link detection asks
-   * about a viewport's worth, which is where the range form earns its keep —
-   * the whole-buffer form would be reading ten thousand rows to underline one.
-   */
+  /** Which of the absolute rows `fromAbs..toAbs` continue the row above them. */
   private readWrapFlags(fromAbs: number, toAbs: number): boolean[] {
     const out = new Array<boolean>(Math.max(0, toAbs - fromAbs + 1)).fill(false)
     if (!this.wasm || !this.termPtr) return out
     const wasm = this.wasm
     const scrollbackCount = wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
-    // Callers ask about the row *after* the last one they care about — copy
-    // does, to learn whether the selection's final row runs on — so the range
-    // can end one past the buffer. Those rows keep the `false` they start as
-    // rather than asking the core about a row it does not have.
+    // Callers may ask one row past the end of the buffer; those stay false.
     const lastAbs = Math.min(toAbs, scrollbackCount + this._rows - 1)
     for (let abs = Math.max(0, fromAbs); abs <= lastAbs; abs++) {
       out[abs - fromAbs] =
@@ -2597,38 +1881,19 @@ export class GhosttyEngine implements TerminalEngine {
     return out
   }
 
-  /**
-   * Matches over *logical* lines, not visual rows.
-   *
-   * A wrapped line is several rows on screen but one line of text, and
-   * searching row by row missed anything straddling the wrap. That used to be
-   * unavoidable: the core answered `is_row_wrapped` only for the active screen,
-   * so a hit that had scrolled into history could not be reassembled. Our own
-   * shim now exports the scrollback form too, so rows are joined into the line
-   * they belong to before matching.
-   *
-   * A match still highlights per row — it has to, the rows are apart on screen
-   * — so each carries the segments it covers, while navigation treats it as the
-   * single hit it is.
-   */
   /** Scrolls the viewport the least amount that brings `row` into view. */
   private revealRow(row: number) {
     const top = this.viewportY
     if (row >= top && row < top + this._rows) return
     const maxScroll = Math.max(0, this.scrollbackLength - this._rows)
-    // Parked a third of the way down, so there is context above the hit as well
-    // as below it.
+    // Parked a third of the way down, for context above the hit.
     const target = Math.max(0, Math.min(row - Math.floor(this._rows / 3), maxScroll))
     this.scrollToLine(target)
   }
 
   /**
-   * Scrolls the least amount that puts absolute `row` on screen.
-   *
-   * Deliberately not `revealRow`: that parks its target a third of the way down
-   * so a search hit has context around it, which is right for a jump and wrong
-   * for a cursor being walked one line at a time — the pane would lurch on
-   * every arrow key.
+   * Scrolls the least amount that puts absolute `row` on screen. Unlike
+   * `revealRow`, doesn't recenter, so walking a cursor doesn't lurch.
    */
   private scrollRowIntoView(row: number): void {
     const top = this.viewportY
@@ -2636,42 +1901,27 @@ export class GhosttyEngine implements TerminalEngine {
     else if (row >= top + this._rows) this.scrollToLine(row - this._rows + 1)
   }
 
-  /** Where the terminal's own cursor is, in absolute buffer coordinates. The
-   *  core reports it relative to the active screen, which always sits at the
-   *  end of the buffer however far the view is scrolled back. */
-  /**
-   * Rebuild the core's render snapshot, so a read that is not riding on a
-   * drawn frame sees the current grid rather than the last painted one.
-   *
-   * `cursorCell` and `readRowText` both come off that snapshot, which is
-   * otherwise only refreshed in `drawFrame`. Every existing caller (copy,
-   * search, links) runs long after a frame has drawn and never noticed;
-   * prompt-input tracking reads on the keystroke, which is inside the same
-   * turn as the write that echoed it and well before the next frame.
-   *
-   * `mark_clean` deliberately isn't called here — that is what resets the
-   * damage state, and resetting it outside the renderer would cost the pane
-   * the repaint it was about to do.
-   */
-  /** Cell size in CSS pixels, for anything that has to place a DOM overlay on
-   *  a grid cell. Null before the renderer exists. */
+  /** Cell size in CSS pixels, for placing DOM overlays; null before the
+   *  renderer exists. */
   cellSize(): { width: number; height: number } | null {
     return this.renderer ? this.renderer.getCellSize() : null
   }
 
+  /**
+   * Rebuild the render snapshot for a read that isn't riding on a drawn frame,
+   * such as prompt-input tracking on a keystroke. Doesn't `mark_clean`, which
+   * would cost the pane its pending repaint.
+   */
   syncReadState(): void {
     if (!this.wasm || !this.termPtr) return
     this.wasm.exports.ghostty_render_state_update(this.termPtr)
-    // Same pairing as the frame does: a snapshot and the depth it was taken
-    // at, recorded together and never sampled apart. See `snapshotScrollback`.
+    // Record the snapshot and its depth together; see `snapshotScrollback`.
     this.snapshotScrollback = this.snapshotScrollbackLength()
   }
 
   /**
-   * The scrollback depth the current render snapshot was taken at. Read
-   * straight after `render_state_update`, the live count used to be the same
-   * number — until synchronized output, where the update keeps the frame
-   * captured when the hold began and the live count runs on past it.
+   * The scrollback depth the current render snapshot was taken at. Differs from
+   * the live count under synchronized output.
    */
   private snapshotScrollbackLength(): number {
     const ex = this.wasm!.exports
@@ -2685,14 +1935,13 @@ export class GhosttyEngine implements TerminalEngine {
     return this.terminalCursorCell()
   }
 
-  /** `readRows` under the name the engine interface uses. Public because
-   *  prompt-input tracking reads the line being typed straight off the grid
-   *  rather than modeling the remote shell's line editor — see
-   *  lib/promptInput.ts. */
+  /** `readRows` under the engine-interface name; used by prompt-input tracking
+   *  (see lib/promptInput.ts). */
   readRowText(fromAbs: number, toAbs: number): RowText[] {
     return this.readRows(fromAbs, toAbs)
   }
 
+  /** The terminal cursor in absolute buffer coordinates. */
   private terminalCursorCell(): { x: number; y: number } {
     if (!this.wasm) return { x: 0, y: 0 }
     const screenTop = Math.max(0, this.scrollbackLength - this._rows)
@@ -2702,10 +1951,7 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
-  /**
-   * Turns keyboard selection on or off. See `MarkModeController` for why it is
-   * a mode at all rather than a shift-arrow binding.
-   */
+  /** Toggles keyboard selection; see `MarkModeController`. */
   toggleMarkMode(): void {
     if (!this.renderer) return
     this.markMode.toggle()
@@ -2721,17 +1967,12 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Turns hint mode on or off.
-   *
-   * Worth having beside Ctrl+click rather than instead of it: this is the only
-   * path that works while a full-screen program owns the mouse, and the only
-   * one that works with no pointing device at all.
+   * Toggles hint mode: the link path that works while a program owns the mouse,
+   * or without a pointing device.
    */
   toggleHintMode(): void {
     if (!this.renderer) return
-    // The two modes both take the keyboard, and a mark cursor left behind a
-    // screen of labels is a captured keyboard with nothing on screen to
-    // explain it.
+    // Both modes take the keyboard.
     if (!this.hintMode.isActive()) this.markMode.cancel()
     this.hintMode.toggle()
   }
@@ -2750,48 +1991,35 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onCopyRequestHandlers.delete(cb) }
   }
 
-  /** A link was activated and wants opening. See `activateLink` for why the
-   *  engine asks rather than opens. */
+  /** A link was activated; see `activateLink`. */
   onLinkActivate(cb: (url: string) => void): IDisposable {
     this.onLinkActivateHandlers.add(cb)
     return { dispose: () => this.onLinkActivateHandlers.delete(cb) }
   }
 
-  /**
-   * The URL under a pointer event, or null.
-   *
-   * For the frontend's context menu, which is the discoverable path for
-   * anyone who never learns the modifier — the same reason VTE has it. It
-   * costs one menu item over machinery the hover path already built.
-   */
+  /** The URL under a pointer event, or null; for the context menu. */
   linkAtPointer(e: MouseEvent): string | null {
     if (!this.renderer || !this.withinCanvas(e)) return null
     const link = this.links.linkAt(this.getCoords(e))
     return link?.kind === 'url' ? link.url : null
   }
 
-  /** The file path under a pointer event, as written, or null. The context
-   *  menu's counterpart to `linkAtPointer` for path links. */
+  /** The file path under a pointer event, or null; for the context menu. */
   pathAtPointer(e: MouseEvent): string | null {
     if (!this.renderer || !this.withinCanvas(e)) return null
     const link = this.links.linkAt(this.getCoords(e))
     return link?.kind === 'path' ? link.url : null
   }
 
-  /** A path link was activated. The engine only says which text was clicked;
-   *  resolving it — against which directory, on which host — is the pane's. */
+  /** A path link was activated; the pane resolves it. */
   onPathActivate(cb: (path: string) => void): IDisposable {
     this.onPathActivateHandlers.add(cb)
     return { dispose: () => this.onPathActivateHandlers.delete(cb) }
   }
 
   /**
-   * Whether file paths are links as well as URLs, and which syntax they are
-   * written in — POSIX for an SSH host, Windows for a local shell.
-   *
-   * Off by default, and turned on only by a pane that can do something with
-   * one: a path the user can Ctrl+click and nothing happens is worse than a
-   * path that is plain text.
+   * Whether file paths are links too, and their syntax (POSIX for SSH, Windows
+   * for a local shell). Only enabled by panes that can open them.
    */
   setPathLinks(flavor: PathFlavor | null): void {
     if (flavor === this.pathLinks) return
@@ -2802,8 +2030,7 @@ export class GhosttyEngine implements TerminalEngine {
     this.needsRedraw = true
   }
 
-  /** Opens a URL that came back from `linkAtPointer`, subject to the same
-   *  scheme check every other route takes. */
+  /** Opens a URL from `linkAtPointer`, with the usual scheme check. */
   openLink(url: string): void {
     this.activateLink(url)
   }
@@ -2819,11 +2046,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   focus(): void {
-    // A programmatic refocus (tab switch, window/app return) is where a stranded
-    // IME composition gets cleared — an app switch can leave `composing` stuck
-    // true with no blur/compositionend, dropping all printable input afterward.
-    // Plain clicks focus via the input handler directly and skip this, so an
-    // in-window click mid-composition is left untouched.
+    // A programmatic refocus clears an IME composition an app switch may have
+    // stranded (which would drop all printable input). Clicks skip this.
     this.inputHandler?.cancelComposition()
     this.inputHandler?.focus()
   }
@@ -2834,26 +2058,17 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   clearSelection(): void {
-    // Whatever is dropping the selection is also ending keyboard selection —
-    // the mark cursor is drawn *as* the selection, so leaving the mode on would
-    // leave a captured keyboard with nothing on screen to show for it.
+    // The mark cursor is drawn as the selection, so end mark mode too.
     this.markMode.cancel()
-    // Guarded here rather than in the controller: "there was nothing to
-    // clear" must not fire a change notification.
+    // Don't notify when there was nothing to clear.
     if (!this.renderer || !this.renderer.selection) return
     this.selection.reset()
   }
   getSelection(): string {
     if (!this.renderer || !this.renderer.selection || !this.wasm) return ''
-    // Copy does not ride on a drawn frame. `readRows` maps absolute rows
-    // through the snapshot's scrollback depth, so once output has landed since
-    // the last frame the rows at the bottom of the selection fall past the
-    // snapshot's screen and read back blank — a copy quietly missing its own
-    // tail. `syncReadState` exists for exactly this caller; see its note.
-    //
-    // Conditional because copy-on-select calls this on every drag update, and
-    // rebuilding the snapshot per mouse event would put a frame's work on a
-    // path that currently does none. Asking the depth is one call.
+    // Copy isn't tied to a frame: if output landed since, rebuild the snapshot
+    // or the selection's tail reads back blank. Conditional because
+    // copy-on-select calls this on every drag update.
     if (
       this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) !==
       this.snapshotScrollback
@@ -2870,43 +2085,20 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * Everything copy reads, written out as text, for a fault nobody can
-   * reproduce on demand.
-   *
-   * Text pasted out of a pane has come back with runs missing, always on a row
-   * boundary. Copy is `readRows` (the cells) joined on `readWrapFlags` (which
-   * rows continue which), so a hole is one of exactly three things: the cells
-   * were already wrong, a wrap flag was wrong and welded two unrelated rows
-   * together, or `SelectionController.text` mis-sliced correct inputs. Those
-   * three call for completely different fixes and nothing after the fact can
-   * tell them apart — the clipboard holds only the answer, not the working.
-   *
-   * So this dumps the working: the same rows, the same flags and the same
-   * selection text, taken through the same readers in the same order copy
-   * takes them. Whoever reads it can re-run the join by hand and see which of
-   * the three it was.
-   *
-   * Rows are JSON-quoted because trailing spaces are load-bearing here — a row
-   * the next one continues keeps its tail, and a row that ends a line has it
-   * trimmed, so "where do the spaces stop" is half the evidence and an
-   * unquoted dump would throw it away.
-   *
-   * `snapshotScrollback` is reported beside the live count deliberately: they
-   * are read from different places (`readRows` splits on the snapshot,
-   * `readWrapFlags` on the live count) and a gap between them is the first
-   * thing worth ruling out.
+   * Everything copy reads, as text, for diagnosing copies that come back with
+   * runs missing on a row boundary. Copy joins `readRows` on `readWrapFlags` via
+   * `SelectionController.text`; dumping all three shows which one went wrong.
+   * Rows are JSON-quoted because trailing spaces matter, and the snapshot depth
+   * is shown beside the live count because the two readers split on different
+   * ones.
    */
   dumpState(): string {
     const lines: string[] = []
     if (!this.wasm || !this.termPtr) return 'no core: the engine has no terminal to dump\n'
-    // Sampled before the sync below, because the gap worth reporting is the one
-    // a copy taken right now would have hit: `readRows` splits on whatever
-    // snapshot the last frame left behind, while `readWrapFlags` splits on the
-    // live count. Reading them afterward would only ever prove they agree.
+    // Sampled before the sync, to show the gap a copy right now would hit.
     const liveBefore = this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr)
     const snapshotBefore = this.snapshotScrollback
-    // Rebuilt rather than inherited from whenever the last frame happened to
-    // draw, so the rows below describe the grid as it is at the keystroke.
+    // Rebuilt so the rows describe the grid as it is now.
     this.syncReadState()
 
     const total = this.scrollbackLength
@@ -2915,8 +2107,7 @@ export class GhosttyEngine implements TerminalEngine {
     lines.push(`cols=${this._cols} rows=${this._rows}`)
     lines.push(`scrollbackLength=${total} viewportY=${this.viewportY} viewportOffset=${this._viewportOffset}`)
     lines.push(
-      // -1 is "no frame has drawn yet", which is the one case where the two
-      // are allowed to differ — there is no snapshot to be out of step with.
+      // -1 means no frame has drawn yet.
       `scrollbackRows: live=${liveBefore} lastFrameSnapshot=` +
         (snapshotBefore < 0 ? 'none yet' : String(snapshotBefore)) +
         (snapshotBefore < 0 || liveBefore === snapshotBefore
@@ -2924,13 +2115,8 @@ export class GhosttyEngine implements TerminalEngine {
           : '  <-- MISMATCH, output landed since the last frame'),
     )
     lines.push(`altScreen=${this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_ALT_SCREEN, 0) !== 0}`)
-    // Whether a plain drag can even reach this pane. A program holding the
-    // mouse takes the drag for its own UI, so the only local selection is a
-    // shift-drag — and a copy made any other way while this is on did not come
-    // through `readRows` at all. It came off the far end through OSC 52, which
-    // is a different program's idea of what was selected and a different code
-    // path end to end. Worth a line, because every field below describes a
-    // reader that was never consulted in that case.
+    // With mouse tracking on, a non-shift copy came from the program via
+    // OSC 52, not from `readRows`.
     lines.push(`mouseTracking=${this.mouseTracking()} (a plain drag goes to the program, not this pane)`)
     const cur = this.terminalCursorCell()
     lines.push(`cursor=${cur.x},${cur.y}`)
@@ -2941,13 +2127,8 @@ export class GhosttyEngine implements TerminalEngine {
         : 'selection=none',
     )
     if (!sel) {
-      // The single most useful thing a dump carries is the selection beside the
-      // rows it was taken from — that pair is what says whether copy read the
-      // grid correctly. Without it the dump proves only that the grid is fine
-      // *now*, which is never the question being asked. Said here, loudly,
-      // because the natural way to take one is to copy, notice the damage, look
-      // away, and only then reach for the keystroke — by which time the
-      // selection is gone and the dump cannot answer.
+      // The selection beside its rows is what makes a dump useful; users tend to
+      // reach for the shortcut after the selection is gone.
       lines.push(
         '  !! No selection was active, so this dump cannot show what copy produced.',
       )
@@ -2956,17 +2137,11 @@ export class GhosttyEngine implements TerminalEngine {
       )
       lines.push('  !! copy, see the damage, then Ctrl+Shift+D without clicking again.')
     }
-    // Stated whether or not it looks relevant: a pane resized between the copy
-    // and the dump reflows every wrapped line, so the rows below can be a
-    // different shape from the ones copy actually read.
+    // A resize between copy and dump reflows wrapped lines.
     lines.push(`geometry note: rows below are as they are at ${this._cols} columns`)
 
-    // The selection plus a margin, rather than the whole buffer. A full
-    // scrollback here is tens of thousands of rows — megabytes of text, and
-    // seconds of a frozen window to produce it, for a keystroke whose whole
-    // point is to be cheap enough to hit the moment something looks wrong.
-    // The margin is what makes it more than the selection: a wrongly joined
-    // pair is only recognizable against the rows on either side of it.
+    // The selection plus a margin, not the whole buffer, so the shortcut stays
+    // cheap. The margin shows wrongly joined neighbors.
     const MARGIN = 20
     const from = Math.max(0, (sel ? Math.min(sel.start.y, sel.end.y) : this.viewportY) - MARGIN)
     const to = Math.min(
@@ -2974,9 +2149,7 @@ export class GhosttyEngine implements TerminalEngine {
       (sel ? Math.max(sel.start.y, sel.end.y) : this.viewportY + this._rows - 1) + MARGIN,
     )
     const rows = this.readRows(from, to)
-    // One past the end, exactly as `SelectionController.text` asks for it, so
-    // the flag on the row after the last is here too — that is the one that
-    // decides whether the selection's final row runs on.
+    // One past the end, as `SelectionController.text` asks.
     const wrapped = this.readWrapFlags(from, to + 1)
     lines.push('')
     lines.push(

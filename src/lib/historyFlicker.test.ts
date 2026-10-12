@@ -2,10 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { GAP_MS, HistoryFlicker, HIDE_MS, spansFor, type HiddenSpan } from './historyFlicker'
 
 /**
- * The spans are what the renderer blanks, so an error here either hides the
- * wrong text — visibly corrupting a line the user is reading — or hides
- * nothing and looks like the feature not firing. Neither is caught by the
- * watcher's tests, which stop at deciding *that* there is something to say.
+ * The spans are what the renderer blanks: wrong ones hide the wrong text or
+ * nothing at all. The watcher's tests stop before this.
  */
 
 describe('spansFor', () => {
@@ -71,9 +69,8 @@ describe('HistoryFlicker', () => {
     vi.advanceTimersByTime(HIDE_MS - 20)
     const again: HiddenSpan[] = [{ row: 1, from: 0, to: 9 }]
     flicker.flash(again)
-    // Restored first. Without this the text went dark on the first press and
-    // stayed dark until the hand stopped, which reads as the line having been
-    // deleted rather than as a flicker.
+    // Restored first, so a held key reads as a flicker rather than a deleted
+    // line.
     expect(applied).toEqual([span, null])
     vi.advanceTimersByTime(GAP_MS)
     expect(applied).toEqual([span, null, again])

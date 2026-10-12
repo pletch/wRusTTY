@@ -1,18 +1,10 @@
 import type { RowText } from './rowText'
 
 /**
- * Joining wrapped rows back into the line they belong to.
- *
- * A wrapped line is several rows on screen but one line of text, and anything
- * matching row by row misses whatever straddles the wrap. Search has needed
- * that since the vendored shim started answering `is_row_wrapped` for
- * scrollback; URL detection needs exactly the same thing, over the same rows,
- * with the same offset-to-column mapping on the way back out.
- *
- * It lives here rather than in `SearchController` so there is one answer to
- * "what is a line" instead of two that drift. The two callers differ only in
- * what they match — a user's regex over the whole buffer, a URL pattern over
- * the viewport — which is the part that should differ.
+ * Joining wrapped rows back into the line they belong to, so matches that
+ * straddle a wrap are found. Shared by search (a regex over the buffer) and
+ * URL detection (over the viewport), so there's one answer to "what is a
+ * line".
  */
 
 /** A run of one row covered by a match. A match that wraps produces several. */
@@ -23,15 +15,10 @@ export interface Segment {
 }
 
 /**
- * One logical line: the text of every row it covers, concatenated, plus the
- * absolute row and column each character came from.
- *
- * The maps are built during the join because the join is already walking every
- * column; recomputing them per match would make a line with many matches
- * quadratic in its own length. They are the reason a caller can hand back a
- * character offset and get a screen position — a column can hold more than one
- * character (a grapheme cluster) or none (a wide character's trailing spacer),
- * so an offset is not a column.
+ * One logical line: its rows' text concatenated, plus the absolute row and
+ * column each character came from. Built during the join, so mapping many
+ * matches stays linear. Needed because an offset isn't a column: a column can
+ * hold a grapheme cluster or nothing (a wide character's spacer).
  */
 export interface LogicalLine {
   text: string
@@ -46,31 +33,23 @@ export interface LogicalLine {
 }
 
 /**
- * Groups `rows` into logical lines.
+ * Groups `rows` into logical lines. `rows[i]` is absolute row
+ * `firstRow + i`, and `wrapped[i]` says it continues the row above.
  *
- * `rows[i]` is the absolute row `firstRow + i`, and `wrapped[i]` says that row
- * continues the one above it. Search reads from row 0 and passes `firstRow`
- * 0; anything reading a window of the buffer passes the window's top, so the
- * rows a caller gets back are absolute either way.
- *
- * A `wrapped[0]` of true is deliberately not honored — the row above is
- * outside what was handed in, so the line has to start here. Callers that care
- * about a line running off the top of their window (link hit-testing does)
- * widen the window before calling rather than asking this to read rows it was
- * not given.
+ * `wrapped[0]` is ignored: the row above wasn't passed in. Callers that care
+ * about a line running off their window's top (link hit-testing) widen the
+ * window first.
  */
 export function logicalLines(rows: RowText[], wrapped: boolean[], firstRow = 0): LogicalLine[] {
   const out: LogicalLine[] = []
   let i = 0
   while (i < rows.length) {
-    // This row plus every continuation of it.
+    // This row plus its continuations.
     let end = i + 1
     while (end < rows.length && wrapped[end]) end++
 
     let text = ''
-    // Sized from the joined text once it exists rather than grown per
-    // character: a row is `cols` columns and a cluster is a handful of
-    // codepoints, so the two passes cost less than repeated array growth.
+    // Sized from the joined text once, rather than grown per character.
     const parts: { row: number; colStart: Int32Array; base: number }[] = []
     for (let r = i; r < end; r++) {
       const row = rows[r]
@@ -97,13 +76,8 @@ export function logicalLines(rows: RowText[], wrapped: boolean[], firstRow = 0):
 }
 
 /**
- * The rows and columns a `[start, end]` span of a line's text covers, `end`
- * inclusive.
- *
- * One segment per row, because the rows are apart on screen: a match across a
- * wrap is a single hit that has to be painted twice. Returns nothing for a
- * span that falls outside the line, which is what a match ending past the last
- * mapped character would be.
+ * The rows and columns a `[start, end]` span (end inclusive) covers, one
+ * segment per row. Empty for a span outside the line.
  */
 export function segmentsFor(line: LogicalLine, start: number, end: number): Segment[] {
   const last = line.rowAt.length - 1

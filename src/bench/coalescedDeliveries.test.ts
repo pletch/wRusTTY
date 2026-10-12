@@ -2,17 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { coalescedDeliveries, COALESCE_THRESHOLD } from './workloads'
 
 /**
- * The delivery model decides what the flood-stress rows actually measure, so
- * the properties that make it a model of `coalesce.rs` rather than a guess are
- * asserted here.
- *
- * The bug this replaced: the feed used fixed 32 KB writes, on the belief that
- * 32 KB was the largest buffer the app ever hands over. It is the *smallest*.
- * `coalesce.rs` appends each upstream read to a buffer and flushes once it
- * reaches the threshold, so the flush carries the overshoot too. Feeding exact
- * 32 KB understated every delivery, and since a 32 KB parse fits inside a
- * frame for either engine, the stall metric floored at the refresh interval
- * and stopped being able to tell them apart at all.
+ * The delivery model decides what the flood-stress rows measure, so the
+ * properties that make it a model of `coalesce.rs` are asserted: the flush
+ * threshold is a floor, and each flush carries the overshoot of the read
+ * that crossed it.
  */
 describe('coalescedDeliveries', () => {
   const TOTAL = 8 * 1024 * 1024
@@ -20,31 +13,27 @@ describe('coalescedDeliveries', () => {
   it('never emits a delivery below the flush threshold, except the last', () => {
     const sizes = coalescedDeliveries(TOTAL, COALESCE_THRESHOLD)
     for (const s of sizes.slice(0, -1)) expect(s).toBeGreaterThanOrEqual(COALESCE_THRESHOLD)
-    // The tail is whatever remained when the stream ended; the Rust flushes it
-    // on the interval tick or on close, and it can be any size.
+    // The tail is whatever remained at the end (flushed on the tick or close).
     expect(sizes[sizes.length - 1]).toBeGreaterThan(0)
   })
 
   it('emits deliveries larger than the threshold — the point of the fix', () => {
     const sizes = coalescedDeliveries(TOTAL, COALESCE_THRESHOLD)
     const oversized = sizes.filter((s) => s > COALESCE_THRESHOLD)
-    // If this ever came back all-exactly-32-KB we would be back to measuring
-    // a feed the app never produces.
+    // All-exactly-threshold would be a feed the app never produces.
     expect(oversized.length).toBeGreaterThan(sizes.length * 0.5)
     expect(Math.max(...sizes)).toBeGreaterThan(COALESCE_THRESHOLD)
   })
 
   it('bounds the overshoot by one upstream read', () => {
     const sizes = coalescedDeliveries(TOTAL, COALESCE_THRESHOLD)
-    // A flush happens the moment the buffer crosses the line, so it can only
-    // exceed it by the read that crossed — not by an unbounded amount.
+    // A flush exceeds the threshold only by the read that crossed it.
     const MAX_READ = 32 * 1024
     for (const s of sizes) expect(s).toBeLessThanOrEqual(COALESCE_THRESHOLD + MAX_READ)
   })
 
   it('accounts for every byte exactly once', () => {
-    // Deliveries slice the payload; dropping or duplicating bytes would feed
-    // the two engines different content and quietly invalidate the comparison.
+    // Dropped or duplicated bytes would feed the engines different content.
     for (const total of [TOTAL, 1, 32 * 1024, 100 * 1024 * 1024]) {
       const sizes = coalescedDeliveries(total, COALESCE_THRESHOLD)
       expect(sizes.reduce((n, s) => n + s, 0)).toBe(total)
@@ -52,8 +41,7 @@ describe('coalescedDeliveries', () => {
   })
 
   it('is deterministic, so both engines get the identical sequence', () => {
-    // The whole benchmark rests on this: same bytes, same boundaries, same
-    // order for both engines and across rounds.
+    // Same bytes, boundaries and order for both engines and every round.
     expect(coalescedDeliveries(TOTAL, COALESCE_THRESHOLD)).toEqual(
       coalescedDeliveries(TOTAL, COALESCE_THRESHOLD),
     )
@@ -68,8 +56,8 @@ describe('coalescedDeliveries', () => {
   })
 
   it('produces far fewer, larger deliveries than the old fixed-chunk feed', () => {
-    // Documents the size of the correction: the old model wrote TOTAL/32KB
-    // writes; the real coalescer emits meaningfully fewer than that.
+    // The real coalescer emits meaningfully fewer deliveries than fixed
+    // threshold-sized writes would.
     const sizes = coalescedDeliveries(TOTAL, COALESCE_THRESHOLD)
     const oldFixedCount = Math.ceil(TOTAL / COALESCE_THRESHOLD)
     expect(sizes.length).toBeLessThan(oldFixedCount)

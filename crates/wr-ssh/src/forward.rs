@@ -23,14 +23,8 @@ use crate::socks;
 /// (which consults it when the server opens a `forwarded-tcpip` channel).
 pub type RemoteForwardRegistry = Arc<Mutex<HashMap<(String, u16), (String, u16)>>>;
 
-/// `rename_all_fields` is load-bearing, not decoration. On an enum,
-/// `rename_all` renames the *variants* — it says nothing about their fields —
-/// so without this the variants arrived as `local`/`remote`/`dynamic` as
-/// intended while the fields were still expected in snake_case. The frontend
-/// sends `bindHost`, so every `ssh_add_forward` was rejected at the IPC
-/// boundary with "missing field `bind_host`" before any forwarding code ran:
-/// port forwarding could not be used at all. `SshEvent` in the app's ssh.rs
-/// already spells both out; this type was simply missing the second.
+/// `rename_all_fields` is needed: on an enum, `rename_all` renames only the
+/// variants, so fields like `bindHost` would be expected in snake_case.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -92,12 +86,8 @@ pub struct ForwardHandle {
     /// `cancel_tcpip_forward` when stopping, and the registry key to remove.
     remote: Option<(String, u16)>,
     registry: Option<RemoteForwardRegistry>,
-    /// The port actually bound, which is not always the one asked for: a
-    /// `bind_port` of 0 means "any", and the OS (or, for a remote forward, the
-    /// server) picks. Reported so a caller re-establishing this forward later
-    /// can ask for the same port again rather than silently landing on a
-    /// different one — a client pointed at the old number would otherwise
-    /// break while the forward looked healthy.
+    /// The port actually bound (`bind_port` 0 means "any"), so re-establishing
+    /// the forward can ask for the same port rather than silently moving.
     bound_port: u16,
 }
 
@@ -116,14 +106,9 @@ impl ForwardHandle {
         } = self;
 
         accept_task.abort();
-        // Awaited, not merely aborted. `abort` only *asks*: the task keeps
-        // running until it next reaches an await point, and until it stops it
-        // still owns the `TcpListener`. That is invisible to a caller stopping
-        // a forward for good, and is exactly the race a caller stopping one in
-        // order to rebind the same port loses — which is what re-establishing a
-        // forward after a reconnect does. `Err` here is the cancellation
-        // itself, or a panic already reported by the task; neither is anything
-        // this can act on.
+        // Awaited, not just aborted: the task owns the `TcpListener` until it
+        // reaches an await point, and a reconnect rebinding the same port would
+        // race it. `Err` is the cancellation or an already-reported panic.
         let _ = accept_task.await;
 
         if let Some((addr, port)) = remote {
@@ -396,17 +381,10 @@ pub(crate) async fn pipe(stream: TcpStream, channel: russh::Channel<russh::clien
     pipe_streams(stream, channel.into_stream()).await;
 }
 
-/// The actual copy, generic over both sides so it's directly unit-testable
-/// with two `tokio::io::duplex()` pairs (see the tests below) rather than
-/// needing a live TCP connection and SSH channel.
-///
-/// Previously hand-rolled as two racing futures under `tokio::select!`,
-/// which drops whichever direction was still running the instant the
-/// *other* one finished — e.g. the local TCP side reaching EOF while
-/// SSH-side data was still in flight, silently truncating it.
-/// `copy_bidirectional` shuts each direction's write half down
-/// independently on EOF and waits for both to finish, which is the correct
-/// half-close behavior.
+/// The copy, generic over both sides so it's testable with
+/// `tokio::io::duplex()` pairs. `copy_bidirectional` shuts each direction
+/// down independently on EOF and waits for both, so in-flight data isn't
+/// dropped when the other side finishes first.
 async fn pipe_streams<A, B>(mut a: A, mut b: B)
 where
     A: AsyncRead + AsyncWrite + Unpin,
@@ -493,12 +471,7 @@ mod tests {
         assert!(!is_loopback_bind_host(""));
     }
 
-    /// The bug this guards against: the old implementation raced two
-    /// futures under `tokio::select!`, dropping whichever direction was
-    /// still running the instant the *other* one finished — so data sent
-    /// from one side, still in flight, could be silently lost if the other
-    /// side happened to reach EOF first. `copy_bidirectional` must instead
-    /// keep relaying a still-open direction until it's actually done.
+    /// A still-open direction keeps relaying after the other reaches EOF.
     #[tokio::test]
     async fn half_close_does_not_truncate_in_flight_data() {
         let (a1, a2) = tokio::io::duplex(1024);

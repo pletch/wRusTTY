@@ -1,26 +1,10 @@
 /**
  * Runs the measurement tools from the keyboard and shows their output on the
- * page, so a live session can be measured with DevTools shut.
+ * page, so a live session can be measured with DevTools closed (an open
+ * inspector puts V8's WebAssembly in a slower debuggable tier).
  *
- * This exists because of a specific, expensive failure. Both recorders were
- * reachable only from the console — `__wrusttyDelivery.report()` and
- * `__wrusttyPaneFlood.run()` — which meant an inspector was attached to every
- * production measurement ever taken. V8 compiles WebAssembly in a debuggable
- * tier while DevTools is open, and on this build that costs 2.75x: 11.14 ms/MB
- * closed against 30.65 open, one page, nothing else changed. So the instrument
- * could not be used without corrupting the thing it measured, and every number
- * it produced was wrong by a factor nobody suspected. The apparent "live pane
- * is 2.7x slower than the benchmark harness" gap — chased through the workload,
- * the grid, the scrollback, the transport, the backend and the page state —
- * was entirely this.
- *
- * The harness never had the problem because it renders its results on screen.
- * This gives the app the same property.
- *
- * Deliberately plain DOM rather than React: nothing exists until a shortcut is
- * pressed, and the overlay never participates in the app's render work, so it
- * cannot perturb the measurement the way a component subscribed to app state
- * might. It is also removed before a flood runs.
+ * Plain DOM rather than React, so it doesn't take part in the app's render
+ * work; it's removed before a flood runs.
  */
 
 import { report as deliveryReport, startRecording, stopRecording } from './deliveryReport'
@@ -138,14 +122,9 @@ let busy = false
 let recording = false
 
 /**
- * Backpressure windows to cycle through, in MB.
- *
- * The open question these answer: a 100 MB flood leaves the frontend idle 33%
- * of the active window, of which ~431 ms across 475 deliveries is genuine —
- * about 0.9 ms each. That is either the backpressure window being too tight, or
- * the IPC round trip showing through now that the queue is 4 MB deep instead of
- * 50. Raising the window separates them: if idle collapses, the window costs
- * throughput; if it does not move, 0.9 ms is inherent and 4 MB stands.
+ * Backpressure windows to cycle through, in MB, to tell whether residual
+ * frontend idle time comes from the window or from the IPC round trip: if
+ * idle collapses as the window grows, the window costs throughput.
  */
 const WINDOW_STEPS_MB = [4, 8, 16, 32]
 let windowStep = 0
@@ -204,13 +183,9 @@ async function toggleDeliveryRecording(): Promise<void> {
 }
 
 /**
- * Ctrl+Alt+F floods the visible pane from inside the page; Ctrl+Alt+D arms and
- * then reports the real PTY delivery path; Ctrl+Alt+W cycles the backpressure
- * window. None of them needs the console.
- *
- * Chosen to sit beside Ctrl+Alt+B for the benchmark harness, and checked
- * against `code` rather than `key` so a terminal that has swallowed the keyboard
- * layout cannot change which shortcut fires.
+ * Ctrl+Alt+F floods the visible pane; Ctrl+Alt+D arms, then reports the real
+ * PTY path; Ctrl+Alt+W cycles the backpressure window. Beside Ctrl+Alt+B
+ * (the harness), and matched on `code` so layouts can't change them.
  */
 export function install(): void {
   window.addEventListener('keydown', (e) => {

@@ -1,22 +1,13 @@
 /**
- * The four workloads Phase 7 names — interactive SSH, streaming (tail -f / a
- * verbose build), a TUI (htop), and a large `cat` flood — as deterministic byte
- * streams.
- *
- * Deterministic on purpose: a benchmark that fed each engine different bytes
- * would be comparing the engines *and* the input at once. Every generator is
- * seeded, built once, and the identical buffer is replayed to both engines and
- * across every round, so the only variable left is the engine.
- *
- * A real capture can be dropped in too (see `capturedFlood`) — synthetic
- * streams exercise the same parser and renderer paths, but "on real traffic" is
- * the exit criterion's own wording, so the option to measure an actual session
- * dump is here rather than assumed away.
+ * The benchmark workloads (interactive SSH, streaming, a TUI, a large `cat`
+ * flood) as deterministic byte streams: seeded, built once, and replayed
+ * identically to both engines every round, so only the engine varies. A real
+ * capture can be used too (`capturedFlood`).
  */
 
 const enc = new TextEncoder()
 
-/** Small deterministic PRNG (mulberry32) — no Math.random, so runs reproduce. */
+/** Small deterministic PRNG (mulberry32), so runs reproduce. */
 function rng(seed: number): () => number {
   let a = seed >>> 0
   return () => {
@@ -30,27 +21,22 @@ function rng(seed: number): () => number {
 
 /** 'throughput' → one big write, timed to full presentation (parse + render).
  *  'latency'    → many small events, each timed input→present individually.
- *  'block'      → one big write, timed for the longest main-thread stall it
- *                 causes (the flood-freeze metric Phase 8 is meant to remove). */
+ *  'block'      → one big write, timed for the longest main-thread stall. */
 export type WorkloadMode = 'throughput' | 'latency' | 'block'
 
 export interface BuiltWorkload {
-  /** Written and allowed to settle before the clock starts (e.g. enter alt screen). */
+  /** Written and allowed to settle before the clock starts. */
   setup?: Uint8Array
   /** The timed units. One element for throughput; many for latency. */
   events: Uint8Array[]
-  /** Written after timing (e.g. leave alt screen), before the terminal is reset. */
+  /** Written after timing, before the terminal is reset. */
   teardown?: Uint8Array
   totalBytes: number
   /**
-   * Block workloads only: the coalescer's flush threshold to model the feed
-   * against, across event-loop turns, instead of one monolithic write. Set to
-   * `COALESCE_THRESHOLD` to measure the stall the app can actually produce; 0
-   * or absent means a single write (the raw-parser / absolute-worst-case
-   * number).
-   *
-   * Deliveries are not this size — they are at least it. See
-   * `coalescedDeliveries`, which is what turns this into the actual sequence.
+   * Block workloads only: the coalescer flush threshold to model the feed
+   * against, across event-loop turns. `COALESCE_THRESHOLD` measures the stall
+   * the app can produce; 0 or absent is one write (the raw worst case).
+   * Deliveries are at least this size; see `coalescedDeliveries`.
    */
   chunkBytes?: number
 }
@@ -63,14 +49,10 @@ export interface Workload {
   unit: string
   description: string
   /**
-   * Whether this payload is expected to scroll the main screen.
-   *
-   * The runner proves a round happened by checking the buffer grew (see
-   * `roundIsDead`), which a flood of ordinary output always does. A workload
-   * that deliberately writes no cells — or one that redraws in place on the
-   * alternate screen — would read as unparsed however well it parsed, so it
-   * opts out here. Defaults to true: the guard exists because a silent failure
-   * cost weeks, and opting out should be a decision, not an omission.
+   * Whether this payload scrolls the main screen. The runner proves a round
+   * happened by checking the buffer grew (`roundIsDead`); a workload that
+   * writes no cells or redraws on the alternate screen opts out. Defaults to
+   * true so opting out is deliberate.
    */
   scrollsMainScreen?: boolean
   build(cols: number, rows: number): BuiltWorkload
@@ -87,41 +69,38 @@ const FLOOD_NAMES = ['src', 'lib', 'index.ts', 'README.md', 'Cargo.toml', 'main.
 const FLOOD_WORDS = ['deploy', 'commit', 'render', 'buffer', 'context', 'viewport', 'scrollback', 'terminal', 'parser', 'atlas', 'glyph', 'session']
 
 /**
- * One line of the mixed content a real scrollback holds — colored `ls -l`, a
- * plain paragraph, an SGR-heavy diagnostic, or a box-drawing/Unicode row — in
- * the proportions a flood actually has, not a pathological best or worst case.
- * The parser meets SGR churn, newlines, wide/Unicode glyphs and long runs. The
- * leading line number is included.
+ * One line of realistic scrollback (colored `ls -l`, plain prose, an
+ * SGR-heavy diagnostic, or box drawing with Unicode) in typical proportions,
+ * with a leading line number.
  */
 function floodLine(rand: () => number, line: number): string {
   const kind = rand()
   let s: string
   if (kind < 0.4) {
-    // ls -l style: perms, size, colored name
+    // ls -l style: perms, size, colored name.
     const n = FLOOD_NAMES[(rand() * FLOOD_NAMES.length) | 0]
     const dir = rand() < 0.3
     const color = dir ? 34 : n.includes('.') ? 37 : 32
     s = `${FG(244)}-rw-r--r--${RESET}  ${FG(240)}1 tim staff${RESET} ${((rand() * 99999) | 0).toString().padStart(6)} ${FG(240)}Jul 24 10:${((rand() * 59) | 0).toString().padStart(2, '0')}${RESET} ${FG(color)}${n}${RESET}\r\n`
   } else if (kind < 0.7) {
-    // paragraph text, default colors, long runs
+    // Paragraph text, default colors, long runs.
     const w: string[] = []
     const count = 6 + ((rand() * 12) | 0)
     for (let i = 0; i < count; i++) w.push(FLOOD_WORDS[(rand() * FLOOD_WORDS.length) | 0])
     s = w.join(' ') + '.\r\n'
   } else if (kind < 0.85) {
-    // heavy SGR churn — a colored build/diagnostic line
+    // Heavy SGR churn: a colored diagnostic.
     s = `${FG(196)}error${RESET}${FG(240)}[E${((rand() * 999) | 0).toString().padStart(4, '0')}]${RESET}: ${FG(255)}mismatched types${RESET} ${FG(33)}--> ${FLOOD_NAMES[(rand() * FLOOD_NAMES.length) | 0]}:${(rand() * 200) | 0}:${(rand() * 80) | 0}${RESET}\r\n`
   } else {
-    // box drawing + a wide/Unicode sprinkle
+    // Box drawing with some wide/Unicode glyphs.
     s = `${FG(51)}├─${RESET} ${FLOOD_WORDS[(rand() * FLOOD_WORDS.length) | 0]} ${FG(240)}······${RESET} 世界 ✓\r\n`
   }
   return `${line.toString().padStart(6)} ${s}`
 }
 
 /**
- * Builds `targetBytes` of flood content as one buffer, encoding in ~1 MB batches
- * so the intermediate string array stays bounded even at 100 MB (a single 100 MB
- * string-join array would balloon memory before it ever reached the parser).
+ * Builds `targetBytes` of flood content, encoding in ~1 MB batches so memory
+ * stays bounded at 100 MB.
  */
 function generateFlood(targetBytes: number, seed: number): Uint8Array {
   const rand = rng(seed)
@@ -155,9 +134,8 @@ function generateFlood(targetBytes: number, seed: number): Uint8Array {
 }
 
 /**
- * Large `cat`: a few MB of mixed colored output, timed to full presentation.
- * This is the *throughput* view — how fast each engine drains a modest flood.
- * For the freeze question at scale, see `largeFlood` (mode 'block').
+ * Large `cat`: a few MB of mixed colored output, timed to full presentation
+ * (throughput). For stalls at scale, see `largeFlood`.
  */
 export const flood: Workload = {
   id: 'flood',
@@ -172,40 +150,25 @@ export const flood: Workload = {
 }
 
 /**
- * Where the parse time actually goes: the byte-level state machine, the actions
- * it dispatches, or the per-cell work a printable character triggers.
+ * Where parse time goes: the byte-level state machine, the actions it
+ * dispatches, or the per-cell work a printable character triggers.
  *
- * The question these answer. Ghostty's WASM parses at ~29 ns/byte, which at this
- * clock is 100+ cycles for every byte. A table-driven VT state machine costs a
- * handful of cycles per byte; even a careless one costs tens. And xterm.js — a
- * state machine in JavaScript — is about twice as fast on the same flood.
- * Compiled WASM losing to JIT'd JS is not a codegen story, so the suspicion is
- * that this build does far more work per *cell* than per byte: grapheme
- * segmentation, width, style resolution and PageList bookkeeping on every
- * printable character, with none of the SIMD fast paths that let native Ghostty
- * skip that route for runs of plain ASCII (the vendored binary has no v128 in
- * any signature or local).
+ * Three probes, since comparing printable text with `ESC [ 0 m` confounds
+ * cells with bytes per action. The long-SGR variant is the same action with
+ * five times the bytes:
  *
- * Why three and not two. Comparing printable text against `ESC [ 0 m` confounds
- * two things: the SGR stream writes no cells, but it also spends four bytes per
- * action against printable text's one, so a 4x result could mean either "cells
- * are expensive" or "actions are expensive and bytes are free". The long-SGR
- * variant separates them — same one action, five times the bytes. Read them as:
+ *   - long ≈ short (per byte)  → cost tracks bytes; the state machine itself
+ *     is slow.
+ *   - long >> short (per byte) → cost tracks actions. Printable is 1
+ *     byte/action and short SGR 4; if printable is far dearer per action, the
+ *     per-cell path is the cost.
  *
- *   - long ≈ short (per byte)  → cost tracks bytes; the state machine itself is
- *     slow, and only native libghostty helps.
- *   - long >> short (per byte) → cost tracks actions, not bytes. Then compare
- *     cost per action: printable is 1 byte/action, short SGR is 4. If printable
- *     is far dearer per action, the per-cell path is the answer and it is the
- *     thing to attack.
- *
- * Deliberately plain ASCII with no wide or combining characters, so a slow
- * result cannot be blamed on Unicode: this is the cheapest cell there is.
+ * Plain ASCII only, the cheapest cell, so Unicode can't be blamed.
  */
 const PARSE_PROBE_BYTES = 2 * 1024 * 1024
 
-/** Repeats `unit` until at least `targetBytes`, cut to a whole number of units
- *  so the stream never ends mid-sequence and leaves the parser mid-state. */
+/** Repeats `unit` to at least `targetBytes`, in whole units so the parser
+ *  never ends mid-sequence. */
 function repeatUnit(unit: string, targetBytes: number): Uint8Array {
   const bytes = enc.encode(unit)
   const count = Math.max(1, Math.floor(targetBytes / bytes.length))
@@ -214,8 +177,8 @@ function repeatUnit(unit: string, targetBytes: number): Uint8Array {
   return out
 }
 
-/** Printable ASCII, one cell per byte — the per-cell cost, at its cheapest.
- *  80 columns then a wrap, matching the `tr '\0' 'x'` flood a live pane sees. */
+/** Printable ASCII, one cell per byte: the per-cell cost at its cheapest.
+ *  80 columns then a wrap. */
 export const parseCells: Workload = {
   id: 'parse-cells',
   label: 'Parse: printable (1 cell/byte)',
@@ -228,8 +191,7 @@ export const parseCells: Workload = {
   },
 }
 
-/** Well-formed SGR resets: fully parsed, pen state updated, no cell written and
- *  no page grown. Four bytes per action. */
+/** SGR resets: parsed and applied, no cell written. Four bytes per action. */
 export const parseShortSgr: Workload = {
   id: 'parse-sgr-short',
   label: 'Parse: short SGR (0 cells)',
@@ -243,9 +205,8 @@ export const parseShortSgr: Workload = {
   },
 }
 
-/** The same single action carrying ten redundant parameters — five times the
- *  bytes through the state machine for identical work at the end of it. This is
- *  what separates per-byte cost from per-action cost. */
+/** One action with ten redundant parameters: five times the bytes for the
+ *  same work, separating per-byte from per-action cost. */
 export const parseLongSgr: Workload = {
   id: 'parse-sgr-long',
   label: 'Parse: long SGR (0 cells)',
@@ -260,59 +221,27 @@ export const parseLongSgr: Workload = {
 }
 
 /**
- * The coalescer's flush *threshold* (`FLUSH_SIZE_THRESHOLD` in
- * src-tauri/src/coalesce.rs).
+ * The coalescer's flush threshold (`FLUSH_SIZE_THRESHOLD` in
+ * src-tauri/src/coalesce.rs); change them together.
  *
- * Not a cap, which is what this constant was previously documented as. The
- * coalescer appends each upstream read to a buffer and flushes once that
- * buffer *reaches* the threshold:
- *
- *     buf.extend_from_slice(&bytes);
- *     if buf.len() >= FLUSH_SIZE_THRESHOLD { flush(...) }
- *
- * so a delivery is always at least the threshold and routinely larger — by
- * however much the read that crossed the line overshot. Feeding the engines
- * exactly the threshold therefore modeled a best case the app never actually
- * produces, and it mattered: a small delivery parses in well under a frame for
- * either engine, so the stall metric bottomed out at the display's refresh
- * interval and reported the same number no matter how fast the engine was.
- *
- * Mirrors `FLUSH_SIZE_THRESHOLD` in src-tauri/src/coalesce.rs and must be
- * changed with it — a harness modeling a coalescer the app no longer has
- * measures nothing useful. It was raised from 32 KB to 256 KB after measuring
- * the real path: at 32 KB the per-message IPC tax was ~40% on top of engine
- * time, paid once per delivery.
- *
- * Measured against the real path at 256 KB, this model holds up: real flushes
- * came out at a 257 KB median against a 256 KB threshold, which is exactly the
- * `threshold + overshoot` shape produced here. The 8 ms `FLUSH_INTERVAL` does
- * not take over at this size — 256 KB accumulates in ~6 ms at flood rates, so
- * the size branch still wins and only lulls flush on the ticker. What the
- * model does not reproduce is that minority of small ticker flushes, which is
- * why its mean delivery runs a little high.
+ * A threshold, not a cap: the coalescer flushes once its buffer reaches it,
+ * so a delivery is the threshold plus the last read's overshoot. Measured on
+ * the real path, flushes had a 257 KB median against 256 KB; the 8 ms
+ * `FLUSH_INTERVAL` only flushes lulls. The model omits those small ticker
+ * flushes, so its mean runs slightly high.
  */
 export const COALESCE_THRESHOLD = 256 * 1024
 
 /**
- * One upstream read, before coalescing — an `ssh2` channel read, a serial
- * read, a PTY read. The coalescer sees a stream of these and batches them.
- *
- * The range is what bounds a delivery's overshoot past the flush threshold,
- * so it is the part of this model worth being explicit about rather than the
- * delivery size itself: deliveries come out as `threshold + (0, MAX_READ]`.
+ * One upstream read before coalescing (SSH channel, serial or PTY). Its range
+ * bounds a delivery's overshoot: deliveries are `threshold + (0, MAX_READ]`.
  */
 const MIN_READ = 4 * 1024
 const MAX_READ = 32 * 1024
 
 /**
- * The delivery sizes `coalesce.rs` would emit for `total` bytes of output,
- * by running its actual accumulate-and-flush loop over simulated reads.
- *
- * Deterministic (seeded) like every other input here, so a run reproduces and
- * both engines are fed the identical sequence. Modeling the algorithm rather
- * than picking a size distribution is deliberate — the shape of the output
- * falls out of the threshold and the read size, which are both real numbers
- * taken from the Rust, instead of a curve invented to look plausible.
+ * The delivery sizes `coalesce.rs` would emit for `total` bytes, by running
+ * its accumulate-and-flush loop over seeded simulated reads.
  */
 export function coalescedDeliveries(total: number, threshold: number, seed = 0xc0a1): number[] {
   const rand = rng(seed)
@@ -333,16 +262,9 @@ export function coalescedDeliveries(total: number, threshold: number, seed = 0xc
 }
 
 /**
- * Flood stress at a chosen size, measured for the longest single main-thread
- * stall while the flood drains — the freeze a user feels, which is what Phase 8
- * (moving the parser to a Web Worker) would remove.
- *
- * `chunkBytes` decides which stall you measure. Fed the way the app actually
- * delivers output — the coalescer's accumulate-and-flush loop replayed over
- * simulated upstream reads, across event-loop turns — this is the stall
- * production can produce. Fed as one monolithic write (`chunkBytes: 0`), both
- * engines block for the whole parse; that's the raw-parser drain / absolute
- * worst case, not a case the coalescer lets happen.
+ * Flood stress at a chosen size, measured for the longest main-thread stall
+ * while it drains. Fed through the modeled coalescer, it's the stall the app
+ * can produce; `chunkBytes: 0` is one monolithic write, the raw worst case.
  */
 export function largeFlood(mb: number, chunkBytes = COALESCE_THRESHOLD, seed = 0x1234): Workload {
   const feed = chunkBytes > 0 ? `${(chunkBytes / 1024) | 0} KB+ feed` : 'single write'
@@ -363,9 +285,8 @@ export function largeFlood(mb: number, chunkBytes = COALESCE_THRESHOLD, seed = 0
 export const FLOOD_SIZES = [10, 50, 100]
 
 /**
- * tail -f / verbose build: steady lines arriving one at a time. Timed as
- * latency — the thing that matters for a log you are watching is how long each
- * new line takes to land, not aggregate bytes.
+ * tail -f / verbose build: lines arriving one at a time, timed as latency per
+ * line.
  */
 export const streaming: Workload = {
   id: 'streaming',
@@ -398,10 +319,9 @@ export const streaming: Workload = {
 }
 
 /**
- * htop-style TUI: the alternate screen, redrawn in full each frame from the
- * home position, with bars that move every frame so the whole grid is damaged
- * every time — the case that most stresses a "repaint only what changed"
- * renderer, because nothing is unchanged. Timed per frame.
+ * htop-style TUI: the alternate screen redrawn in full from home each frame,
+ * with every row changing, the worst case for damage tracking. Timed per
+ * frame.
  */
 export const tui: Workload = {
   id: 'tui',
@@ -418,7 +338,7 @@ export const tui: Workload = {
       const parts: string[] = ['\x1b[H'] // home, no clear — overwrite in place like htop
       for (let r = 0; r < rows; r++) {
         if (r < 4) {
-          // CPU/mem meter rows
+          // CPU/mem meter rows.
           const pct = (Math.sin(f / 8 + r) * 0.5 + 0.5)
           const filled = (pct * barWidth) | 0
           const color = pct > 0.8 ? 196 : pct > 0.5 ? 214 : 40
@@ -427,7 +347,7 @@ export const tui: Workload = {
         } else if (r === 4) {
           parts.push(`${FG(30)}  PID USER      PRI  NI  VIRT   RES   CPU% MEM%   TIME+  Command\x1b[K${RESET}\r\n`)
         } else {
-          // process rows, values jittering each frame
+          // Process rows, jittering each frame.
           const pid = 100 + r + ((f * 3) % 7)
           const cpu = (rand() * 100).toFixed(1)
           const mem = (rand() * 20).toFixed(1)
@@ -448,9 +368,8 @@ export const tui: Workload = {
 }
 
 /**
- * Interactive SSH: a person typing. Each keystroke is its own event, echoed as
- * a single character (the loopback of a real echo), and timed on its own. This
- * is the keystroke-to-glyph latency that decides whether a session feels live.
+ * Interactive SSH: each keystroke echoed as one character and timed on its
+ * own (keystroke-to-glyph latency).
  */
 export const typing: Workload = {
   id: 'typing',
@@ -472,9 +391,8 @@ export const typing: Workload = {
   },
 }
 
-/** Wrap a real captured session dump as a flood-stress workload — the "on real
- *  traffic" case the exit criterion names, fed the way the app delivers it (in
- *  coalescer-sized chunks) and measured for its worst main-thread stall. */
+/** Wraps a captured session dump as a flood-stress workload, fed in
+ *  coalescer-sized chunks and measured for its worst stall. */
 export function capturedFlood(bytes: Uint8Array, name: string, chunkBytes = COALESCE_THRESHOLD): Workload {
   const feed = chunkBytes > 0 ? `${(chunkBytes / 1024) | 0} KB+ feed` : 'single write'
   return {

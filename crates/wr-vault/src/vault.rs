@@ -15,12 +15,8 @@ use crate::wrapper::{self, StoredWrapper, WrapperKind, WrapperMeta, WrapperParam
 
 const FORMAT_VERSION: u32 = 2;
 
-/// Temp-file-plus-rename write, owner-only on Unix. A crash or power loss
-/// mid-write could otherwise leave a truncated or empty vault file, silently
-/// destroying every stored credential; this is also what makes the v1 → v2
-/// migration safe, since the old file stays intact and openable right up
-/// until the single rename that replaces it. See `wr_fs` for the full
-/// reasoning.
+/// Temp-file-plus-rename write, owner-only on Unix, so a crash can't truncate
+/// the vault; also what keeps the v1 to v2 migration safe. See `wr_fs`.
 use wr_fs::write_atomic as atomic_write;
 
 // Matches the `argon2` crate's own `Params::default()` exactly (verified
@@ -113,23 +109,14 @@ fn parse_any(value: serde_json::Value) -> Result<AnyFile, VaultError> {
     }
 }
 
-/// Checks that `value` is a vault this crate could actually open, without
-/// unlocking it or touching the filesystem.
+/// Checks that `value` is a vault this crate could open, without unlocking or
+/// touching the filesystem. For `vault_import`, which replaces the live store:
+/// beyond parsing, it requires a master password wrapper (see
+/// [`Vault::remove_unlock_method`]) and acceptable KDF costs.
 ///
-/// For `vault_import`, which replaces the live credential store with a file it
-/// was handed. Parsing is not enough on its own: a JSON object that
-/// deserializes but carries no password wrapper would install a vault that
-/// opens with nothing, destroying every stored credential for a user who has
-/// already been re-locked by the import. So this also insists on the invariant
-/// the crate maintains everywhere else — that a vault always has a master
-/// password wrapper (see [`Vault::remove_unlock_method`]) — and that the
-/// stored KDF costs are ones this crate will agree to derive with, rather than
-/// leaving that to be discovered at unlock time by an allocation.
-///
-/// Deliberately *not* an authenticity check. A bundle is a backup format that
-/// has to be openable on a new machine with nothing but the master password,
-/// so there is no key available to have signed it with. This says "this is a
-/// vault", never "this is your vault".
+/// Not an authenticity check: a backup must open on a new machine with only
+/// the master password, so nothing signs it. This says "a vault", never "your
+/// vault".
 pub fn validate(value: &serde_json::Value) -> Result<(), VaultError> {
     match parse_any(value.clone())? {
         AnyFile::V1(file) => {
@@ -181,14 +168,9 @@ fn wrapper_index(wrappers: &[StoredWrapper], kind: WrapperKind) -> Option<usize>
     wrappers.iter().position(|w| w.params.kind() == kind)
 }
 
-/// An unlocked vault: decrypted entries live in memory only for as long as
-/// this value does. Every mutation re-encrypts and persists immediately
-/// (no separate "save" step to forget).
-///
-/// No explicit `Drop`: `Dek` is `ZeroizeOnDrop` and each `VaultSecret` in
-/// `entries` derives it too, so drop glue already wipes everything sensitive.
-/// The previous hand-written `Drop` existed only because the key was a bare
-/// `[u8; 32]` that nothing else would have cleaned up.
+/// An unlocked vault: decrypted entries live only as long as this value.
+/// Every mutation re-encrypts and persists immediately. No explicit `Drop`:
+/// `Dek` and each `VaultSecret` are `ZeroizeOnDrop`.
 pub struct Vault {
     path: PathBuf,
     /// Random, independent of every unlock method. Adding, removing, or
@@ -342,17 +324,9 @@ impl Vault {
         let nonce = decode_b64("entries nonce", &file.nonce)?;
         let ciphertext = decode_b64("entries ciphertext", &file.ciphertext)?;
 
-        // The DEK already authenticated against its wrapper's AEAD tag, so a
-        // failure here is genuine damage to the entries blob and must not be
-        // reported as a wrong password.
-        // `Zeroizing` because this buffer is every credential in the vault, in
-        // the clear, as JSON. `VaultSecret` and `Dek` are `ZeroizeOnDrop`, so
-        // this intermediate was the one copy of the same bytes that would have
-        // been released back to the allocator intact.
-        //
-        // `serde_json`'s own internal scratch buffers are still unaddressed
-        // and can't be from here; that's a limitation of parsing secrets with
-        // serde at all, and closing this doesn't pretend otherwise.
+        // The DEK already authenticated, so a failure here is real damage, not a
+        // wrong password. `Zeroizing`, since this is every credential in the clear
+        // (serde_json's internal buffers remain beyond reach).
         let plaintext = zeroize::Zeroizing::new(
             crypto::decrypt(dek.as_bytes(), &nonce, &ciphertext, crypto::ENTRIES_AAD).ok_or_else(
                 || {
@@ -392,15 +366,10 @@ impl Vault {
         serde_json::from_slice(&plaintext).map_err(|e| VaultError::Corrupt(e.to_string()))
     }
 
-    /// Completes a v1 → v2 upgrade by re-keying onto a **fresh** DEK rather
-    /// than adopting the old password-derived key as the DEK.
-    ///
-    /// That costs one re-encryption of a file measured in kilobytes, and buys
-    /// something worth much more: every copy of the old key stops being
-    /// useful the moment the rename lands. In particular the plaintext copy
-    /// that v1's "unlock with Windows sign-in" left sitting in the OS
-    /// credential store — the weakness this whole format change exists to
-    /// close — is dead weight afterward instead of a live key to the vault.
+    /// Completes a v1 to v2 upgrade by re-keying onto a fresh DEK rather than
+    /// adopting the old password-derived key, so every old copy of that key
+    /// (including the plaintext one v1's Windows sign-in unlock left in the OS
+    /// credential store) becomes useless.
     fn finish_migration(
         path: PathBuf,
         entries: HashMap<String, VaultSecret>,
@@ -445,15 +414,10 @@ impl Vault {
         self.add_enrolled_unlock_method(params, &kek)
     }
 
-    /// The second half of [`Vault::add_unlock_method`], for callers that need
-    /// to run enrollment *outside* whatever lock guards this vault.
-    ///
-    /// That separation matters more than it looks: enrollment can sit for as
-    /// long as a user takes to answer a Windows Hello prompt, and holding the
-    /// vault's mutex across that stalls every other vault operation behind
-    /// it — including the ones the UI uses to notice that anything is
-    /// happening. Worse, repeated attempts queue up on the mutex rather than
-    /// failing fast, so each one raises its own prompt in turn.
+    /// The second half of [`Vault::add_unlock_method`], for running enrollment
+    /// outside the vault's lock: a Hello prompt can take as long as the user
+    /// does, and holding the mutex would stall every vault operation and queue
+    /// repeated attempts.
     pub fn add_enrolled_unlock_method(
         &mut self,
         params: WrapperParams,
@@ -488,14 +452,9 @@ impl Vault {
     }
 
     pub fn remove_unlock_method(&mut self, kind: WrapperKind) -> Result<(), VaultError> {
-        // A vault reachable only through hardware-backed unlock is one PIN
-        // reset, TPM clear, or dead motherboard away from being gone for
-        // good — and in the Windows Hello case, one Microsoft change to
-        // signature determinism away as well. The master password is the
-        // fallback that makes every other method safe to rely on, so it
-        // isn't removable. (If you decide that's too paternalistic, this is
-        // the single line to drop — but read the note on
-        // `WrapperParams::Hello` first.)
+        // The master password isn't removable: a hardware-only vault is one PIN
+        // reset, TPM clear or dead motherboard (or a Hello determinism change) from
+        // gone. See `WrapperParams::Hello` before changing this.
         if kind == WrapperKind::Password {
             return Err(VaultError::PasswordRequired);
         }
@@ -552,18 +511,10 @@ impl Vault {
         self.persist()
     }
 
-    /// Drops every entry whose key `keep` rejects, in one pass and one write.
-    /// Returns how many went.
-    ///
-    /// For sweeping credentials whose owner no longer exists: a profile
-    /// deleted while the vault was locked can't take its entry with it, so the
-    /// entry outlives it. Written as a predicate over ids rather than a list
-    /// of ids to delete because the caller's knowledge is "these still exist"
-    /// — inverting that here means a caller who computes its set wrongly
-    /// deletes nothing rather than everything.
-    ///
-    /// Persists only when something was actually removed, so the common case
-    /// (nothing orphaned) doesn't rewrite the file on every unlock.
+    /// Drops every entry whose id `keep` rejects, in one write, returning how many
+    /// went. For credentials outliving their profile (deleted while locked). A
+    /// predicate over survivors, so a wrong set deletes nothing rather than
+    /// everything. Writes only when something was removed.
     pub fn retain(&mut self, keep: impl Fn(&str) -> bool) -> Result<usize, VaultError> {
         let before = self.entries.len();
         self.entries.retain(|id, _| keep(id));

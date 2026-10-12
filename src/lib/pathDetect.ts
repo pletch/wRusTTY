@@ -1,59 +1,43 @@
 /**
  * Finding file paths in a line of terminal output.
  *
- * The sibling of `urlDetect.ts`, with the same contract: one logical line in,
- * half-open offsets out, no knowledge of rows or cells. And the same threat
- * model — every line is attacker-supplied. On an SSH pane the stakes are low:
- * the path is looked up over the SFTP session that pane already has, so the
- * worst a hostile line can do is point the files panel somewhere. On a local
- * pane it is opened on this machine, and the guards for that — no network
- * paths, nothing that runs — live beside the opener, in `local_open.rs`,
- * because this file only finds text.
+ * The sibling of `urlDetect.ts`: one logical line in, half-open offsets out,
+ * and every line attacker-supplied. On SSH a path is looked up over the
+ * pane's SFTP session; on a local pane it's opened on this machine, with the
+ * guards (no network paths, nothing that runs) in `local_open.rs`.
  *
- * What it is strict about instead is *noise*. Paths are far more common in
- * output than URLs, and far less self-announcing, so only text that is
- * unmistakably a path is offered:
+ * Strict about noise, offering only unmistakable paths:
  *
  * - absolute: `/etc/nginx/nginx.conf`
  * - home-relative: `~/src`, and `~` alone
  * - explicitly relative: `./build.sh`, `../lib`
- * - relative with a separator in it: `src/main.rs`
+ * - relative with a separator: `src/main.rs`
  *
- * A bare name — `README.md` in a listing — is not. Every word of prose would
- * otherwise be a candidate, and there is no way to tell `make` the file from
+ * A bare name (`README.md`) isn't: `make` the file is indistinguishable from
  * `make` the verb.
  *
- * **No regex does the scanning.** A candidate is a run of non-delimiter
- * characters, found by one pass over the line, and each run is then examined
- * with fixed-cost checks. The obvious pattern for "a word, then a slash" has a
- * greedy class followed by a literal, which backtracks through every start
- * position of a long slash-less run — quadratic on exactly the hostile line
- * `urlDetect` is shaped to survive.
+ * No regex does the scanning: candidates are runs of non-delimiters found in
+ * one pass, then checked at fixed cost. "A word, then a slash" as a regex
+ * backtracks quadratically on a long slash-less run.
  */
 
 /**
- * Which path syntax the pane's host speaks.
- *
- * `'posix'` for an SSH host. `'windows'` for a local shell, which adds drive
- * letters and backslashes to everything POSIX accepts — Git Bash, and most
- * cross-platform tools, print forward slashes on Windows too.
+ * Which path syntax the pane's host speaks: `'posix'` for SSH, `'windows'`
+ * for a local shell (POSIX plus drive letters and backslashes).
  */
 export type PathFlavor = 'posix' | 'windows'
 
 export interface PathMatch {
   start: number
   end: number
-  /** The path as written, with any `:line:col` suffix removed. Not resolved:
-   *  that needs the pane's directory, which this file has no business
-   *  knowing. */
+  /** The path as written, minus any `:line:col` suffix. Unresolved. */
   path: string
 }
 
 /**
- * What ends a candidate. Whitespace; the quotes and brackets shells and prose
- * wrap paths in; and the shell's own operators. Brackets and parentheses are
- * legal in a filename, but a path in `(see /etc/hosts)` is far more common
- * than one with a parenthesis in it.
+ * What ends a candidate: whitespace, wrapping quotes and brackets, and shell
+ * operators. Parentheses are legal in filenames, but `(see /etc/hosts)` is far
+ * more common.
  */
 function isDelimiter(c: number): boolean {
   return (
@@ -80,14 +64,9 @@ function isDelimiter(c: number): boolean {
 const TRAILING_PUNCT = '.:!?'
 
 /**
- * Cuts the path off at a `:line` position — `src/main.rs:42:7` from a
- * compiler, `/var/log/syslog:120:kernel: …` from grep. The file is the link;
- * the position, and whatever grep printed after it, are not somewhere the
- * files panel can go.
- *
- * The first `:` followed by digits and then another `:` or the end is the cut.
- * Linear: the digits after one colon are never rescanned from another, since a
- * colon is not a digit.
+ * Cuts the path at a `:line` position (`src/main.rs:42:7`,
+ * `/var/log/syslog:120:kernel: ...`): the first `:` followed by digits and
+ * then `:` or the end. Linear.
  */
 function stripPosition(s: string): string {
   for (let i = s.indexOf(':'); i >= 0; i = s.indexOf(':', i + 1)) {
@@ -127,21 +106,15 @@ function firstSeparator(text: string, flavor: PathFlavor): number {
   return Math.min(slash, back)
 }
 
-/**
- * The part of a run that is a path, as an offset into it and a length, or
- * null.
- */
+/** The part of a run that's a path, as an offset and text, or null. */
 function examine(run: string, flavor: PathFlavor): { at: number; text: string } | null {
-  // `--config=/etc/x.conf`, `PATH=/usr/bin`: the path is what follows the
-  // first `=`. Taken before anything else looks at the run, because the
-  // option name in front is not part of anything.
+  // `--config=/etc/x.conf`, `PATH=/usr/bin`: the path follows the first `=`.
   let at = 0
   const eq = run.indexOf('=')
   if (eq >= 0) at = eq + 1
   let text = run.slice(at)
 
-  // A URL is `urlDetect`'s, and `host:/path` is a path on some *other*
-  // machine — `scp` and `rsync` syntax — which this session cannot reach.
+  // A URL is `urlDetect`'s; `host:/path` (scp, rsync) is on another machine.
   if (text.includes('://')) return null
 
   let end = text.length
@@ -155,11 +128,9 @@ function examine(run: string, flavor: PathFlavor): { at: number; text: string } 
   if (text === '~') return { at, text }
   const first = text.charCodeAt(0)
   if (first === 0x2f /* / */) {
-    // `/` alone is a path, but nearly always a separator in prose ("and / or")
-    // or a stray division sign; a path worth clicking has something after it.
+    // `/` alone is nearly always prose ("and / or") or division.
     if (text.length < 2) return null
-    // `//` opens a network path in some notations and a comment in most
-    // languages; neither is a place on this host.
+    // `//` is a network path or a comment, not a place on this host.
     if (text.charCodeAt(1) === 0x2f) return null
     return { at, text }
   }
@@ -174,11 +145,10 @@ function examine(run: string, flavor: PathFlavor): { at: number; text: string } 
   }
   if (!startsRelative(first)) return null
   const slash = firstSeparator(text, flavor)
-  // Needs a separator with something on both sides of it: `foo/` alone is how
-  // `ls -F` marks a directory, but it is also the end of "and/" in a wrapped
-  // sentence, and a bare name is not offered anyway.
+  // Needs a separator with something on both sides (`foo/` is often a wrapped
+  // "and/").
   if (slash <= 0 || slash === text.length - 1) return null
-  // A colon before the first separator is `host:path` again.
+  // A colon before the first separator is `host:path`.
   const colon = text.indexOf(':')
   if (colon >= 0 && colon < slash) return null
   return { at, text }
@@ -196,27 +166,21 @@ export function findPaths(line: string, flavor: PathFlavor = 'posix'): PathMatch
     const hit = examine(line.slice(start, i), flavor)
     if (!hit) continue
     const from = start + hit.at
-    // `hit.text` may be shorter than what is left of the run — trailing
-    // punctuation and a position suffix were dropped from its end — but it
-    // always begins where the run (or the part after `=`) does.
+    // `hit.text` may be shorter than the run (trailing punctuation and position
+    // dropped), but starts where the run or the part after `=` does.
     out.push({ start: from, end: from + hit.text.length, path: hit.text })
   }
   return out
 }
 
 /**
- * Where a path found by `findPaths` points, as an absolute remote path, or
- * null if there is nothing to resolve it against.
+ * Where a path from `findPaths` points, as an absolute remote path, or null.
+ * `cwd` is the pane's last-known directory (possibly `~`-relative); `home` is
+ * the remote home.
  *
- * `cwd` is the pane's directory as the app last heard it, and may itself be
- * `~`-relative (it can come from a window title). `home` is the remote home
- * directory, needed for either kind of `~`.
- *
- * Normalized lexically — `.` dropped, `..` popped — because SFTP resolves
- * neither reliably and because the files panel shows the path it was given.
- * Lexical `..` is not what the kernel does through a symlink, and that is
- * accepted: the result is looked up before anything is done with it, so the
- * cost of a disagreement is "not found" rather than the wrong file.
+ * Normalized lexically (SFTP resolves neither `.` nor `..` reliably). Lexical
+ * `..` differs from the kernel through symlinks; the result is looked up
+ * before use, so a disagreement is "not found", not the wrong file.
  */
 export function resolveRemotePath(path: string, cwd: string | null, home: string): string | null {
   const expand = (p: string) => (p === '~' ? home : p.startsWith('~/') ? `${home}/${p.slice(2)}` : p)
@@ -238,8 +202,8 @@ export function resolveRemotePath(path: string, cwd: string | null, home: string
   return `/${parts.join('/')}`
 }
 
-/** The parent directory of an absolute path from `resolveRemotePath`, and the
- *  name in it. The root has no parent and comes back as its own. */
+/** Splits an absolute path into its parent and name; the root is its own
+ *  parent. */
 export function splitRemotePath(abs: string): { dir: string; name: string | null } {
   if (abs === '/') return { dir: '/', name: null }
   const idx = abs.lastIndexOf('/')

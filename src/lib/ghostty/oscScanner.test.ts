@@ -6,13 +6,9 @@ const enc = new TextEncoder()
 const B = (s: string) => enc.encode(s)
 
 /**
- * Replays chunks exactly as GhosttyEngine.parseAndDispatch does, recording the
- * interleaving of parsed segments and dispatched events.
- *
- * The ordering is the whole point of the scanner: a handler has to run only
- * after everything preceding it in the stream — including its own sequence —
- * has reached the parser. Asserting on this log is what pins that down, since
- * the events alone would look identical whatever order the parser saw.
+ * Replays chunks as GhosttyEngine.parseAndDispatch does, logging parsed
+ * segments and dispatched events in order: a handler must run only after
+ * everything before it (its own sequence included) has been parsed.
  */
 function replay(chunks: string[], wantRis = false) {
   let pending: Uint8Array | null = null
@@ -73,10 +69,8 @@ describe('scanOsc', () => {
     })
 
     it('parses a screen-buffer change before a marker in the same chunk', () => {
-      // The tmux/nano regression: leaving the alternate screen and the marker
-      // that ends the run arrive together. Dispatching before ESC[?1049l was
-      // parsed made handlers read a stale screen state, which stranded the run
-      // open and left the activity indicator stuck on.
+      // Leaving the alternate screen and the end-of-run marker arrive together;
+      // handlers must see the primary screen state.
       const src = '\x1b[?1049l\x1b]133;D;0\x07$ '
       const { log } = replay([src])
       expect(log).toEqual(['parse:\x1b[?1049l\x1b]133;D;0\x07', 'osc:133:D;0', 'parse:$ '])
@@ -145,9 +139,7 @@ describe('scanOsc', () => {
       expect(replay([src]).log).toEqual([`parse:${src}`])
     })
 
-    // These two guard a bug the old regex scanner had: an unrecognized OSC let
-    // scanning resume *inside* the sequence, so its own terminating BEL was
-    // reported as the bell. Any OSC form we do not parse would ring it.
+    // An unrecognized OSC's own terminating BEL isn't reported as a bell.
     it('does not ring the bell on an OSC with no ident', () => {
       const src = '\x1b];nodigits\x07'
       expect(replay([src]).log).toEqual([`parse:${src}`])
@@ -159,12 +151,9 @@ describe('scanOsc', () => {
     })
   })
 
-  // CAN (0x18) and SUB (0x1A) cancel a control string in progress: the command
-  // is dropped and what follows is ordinary output (DEC parser; xterm; the core
-  // since upstream 520d8f55a, pinned in main/oscCancel.test.ts). The scanner
-  // knew only BEL and ESC, so a canceled OSC stayed open until the next BEL
-  // and was dispatched with the following output as its payload — a title of
-  // "evil␘ normal text", or an OSC 52 write with output glued to the base64.
+  // CAN (0x18) and SUB (0x1A) cancel a control string: the command is dropped
+  // and what follows is ordinary output (DEC parser; xterm; the core since
+  // upstream 520d8f55a, pinned in main/oscCancel.test.ts).
   describe('CAN and SUB cancel an OSC', () => {
     it('drops an OSC canceled with CAN, and dispatches nothing for the BEL after it', () => {
       const src = '\x1b]2;evil title\x18 normal text\x07'
@@ -377,8 +366,7 @@ describe('scanOsc', () => {
     })
 
     it('keeps an OSC and a following reset in stream order', () => {
-      // The order a program abandoning a run actually emits: it reported
-      // progress, then reset the terminal without clearing it.
+      // What a program abandoning a run emits: progress, then a reset.
       const { log } = replay(['\x1b]9;4;3\x07working\x1bc'], true)
       expect(log).toEqual([
         'parse:\x1b]9;4;3\x07',

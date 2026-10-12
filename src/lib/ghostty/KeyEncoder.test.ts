@@ -7,18 +7,11 @@ import { KeyEncoder } from './KeyEncoder'
 import { createTerminal, instantiateGhosttyWasm, writeString, type GhosttyWasm } from './wasmBindings'
 
 /**
- * The key encoder, against the binary that ships.
- *
- * This is the suite that replaced a hand-rolled keyboard table, so what it is
- * really asserting is that the replacement covers the ground the table did and
- * the ground it missed. The sequences below are not invented here — they are
- * what the protocols specify and what Ghostty produces — so a failure means
- * either the DOM-to-`GhosttyKeyEvent` mapping has drifted or the pinned binary
- * has changed its mind, and both are worth stopping for.
- *
- * The Kitty cases matter most. Nothing in this app decides to speak that
- * protocol: the far end asks with `CSI > flags u`, and these tests ask the
- * same way, through the terminal, which is the only route a real session has.
+ * The key encoder, against the binary that ships. The expected sequences are
+ * what the protocols specify and Ghostty produces, so a failure means the
+ * DOM-to-`GhosttyKeyEvent` mapping drifted or the pinned binary changed.
+ * Kitty cases go through the terminal (`CSI > flags u`), as a real session
+ * does.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -108,10 +101,8 @@ describe('KeyEncoder', () => {
       // The old table's ctrl branch required !alt && !shift and its default
       // branch required !ctrl, so both of these fell between them.
       expect(encode(key('KeyA', { key: 'a', ctrl: true, alt: true }))).toBe('\x1b\x01')
-      // A chord with no legacy byte at all comes out in the `CSI u` form even
-      // without the Kitty protocol. This one is worth knowing about beyond its
-      // own sake: the app binds Ctrl+Shift+C to copy, and the binding's comment
-      // used to say it "maps to no terminal sequence". It does now.
+      // A chord with no legacy byte uses the `CSI u` form even without Kitty, so
+      // the app's Ctrl+Shift+C copy binding does shadow a real sequence.
       expect(encode(key('KeyC', { key: 'C', ctrl: true, shift: true }))).toBe('\x1b[99;5u')
     })
 
@@ -196,20 +187,11 @@ describe('KeyEncoder', () => {
   })
 
   /**
-   * Application keypad mode, which works and looks like it does not.
-   *
-   * Setting DECKPAM on its own changes nothing, and that is correct rather
-   * than broken: DEC 1035 (`ignore_keypad_with_numlock`) defaults to **on**,
-   * and upstream hard-disables application keypad whenever it is
-   * — `if (ignore_keypad_with_numlock) break :keypad false`. xterm's modern
-   * default is the same. An application therefore has to clear 1035 as well,
-   * and the ones that care do.
-   *
-   * Pinned in full because the first reading of the evidence here was that
-   * the encoder ignored mode 66 altogether. It does not; the gate was simply
-   * invisible. Anyone who reaches the same wrong conclusion will be tempted
-   * to "fix" the numpad by removing that gate, and this is what should stop
-   * them.
+   * Application keypad mode, which works but looks like it doesn't: DEC 1035
+   * (`ignore_keypad_with_numlock`) defaults on, and upstream disables
+   * application keypad while it is (`if (ignore_keypad_with_numlock) break
+   * :keypad false`), as xterm does. Applications clear 1035 too. Pinned so
+   * nobody "fixes" the numpad by removing that gate.
    */
   describe('application keypad mode', () => {
     /** The whole keypad, as a single readable snapshot. */
@@ -320,8 +302,7 @@ describe('KeyEncoder', () => {
 
     it('reports keys legacy encoding has no form for', () => {
       const { encode, write } = boot()
-      // F13 used to be the example here and stopped being one at the 492300ca
-      // pin, which gave it a legacy form. PrintScreen still has none.
+      // PrintScreen has no legacy form (F13 gained one at the 492300ca pin).
       expect(encode(key('PrintScreen'))).toBeNull()
       write('\x1b[>1u')
       expect(encode(key('PrintScreen'))).toBe('\x1b[57361u')
@@ -379,17 +360,10 @@ describe('KeyEncoder', () => {
   })
 
   /**
-   * Events with no `code` on them, which is what an injected virtual key looks
-   * like: Chromium fills `code` in from the hardware scan code, so anything
-   * synthesized without one — an on-screen keyboard, a KVM or remote-desktop
-   * stack, `SendInput` without `KEYEVENTF_SCANCODE` — arrives with `code: ""`.
-   *
-   * This is here because it was found in the running app rather than reasoned
-   * about: driving the real window through `SendInput` produced a pane where
-   * every arrow, function key and control chord was dead while plain letters
-   * still typed, because those reach the wire through the browser's text path
-   * and need no encoding. The table this file's subject replaced keyed off
-   * `key`, so the swap would have taken that away from those users silently.
+   * Events with no `code`, as injected virtual keys arrive (on-screen
+   * keyboards, KVM and remote-desktop stacks, `SendInput` without
+   * `KEYEVENTF_SCANCODE`). Without the fallback, arrows, function keys and
+   * control chords would be dead while letters still typed.
    */
   describe('an event that carries no code, as injected keys do', () => {
     it('still encodes a named key', () => {

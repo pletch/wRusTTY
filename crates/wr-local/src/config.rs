@@ -1,60 +1,36 @@
 use serde::{Deserialize, Serialize};
 
-/// What we set `TERM` to when the session doesn't override it.
-///
-/// Matches `wr_ssh::DEFAULT_TERM_TYPE` and `wr_telnet::DEFAULT_TERM_TYPE`
-/// deliberately, for the reason telnet's own constant gives: they are separate
-/// transports but the same terminal, and a user has no reason to expect
-/// different behavior from the same shell reached two ways.
-///
-/// It matters unevenly here. A WSL or Git Bash session reads `TERM` and
-/// changes what it emits based on it; PowerShell and CMD ignore it entirely,
-/// since ConPTY is what tells them the console's capabilities.
+/// The `TERM` used when the session doesn't override it. Matches
+/// `wr_ssh::DEFAULT_TERM_TYPE` and `wr_telnet::DEFAULT_TERM_TYPE`. WSL and Git
+/// Bash read it; PowerShell and CMD get their capabilities from ConPTY.
 pub const DEFAULT_TERM_TYPE: &str = "xterm-256color";
 
 /// Everything needed to launch a local shell.
 ///
-/// Every field here exists to serve the security decision recorded in
-/// `docs/LOCAL_SHELL_PLAN.md` — a saved profile becomes executable content,
-/// so the environment is passed explicitly rather than inherited wholesale,
-/// the working directory is stated rather than assumed, and the command line
-/// is **argv** rather than a string. That last one is not cosmetic: a distro
-/// name or an install path with a space in it becomes an argument boundary
-/// the moment anything concatenates these together.
-///
-/// Every field's zero value is also its intended default — an empty command is
-/// not runnable, and the rest mean "inherit" or "use the built-in" — so this
-/// derives `Default` rather than spelling one out. `SerialConfig` next door
-/// does the opposite because 9600 baud is not zero.
+/// A saved profile is executable content (`docs/LOCAL_SHELL_PLAN.md`), so the
+/// environment is explicit, the working directory stated, and the command
+/// line argv rather than a string (a space in a distro name or path would
+/// otherwise split an argument). Every field's zero value is its default,
+/// hence the derived `Default`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalConfig {
-    /// Absolute path to the executable, resolved when the shell was detected
-    /// rather than looked up on `PATH` now. Detection already had to find it
-    /// to offer it, and re-resolving here would let a `PATH` change between
-    /// then and now silently launch a different binary.
+    /// Absolute path, resolved at detection rather than on `PATH` now, so a
+    /// `PATH` change can't silently launch a different binary.
     pub command: String,
 
     /// Arguments, already split. Never a command line to be parsed.
     #[serde(default)]
     pub args: Vec<String>,
 
-    /// Working directory. `None` means the user's home, which is what every
-    /// shell does when launched from a shortcut and what a user expects from
-    /// a fresh terminal.
+    /// Working directory; `None` means the user's home.
     #[serde(default)]
     pub cwd: Option<String>,
 
-    /// Variables to set on top of the inherited environment, not a
-    /// replacement for it.
-    ///
-    /// A shell with a genuinely empty environment does not work — PowerShell
-    /// needs `SystemRoot` to load .NET, and bash needs `PATH` to find
-    /// anything — so a full replacement would have to rebuild most of what it
-    /// removed. What this does instead is make every variable *this app*
-    /// contributes an explicit, reviewable list, so nothing reaches the child
-    /// because it happened to be set in the process that also holds decrypted
-    /// vault secrets.
+    /// Variables set on top of the inherited environment, not replacing it (an
+    /// empty environment breaks PowerShell and bash). Whatever this app adds is
+    /// an explicit, reviewable list, so nothing leaks to the child just because
+    /// it's set in a process holding vault secrets.
     #[serde(default)]
     pub env: Vec<(String, String)>,
 
@@ -68,17 +44,10 @@ impl LocalConfig {
         self.term_type.as_deref().unwrap_or(DEFAULT_TERM_TYPE)
     }
 
-    /// The label a log file and a status line use for this session.
-    ///
-    /// The executable's file stem, not its full path: a log named
-    /// `pwsh-2026-09-10.log` says what it is, where one named after
-    /// `C--Program-Files-PowerShell-7-pwsh-exe` says the same thing and is
-    /// unreadable. `logging.rs` sanitizes whatever it gets, so this only has
-    /// to be meaningful, not safe.
-    ///
-    /// Split on both separators by hand rather than through `Path`, which only
-    /// knows the host's own: on Linux a Windows path is a single file name. The
-    /// frontend's `shellLabel` does the same.
+    /// The label a log file and status line use: the executable's file stem
+    /// (`pwsh`), not its path. `logging.rs` sanitizes it. Split on both
+    /// separators by hand, since `Path` only knows the host's; the frontend's
+    /// `shellLabel` does the same.
     pub fn label(&self) -> &str {
         let leaf = self.command.rsplit(['/', '\\']).next().unwrap_or("");
         let stem = match leaf.rsplit_once('.') {
@@ -111,9 +80,8 @@ mod tests {
         assert_eq!(config.term_type(), "vt100");
     }
 
-    /// The frontend sends this straight from a saved session snapshot, and a
-    /// snapshot written before any of the optional fields existed must still
-    /// parse. Only `command` is required.
+    /// A snapshot without the optional fields still parses; only `command` is
+    /// required.
     #[test]
     fn config_with_only_a_command_still_parses() {
         let config: LocalConfig = serde_json::from_str(r#"{"command":"C:\\pwsh.exe"}"#).unwrap();
@@ -132,8 +100,8 @@ mod tests {
         assert_eq!(config.label(), "pwsh");
     }
 
-    /// A command that is somehow not a path at all still has to name itself,
-    /// because the label reaches a log filename either way.
+    /// A command that isn't a path still names itself, since the label reaches a
+    /// log filename.
     #[test]
     fn label_falls_back_when_there_is_no_stem() {
         let config = LocalConfig {

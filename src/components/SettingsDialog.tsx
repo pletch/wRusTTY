@@ -111,21 +111,11 @@ const selectClass =
   'rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
 /**
- * What the font select offers: the curated stacks, then whatever monospaced
- * families this machine actually has, then the current setting if it is
- * neither.
- *
- * That last group is what keeps the control honest. A controlled select whose
- * value matches no option displays nothing at all, which reads as the font
- * setting having been lost — so a stack carried over from a version that
- * offered a different set, or one this machine cannot enumerate, is shown as
- * its own entry rather than silently disappearing.
- *
- * Installed families are offered wrapped in the same symbol tier the curated
- * stacks carry, and the ones a curated stack already names are dropped so the
- * list does not say Consolas twice. That covers the bundled families too: a
- * machine that also has JetBrains Mono installed should offer it once, and the
- * bundled entry is the one that resolves either way.
+ * What the font select offers: the curated stacks, the machine's monospaced
+ * families, then the current setting if it's neither (a controlled select
+ * with no matching option shows nothing, which looks like a lost setting).
+ * Installed families get the curated symbol tier, and ones a curated stack
+ * already names (bundled families included) aren't listed twice.
  */
 function fontOptions(current: string, installed: InstalledFont[] | null) {
   const curatedNames = new Set(FONT_STACKS.map((f) => familyName(f.value).toLowerCase()))
@@ -161,17 +151,10 @@ const GENERIC_FAMILIES = new Set([
 ])
 
 /**
- * Which face in a stack the browser will actually use, and which named ones
- * ahead of it are not installed.
- *
- * The stack is the only control over fallback this renderer has — Canvas 2D
- * picks per glyph and never says what it picked — so without this a machine
- * missing the named font renders in something else forever with no indication,
- * which reads as the setting doing nothing. `document.fonts.check` answers for
- * the whole webview and is available in WebView2.
- *
- * Returns null if nothing can be determined, which is the honest answer when
- * the API is missing rather than a guess dressed up as a report.
+ * Which face in a stack the browser will use, and which named ones ahead of
+ * it are missing. Canvas 2D never says what it picked, so without this a
+ * missing font looks like the setting doing nothing. Null when
+ * `document.fonts.check` is unavailable.
  */
 function resolveFace(stack: string): { using: string; missing: string[] } | null {
   const families = stack.split(',').map((f) => f.trim()).filter(Boolean)
@@ -214,15 +197,10 @@ function hasFamily(bare: string): boolean | null {
  *  yet — Settings can be opened before any connection exists. */
 const FALLBACK_COLS = 80
 
-/** What About shows, and what its copy button puts on the clipboard — one
- *  definition so the two can't say different things. Ordered as it reads: what
- *  you are running first, then what identifies the engine build.
- *
- *  The engine facts are not read off the running wasm, because it doesn't
- *  publish them — it exports no version symbol, and the `XTVERSION` reply is
- *  ours rather than its. They come from `vendorPin.ts`, which
- *  `vendorIntegrity.test.ts` checks against the bytes on every run, so what
- *  this shows is verified rather than merely recorded. */
+/** What About shows and its copy button copies, from one definition: what
+ *  you're running, then the engine build. The engine facts come from
+ *  `vendorPin.ts` (the wasm exports no version), which
+ *  `vendorIntegrity.test.ts` checks against the binary. */
 const ABOUT_FACTS: ReadonlyArray<readonly [string, string]> = [
   ['wRusTTY', APP_VERSION],
   ['Engine', `ghostty ${GHOSTTY_PIN.upstream} @ ${GHOSTTY_COMMIT_SHORT}`],
@@ -345,18 +323,10 @@ function familyChoices(installed: InstalledFont[] | null): string[] {
 }
 
 /**
- * A picker for one installed family, where empty means "not set".
- *
- * The value stored is the family name quoted, so it can be dropped into a CSS
- * font shorthand as-is — an unquoted name with a comma or a leading digit in
- * it would otherwise end the family list early or fail to parse.
- *
- * It becomes a text field when nothing could be enumerated, which is the
- * whole story off Windows: `list_fonts` answers natively through DirectWrite
- * and returns an empty list everywhere else. A select over an empty list is
- * not a degraded picker, it is a control that cannot express anything — so
- * where there is nothing to offer, the name gets typed instead. The setting,
- * what it stores, and everything downstream of it are identical either way.
+ * A picker for one installed family; empty means "not set". Stores the name
+ * quoted so it drops into a CSS font shorthand safely. Becomes a text field
+ * when nothing was enumerated (everywhere but Windows); the stored setting is
+ * the same either way.
  */
 export function FamilySelect({
   value,
@@ -410,18 +380,10 @@ export function FamilySelect({
 }
 
 /**
- * The range table, edited as text and committed as numbers.
- *
- * The drafts are strings rather than the parsed settings themselves because a
- * range is typed one character at a time: `U+E0` is not a range anyone meant,
- * and a control that dropped the row the moment it stopped parsing would take
- * the cursor with it. So a row exists here as soon as it is added, and reaches
- * the settings only once it is a range — which is also why a half-typed row
- * simply has no effect rather than an alarming one.
- *
- * Seeded from the settings once. Nothing else writes ranges while this dialog
- * is open, and re-seeding from a prop this component is itself the source of
- * would fight the person typing.
+ * The range table, edited as text and committed as numbers. Drafts are
+ * strings so a half-typed row (`U+E0`) stays put and simply has no effect
+ * until it parses. Seeded from settings once; re-seeding would fight the
+ * typist.
  */
 function FontRangeTable({
   ranges,
@@ -474,11 +436,8 @@ function FontRangeTable({
     commit(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
 
-  // One border-color utility, never two. Tailwind settles a conflict by where
-  // the rules land in the stylesheet, not by the order the classes appear in
-  // the attribute, so appending an amber border to a list already carrying the
-  // white one is a coin toss — and it lands on white, which is how this shipped
-  // marking nothing at all.
+  // One border-color utility, never two: Tailwind resolves conflicts by
+  // stylesheet order, not class order.
   const fieldBase =
     'w-20 rounded border bg-black/20 px-1.5 py-1 text-center font-mono text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
   const fieldClass = (flagged: boolean) =>
@@ -552,16 +511,10 @@ function FontRangeTable({
   )
 }
 
-/** A labeled slider with its value beside it — the shape the font size
- *  control already had, now that weight and the two cell metrics want it too. */
 /**
- * A range slider whose track this app paints (see `.range` in index.css).
- *
- * Exists because painting the track means the fill to the left of the thumb
- * has to be worked out here — `accent-color` used to do it, and taking the
- * track over to get it onto the theme gave that up with it. The percentage
- * goes to CSS as a custom property rather than into a computed gradient
- * string, so the colors stay in the stylesheet with the rest of them.
+ * A range slider whose track this app paints (`.range` in index.css), so the
+ * fill left of the thumb is computed here and passed to CSS as a custom
+ * property.
  */
 function RangeInput({
   min,
@@ -599,6 +552,7 @@ function RangeInput({
   )
 }
 
+/** A labeled slider with its value beside it. */
 function SliderRow({
   label,
   value,
@@ -634,16 +588,9 @@ function SliderRow({
 }
 
 /**
- * Says when a descriptor string does not parse, because nothing else will.
- *
- * There is no error to surface here and no exception to catch: the browser
- * takes a descriptor it cannot read, discards it, and reports `normal`. The
- * font then renders as though the setting were empty, which from the outside
- * is indistinguishable from the font not having the feature — so the natural
- * conclusion is that the face lacks it, and the typo goes unfound.
- *
- * Worth saying loudly because the discard is all or nothing: one bad tag in a
- * list takes the working ones with it.
+ * Flags a descriptor string that doesn't parse. The browser silently discards
+ * the whole descriptor (one bad tag takes the good ones with it), which looks
+ * like the font lacking the feature.
  */
 export function DescriptorNote({ property, value }: { property: string; value: string }) {
   if (descriptorIsValid(property, value) !== false) return null
@@ -656,12 +603,8 @@ export function DescriptorNote({ property, value }: { property: string; value: s
 }
 
 /**
- * What the OpenType features and the ligature toggle are doing to each other.
- *
- * Neither is wrong when they disagree — each is a different level of the same
- * pipeline doing as it was told — but the visible result is that one of the
- * two controls appears to do nothing, and there is no way to tell from either
- * one alone which one that is.
+ * What the OpenType features and the ligature toggle are doing to each
+ * other: when they disagree, one control appears to do nothing.
  */
 function LigatureConflictNote({ settings }: { settings: TerminalSettings }) {
   const conflict = ligatureConflict(settings.fontFeatures, settings.ligatures)
@@ -676,19 +619,10 @@ function LigatureConflictNote({ settings }: { settings: TerminalSettings }) {
 }
 
 /**
- * The faces named above that this machine does not have.
- *
- * The same argument as `FontResolution`, carried to the slots that name one
- * family rather than a stack: a missing face is not an error anywhere, it is
- * text quietly rendering in something else. It is worse here, though. The body
- * stack has fallbacks written into it and can say which one it landed on;
- * these are a single family, so a name nothing answers to leaves the rasterizer
- * on whatever it defaults to — not the body font, which is what anyone would
- * assume happened.
- *
- * Ranges are checked alongside the styled slots because the range picker only
- * offers installed families, so a missing one arrives from a settings file
- * written on another machine — exactly the case nobody would think to check.
+ * The named single-family faces this machine lacks. Unlike the body stack,
+ * these have no fallbacks, so a missing name renders in the rasterizer's
+ * default, not the body font. Ranges are checked too, since a missing one
+ * usually comes from a settings file written elsewhere.
  */
 export function NamedFaceReport({
   settings,
@@ -717,13 +651,9 @@ export function NamedFaceReport({
 }
 
 /**
- * The font settings behind a disclosure: a face per style, OpenType features,
- * and families pinned to codepoint ranges.
- *
- * Folded away rather than listed with the rest, because the Terminal section
- * is where people come for font size and cursor shape. These only start to
- * matter once you have a font you care about, and two of them are typed rather
- * than picked.
+ * The font settings behind a disclosure: a face per style, OpenType
+ * features, and families pinned to codepoint ranges. Folded away since most
+ * visitors want font size and cursor shape.
  */
 function AdvancedFontSettings({
   settings,
@@ -859,17 +789,9 @@ function AdvancedFontSettings({
   )
 }
 
-/** Global preferences, one category at a time.
- *
- * A dialog rather than the dropdown this used to be: at a dozen-plus
- * controls the popover was a single scrolling column roughly 250px wide, so
- * every explanation wrapped to three lines and finding a given setting meant
- * reading all of them. The extra width is most of the fix; the categories
- * are what keep it from simply becoming a longer list.
- *
- * Owns its own trigger, like the other toolbar menus (VaultMenu,
- * WorkspaceMenu) — the toolbar stays a row of self-contained buttons rather
- * than App having to hold open-state for one of them. */
+/** Global preferences, one category at a time, in a dialog wide enough that
+ * explanations don't wrap to three lines. Owns its trigger, like VaultMenu
+ * and WorkspaceMenu. */
 export function SettingsDialog({
   settings,
   onChange,
@@ -1848,12 +1770,8 @@ export function SettingsDialog({
                           </span>
                         </span>
                       </button>
-                      {/* Attribution, and a license condition rather than a
-                          courtesy: the Git logo is CC BY 3.0, which requires
-                          the credit to travel with the mark wherever it is
-                          distributed — including into a shipped installer,
-                          where a file in the repo would never reach anyone.
-                          THIRD-PARTY-NOTICES.md carries the long form. */}
+                      {/* A license condition: the Git logo is CC BY 3.0, so the credit travels
+                          with the installer. THIRD-PARTY-NOTICES.md has the long form. */}
                       <div className="mt-2 space-y-2 border-t border-chrome/10 px-2 py-2">
                         {/* The engine is compiled into the installer, so its MIT
                             notice has to travel inside it too. */}

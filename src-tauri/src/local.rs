@@ -1,17 +1,7 @@
-//! Tauri command layer for local shell sessions — the same push-`Channel`
-//! shape as `telnet.rs`, which is the closest existing transport: no
-//! credential, no host-key prompt, nothing to re-resolve.
-//!
-//! Everything that isn't local-shell-specific lives in `session_registry.rs`;
-//! what remains here is the event enum (this transport's own `Channel<E>`
-//! type) and the `#[tauri::command]` entry points, which have to be concrete
-//! functions for `generate_handler!`.
-//!
-//! Unlike telnet, `local_connect` takes the pane's size. A pseudoconsole has
-//! to be given one at creation — there is no "decide later" — so passing it
-//! here is what stops the shell drawing its first prompt at 80 columns and
-//! reflowing a moment later when the registry replays the real size. See
-//! `wr_local::LocalConnector::with_size`.
+//! Tauri command layer for local shells, shaped like `telnet.rs` (no
+//! credential or host-key prompt). Shared logic is in `session_registry.rs`.
+//! `local_connect` takes the pane's size, since a pseudoconsole needs one at
+//! creation (see `wr_local::LocalConnector::with_size`).
 
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -68,18 +58,10 @@ pub async fn local_connect(
     let policy = reconnect.unwrap_or_default().sanitized();
     let session_id = state.sessions.next_session_id();
 
-    // Nothing to re-resolve and nothing secret to hold: a local shell is a
-    // path and an argv, both of which are already here. The config is cloned
-    // per attempt only because `LocalConnector::new` consumes one.
-    //
-    // The factory is wired up even though, as things stand, it can never run.
-    // Auto-reconnect fires on `DisconnectKind::Lost`, and `wr-local` only ever
-    // reports `Closed` — a shell has either exited or it hasn't, so there is no
-    // state where the process is gone but the session should come back by
-    // itself. That is decision 5 in docs/LOCAL_SHELL_PLAN.md holding
-    // structurally rather than by policy, and this stays correct rather than
-    // absent so that a future `Lost` (a pty read failing under a live child,
-    // say) relaunches properly instead of finding no way to.
+    // Nothing to re-resolve or hold secret; cloned per attempt because
+    // `LocalConnector::new` consumes it. Reconnect can't currently fire
+    // (`wr-local` only reports `Closed`; decision 5 in
+    // docs/LOCAL_SHELL_PLAN.md), but stays wired for any future `Lost`.
     let reconnect_config = config.clone();
     state
         .sessions
@@ -108,20 +90,10 @@ pub async fn local_connect(
     Ok(session_id)
 }
 
-/// Turn a saved profile into something runnable, re-resolving the shell.
-///
-/// The stored path is a fallback, not the answer. A `shell_id` that detection
-/// still recognizes wins, because that is what survives the shell being
-/// upgraded out from under the profile — PowerShell 7 and 8 install side by
-/// side under different directories, so the path saved last year names a
-/// binary that may be gone.
-///
-/// An id detection no longer knows falls back to the stored path rather than
-/// failing. That covers a hand-typed shell (which has no id at all), an
-/// install that moved somewhere unusual, and a WSL distro that is temporarily
-/// unregistered — in each case the honest attempt is to run what was saved and
-/// let `LocalError::NotFound` say so if it is gone, rather than to refuse
-/// before trying.
+/// Turns a saved profile into something runnable, re-resolving the shell. A
+/// `shell_id` detection still knows wins (paths change across upgrades);
+/// otherwise the stored path is tried, and `LocalError::NotFound` reports if
+/// it's gone (a hand-typed shell, a moved install, an unregistered distro).
 fn config_from_profile(profile: &crate::profiles::SessionProfile) -> Result<LocalConfig, String> {
     let local = profile
         .local
@@ -273,8 +245,7 @@ mod tests {
         assert_eq!(config.command, r"C:\Program Files\PowerShell\8\pwsh.exe");
     }
 
-    /// An id detection no longer knows falls back rather than failing: the
-    /// honest attempt is to run what was saved and let `NotFound` say so.
+    /// An unknown id falls back to the stored path rather than failing.
     #[test]
     fn an_unknown_id_falls_back_to_the_stored_path() {
         let installed = [shell("cmd", r"C:\Windows\System32\cmd.exe", &[])];

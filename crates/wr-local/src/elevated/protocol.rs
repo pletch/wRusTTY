@@ -1,15 +1,10 @@
-//! The messages an elevated host and its tab exchange over their pipe.
+//! The messages an elevated host and its tab exchange over their pipe. Each
+//! frame is a type byte, a little-endian `u32` payload length, and the payload.
+//! Which types each side may send is enforced by the receiver.
 //!
-//! Every message is a frame: one type byte, a little-endian `u32` payload
-//! length, and the payload. The format is the same in both directions; which
-//! types each side may *send* is enforced by the side receiving them, not
-//! here, so this module stays a plain codec.
-//!
-//! What the protocol deliberately cannot say matters more than what it can.
-//! No message names a program, a path, an argument or an environment
-//! variable: the host is told what to run on its command line, at the moment
-//! the UAC prompt is approved, and nothing arriving over the pipe afterward
-//! can change that. See decision 2 in `docs/ELEVATED_TABS_PLAN.md`.
+//! No message names a program, path, argument or environment variable: what
+//! runs is fixed on the host's command line when UAC is approved (decision 2
+//! in `docs/ELEVATED_TABS_PLAN.md`).
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -251,8 +246,7 @@ mod tests {
         ));
     }
 
-    /// Fixed-size frames must be exactly their size, so a malformed peer is
-    /// caught rather than misread.
+    /// Fixed-size frames must be exactly their size.
     #[tokio::test]
     async fn a_resize_of_the_wrong_length_is_refused() {
         let bytes = [RESIZE, 3, 0, 0, 0, 1, 2, 3];

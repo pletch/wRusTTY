@@ -1,34 +1,17 @@
 //! Reads a color-scheme file the user picked, for the theme importer.
 //!
-//! # Why this is only a reader
+//! Only a reader: `.itermcolors` (XML plist) and VS Code themes (JSON) are
+//! parsed by `src/lib/themeImport.ts`, where `DOMParser` already exists and
+//! tests are cheaper.
 //!
-//! The other importers here (`putty_import`, `ssh_config_import`) parse on
-//! this side, and this one deliberately does not. Both formats it has to read
-//! are ones the webview already has a parser for and Rust does not: an
-//! `.itermcolors` file is an XML property list, which `DOMParser` handles
-//! natively, and a VS Code theme is JSON. Parsing here would mean taking on
-//! an XML dependency to reimplement something already in the process.
-//!
-//! So this hands back text and `src/lib/themeImport.ts` does the rest, where
-//! the parsing is also far cheaper to test.
-//!
-//! # What this does and does not add
-//!
-//! It reads an arbitrary path the webview names. That is not a new capability
-//! in this app — `sftp_upload_path` already reads any local file and sends it
-//! to a remote host — so the marginal exposure is nil, and the path still
-//! comes from an OS file dialog the user drove. It is kept narrow anyway:
-//! text only, one file, and a size cap, so it cannot be turned into a way to
-//! stream something large out of the machine a chunk at a time.
+//! Reading an arbitrary path adds no new capability (`sftp_upload_path`
+//! already reads local files), and the path comes from an OS file dialog.
+//! Still kept narrow: text only, one file, a size cap.
 
 use std::path::Path;
 
-/// Largest color scheme this will read.
-///
-/// Generous by three orders of magnitude for what these files actually are —
-/// an `.itermcolors` is a few KB, and even a full VS Code theme carrying
-/// every `tokenColors` rule is a couple of hundred — while still refusing to
-/// pull a video into a string because someone picked the wrong file.
+/// Largest scheme this will read: far above real files (a few KB to a few
+/// hundred), but refuses a wrongly picked video.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
 #[tauri::command]
@@ -37,9 +20,8 @@ pub fn read_theme_file(path: String) -> Result<String, String> {
 }
 
 fn read_capped(path: &Path, max_bytes: u64) -> Result<String, String> {
-    // Checked before reading rather than after: the point is not to have the
-    // bytes in memory at all. `metadata` also gives the clearer error for the
-    // ordinary mistakes — a path that is gone, or a directory.
+    // Checked before reading, so the bytes never load; `metadata` also gives
+    // clearer errors for a missing path or a directory.
     let meta = std::fs::metadata(path).map_err(|e| format!("can't read that file: {e}"))?;
     if meta.is_dir() {
         return Err("that's a folder, not a color scheme file".to_string());
@@ -52,13 +34,11 @@ fn read_capped(path: &Path, max_bytes: u64) -> Result<String, String> {
     }
 
     let bytes = std::fs::read(path).map_err(|e| format!("can't read that file: {e}"))?;
-    // Not `from_utf8_lossy`: a scheme file is XML or JSON, both of which are
-    // text by definition, and replacement characters would turn "you picked a
-    // binary file" into a parse error further away from the cause.
+    // Not lossy: XML and JSON are text, and replacement characters would turn
+    // "binary file" into a confusing parse error.
     let text = String::from_utf8(bytes)
         .map_err(|_| "that file isn't text, so it isn't a color scheme".to_string())?;
-    // A plist written on macOS often carries one, and it would otherwise be
-    // the first character the XML parser sees.
+    // macOS plists often start with a BOM.
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_string())
 }
 
@@ -83,8 +63,7 @@ mod tests {
 
     #[test]
     fn strips_a_byte_order_mark() {
-        // Plists written by macOS tooling routinely carry one, and it is the
-        // first thing DOMParser would choke on.
+        // macOS plists often carry one, and DOMParser would choke on it.
         let path = temp_file("bom.xml", "\u{feff}<plist/>".as_bytes());
         assert_eq!(read_capped(&path, MAX_BYTES).unwrap(), "<plist/>");
         let _ = std::fs::remove_file(path);
@@ -100,8 +79,7 @@ mod tests {
 
     #[test]
     fn refuses_bytes_that_are_not_text() {
-        // The failure this produces otherwise is a parse error, which points
-        // at the format rather than at the file being a JPEG.
+        // Otherwise this surfaces as a parse error far from the cause.
         let path = temp_file("binary.bin", &[0xff, 0xfe, 0x00, 0x80, 0x9f]);
         let err = read_capped(&path, MAX_BYTES).unwrap_err();
         assert!(err.contains("isn't text"), "unexpected error: {err}");

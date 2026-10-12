@@ -18,9 +18,8 @@ pub struct HostKeyPrompt {
 }
 
 /// Decides whether an unknown or changed host key should be trusted.
-/// Implemented by the caller (in Phase 1, `src-tauri`'s command layer,
-/// backed by a real accept/reject dialog); a `false`/reject answer aborts
-/// the connection, never falls back to trusting it anyway.
+/// Implemented by the caller (the app's command layer, via a dialog); a
+/// reject aborts the connection and never falls back to trusting.
 #[async_trait]
 pub trait HostKeyVerifier: Send + Sync {
     async fn verify(&self, prompt: HostKeyPrompt) -> bool;

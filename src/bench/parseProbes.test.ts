@@ -5,18 +5,15 @@ const dec = new TextDecoder()
 const ESC = String.fromCharCode(27)
 
 /**
- * These three exist to divide ~29 ns/byte between the state machine, the actions
- * it dispatches, and the per-cell work a printable character triggers. The
- * division only holds if each stream is exactly what it claims, so the claims
- * are pinned here: a stray printable byte in an SGR stream, or a truncated final
- * sequence, would quietly turn a decisive result into a meaningless one.
+ * The three probes divide parse cost between the state machine, its actions
+ * and per-cell work, which only holds if each stream is exactly what it
+ * claims; a stray printable byte or truncated sequence would spoil it.
  */
 describe('parse-cost probes', () => {
   it('writes one cell per byte in the printable probe', () => {
     const { events, totalBytes } = parseCells.build(80, 24)
     const text = dec.decode(events[0])
-    // Every byte is printable or part of a line ending; nothing here is an
-    // escape sequence, so the parser's only job is to place cells.
+    // Printable bytes and line endings only: the parser just places cells.
     expect(text).not.toContain(ESC)
     expect(text.startsWith('x'.repeat(80) + '\r\n')).toBe(true)
     expect(totalBytes).toBe(events[0].length)
@@ -25,9 +22,8 @@ describe('parse-cost probes', () => {
   it('writes no cells at all in either SGR probe', () => {
     for (const w of [parseShortSgr, parseLongSgr]) {
       const text = dec.decode(w.build(80, 24).events[0])
-      // Split on ESC rather than matching it: every piece must be one complete
-      // SGR body and nothing else, so there is no printable byte and no line
-      // ending anywhere in the stream — parsed in full, buffer untouched.
+      // Each piece must be one complete SGR body: no printable bytes or line
+      // endings anywhere.
       const parts = text.split(ESC)
       const bodies = new Set(parts.slice(1))
       expect(parts[0]).toBe('')
@@ -37,9 +33,8 @@ describe('parse-cost probes', () => {
   })
 
   /**
-   * The whole point of the long form. Same single action, materially more bytes
-   * through the state machine — that ratio is what separates per-byte cost from
-   * per-action cost, so it has to be large enough for the result to be readable.
+   * The long form's byte-to-action ratio must be large enough to separate
+   * per-byte from per-action cost.
    */
   it('puts several times more bytes behind each action in the long form', () => {
     const short = parseShortSgr.build(80, 24)
@@ -57,8 +52,7 @@ describe('parse-cost probes', () => {
   })
 
   /**
-   * Comparable only if they are the same size, and large enough that a few
-   * milliseconds of noise cannot swing the ratio between them.
+   * Equal sizes, large enough that noise can't swing the ratio.
    */
   it('sizes all three alike, within one repeat unit', () => {
     const sizes = [parseCells, parseShortSgr, parseLongSgr].map((w) => w.build(80, 24).totalBytes)

@@ -1,21 +1,10 @@
-//! Coalesces a stream of `ConnectionEvent`s into fewer, larger IPC messages
-//! before they cross into the webview. Without this, every individual PTY
-//! read (one `ChannelMsg::Data`) pays its own full base64-encode +
-//! JSON-serialize + IPC round trip — under a firehose (`cat` a large file,
-//! `tail -f` a busy log, a verbose build) that's a storm of tiny messages
-//! each paying the full per-message tax. The engine already coalesces on the
-//! render side (writes are queued and drained against the frame clock — see
-//! `src/lib/writeScheduler.ts`), so the win is entirely here, in the
-//! forwarder. Shared by the ssh/telnet/serial Tauri command layers, which
-//! otherwise differ only in their own `XxxEvent` type.
+//! Coalesces a session's `ConnectionEvent`s into fewer, larger IPC messages, so
+//! a flood of small PTY reads doesn't pay the per-message IPC cost for each.
+//! (The frontend separately meters writes against the frame clock; see
+//! `src/lib/writeScheduler.ts`.) Shared by the ssh/telnet/serial command layers.
 //!
-//! `Data` chunks travel on their own `Channel<InvokeResponseBody>` as raw
-//! bytes (`InvokeResponseBody::Raw`) rather than base64-encoded JSON on the
-//! same channel as `Status`/`HostKeyPrompt` — base64 alone inflates a
-//! coalesced buffer by 33%, on top of the encode/decode cost, and none of
-//! that is needed for a payload that's already just bytes. `Status`/
-//! `HostKeyPrompt` stay on the original JSON channel, where serde typing is
-//! actually useful.
+//! `Data` travels as raw bytes on its own `Channel<InvokeResponseBody>`, avoiding
+//! base64 (+33%) and JSON. `Status` and prompts stay on the typed JSON channel.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -30,56 +19,21 @@ use wr_core::{ConnectionEvent, ConnectionStatus};
 
 const FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 
-/// Buffered bytes that force a flush regardless of the interval.
-///
-/// This is a flood-path knob and nothing else. It can only bind when output
-/// arrives faster than `FLUSH_SIZE_THRESHOLD / FLUSH_INTERVAL`; below that
-/// rate the ticker always fires first, so interactive echo latency is
-/// governed by `FLUSH_INTERVAL` and is untouched by this value.
-///
-/// It was 32 KB, which put a 100 MB flood squarely on the size branch: 2931
-/// messages of ~33 KB. Measuring both ends of the real delivery path
-/// (`delivery_stats` here, `src/lib/deliveryStats.ts` in the webview) showed
-/// the per-message IPC tax at ~0.70 ms against ~1.06 ms of actual engine
-/// work — a 40% surcharge for crossing into the webview, paid 2931 times.
-/// The frontend was idle, not blocked, for most of the shortfall: a rAF
-/// series taken across its longest starved window showed frames arriving at a
-/// clean 15.2 ms cadence while it waited on bytes the backend had already
-/// sent.
-///
-/// Raising it to 256 KB measured 15.1 -> 19.7 MB/s on a 100 MB local flood,
-/// with 459 flushes in place of 2931. Note what that does *not* mean: a flood
-/// still flushes on the size branch, not the interval one. 256 KB accumulates
-/// in ~6 ms at 41 MB/s, just inside the tick, so the median flush comes out at
-/// 257 KB — threshold plus overshoot. Only the lulls flush on the ticker.
-///
-/// 256 KB is near the point of diminishing returns rather than an arbitrary
-/// step up. Measured across the two settings, the IPC cost decomposes into
-/// ~0.61 ms fixed per message plus ~2.9 ms per MB of copy; past this size the
-/// per-byte term dominates and there is little left for a bigger buffer to
-/// amortize. 1 MB would save a further ~6% of wall time while making each
-/// uninterrupted engine write ~32 ms — visible jank for very little. At
-/// 256 KB the write is ~8 ms, inside a frame, and the measured worst frame
-/// gap moved only 106 -> 121 ms.
+/// Buffered bytes that force a flush regardless of the interval. Only binds
+/// during floods (above `FLUSH_SIZE_THRESHOLD / FLUSH_INTERVAL`), so interactive
+/// latency is governed by `FLUSH_INTERVAL`. Measured to be near the point of
+/// diminishing returns: per-message IPC overhead is amortized, while each engine
+/// write (~8 ms) still fits in a frame. See docs/DEV_HISTORY.md.
 const FLUSH_SIZE_THRESHOLD: usize = 256 * 1024;
 
-/// Counters for what this forwarder actually pushed at the webview.
+/// Counters for what this forwarder pushed to the webview. Compared with the
+/// frontend's receive-side numbers (`src/lib/deliveryStats.ts`), they show
+/// whether a slow flood is limited by the parser or by everything upstream.
 ///
-/// Exists to answer one question the engine benchmarks structurally cannot:
-/// when a flood is slow, is the frontend's parser the constraint or is it
-/// everything upstream of it — transport reads, this coalescer, and the IPC
-/// hop? Comparing the send rate recorded here against the receive rate the
-/// frontend records (`src/lib/deliveryStats.ts`) separates those.
-///
-/// Process-wide and lock-free rather than per-session: it is a diagnostic that
-/// must not perturb the thing it measures, and a flood is exactly when an
-/// added mutex would be least welcome. The consequence is that concurrent
-/// sessions aggregate together, which `reset` before a measurement makes
-/// manageable.
-///
-/// `FLUSH_SIZE_THRESHOLD` is a floor, not a cap: a flush carries however much
-/// the read that crossed the line overshot by, so `max_bytes` is the number
-/// worth looking at when reasoning about frontend stalls.
+/// Process-wide and lock-free so they don't perturb what they measure;
+/// concurrent sessions aggregate, so `reset` before measuring. A flush carries
+/// the overshoot past `FLUSH_SIZE_THRESHOLD`, so watch `max_bytes` when
+/// reasoning about frontend stalls.
 mod stats {
     use super::*;
 
@@ -87,8 +41,7 @@ mod stats {
     pub(super) static BYTES: AtomicU64 = AtomicU64::new(0);
     pub(super) static MIN_BYTES: AtomicUsize = AtomicUsize::new(usize::MAX);
     pub(super) static MAX_BYTES: AtomicUsize = AtomicUsize::new(0);
-    /// Micros since `origin()`, for the first and most recent flush — the span
-    /// the byte total was delivered over, and so the send rate.
+    /// Micros since `origin()` of the first and latest flush: the send window.
     pub(super) static FIRST_US: AtomicU64 = AtomicU64::new(0);
     pub(super) static LAST_US: AtomicU64 = AtomicU64::new(0);
 
@@ -110,22 +63,20 @@ mod stats {
     }
 }
 
-/// What `coalesce.rs` sent to the webview, as of now. Paired with the
-/// frontend's own receive-side numbers to locate a throughput ceiling.
+/// What this forwarder has sent, for comparison with the frontend's receive
+/// side.
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliveryStats {
     pub flushes: u64,
     pub bytes: u64,
-    /// Smallest and largest single flush. `min` is usually a partial tail or an
-    /// interval-tick flush; `max` shows how far past `FLUSH_SIZE_THRESHOLD` a
-    /// delivery actually runs. (Named rather than restated: this said "the
-    /// 32 KB threshold" long after the constant had moved to 256 KB.)
+    /// Smallest and largest single flush. `max` shows how far past
+    /// `FLUSH_SIZE_THRESHOLD` a delivery runs.
     pub min_bytes: u64,
     pub max_bytes: u64,
     /// Wall time from the first flush to the most recent, in milliseconds.
     pub span_ms: f64,
-    /// Bytes per second across that span — the rate the backend sustained.
+    /// Bytes per second across that span.
     pub bytes_per_sec: f64,
 }
 
@@ -153,8 +104,7 @@ pub fn delivery_stats() -> DeliveryStats {
     }
 }
 
-/// Zero the counters. Call immediately before the run being measured, since
-/// the counters are process-wide and every session feeds them.
+/// Zero the counters (process-wide) right before a measured run.
 #[tauri::command]
 pub fn reset_delivery_stats() {
     stats::FLUSHES.store(0, Ordering::Relaxed);
@@ -165,65 +115,27 @@ pub fn reset_delivery_stats() {
     stats::LAST_US.store(0, Ordering::Relaxed);
 }
 
-/// Now that output is coalesced (see above), far fewer, larger messages are
-/// ever in flight at once, so a modest bound already leaves ample slack —
-/// while still giving a stalled/slow frontend real backpressure through to
-/// each transport's own read loop (and, for SSH, its channel flow control)
-/// instead of letting an unbounded channel balloon memory under a firehose.
-///
-/// On its own this bound could never engage. `Channel::send` is
-/// fire-and-forget: it hands the message to the webview and returns, so the
-/// forwarder always drained `rx` at full speed, `rx` never filled, and the
-/// transport was never pushed back on. The unbounded growth was never here —
-/// it was in the webview's own message queue, downstream of this. See
-/// `FlowControl`, which is what actually makes this bound reachable.
+/// Bound on the event channel from transport to forwarder, giving a slow
+/// frontend real backpressure through to each transport's read loop (and SSH's
+/// channel window). It only engages because `FlowControl` stops the forwarder
+/// draining `rx` when the webview falls behind; `Channel::send` itself never
+/// blocks.
 pub(crate) const CONNECTION_EVENT_CHANNEL_BOUND: usize = 256;
 
-/// Default bytes that may be sitting in the webview's IPC queue, unwritten,
-/// before the forwarder stops draining its input.
-///
-/// Measured on a 100 MB flood over LAN SSH: the backend finished sending at
-/// 2.56 s while the frontend was still draining at 3.69 s, so roughly 50 MB of
-/// `ArrayBuffer`s were resident in the webview at peak — and that is a function
-/// of how long the producer runs, not of anything the frontend controls. `yes`
-/// or `cat /dev/urandom` grows it without limit until the webview process is
-/// killed. This is a memory-safety bound, not a throughput one.
-///
-/// 16 MB is the knee, measured rather than reasoned. Three 100 MB floods over
-/// LAN SSH, identical engine work each time (1553/1551/1543 ms inside write,
-/// coreWrite 1305/1309/1309), varying only this value:
-///
-///   window   genuinely starved   active window   worst freeze
-///     4 MB     448 ms (19.2%)      44.3 MB/s        25.2 ms
-///    16 MB      93 ms  (4.3%)      47.6 MB/s        25.1 ms
-///    32 MB      54 ms  (2.5%)      48.8 MB/s        25.1 ms
-///
-/// 4 MB was the first guess and it starved the frontend for a fifth of the run;
-/// the reasoning behind it — that ~56 ms of queued work is plenty — ignored that
-/// the queue is drained in bursts against a frame budget, not smoothly.
-///
-/// Past 16 MB there is almost nothing left to recover, because the constraint
-/// stops being this window and becomes `FRAME_BUDGET_MS` in the write
-/// scheduler: as starvation fell, deliberate pacing rose to take its place
-/// (328 -> 529 ms), and throughput moved only 10%. The freeze is unchanged at
-/// every setting, which is the scheduler bounding it independently.
-///
-/// Note this is per session, so N flooding panes hold N times this. 8 MB is on
-/// the Ctrl+Alt+W cycle if that trade needs revisiting.
+/// Default bytes that may sit unwritten in the webview's IPC queue before the
+/// forwarder stops draining. A memory-safety bound: without it a producer like
+/// `yes` grows the webview's queue until the process is killed. 16 MB was
+/// measured as the knee (smaller windows starve the frontend; larger ones gain
+/// little, since the write scheduler's frame budget takes over). Per session.
+/// See docs/DEV_HISTORY.md.
 const DEFAULT_MAX_INFLIGHT_BYTES: u64 = 16 * 1024 * 1024;
 
-/// The live window, so it can be retuned without a rebuild.
-///
-/// Adjustable because the value has to be chosen from a measurement that
-/// DevTools cannot be present for — an attached inspector puts V8's WebAssembly
-/// in a debuggable tier and makes the frontend ~2.75x slower, which would move
-/// the very balance being tuned. A console-driven knob is therefore useless
-/// here; this one is reachable from a keyboard shortcut with DevTools shut (see
-/// `measureOverlay.ts`).
+/// The live window, adjustable at runtime because tuning must happen with
+/// DevTools closed (an attached inspector slows the frontend ~2.75x). Reached
+/// from a keyboard shortcut; see `measureOverlay.ts`.
 static INFLIGHT_WINDOW: AtomicU64 = AtomicU64::new(DEFAULT_MAX_INFLIGHT_BYTES);
 
-/// One delivery, so the window can never be set below the size of the thing it
-/// gates — which would stall the session outright.
+/// One delivery; a smaller window would stall the session.
 const MIN_INFLIGHT_BYTES: u64 = FLUSH_SIZE_THRESHOLD as u64;
 /// Past this the bound stops being a memory-safety bound worth having.
 const MAX_INFLIGHT_BYTES: u64 = 64 * 1024 * 1024;
@@ -232,9 +144,8 @@ fn inflight_window() -> u64 {
     INFLIGHT_WINDOW.load(Ordering::Relaxed)
 }
 
-/// Sets the window and returns what it was clamped to. Wakes every waiter, so
-/// raising it takes effect on a session that is already gated rather than only
-/// on the next one.
+/// Sets the window and returns the clamped value. Wakes waiters so it applies
+/// to sessions already gated.
 #[tauri::command]
 pub fn set_inflight_window(bytes: u64) -> u64 {
     let clamped = bytes.clamp(MIN_INFLIGHT_BYTES, MAX_INFLIGHT_BYTES);
@@ -245,24 +156,15 @@ pub fn set_inflight_window(bytes: u64) -> u64 {
     clamped
 }
 
-/// How long to wait for credit before sending anyway.
-///
-/// A frontend that never acknowledges — an older build, a wedged page, a
-/// renderer killed by the OS — must not silently freeze the session. Timing out
-/// degrades to the previous unbounded behavior, which is bad, rather than to a
-/// hang, which is worse and much harder to diagnose. A dead webview is caught
-/// separately: `Channel::send` fails and the loop exits.
+/// How long to wait for credit before sending anyway, so a frontend that never
+/// acknowledges degrades to unbounded sending rather than a hang. A dead
+/// webview is caught separately (`Channel::send` fails).
 const CREDIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Per-session accounting of bytes sent to the webview but not yet written by
-/// it, and the gate the forwarder waits on.
-///
-/// Backpressure needs a signal from the consumer, and IPC gives none: a send
-/// that succeeded means the message was queued, not that anyone read it. So the
-/// frontend reports what it has written (`ack_delivery`, called from the write
-/// scheduler once it has actually handed bytes to the engine) and this credits
-/// them back. Without that report there is no way to distinguish a frontend
-/// keeping up from one falling 50 MB behind.
+/// Per-session count of bytes sent to the webview but not yet written, and the
+/// gate the forwarder waits on. IPC success only means "queued", so the
+/// frontend reports what it has actually written (`ack_delivery`, from the
+/// write scheduler) and that is credited back.
 #[derive(Default)]
 pub struct FlowControl {
     inflight: AtomicU64,
@@ -275,9 +177,8 @@ impl FlowControl {
     }
 
     fn ack(&self, bytes: u64) {
-        // Saturating: an ack for more than is outstanding means the counters
-        // disagree, and clamping to zero keeps the gate open rather than
-        // wrapping to u64::MAX and stalling the session forever.
+        // Saturating: a mismatched over-ack opens the gate rather than wrapping
+        // and stalling forever.
         let mut current = self.inflight.load(Ordering::Relaxed);
         loop {
             let next = current.saturating_sub(bytes);
@@ -294,14 +195,11 @@ impl FlowControl {
         self.credit.notify_waiters();
     }
 
-    /// Blocks until the webview has caught up enough to take more, or until the
-    /// timeout gives up on hearing from it at all. The timeout is a parameter so
-    /// a test can pin the give-up behavior without waiting the real interval.
+    /// Waits until the webview has caught up, or until `timeout`. A parameter so
+    /// tests can pin the give-up behavior quickly.
     async fn wait_for_room(&self, timeout: Duration) {
         while self.inflight.load(Ordering::Relaxed) >= inflight_window() {
-            // Registered before the re-check inside `timeout` so an ack landing
-            // in between is not missed, which would park this task until the
-            // next one — or forever, on the last delivery.
+            // Registered before the re-check so an ack in between isn't missed.
             let waiter = self.credit.notified();
             if self.inflight.load(Ordering::Relaxed) < inflight_window() {
                 return;
@@ -315,15 +213,9 @@ impl FlowControl {
 
 static FLOW: OnceLock<Mutex<HashMap<String, Arc<FlowControl>>>> = OnceLock::new();
 
-/// Locks the registry, recovering the map rather than propagating a poisoning.
-///
-/// This is a process-wide registry on the path every session's output takes,
-/// so a panic anywhere that happened to be holding this lock would otherwise
-/// poison it permanently — turning one fault into a dead output path for every
-/// session, including ones opened afterward. Nothing guarded here has an
-/// invariant a panic could leave half-applied: it is a map of session id to a
-/// counter, and the worst a recovered map holds is a stale entry that the next
-/// `remove` clears. `logging.rs` recovers its own file map the same way.
+/// Locks the registry, recovering from poisoning: one panic shouldn't kill the
+/// output path for every session, and the map can't be left half-updated
+/// (`logging.rs` does the same).
 fn lock_registry() -> std::sync::MutexGuard<'static, HashMap<String, Arc<FlowControl>>> {
     flow_registry()
         .lock()
@@ -341,42 +233,28 @@ fn flow_for(session_id: &str) -> Arc<FlowControl> {
         .clone()
 }
 
-/// Credits bytes the frontend has finished writing, freeing the forwarder to
-/// send more. Called by the write scheduler, batched — see `ACK_THRESHOLD_BYTES`
-/// in `src/components/Terminal.tsx`.
+/// Credits bytes the frontend has written, freeing the forwarder to send more.
+/// Batched by the frontend; see `ACK_THRESHOLD_BYTES` in
+/// `src/components/Terminal.tsx`.
 #[tauri::command]
 pub fn ack_delivery(session_id: String, bytes: u64) {
-    // Looked up rather than created: an ack for a session that has already gone
-    // is not worth resurrecting an entry for, and doing so would leak one per
-    // stale ack.
+    // Looked up, not created: don't resurrect an entry for a finished session.
     let flow = lock_registry().get(&session_id).cloned();
     if let Some(flow) = flow {
         flow.ack(bytes);
     }
 }
 
-/// Drains `rx` until it closes, coalescing consecutive `Data` chunks and
-/// flushing (sending one raw `InvokeResponseBody::Raw` message on
-/// `data_channel`) whenever either the flush interval elapses or the
-/// buffered size crosses the threshold, whichever comes first. A `Status`
-/// event flushes whatever data is pending first (to preserve ordering
-/// relative to the data around it), then is forwarded immediately on
-/// `status_channel`, uncoalesced — status changes are rare and meaningful,
-/// not something to batch.
+/// Drains `rx` until it closes, coalescing `Data` and flushing it as one raw
+/// message on `data_channel` when the interval elapses or the buffer passes the
+/// threshold. A `Status` flushes pending data first (preserving order), then
+/// goes out immediately on `status_channel`.
 ///
-/// `log_data` sees every flushed chunk before it's sent to the webview —
-/// session-transcript logging hooks in here (see `logging.rs`) so logged
-/// bytes never have to round-trip back over IPC from the frontend.
-///
-/// `on_status` sees every status before it is forwarded, and exists for
-/// auto-reconnect: `session_registry.rs` needs to know the transport died, and
-/// this is the one place in the process that already sees that event. The
-/// alternative — a task interposed on `rx` — would make every `Data` chunk pay
-/// an extra channel hop for the benefit of an event that fires once per
-/// connection, and would double the buffering the bound above is there to
-/// impose. It is a *synchronous* `Fn` for the same reason `flush` is: nothing
-/// on this loop may block, since not draining `rx` is what applies
-/// backpressure to the transport.
+/// `log_data` sees every flushed chunk (session transcripts; see `logging.rs`).
+/// `on_status` sees every status, so `session_registry.rs` learns of a dropped
+/// transport without an extra hop on the data path. Both are synchronous:
+/// nothing on this loop may block.
+// The last three arguments are distinct consumers of one stream.
 // Seven arguments, exactly at clippy's threshold. The last three are each a
 // distinct consumer of the same stream — render, log, supervise — and a struct
 // grouping them would be built once at the only call site and destructured
@@ -394,17 +272,12 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     let mut buf: Vec<u8> = Vec::new();
     let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // The first tick fires immediately; skip it so a fresh connection with
-    // no data yet doesn't race an empty flush against the first real event.
+    // Skip the immediate first tick.
     ticker.tick().await;
 
     loop {
-        // Awaited before taking anything else off `rx`, which is what turns
-        // CONNECTION_EVENT_CHANNEL_BOUND from decoration into real
-        // backpressure: not draining lets `rx` fill, which blocks the
-        // transport's read loop on `tx.send().await`, which for SSH closes the
-        // channel window and slows the remote host — a terminal that has
-        // stopped reading, exactly as any other does.
+        // Awaited before taking more from `rx`: not draining lets `rx` fill, which
+        // blocks the transport's read loop (and closes SSH's channel window).
         flow.wait_for_room(CREDIT_TIMEOUT).await;
 
         tokio::select! {
@@ -422,10 +295,8 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
                         if !flush(&data_channel, &mut buf, &log_data, &flow) {
                             break;
                         }
-                        // Before the send, so a supervisor still learns of a
-                        // drop when the webview has already gone away — that
-                        // is the case where the `break` below would otherwise
-                        // swallow it.
+                        // Before the send, so the supervisor learns of a drop even when the
+                        // webview is gone.
                         on_status(&status);
                         if status_channel.send(make_status(&status)).is_err() {
                             break;
@@ -445,14 +316,11 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
         }
     }
 
-    // The session is over; nothing will ever ack these bytes. Left behind, the
-    // entry would hold a counter for a session that no longer exists and leak
-    // one per connection for the life of the process.
+    // Nothing will ack these now; drop the entry so it doesn't leak.
     lock_registry().remove(&session_id);
 }
 
-/// Returns `false` if the channel is gone (send failed) — callers stop
-/// their loop in that case, same as the old one-message-per-event code did.
+/// Returns `false` if the channel is gone; callers stop their loop.
 fn flush(
     data_channel: &Channel<InvokeResponseBody>,
     buf: &mut Vec<u8>,
@@ -466,15 +334,12 @@ fn flush(
     let len = bytes.len() as u64;
     stats::record(bytes.len());
     log_data(&bytes);
-    // Counted before the send: once it is queued the frontend owns it, and
-    // counting after would leave a window where the bytes are in flight but
-    // invisible to the gate.
+    // Counted before the send, so queued bytes are never invisible to the gate.
     flow.sent(len);
     if data_channel.send(InvokeResponseBody::Raw(bytes)).is_ok() {
         true
     } else {
-        // The channel is gone, so no ack is coming for these. Credit them back
-        // so a caller that keeps the flow alive is not left permanently short.
+        // No ack is coming; credit them back.
         flow.ack(len);
         false
     }
@@ -485,16 +350,9 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// The delivery counters are process-wide, and `cargo test` runs these in
-    /// parallel on one process — so every test that flushes bumps the same
-    /// numbers. Each takes this first, which serializes them just enough for
-    /// the counter assertions to mean anything.
-    ///
-    /// Tokio's mutex rather than `std`'s because the guard is deliberately
-    /// held across the `.await`s that drive the forwarder, which is precisely
-    /// what a std guard must not do (and what `clippy::await_holding_lock`
-    /// exists to catch). It also has no poisoning, so one failing test cannot
-    /// cascade into the others.
+    /// The counters are process-wide and tests run in parallel, so tests that
+    /// flush take this lock. A tokio mutex, since it's held across awaits (and has
+    /// no poisoning).
     static COALESCE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn serial_guard() -> tokio::sync::MutexGuard<'static, ()> {
@@ -511,9 +369,7 @@ mod tests {
         Status { status: String },
     }
 
-    /// Records each raw `Data` message's bytes, in send order — good enough
-    /// to assert both "how many separate sends happened" and "what ended up
-    /// in each one".
+    /// Records each raw `Data` message, in send order.
     #[allow(clippy::type_complexity)]
     fn recording_data_channel() -> (Channel<InvokeResponseBody>, Arc<Mutex<Vec<Vec<u8>>>>) {
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -527,9 +383,7 @@ mod tests {
         (channel, received)
     }
 
-    /// The counters are process-wide, so this test owns them for its duration
-    /// — hence one test covering the whole surface rather than several racing
-    /// each other through `cargo test`'s thread pool.
+    /// One test covers the whole stats surface, since the counters are shared.
     #[tokio::test]
     async fn delivery_stats_count_what_was_actually_flushed() {
         let _serial = serial_guard().await;
@@ -557,8 +411,8 @@ mod tests {
             |_: &ConnectionStatus| {},
         ));
 
-        // One oversized burst (flushes on the size branch, carrying the whole
-        // overshoot past the threshold) and one small tail (flushed on close).
+        // One oversized burst (size-branch flush, with overshoot) and a small tail
+        // (flushed on close).
         let big = vec![b'x'; FLUSH_SIZE_THRESHOLD + 5000];
         tx.send(ConnectionEvent::Data(big.clone())).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -582,17 +436,12 @@ mod tests {
         reset_delivery_stats();
     }
 
-    /// The bound on `rx` existed for a long time and could never engage, because
-    /// `Channel::send` returns as soon as the message is queued and the
-    /// forwarder therefore always drained its input at full speed. These pin the
-    /// piece that makes it real: the forwarder must stop taking events once the
-    /// webview is far enough behind, and start again when it catches up.
+    /// The forwarder stops taking events once the webview is far enough behind and
+    /// resumes when it catches up.
     #[tokio::test]
     async fn stops_sending_once_the_frontend_falls_far_enough_behind() {
         let _serial = serial_guard().await;
-        // Pinned small rather than taking the default, so the test stays fast
-        // and keeps working when the default is retuned — which it already was
-        // once, from 4 MB to 16, silently breaking this.
+        // Pinned small so the test is fast and independent of the default.
         set_inflight_window(1024 * 1024);
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let status_channel = Channel::new(|_| Ok(()));
@@ -611,7 +460,7 @@ mod tests {
             |_: &ConnectionStatus| {},
         ));
 
-        // Enough to overrun the window several times over, with nothing acking.
+        // Overrun the window several times, with no acks.
         let burst = vec![b'x'; FLUSH_SIZE_THRESHOLD];
         for _ in 0..48 {
             if tx.send(ConnectionEvent::Data(burst.clone())).await.is_err() {
@@ -632,7 +481,7 @@ mod tests {
             "it should have sent up to the window, not nothing"
         );
 
-        // Crediting the whole lot back must let it move again.
+        // Crediting it all back lets it move again.
         ack_delivery(session.clone(), sent as u64);
         tokio::time::sleep(Duration::from_millis(50)).await;
         let after = received
@@ -647,17 +496,14 @@ mod tests {
         );
 
         drop(tx);
-        // Credit generously so the forwarder can finish and exit rather than
-        // sitting on the gate until the test times out.
+        // Credit generously so the forwarder can exit.
         ack_delivery(session.clone(), u64::MAX);
         let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
         reset_delivery_stats();
         set_inflight_window(DEFAULT_MAX_INFLIGHT_BYTES);
     }
 
-    /// A session that never acks — an older frontend, a wedged page — must
-    /// degrade to the old unbounded behavior rather than hanging, which would
-    /// look like a dead connection and be far harder to diagnose.
+    /// A session that never acks degrades to unbounded sending instead of hanging.
     #[tokio::test]
     async fn gives_up_waiting_for_credit_rather_than_hanging() {
         let flow = FlowControl::default();
@@ -675,8 +521,7 @@ mod tests {
         );
     }
 
-    /// An ack larger than the outstanding total must clamp rather than wrap: a
-    /// `u64` underflow here would park the session on a full window forever.
+    /// An over-ack clamps to zero rather than wrapping.
     #[test]
     fn over_acking_cannot_wrap_the_counter() {
         let flow = FlowControl::default();
@@ -685,9 +530,8 @@ mod tests {
         assert_eq!(flow.inflight.load(Ordering::Relaxed), 0);
     }
 
-    /// The window is retuned from a keyboard shortcut during a live flood, so a
-    /// value that stalled a session outright — or one large enough to stop being
-    /// a bound at all — has to be refused rather than accepted.
+    /// The live-tunable window rejects values that would stall a session or stop
+    /// bounding anything.
     #[tokio::test]
     async fn the_window_cannot_be_set_somewhere_useless() {
         let _serial = serial_guard().await;
@@ -702,8 +546,7 @@ mod tests {
         );
     }
 
-    /// The registry is keyed by session, so one stalled tab cannot throttle
-    /// another — and an ack for a session that has gone must not resurrect it.
+    /// Flow is per session, and an ack for a finished session doesn't recreate it.
     #[tokio::test]
     async fn flow_is_per_session_and_does_not_leak() {
         let a = flow_for("session-a");
@@ -749,8 +592,7 @@ mod tests {
         tx.send(ConnectionEvent::Data(b"world".to_vec()))
             .await
             .unwrap();
-        // Closing the sender ends the loop and flushes whatever's pending —
-        // deterministic, unlike waiting on the flush timer in a test.
+        // Closing the sender flushes deterministically.
         drop(tx);
         handle.await.unwrap();
 
@@ -780,8 +622,7 @@ mod tests {
 
         let big = vec![b'x'; FLUSH_SIZE_THRESHOLD];
         tx.send(ConnectionEvent::Data(big.clone())).await.unwrap();
-        // Give the coalescing task a chance to observe and flush the burst
-        // before we also send a second, distinguishable chunk.
+        // Let the burst flush before sending a distinguishable second chunk.
         tokio::time::sleep(Duration::from_millis(20)).await;
         tx.send(ConnectionEvent::Data(b"tail".to_vec()))
             .await

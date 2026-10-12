@@ -6,10 +6,8 @@ import type { SessionProfile } from '../lib/profiles'
 import * as sessionSnapshot from '../lib/sessionSnapshot'
 import type { PaneLeaf, PaneNode, Tab } from '../types'
 
-/** Tooltip on a split button that's been disabled by one of the limits in
- * paneTree.ts. Says which ceiling was hit and what to do instead, since a
- * dimmed button on its own just looks broken — and with per-axis caps the
- * other split direction is often still available, which isn't guessable. */
+/** Tooltip on a split button disabled by a paneTree.ts limit: which ceiling,
+ * and what to do instead (often the other direction still works). */
 export function splitLimitHint(limit: SplitLimit): string {
   switch (limit) {
     case 'panes':
@@ -47,39 +45,26 @@ export function profileToInitial(profile: SessionProfile): PaneLeaf['initial'] {
     keepaliveSeconds: profile.keepaliveSeconds,
     useProxy: profile.useProxy ?? null,
     logSession: profile.logSession ?? null,
-    // Carried so an edit of some unrelated field doesn't save the profile
-    // back without its MAC — the form has no wake field yet to re-supply one.
+    // Carried so editing other fields keeps the wake settings.
     wakeOnLan: profile.wakeOnLan,
-    // Carried whole so editing a saved serial session opens the form on its
-    // stored line settings *and* keeps the adapter identity — re-saving
-    // without touching the port dropdown must not silently downgrade the
-    // profile to name-only matching.
+    // Carried whole so the form opens on the stored line settings and re-saving
+    // keeps the adapter identity.
     serial: profile.serial,
-    // Same reason as `serial` above: editing a saved local session must open
-    // on the shell it was saved with, and re-saving must not lose the detected
-    // id that keeps its path re-resolvable.
+    // Likewise: open on the saved shell and keep its detected id.
     local: profile.local,
   }
 }
 
-/** Re-resolves saved-profile panes against the live profile list as a stored
- * arrangement (a workspace, or the launch snapshot) is brought back.
+/** Re-resolves saved-profile panes against the live profile list when a
+ * workspace or the launch snapshot is restored.
  *
- * Both stores keep a copy of the profile's details in `initial`, captured when
- * the arrangement was saved — possibly months ago, and it only ever feeds the
- * connect form and the tab title (the connection itself carries just a profile
- * id, which Rust resolves fresh). So the live profile wins outright and the
- * stored copy is demoted to a fallback for one case: a profile that no longer
- * exists. That's what keeps a renamed or re-hosted profile from coming back
- * under its old name, and it holds for edits made outside the app or by a
- * vault import too — none of which could have written back into these files.
- *
- * Three outcomes per pane:
- *  - profile gone: blanked to a connect form, prefilled from the stored copy,
- *    since mounting it would only fail with "profile not found";
- *  - profile needs the vault and we don't have it: blanked to a connect form,
- *    prefilled from the *live* profile, which offers to unlock;
- *  - otherwise: kept connected, with its details refreshed. */
+ * The stored `initial` copy only feeds the form and tab title (the
+ * connection carries just an id), so the live profile wins and the stored
+ * copy is a fallback for a deleted profile. Per pane:
+ *  - profile gone: blanked to a form prefilled from the stored copy;
+ *  - profile needs the vault and it's locked: blanked to a form prefilled
+ *    from the live profile, which offers to unlock;
+ *  - otherwise: kept, with details refreshed. */
 export function refreshProfilePanes(
   node: PaneNode,
   sessions: SessionProfile[],
@@ -107,9 +92,8 @@ export function refreshProfilePanes(
 }
 
 /** Applies `refreshProfilePanes` to whole tabs, re-deriving each title from
- * the pane that will be showing when it opens — otherwise a renamed profile
- * still surfaces under its old name in the tab bar, which is the one place
- * the staleness was actually visible. */
+ * the pane that will show, so a renamed profile isn't titled by its old
+ * name. */
 export function refreshTabs(tabs: Tab[], sessions: SessionProfile[], vaultUsable: boolean): Tab[] {
   return tabs.map((t) => {
     const root = refreshProfilePanes(t.root, sessions, vaultUsable)
@@ -118,11 +102,8 @@ export function refreshTabs(tabs: Tab[], sessions: SessionProfile[], vaultUsable
   })
 }
 
-/** A tab holding one pane that has never connected — the state a new tab
- * starts in, showing the connect dialog. Opening a workspace from such a tab
- * should consume it rather than leave it stranded in front of the tabs it
- * just created. Any half-filled connect form in it goes too, which is fine:
- * choosing a workspace from that very form is choosing to move on. */
+/** A tab with one never-connected pane (a new tab's connect dialog). Opening
+ * a workspace from it consumes it, half-filled form included. */
 export function isBlankTab(tab: Tab): boolean {
   const leaves = allLeaves(tab.root)
   return leaves.length === 1 && !leaves[0].source
@@ -132,23 +113,16 @@ export function newTabId() {
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-// A leaf connected via a saved profile carries a `sshProfile` source whose
-// only field is the profile's id — sourceLabel() for that variant returns
-// the raw (UUID-looking) id, since resolving it to the profile's actual
-// name requires the profile list, which isn't available down in lib/
-// connection.ts. leaf.initial.label is filled in with the real name at
-// connect time and is always the better title when present; every title
-// computation should go through this instead of calling sourceLabel(source)
-// directly, or a saved-profile pane's title regresses to its profile id
-// the moment anything (focus, split, pop-out, attach) recomputes it.
+// A saved-profile leaf's `sshProfile` source holds only the profile id, so
+// sourceLabel() returns that id; leaf.initial.label holds the real name.
+// Every title computation should go through this.
 export function leafTitle(leaf: PaneLeaf, fallback: string): string {
   if (leaf.initial?.label) return leaf.initial.label
   if (leaf.source) return sourceLabel(leaf.source)
   return fallback
 }
 
-// Serial data-bits enum → the digit used in conventional framing notation
-// (e.g. the "8" in "8N1"), for the status bar's serial detail string.
+// Serial data bits as the digit in framing notation (the "8" in "8N1").
 export function dataBitsDigit(bits: 'Five' | 'Six' | 'Seven' | 'Eight'): number {
   return { Five: 5, Six: 6, Seven: 7, Eight: 8 }[bits]
 }

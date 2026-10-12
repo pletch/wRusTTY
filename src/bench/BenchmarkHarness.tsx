@@ -23,20 +23,11 @@ const THROUGHPUT_ROUNDS = 7
 const BLOCK_ROUNDS = 3
 
 /**
- * Grid sizes a run can be pinned to, rather than always taking whatever the
- * window happens to fit.
- *
- * Two of the renderer's costs scale with cell count and nothing else — the
- * per-cell parse in `updateStaticGrid` and the per-frame viewport buffer — so
- * a baseline measured only at ~80x24 cannot distinguish "this optimization
- * did nothing" from "this grid was too small for it to matter". 200x60 is
- * about six times the cells, which is also a realistic maximized-window size
- * on a 1440p display.
- *
- * `fit` keeps the old behavior (whatever the host container measures). Pinned
- * sizes call `resize` without `fit`, so the canvas can exceed its container —
- * the hosts clip, and a benchmark cares about the cell count the renderer
- * processes, not whether all of it is on screen.
+ * Grid sizes a run can be pinned to. Per-cell parse and the per-frame
+ * viewport buffer scale with cell count, so 80x24 alone can't show whether an
+ * optimization matters; 200x60 (about a maximized 1440p window) is six times
+ * the cells. `fit` uses the container's size; pinned sizes may exceed it,
+ * since the benchmark cares about cells processed, not visible.
  */
 const GRID_SIZES = [
   { id: 'fit', label: 'Fit window', cols: 0, rows: 0 },
@@ -142,17 +133,10 @@ export function BenchmarkHarness() {
       e.setScrollbackBudget(16)
     }
 
-    // The app registers a bell handler, which routes every write through
-    // parseAndDispatch and its full-buffer scanOsc pass; without one the
-    // harness took the shorter parseSegment path and so was not measuring the
-    // code the app runs.
-    //
-    // It also buys a control. scanOsc is pure JS over the same bytes in the
-    // same write, so `scan` in the phase report measures this thread's plain
-    // JS speed alongside `coreWrite`'s WASM speed. Comparing scan ms/MB here
-    // against a live pane separates "the whole thread is slower there" from
-    // "the WASM specifically is slower there" — which nothing else has been
-    // able to do, since every workload property measured identical in both.
+    // The app registers a bell handler, routing writes through
+    // parseAndDispatch's scanOsc pass, so the harness does too. scanOsc is pure
+    // JS over the same bytes, so the `scan` phase doubles as a control for this
+    // thread's JS speed against `coreWrite`'s WASM speed.
     ghostty.onBell(() => {})
 
     xterm.mount(xtermHost.current!)
@@ -170,11 +154,8 @@ export function BenchmarkHarness() {
 
     let cancelled = false
     ;(async () => {
-      // The result is checked, and refusing to run is the whole point. An
-      // engine that never paints never loaded its core, and a Ghostty engine in
-      // that state silently *buffers* every write instead of parsing it — so
-      // the run completes, quickly, having measured nothing. Ignoring this
-      // boolean is how a parse figure roughly 3x too fast reached the findings.
+      // Refuse to run: an engine that never painted never loaded its core, and
+      // Ghostty would silently buffer every write, measuring nothing.
       const notReady = [
         (await awaitReady(a)) ? '' : a.name,
         (await awaitReady(b)) ? '' : b.name,
@@ -218,11 +199,7 @@ export function BenchmarkHarness() {
     const ghostty = ghosttyRef.current
     if (!xterm || !ghostty) return ''
     const size = GRID_SIZES.find((g) => g.id === gridSize)!
-    // Ghostty's render loop re-fits itself to its container whenever the box
-    // changes. A pinned grid bigger than the container makes the canvas
-    // overflow, which relays out the page, which changes the box — so the poll
-    // would undo the pin a few frames later. It did exactly that: a run asking
-    // for 200x60 measured 5x18 and reported it in the header nobody read.
+    // Auto-fit would undo a pin larger than the container a few frames later.
     ghostty.setAutoFit(size.cols === 0)
     for (const e of [xterm, ghostty]) {
       if (size.cols === 0) e.fit(true)
@@ -254,27 +231,17 @@ export function BenchmarkHarness() {
     setProgress('sizing grid…')
     const gridProblem = await applyGridSize()
     if (gridProblem !== '') {
-      // Refused rather than reported in the header, which is where the last
-      // silent 5x18 run hid. A run at the wrong grid answers a question nobody
-      // asked and reads as if it answered the one they did.
+      // Refused rather than noted in the header, where a wrong grid goes unread.
       setBootError(`${gridProblem}. Widen the window or pick a smaller grid.`)
       setPhase('ready')
       setProgress('')
       return
     }
 
-    // Both hosts on screen before anything is measured. xterm stops rendering
-    // when its host leaves the viewport and reports zero paints instead, which
-    // the latency loop counts as an empty trial — see hostVisibility.ts.
-    // Scrolled into view rather than merely checked, because the usual cause is
-    // someone reading the tables from the previous run.
-    //
-    // Armed *after* the grid pin, not before. Pinning 200x60 resizes both
-    // canvases from roughly 640x400 to 1600x1020, and that relayout transiently
-    // perturbs intersection — which the latch faithfully recorded and never
-    // cleared, so every large-grid run aborted on the harness's own resize
-    // before a single trial ran. 80x24 moved too little to trip it, which is
-    // what made it look like a large-grid problem rather than an ordering one.
+    // Both hosts on screen before measuring (xterm stops painting off screen;
+    // see hostVisibility.ts), scrolled into view since the usual cause is
+    // reading the previous run's tables. Armed after the grid pin, whose
+    // relayout transiently perturbs intersection.
     xtermHost.current?.scrollIntoView({ block: 'nearest' })
     // Frames before arming, not after: IntersectionObserver delivers
     // asynchronously, so entries generated by the resize above can still land
@@ -370,16 +337,9 @@ export function BenchmarkHarness() {
   }
 
   /**
-   * Writes the flood-stress payload to a file so a live pane can be fed the
-   * *exact* bytes this harness measures — `cat` it with `__wrusttyDelivery`
-   * recording and the two paths become byte-identical.
-   *
-   * Worth having as a button rather than a shell approximation: the generator
-   * is seeded and deterministic, so this is the only way to be certain the two
-   * measurements differ in environment and not in input. The harness flood is
-   * heavily escape-sequence laden (see floodLine) while a `yes` or `tr` flood
-   * is ~100% printable, which is a difference in cells written per byte that
-   * no shell one-liner reproduces by accident.
+   * Writes the flood-stress payload to a file so a live pane can `cat` the
+   * exact bytes measured here (with `__wrusttyDelivery` recording). The seeded
+   * flood is escape-heavy, which no `yes` or `tr` one-liner reproduces.
    */
   async function downloadFlood(mb: number) {
     // Generating 100 MB is a second or two of synchronous work that freezes the
@@ -535,19 +495,8 @@ export function BenchmarkHarness() {
         )}
       </div>
 
-      {/* Above the results, and sticky while a run is in flight.
-       *
-       * These used to render *below* the results tables, which is why runs kept
-       * aborting on a visibility check nobody could explain: each completed
-       * workload appends a table above the hosts and pushes them further down
-       * the page, so a seven-workload suite walks them out of the viewport on
-       * its own. xterm.js stops rendering when its host leaves the viewport and
-       * reports zero paints, which the latency loop counts as an empty trial —
-       * the exact failure that made the TUI row unusable at n=18 of 120.
-       *
-       * Sticky rather than merely reordered, so that scrolling down to read
-       * results mid-run cannot reintroduce it either. The engines are the
-       * instrument; they stay on screen. */}
+      {/* Above the results and sticky during a run, so appended result tables
+          or scrolling can't push the hosts off screen. */}
       <div style={{ ...S.engines, ...(phase === 'running' ? S.enginesPinned : null) }}>
         <div>
           <div style={S.engineLabel}>xterm.js</div>

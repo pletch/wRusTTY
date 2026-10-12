@@ -5,11 +5,8 @@ import { dirname, join } from 'node:path'
 import { APP_VERSION } from './version'
 
 /**
- * `APP_VERSION` is what the About section reports, and a version number that is
- * wrong is worse than one that is absent — it sends whoever reads a bug report
- * to the wrong commit. These assert it against every manifest that carries the
- * same number, so a release bump that misses one fails here rather than
- * shipping.
+ * `APP_VERSION` matches every manifest carrying the number, so a release
+ * bump that misses one fails here.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -26,9 +23,8 @@ describe('APP_VERSION', () => {
     expect(pkg.version).toBe(APP_VERSION)
   })
 
-  /** The Rust side takes `version.workspace = true` from the root manifest, so
-   *  this one number covers every crate. Matched loosely — a TOML parser is not
-   *  worth a dependency for one field in a `[workspace.package]` block. */
+  /** Crates take `version.workspace = true` from the root manifest. Matched
+   *  loosely rather than with a TOML parser. */
   it('matches the Cargo workspace', () => {
     const cargo = read('Cargo.toml')
     expect(cargo).toMatch(new RegExp(`^version = "${APP_VERSION}"$`, 'm'))

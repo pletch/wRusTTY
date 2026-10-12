@@ -6,14 +6,9 @@ import type { GhosttyWasm } from './wasmBindings'
 import type { Link } from './LinkController'
 
 /**
- * Link detection against the real core.
- *
- * The unit tests above it stub the buffer, which is the right shape for the
- * rules but cannot catch the thing that actually breaks here: a URL that has
- * wrapped, or scrolled into history, is reassembled from `readRows` and
- * `readWrapFlags`, and those two have a scrollback path and an active-screen
- * path that are entirely different code. This drives a real terminal at a
- * known width and asks what is under a cell.
+ * Link detection against the real core: a wrapped or scrolled-back URL is
+ * reassembled from `readRows` and `readWrapFlags`, whose scrollback and
+ * active-screen paths are different code.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

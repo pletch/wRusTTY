@@ -1,23 +1,14 @@
 /**
- * How a buffer row travels between `GhosttyEngine.readRows` and the things
- * that read it — copy, word selection, search.
- *
- * Its own module because the search controller needs the type and the engine
- * produces it; putting it in either would make the other import from a
- * 2,000-line file (or from its own consumer) for one interface.
+ * How a buffer row travels from `GhosttyEngine.readRows` to copy, word
+ * selection and search. Its own module so neither the engine nor the search
+ * controller imports the other for one interface.
  */
 
 /**
- * One buffer row: the text of every column concatenated, plus where each
- * column begins in it.
- *
- * `colStart` has `cols + 1` entries, so column `c` is always
- * `text.slice(colStart[c], colStart[c + 1])` with no special case for the last
- * column. A span can be longer than one character (a grapheme cluster) or
- * empty (the trailing half of a wide character) — which is exactly the
- * information a plain `string` per row would throw away, and which a
- * `string[]` per cell paid ~2M allocations on a full-scrollback search to
- * keep.
+ * One buffer row: its columns' text concatenated, plus where each column
+ * begins. `colStart` has `cols + 1` entries, so column `c` is always
+ * `text.slice(colStart[c], colStart[c + 1])`. A span can be several
+ * characters (a grapheme cluster) or empty (a wide character's trailing half).
  */
 export interface RowText {
   text: string
@@ -31,18 +22,9 @@ export function columnText(row: RowText, c: number): string {
 }
 
 /**
- * What counts as one word. Deliberately wider than alphanumerics: the things
- * worth grabbing out of a terminal in one gesture are paths, flags, hostnames
- * and URLs, and stopping at every `/` or `.` turns picking up a path into
- * several gestures.
- *
- * Hoisted to module scope so the literal isn't recompiled per call — V8 handles
- * the inline form well, but a word scan calls this once per column and a
- * module-level constant is free.
- *
- * Lives here rather than in either caller because both the mouse's double-click
- * and mark mode's word-wise movement have to agree on where a word ends; two
- * copies of this regex would be two slightly different answers within a week.
+ * What counts as one word: wider than alphanumerics, so a path, flag,
+ * hostname or URL is one double-click. Shared by double-click and mark
+ * mode's word movement so they agree; module-scoped since it runs per column.
  */
 const WORD_RE = /[A-Za-z0-9_\-./:@~+=%?&#]/
 

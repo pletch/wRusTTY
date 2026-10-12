@@ -49,8 +49,7 @@ uniform vec2 u_resolution; // (cols, rows)
 out vec4 v_fgColor;
 out vec4 v_bgColor;
 out vec2 v_uv;
-// Flat because it is a per-instance flag, not a quantity: interpolating it
-// would put fragments in the middle of a quad at values that mean neither.
+// Flat: a per-instance flag, not a quantity to interpolate.
 flat out float v_color;
 
 void main() {
@@ -68,16 +67,10 @@ void main() {
 }
 `
 
-// Glyph coverage and cell background resolve in one pass. The alpha channel is
-// mixed along with the color, so a glyph stays opaque even where it sits on a
-// translucent default background — that is what lets the pane's opacity reach
-// the clear color without also fading the text.
+// Glyph coverage and cell background resolve in one pass. Alpha is mixed too,
+// so a glyph stays opaque over a translucent default background.
 const FRAGMENT_SHADER_SRC = `#version 300 es
-// highp rather than the mediump this shader used to declare: the corrected
-// mode divides by the fg/bg luminance difference, and a mediump quotient of
-// two nearby values is exactly where that goes visibly wrong. Every target
-// this app runs on (WebView2 on desktop GPUs) treats the two identically
-// anyway, so the precision is free here in a way it would not be on mobile.
+// highp: the corrected mode divides by a luminance difference.
 precision highp float;
 
 in vec4 v_fgColor;
@@ -86,34 +79,23 @@ in vec2 v_uv;
 flat in float v_color;
 
 uniform sampler2D u_atlas;
-// The color companion, sampled only by the branch below. It shares the
-// coverage atlas's packing, so v_uv addresses it unchanged.
+// The color companion atlas; same packing, so v_uv addresses it unchanged.
 uniform sampler2D u_colorAtlas;
-// One of the BLEND_* constants below. A uniform branch, so every fragment in
-// a frame takes the same path and the GPU never diverges within a warp.
+// One of the BLEND_* constants; a uniform branch, so no divergence.
 uniform int u_blendMode;
 
 out vec4 outColor;
 
-// Mix in the framebuffer's own space. Cheap, and what this renderer always
-// did — but sRGB values are not proportional to light, so the result is not
-// a blend of anything physical, and two cells whose colors differ in hue
-// darken where their glyph edges meet.
+// Mix in sRGB: cheap, but darkens edges where colors differ in hue.
 const int BLEND_NATIVE = 0;
-// Mix in linear light. Correct, and visibly so on contrasting hues — but it
-// renders dark-on-light text thinner and light-on-dark thicker than the face
-// was drawn to look, because rasterizers have long assumed the sRGB blend's
-// accidental weight is there.
+// Mix in linear light: no fringe, but dark-on-light text looks thinner and
+// light-on-dark thicker than designed.
 const int BLEND_LINEAR = 1;
 // Linear, with ghostty's weight correction: solve for the coverage that
-// reproduces the *native* blend's luminance, then blend linearly with it.
-// Weight therefore matches BLEND_NATIVE while the darkening artifact stays
-// gone. See the comment on the solve itself.
+// reproduces the native blend's luminance, then blend linearly.
 const int BLEND_LINEAR_CORRECTED = 2;
 
-// The exact piecewise sRGB transfer function rather than a 2.2 power law.
-// The two diverge near black, which for glyph coverage is precisely the
-// range the correction below is solving in.
+// The exact sRGB transfer function; a 2.2 power law diverges near black.
 float linearize(float v) {
     return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
 }
@@ -132,16 +114,9 @@ float luminance(vec3 c) {
 
 void main() {
     if (v_color > 0.0) {
-        // An emoji is not a mask, so none of the coverage machinery below
-        // applies to it: there is no single foreground to weight against, and
-        // the blend modes exist to make *text* the weight the face intended.
-        // Straight source-over onto the cell's background is the whole job.
-        //
-        // v_color is a scale rather than a flag, because faint is the one
-        // attribute that acts on a color glyph as well: it darkens the
-        // foreground toward black, and the equivalent here is to darken the
-        // face's own colors by the same factor. Anything above zero means
-        // color; how far above says how much of it is kept.
+        // Color glyphs (emoji) are composited source-over onto the background; the
+        // blend modes only apply to text. v_color > 0 means color, and its value
+        // scales the glyph's colors (faint).
         vec4 src = texture(u_colorAtlas, v_uv);
         outColor = vec4(mix(v_bgColor.rgb, src.rgb * v_color, src.a), mix(v_bgColor.a, 1.0, src.a));
         return;
@@ -159,70 +134,53 @@ void main() {
     vec3 bgLin = linearize(v_bgColor.rgb);
 
     if (u_blendMode == BLEND_LINEAR_CORRECTED) {
-        // Take the luminance of each end, blend *those* the gamma-incorrect
-        // way to get the luminance the native path would have produced, then
-        // map it back onto [bg_l, fg_l] to recover the coverage that reaches
-        // the same luminance through a linear blend. The whole point is that
-        // this has no tunable constant in it: the target is not a taste, it
-        // is what the other mode already renders.
+        // Blend the luminances the native way, then find the coverage that
+        // reaches that luminance through a linear blend. No tunable constants.
         float fgL = luminance(fgLin);
         float bgL = luminance(bgLin);
-        // Guard the division: as the two luminances converge the quotient
-        // stops being meaningful, and there is nothing to correct anyway.
+        // Nothing to correct when the luminances converge.
         if (abs(fgL - bgL) > 0.001) {
             float blendL = linearize(unlinearize(fgL) * a + unlinearize(bgL) * (1.0 - a));
             a = clamp((blendL - bgL) / (fgL - bgL), 0.0, 1.0);
         }
     }
 
-    // Alpha stays in coverage units: it is this pane's opacity, not light,
-    // and it is what keeps a glyph opaque over a translucent background.
+    // Alpha stays in coverage units: it's the pane's opacity, not light.
     outColor = vec4(unlinearize(mix(bgLin, fgLin, a)), mix(v_bgColor.a, v_fgColor.a, a));
 }
 `
 
-/** Values `setTextBlending` takes; they are the shader's BLEND_* constants,
- *  and the engine maps the user-facing setting onto them. */
+/** Values for `setTextBlending`: the shader's BLEND_* constants. */
 export const BLEND_NATIVE = 0
 export const BLEND_LINEAR = 1
 export const BLEND_LINEAR_CORRECTED = 2
 
 /** Floats per instance: cell position, foreground, background, UVs, and the
- *  scale saying which atlas those UVs address and how strongly to draw it. */
+ *  color-atlas scale. */
 const INSTANCE_FLOATS = 15
 
-/** Instances the cursor overlay can draw in a frame: one per column the cursor
- *  covers, which is two on a wide character and one on everything else. */
+/** Cursor overlay instances per frame: one per column (two on a wide char). */
 const CURSOR_OVERLAY_CAP = 2
 
-/** How far faint text is darkened toward black. One constant, because the
- *  coverage path applies it to the foreground and the color path applies it
- *  to the glyph's own colors, and the two have to fade alike. */
+/** How far faint text is darkened toward black, for both text and color
+ *  glyphs. */
 const FAINT_SCALE = 0.55
 
 /**
- * The one place cell metrics are derived. Both the renderer (which sizes the
- * canvas as `cols * cellWidth`) and the engine's fit (which derives cols from
- * the container) have to agree to the pixel: when they measured separately,
- * cols came from one width and the canvas from another, and nothing — not
- * re-fitting, not resizing the window — could reconcile them.
+ * The one place cell metrics are derived, so the renderer's canvas size and
+ * the engine's fit always agree to the pixel.
  */
 export function measureCell(
   fonts: FontSelection,
   fontSize: number,
 ): { width: number; height: number } {
   const ctx = document.createElement('canvas').getContext('2d')!
-  // Always the regular face, and always its ordinary weight. The grid must not
-  // shift when a cell happens to be bold or italic, so a per-style face is
-  // measured against the body font's cell rather than its own -- which is also
-  // why an overwide face is condensed into its slot rather than given more
-  // room. The weight is emitted because a Light and a Black cut of the same
-  // family do not advance identically, so the cell has to be measured at the
-  // weight the body text will actually be drawn in.
+  // The regular face at the body weight: the grid must not shift for bold or
+  // italic cells (other faces are condensed into this cell), and weights of
+  // one family advance differently.
   ctx.font = `${fonts.weight === 400 ? '' : `${fonts.weight} `}${fontSize}px ${fonts.regular}`
   return {
-    // Floored at one pixel: a face that has not resolved yet measures zero,
-    // and a zero-width cell is a division by zero in every grid fit downstream.
+    // Floored at one pixel: an unresolved face measures zero.
     width: Math.max(1, Math.ceil(ctx.measureText('W').width) + fonts.letterSpacing),
     height: Math.max(1, Math.ceil(fontSize * fonts.lineHeight)),
   }
@@ -241,10 +199,8 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string) {
 }
 
 /**
- * Codepoints read back for one grapheme cluster. Real clusters — a letter and
- * its marks, or an emoji and its joiners — are a handful; a longer one is
- * truncated rather than sized for, since this buffer is held for the pane's
- * lifetime.
+ * Codepoints read back for one grapheme cluster; longer clusters are
+ * truncated.
  */
 const GRAPHEME_CAP = 16
 
@@ -253,9 +209,7 @@ export interface SelectionRange {
   start: { x: number; y: number }
   end: { x: number; y: number }
   /**
-   * Column-wise rather than line-wise: every row takes the same column span
-   * instead of running to the end of the line and wrapping. Pulls one field out
-   * of tabular output without the rest of each row.
+   * Column-wise: every row takes the same column span.
    */
   rectangular?: boolean
 }
@@ -267,13 +221,11 @@ export interface SearchHighlight {
   active: boolean
 }
 
-// Matching the xterm engine's SEARCH_DECORATIONS, so switching engines doesn't
-// change what a hit looks like.
+// Matches the xterm engine's SEARCH_DECORATIONS.
 const SEARCH_MATCH_BG = [0x5c, 0x4a, 0x1c]
 const SEARCH_ACTIVE_BG = [0xd9, 0xa4, 0x41]
 
-/** Hint labels: dark on amber, so a label cannot be mistaken for output
- *  whatever the theme or the program underneath it is painting. */
+/** Hint labels: dark on amber, distinct from any output. */
 const HINT_FG = [0x1a, 0x1a, 0x1a]
 const HINT_BG = [0xf5, 0xc2, 0x42]
 
@@ -318,44 +270,33 @@ export class WebGLRenderer {
   /** 0..1. Reaches the clear color and default-background cells only. */
   private defaultBgA = 1
 
-  // Held on the instance rather than only pushed to the uniform, because the
-  // program is rebuilt on a context loss and the renderer itself is rebuilt on
-  // every font change — and both start on the shader's own defaults. Same
-  // reason the engine re-applies the theme in those paths.
+  // Held here because the program and the renderer are both rebuilt (context
+  // loss, font change) and start on the shader defaults.
   private blendMode = BLEND_NATIVE
   /**
-   * Whether to shape runs of operators as one string, which is what makes a
-   * ligature-carrying face actually ligate. Off by default: it costs atlas
-   * slots and only pays for itself on a font that has the substitutions, so
-   * it is the user's call rather than something a default install absorbs.
+   * Whether to shape operator runs as one string so ligatures apply. Off by
+   * default: it costs atlas slots.
    */
   private ligatures = false
   /** Per-row run bookkeeping, allocated with the grid. See `computeRuns`. */
   private runs: RunScratch | null = null
 
-  // As measured, before display-scale quantization. Kept so a scale change
-  // re-quantizes from the measurement rather than from an already-rounded value.
+  // As measured, before display-scale rounding.
   private baseCellWidth: number
   private baseCellHeight: number
   private cellWidth: number
   private cellHeight: number
-  // Cell size in whole device pixels. Windows commonly runs at 125% or 150%,
-  // where a logical cell is a fractional number of device pixels: the canvas
-  // height truncates, the shader still divides it into equal rows, and every
-  // row boundary lands a little further off a real pixel than the last. The
-  // glyph — rasterized on its own integer grid — then sits a pixel or two off
-  // the cell the cursor paints, increasingly so down the screen. Rounding to
-  // whole device pixels makes every cell an exact integer rect, which is also
-  // what lets the atlas rasterize at native resolution instead of being
-  // NEAREST-upscaled from logical size.
+  // Cell size in whole device pixels. At fractional scales (125%, 150%) a
+  // fractional cell drifts off the pixel grid down the screen; rounding makes
+  // every cell an exact integer rect and lets the atlas rasterize at native
+  // resolution.
   private deviceCellWidth: number
   private deviceCellHeight: number
   private dpr: number
 
   private contextLost = false
   private loseExt: WEBGL_lose_context | null = null
-  // False until the program links and the GL objects exist. A failed link would
-  // otherwise turn one console error into an exception on every frame.
+  // False until the program links; a failed link must not throw every frame.
   private ready = false
 
   /** Absolute-coordinate selection to highlight, or null. */
@@ -366,74 +307,38 @@ export class WebGLRenderer {
 
   /** The blink phase for cells carrying the blink attribute. */
   blinkOn = true
-  /**
-   * Whether the last frame actually contained any. Lets the owner skip the
-   * repaint a blink tick would otherwise force on every pane forever.
-   */
+  /** Whether the last frame contained any blinking cells, so blink ticks can
+   *  skip repainting otherwise. */
   sawBlinkingCell = false
 
   /**
-   * Search hits to highlight, grouped by absolute row. Grouped rather than a
-   * flat list because the alternative is scanning every match for every cell;
-   * this way a row costs one lookup and a cell costs a walk of just its own
-   * row's hits, which is almost always none.
+   * Search hits to highlight, grouped by absolute row so each cell only checks
+   * its own row's hits.
    */
   searchHighlights: Map<number, SearchHighlight[]> | null = null
 
   /**
    * The link under the pointer, as the rows and columns it covers, or null.
-   *
-   * A flat list rather than a map by row: there is at most one hovered link
-   * and it covers one row, or a handful when it wraps, so the lookup per row
-   * is a walk of two or three entries — the grouping `searchHighlights` needs
-   * would cost more than it saves here.
-   *
-   * Feedback is a style bit on the covered cells rather than new geometry: the
-   * renderer already folds `CELL_UNDERLINE` into the atlas key, so an
-   * underlined link costs at most one extra atlas entry per glyph, bounded by
-   * the link's own text.
+   * Rendered as a solid underline style bit on the covered cells.
    */
   linkHighlight: { row: number; from: number; to: number }[] | null = null
 
   /**
-   * Every link on screen, whether or not the pointer is on one.
-   *
-   * These are drawn with a dotted underline and the hovered one with a solid
-   * one, which is what makes a link *discoverable*: underlining only under the
-   * pointer means a link is invisible until you happen to hold Ctrl over it,
-   * and nobody holds Ctrl over text they have no reason to think is a link.
-   * Two distinct rules rather than a color change, so nothing here has to
-   * argue with the theme or with whatever color the program chose for its own
-   * output.
+   * Every link on screen, drawn with a dotted underline so links are
+   * discoverable; the hovered one is solid.
    */
   linkRanges: { row: number; from: number; to: number }[] | null = null
 
   /**
-   * Hint-mode labels to paint over the grid, or null when the mode is off.
-   *
-   * Drawn as cells rather than as an overlay: a label is a character in a
-   * cell, which is exactly what this loop already draws, so it costs the
-   * colors and nothing else. Absolute rows, so a label stays on its link as
-   * output scrolls the screen underneath it.
+   * Hint-mode labels, drawn as cells, in absolute rows so they stay on their
+   * links. Null when the mode is off.
    */
   hintLabels: { row: number; col: number; text: string }[] | null = null
 
   /**
-   * Spans whose glyphs are painted in their own background color, i.e. made
-   * to vanish without anything being drawn over them.
-   *
-   * What makes the history flicker possible (see lib/historyRepeat.ts). The
-   * obvious implementation of "flicker the recalled command" is a DOM band
-   * over the canvas in the background color, and it is wrong here for a
-   * reason that only shows up on a translucent pane: the cell's background is
-   * itself partly transparent, so a second copy of it stacked on top
-   * composites to something *more* opaque than its surroundings — a visible
-   * dark patch rather than a hole. Suppressing the foreground instead draws
-   * the cell exactly as it would have been drawn anyway, minus the glyph, at
-   * any background opacity.
-   *
-   * Absolute rows, like every other overlay here, so a span stays on its text
-   * if output scrolls underneath it. Rows off screen simply never match.
+   * Spans whose glyphs are hidden by drawing them in the background color, for
+   * the history flicker (see lib/historyRepeat.ts). Hiding the glyph rather than
+   * overlaying a band keeps a translucent background correct. Absolute rows.
    */
   hiddenSpans: { row: number; from: number; to: number }[] | null = null
 
@@ -442,38 +347,30 @@ export class WebGLRenderer {
   private cursorB = 255
 
   /**
-   * Called after a lost context has been rebuilt. Every GPU-side object comes
-   * back empty, so the owner has to re-issue a draw or the pane sits blank
-   * until its next byte arrives.
+   * Called after a lost context is rebuilt; the owner must redraw or the pane
+   * stays blank.
    */
   onRestore: (() => void) | null = null
 
-  // Instance data buffer (floats):
-  // cellPos.x, cellPos.y, fgR, fgG, fgB, fgA, bgR, bgG, bgB, bgA, u0, v0, u1, v1 (14 floats = 56 bytes per cell)
+  // Per-cell instance data; see INSTANCE_FLOATS.
   private instanceData!: Float32Array
 
-  // The cursor overlay's own instances. Fixed size and allocated once for the
-  // pane's lifetime — it never holds more than the columns of a single cell.
+  // The cursor overlay's instances, allocated once.
   private overlayData = new Float32Array(CURSOR_OVERLAY_CAP * INSTANCE_FLOATS)
   private overlayCount = 0
 
-  // Scrollback is read one row at a time into a scratch buffer. It only has to
-  // exist while the viewport is scrolled up, and it outlives the frame so
-  // scrolling doesn't churn the WASM allocator once per row per frame.
+  // Scratch row for scrollback, kept across frames while scrolled up.
   private lineWasm: GhosttyWasm | null = null
   private linePtr = 0
   private lineCells = 0
   private graphemePtr = 0
 
-  // The whole viewport is read into a scratch buffer once per frame, per pane.
-  // Cached on the same terms as `lineBuffer` above rather than allocated and
-  // freed inside updateStaticGrid: at 200x60 that is a 192 KB malloc, a
-  // zero-fill and a free every frame, which is the one thing here its two
-  // neighbors were already careful not to do.
+  // Scratch buffer for the whole viewport, cached rather than reallocated
+  // every frame (192 KB at 200x60).
   private viewportPtr = 0
   private viewportCells = 0
 
-  /** One cell, reused for every cell of every frame — see `parseCellInto`. */
+  /** One cell reused for every cell of every frame; see `parseCellInto`. */
   private scratchCell = emptyCell()
 
   constructor(
@@ -489,18 +386,9 @@ export class WebGLRenderer {
     this.fonts = fonts
     this.fontSize = fontSize
 
-    // This renderer only repaints on damage, so an idle pane goes many frames
-    // without a draw. WebGL formally leaves a composited buffer's contents
-    // undefined unless it is preserved, so an idle pane is relying on behavior
-    // it isn't promised; preserving costs a copy per frame and makes the buffer
-    // mean what it says. The alternative is redrawing every frame, which gives
-    // up the zero-cost idle pane this loop is built around.
-    //
-    // The buffer keeps an alpha channel so the pane's background opacity can
-    // reach the clear color and let the window's own backdrop through.
-    // `premultipliedAlpha: false` because the colors written here are straight
-    // RGBA — declaring them premultiplied would wash out every translucent
-    // background by dividing it through by its own alpha at composite time.
+    // The renderer only draws on damage, so the drawing buffer must be
+    // preserved between frames. Alpha lets the pane's opacity reach the
+    // window backdrop; colors are straight RGBA, not premultiplied.
     this.gl = canvas.getContext('webgl2', {
       antialias: false,
       alpha: true,
@@ -518,14 +406,11 @@ export class WebGLRenderer {
     this.deviceCellHeight = cellHeight
     this.syncDeviceMetrics()
 
-    // A GPU reset — driver timeout, sleep/resume, WebView2 recycling its GPU
-    // host — invalidates every object below without the pane knowing. Without
-    // preventDefault the context is never eligible for restoration and the
-    // pane stays dead for the rest of the session.
+    // A GPU reset invalidates everything; preventDefault makes the context
+    // restorable.
     canvas.addEventListener('webglcontextlost', this.onContextLost)
     canvas.addEventListener('webglcontextrestored', this.onContextRestored)
-    // The same extension is how a pane hands its context back voluntarily when
-    // it is no longer on screen — see releaseContext.
+    // Also used to release the context voluntarily; see releaseContext.
     this.loseExt = this.gl.getExtension('WEBGL_lose_context')
 
     this.resizeCanvas()
@@ -539,11 +424,8 @@ export class WebGLRenderer {
 
   private onContextRestored = () => {
     this.contextLost = false
-    // Nothing from the old context survives, so mark the build dead before
-    // rebuilding rather than trying to delete objects that no longer exist.
+    // The old objects are gone; don't try to delete them.
     this.ready = false
-    // Every glyph the atlas had cached lived in a texture that is gone too, so
-    // the cache goes with it.
     this.initGL()
     this.onRestore?.()
   }
@@ -553,22 +435,14 @@ export class WebGLRenderer {
   }
 
   /**
-   * Hands the GL context back to the browser.
-   *
-   * There is a hard ceiling on how many WebGL contexts can be live at once —
-   * around sixteen in Chromium — and past it the browser starts taking them
-   * from whoever it likes. Every tab in this app stays mounted, just hidden, so
-   * a dozen tabs of one pane each is enough to reach that on its own. A pane
-   * that isn't on screen has no use for a context, and giving it up on purpose
-   * is what keeps the ceiling away from the panes that are.
-   *
-   * Nothing is lost by doing this: the terminal lives in WASM, and everything
-   * dropped here — the atlas, the buffers, the program — is rebuilt from it.
+   * Hands the GL context back to the browser. Chromium allows about sixteen live
+   * WebGL contexts and evicts arbitrarily past that; hidden tabs stay mounted, so
+   * off-screen panes give theirs up. Everything is rebuilt from WASM on restore.
    */
   releaseContext() {
     if (this.contextLost || !this.loseExt) return
     this.releaseGL()
-    // Fires webglcontextlost, which is what actually sets contextLost.
+    // Fires webglcontextlost, which sets contextLost.
     this.loseExt.loseContext()
   }
 
@@ -592,9 +466,8 @@ export class WebGLRenderer {
   }
 
   /**
-   * Recomputes whole-pixel cell metrics, returning whether the display scale
-   * moved — dragging a window between monitors of different DPI changes the
-   * size a glyph has to be rasterized at.
+   * Recomputes whole-pixel cell metrics; returns whether the display scale
+   * changed (e.g. a window moved between monitors).
    */
   private syncDeviceMetrics(): boolean {
     const dpr = window.devicePixelRatio || 1
@@ -602,11 +475,8 @@ export class WebGLRenderer {
     this.dpr = dpr
     this.deviceCellWidth = Math.max(1, Math.round(this.baseCellWidth * dpr))
     this.deviceCellHeight = Math.max(1, Math.round(this.baseCellHeight * dpr))
-    // The logical size is derived back from the rounded device size rather than
-    // kept at the measured value. Sizing the CSS box from the raw measurement
-    // would leave the browser rescaling the backing store by the rounding error
-    // — undoing the point of the exercise — and fit() reads these same numbers,
-    // so deriving them keeps the grid it computes identical to the one drawn.
+    // Derive the logical size back from the rounded device size, so the browser
+    // doesn't rescale the backing store and fit() sees the drawn grid.
     this.cellWidth = this.deviceCellWidth / dpr
     this.cellHeight = this.deviceCellHeight / dpr
     return true
@@ -618,17 +488,14 @@ export class WebGLRenderer {
     const gl = this.gl
     this.ready = false
 
-    // Rasterized at device scale into device-sized slots, so a glyph is drawn
-    // at the resolution it is displayed at rather than magnified from logical
-    // size by a NEAREST sampler.
+    // Rasterized at device scale.
     this.atlas = new GlyphAtlas(
       gl,
       this.fonts,
       this.fontSize * this.dpr,
       this.deviceCellWidth,
       this.deviceCellHeight,
-      // In device pixels, like everything else the atlas is handed: the cell
-      // it centers a glyph in is the device-pixel one.
+      // In device pixels, like the cell.
       Math.round(this.fonts.letterSpacing * this.dpr),
     )
 
@@ -640,8 +507,7 @@ export class WebGLRenderer {
     gl.attachShader(this.program, vs)
     gl.attachShader(this.program, fs)
     gl.linkProgram(this.program)
-    // A link failure is otherwise completely silent: the clear still paints, so
-    // the pane comes up showing its theme background with no text on it at all.
+    // Otherwise a link failure just shows an empty background.
     if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
       console.error('Ghostty renderer program link failed:', gl.getProgramInfoLog(this.program))
       return
@@ -686,12 +552,8 @@ export class WebGLRenderer {
 
     this.bindInstanceAttribs()
 
-    // The cursor overlay draws from its own VAO and its own two-instance
-    // buffer rather than from an offset into the grid's. WebGL2's
-    // drawArraysInstanced has no base-instance parameter, so the alternative
-    // is re-pointing four attributes twice a frame and restoring them after —
-    // a second VAO is the same state, set once, and it keeps the grid's own
-    // bindings untouched.
+    // The cursor overlay has its own VAO and buffer: WebGL2 has no base-instance
+    // draw, so this avoids re-pointing attributes twice a frame.
     this.overlayVao = gl.createVertexArray()!
     gl.bindVertexArray(this.overlayVao)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer)
@@ -708,24 +570,11 @@ export class WebGLRenderer {
   }
 
   /**
-   * Points the five per-instance attributes at whatever ARRAY_BUFFER is bound,
-   * into whatever VAO is bound. The grid and the cursor overlay feed the same
-   * shader from the same instance layout, so they configure identically.
-   */
-  /**
-   * Queues one column of a cursor shape to be drawn over the finished grid.
-   *
-   * The instance is an ordinary one in every respect but its colors: the
-   * background carries the cursor's own RGB at **zero alpha**, so the shader's
-   * `mix(bg, fg, coverage)` returns the cursor color at every coverage value
-   * and the alpha it returns is the coverage itself. Source-over then composites
-   * the shape onto whatever the grid already drew, antialiased edges included,
-   * and it does so identically in all three blend modes — the corrected one
-   * sees two equal luminances and skips its solve, which is right, because
-   * there is no foreground-against-background weight to correct here.
-   *
-   * `spansTwo` means the shape was rasterized double-width for a wide cell, in
-   * which case each column samples its own half, exactly as a wide glyph does.
+   * Queues one column of a cursor shape to draw over the finished grid. The
+   * background is the cursor color at zero alpha, so the shader returns the
+   * cursor color with coverage as alpha, which composites correctly in every
+   * blend mode. `spansTwo` means the shape was rasterized double-width for a
+   * wide cell, and each column samples its half.
    */
   private pushCursorOverlay(
     col: number,
@@ -758,6 +607,10 @@ export class WebGLRenderer {
     this.overlayCount++
   }
 
+  /**
+   * Points the per-instance attributes at the bound ARRAY_BUFFER, in the bound
+   * VAO. Shared by the grid and the cursor overlay.
+   */
   private bindInstanceAttribs() {
     const gl = this.gl
     const stride = INSTANCE_FLOATS * 4
@@ -789,8 +642,7 @@ export class WebGLRenderer {
   }
 
   private resizeCanvas() {
-    // Backing store in whole device pixels; CSS box in the logical units the
-    // rest of the layout is measured in.
+    // Backing store in device pixels; CSS box in logical units.
     this.canvas.width = this.cols * this.deviceCellWidth
     this.canvas.height = this.rows * this.deviceCellHeight
     this.canvas.style.width = `${this.cols * this.cellWidth}px`
@@ -808,10 +660,8 @@ export class WebGLRenderer {
   }
 
   /**
-   * Color space to blend glyph coverage in, as one of the BLEND_* values.
-   *
-   * Safe to call before the program links — the value is held and pushed at
-   * link time, which is the path a new pane actually takes.
+   * Color space to blend glyph coverage in, as a BLEND_* value. Safe before the
+   * program links; the value is applied at link time.
    */
   setTextBlending(mode: number) {
     this.blendMode = mode
@@ -821,9 +671,7 @@ export class WebGLRenderer {
   }
 
   /**
-   * Turns run shaping on or off. Nothing is cached across the change beyond
-   * the atlas slots already taken, which stay valid — a run slot is only ever
-   * reached through a run, so switching off simply stops asking for them.
+   * Turns run shaping on or off. Existing atlas slots stay valid.
    */
   setLigatures(on: boolean) {
     this.ligatures = on
@@ -849,8 +697,7 @@ export class WebGLRenderer {
     if (this.contextLost) return
 
     if (scaleChanged) {
-      // The atlas holds glyphs rasterized for the old scale, and initGL sizes
-      // the instance buffer for the current grid, so this covers the resize too.
+      // initGL rebuilds the atlas for the new scale and sizes the buffer.
       this.initGL()
       return
     }
@@ -877,21 +724,13 @@ export class WebGLRenderer {
   }
 
   /**
-   * Scratch buffer for the whole viewport, grown on demand — the same shape
-   * as `lineBuffer` below, deliberately, so the three scratch buffers in this
-   * class read the same way.
-   *
-   * Grown rather than resized exactly: a pane that shrinks keeps the larger
-   * allocation, which costs a little memory and saves a free/malloc pair on
-   * every drag of a split divider. The caller only ever reads the first
-   * `cells` of it.
+   * Scratch buffer for the whole viewport, grown on demand (never shrunk, to
+   * avoid reallocating on every divider drag).
    */
   private viewportBuffer(wasm: GhosttyWasm, cells: number): number {
     if (this.viewportPtr !== 0 && this.viewportCells >= cells) return this.viewportPtr
-    // The replacement is taken before the incumbent is released, so a failure
-    // costs nothing. Freeing first meant one refused allocation also threw away
-    // the working buffer and pinned viewportCells at 0 — the pane could then
-    // never repaint again even once memory came back.
+    // Allocate the replacement before freeing, so a failure keeps the old
+    // buffer.
     const next = allocBufferOrThrow(wasm, cells * CELL_BYTES)
     if (this.viewportPtr !== 0) {
       wasm.exports.ghostty_wasm_free_u8_array(this.viewportPtr, this.viewportCells * CELL_BYTES)
@@ -929,33 +768,24 @@ export class WebGLRenderer {
     const wasmCols = wasm.exports.ghostty_render_state_get_cols(termPtr)
     const wasmRows = wasm.exports.ghostty_render_state_get_rows(termPtr)
 
-    // Sized from the WASM dimensions rather than ours, since a resize can land
-    // on one side before the other.
+    // Sized from the WASM dimensions, which may lag ours during a resize.
     const cellCount = wasmCols * wasmRows
     const expectedBufSize = cellCount * CELL_BYTES
     const viewportBufPtr = this.viewportBuffer(wasm, cellCount)
 
-    // Kept even though the buffer is now cached rather than freshly allocated,
-    // and *because* of it. The vendored PR #142 zero-initializes WASM page
-    // buffers, which would make this redundant for a fresh allocation — but a
-    // reused buffer is exactly the case that fix does not cover, so without
-    // this a shrink (or a short `get_viewport` return) would leave the
-    // previous frame's cells sitting in the uncovered tail and paint them.
-    // Costs a memset against a malloc+free it replaces, which is the cheaper
-    // half of what was here before.
+    // Zero the reused buffer so a shrink or short read can't leave the previous
+    // frame's cells in the tail.
     new Uint8Array(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize).fill(0)
 
     // Takes a cell count, not a byte count.
     wasm.exports.ghostty_render_state_get_viewport(termPtr, viewportBufPtr, cellCount)
 
     viewportOffset = Math.max(0, Math.min(viewportOffset, scrollbackCount))
-    // Only pay for the scratch row when the viewport is actually scrolled up.
+    // The scratch row is only needed when scrolled up.
     const linePtr = viewportOffset > 0 ? this.lineBuffer(wasm, wasmCols) : 0
     const graphemePtr = this.graphemeBuffer(wasm)
 
-    // Both views are made after every allocation this frame will do: growing
-    // WASM memory detaches the old ArrayBuffer, and a DataView built before the
-    // growth throws on its next read.
+    // Views after all allocations: growing memory detaches older buffers.
     const viewportView = new DataView(wasm.exports.memory.buffer, viewportBufPtr, expectedBufSize)
     const lineView = linePtr !== 0
       ? new DataView(wasm.exports.memory.buffer, linePtr, wasmCols * CELL_BYTES)
@@ -964,19 +794,15 @@ export class WebGLRenderer {
       ? new DataView(wasm.exports.memory.buffer, graphemePtr, GRAPHEME_CAP * 4)
       : null
 
-    // The core has no runtime color setter, so a pane that outlives a theme
-    // change would otherwise keep painting default text in the palette it was
-    // created with. Its current defaults are queryable and come back on cells
-    // byte-for-byte, so cells still sitting on them can be mapped onto the live
-    // theme. Explicitly-colored text is left alone — remapping that would mean
-    // guessing which palette slot it came from, which the resolved-RGB ABI
-    // deliberately no longer tells us.
+    // The core can't change colors at runtime, so cells still on its default
+    // fg/bg are mapped onto the current theme. Explicitly colored cells are left
+    // alone.
     const coreFg = wasm.exports.ghostty_render_state_get_fg_color(termPtr)
     const coreFgR = (coreFg >> 16) & 0xff, coreFgG = (coreFg >> 8) & 0xff, coreFgB = coreFg & 0xff
     const coreBg = wasm.exports.ghostty_render_state_get_bg_color(termPtr)
     const coreBgR = (coreBg >> 16) & 0xff, coreBgG = (coreBg >> 8) & 0xff, coreBgB = coreBg & 0xff
 
-    // Normalized here so the caller can drag a selection in either direction.
+    // Normalized so selections can be dragged either way.
     let selStart = this.selection?.start
     let selEnd = this.selection?.end
     if (selStart && selEnd) {
@@ -985,14 +811,11 @@ export class WebGLRenderer {
       }
     }
 
-    // Hidden outright while scrolled back: the cursor belongs to the live
-    // screen, and leaving it on history reads as an editable line up there.
+    // Hidden while scrolled back: the cursor belongs to the live screen.
     const cursor = this.cursor && viewportOffset === 0 ? this.cursor : null
     this.sawBlinkingCell = false
 
-    // Grown with the grid rather than with the pane's lifetime: `cols` only
-    // moves on a resize, and every one of these is overwritten per row before
-    // it is read.
+    // Grown with the grid; overwritten per row before use.
     if (this.ligatures && (this.runs === null || this.runs.head.length < cols)) {
       this.runs = {
         head: new Int32Array(cols),
@@ -1027,10 +850,8 @@ export class WebGLRenderer {
         rowValid = activeRow < wasmRows
       }
 
-      // A wide character occupies two columns: the core puts the codepoint in
-      // the first with width 2 and leaves the second as a spacer with width 0.
-      // The right half of that glyph is drawn from the same atlas entry when
-      // the spacer comes round, so these carry it across one column.
+      // A wide character's spacer column draws the right half of the glyph
+      // started in the previous column.
       let pendingWide: GlyphRect | null = null
       let cursorOnWide: boolean = false
 
@@ -1040,19 +861,15 @@ export class WebGLRenderer {
       const rowHints = this.hintLabels?.filter((h) => h.row === absRow) ?? null
       const rowHidden = this.hiddenSpans?.filter((s) => s.row === absRow) ?? null
 
-      // Ligature runs for this row. The two scratch rows are filled first
-      // because `computeRuns` reads them: `rowBreak` for the cells whose
-      // contents get replaced outright, `rowLinkState` for the underline this
-      // loop adds from outside the cell's own flags.
+      // Ligature runs for this row. The break and link-state scratch rows are
+      // filled first because `computeRuns` reads them.
       let runsThisRow = false
       if (this.ligatures && rowValid && runs !== null) {
         runs.brk.fill(0, 0, cols)
         runs.linkState.fill(0, 0, cols)
         if (cursor !== null && cursor.row === r && cursor.col < cols) {
-          // The cursor's own cell leaves the run, so what sits under a block
-          // cursor is the character you typed rather than a slice of the
-          // ligature it formed. It is what other terminals do, and it reuses
-          // the run breaking already needed for everything else.
+          // The cursor's cell leaves the run, so a block cursor shows the typed
+          // character rather than a slice of a ligature.
           runs.brk[cursor.col] = 1
         }
         if (rowHints !== null) {
@@ -1087,45 +904,30 @@ export class WebGLRenderer {
       for (let c = 0; c < cols; c++) {
         let codepoint = 0
         let flags = 0
-        // 1 for an ordinary cell (and for anything outside the core's grid),
-        // 2 for the head of a wide character, 0 for its trailing spacer.
+        // 1 for a normal cell, 2 for a wide character's head, 0 for its spacer.
         let cellWidth = 1
         /** Codepoints beyond the first; non-zero means a cluster to compose. */
         let graphemeLen = 0
         /** Underline style and overline; see CELL2_* in wasmBindings. */
         let attrs2 = 0
-        // Cells outside the core's grid (a resize we've seen but it hasn't)
-        // fall back to the theme's own colors.
+        // Cells outside the core's grid use the theme colors.
         let finalFgR = this.defaultFgR
         let finalFgG = this.defaultFgG
         let finalFgB = this.defaultFgB
         let finalBgR = this.defaultBgR
         let finalBgG = this.defaultBgG
         let finalBgB = this.defaultBgB
-        // Only the default background is allowed to be see-through. A cell that
-        // asked for a specific background gets it at full strength, the same way
-        // xterm treats an explicit SGR background.
+        // Only the default background may be translucent, as in xterm.
         let bgIsDefault = true
         /**
-         * The glyph is to disappear into its own cell — the history flicker's
-         * `hiddenSpans`, and the off half of a blink.
-         *
-         * Matching the foreground *color* to the background is only half of
-         * that, and the missing half only shows up on a translucent pane. The
-         * foreground alpha is otherwise always 255 while a default background
-         * carries `defaultBgA`, and the shader mixes the two by coverage — so
-         * every pixel the glyph covers comes out more opaque than the cells
-         * around it, and the "hidden" text reappears as a solid silhouette of
-         * itself against whatever is behind the window. Flagging it here lets
-         * the alpha follow the background as well, which is what actually
-         * leaves a hole rather than a patch.
+         * The glyph should vanish into its cell (`hiddenSpans`, or blink off). Its
+         * alpha must also follow the background's, or on a translucent pane the
+         * hidden glyph shows as a more opaque silhouette.
          */
         let glyphHidden = false
 
         if (rowValid && c < wasmCols) {
-          // Read into the renderer's own scratch cell: every field is copied
-          // into locals on the next few lines and the object never escapes,
-          // so a fresh one per cell per frame was garbage by construction.
+          // Into the reusable scratch cell.
           const cell = isScrollback
             ? parseCellInto(lineView!, c * CELL_BYTES, this.scratchCell)
             : parseCellInto(viewportView, (activeRow * wasmCols + c) * CELL_BYTES, this.scratchCell)
@@ -1135,9 +937,7 @@ export class WebGLRenderer {
           cellWidth = cell.width
           graphemeLen = cell.graphemeLen
           attrs2 = cell.attrs2
-          // Already resolved to RGB by the core against the palette and
-          // defaults it was configured with, so the only substitution left is
-          // pulling default-colored cells onto the current theme.
+          // Already RGB; just map default-colored cells onto the current theme.
           if (cell.fgR === coreFgR && cell.fgG === coreFgG && cell.fgB === coreFgB) {
             finalFgR = this.defaultFgR; finalFgG = this.defaultFgG; finalFgB = this.defaultFgB
           } else {
@@ -1151,12 +951,8 @@ export class WebGLRenderer {
           }
         }
 
-        // A hint label replaces whatever the cell held, in colors chosen to be
-        // unmistakably not the program's output. Applied after the cell is read
-        // so it wins outright, and before the glyph is chosen so the label is
-        // what gets rasterized. A label never sits on a wide character's
-        // spacer: overriding the width to 1 leaves nothing pending, and the
-        // spacer beside it simply draws blank.
+        // A hint label replaces the cell's contents. Labels never sit on a wide
+        // character's spacer.
         if (rowHints !== null) {
           for (let i = 0; i < rowHints.length; i++) {
             const hint = rowHints[i]
@@ -1174,9 +970,8 @@ export class WebGLRenderer {
           }
         }
 
-        // Faint is a foreground effect, not a glyph one, so it stays out of the
-        // atlas key — otherwise every dimmed character would cost a second
-        // raster identical to the one already cached.
+        // Faint is applied to the color, not the atlas key, so it costs no extra
+        // rasters.
         if ((flags & CELL_FAINT) !== 0) {
           finalFgR = (finalFgR * FAINT_SCALE) | 0
           finalFgG = (finalFgG * FAINT_SCALE) | 0
@@ -1184,13 +979,10 @@ export class WebGLRenderer {
         }
 
         let u0 = 0, v0 = 0, u1 = 0, v1 = 0
-        // Which atlas those UVs address. Set wherever they are, and from the
-        // same rect, so a color glyph cannot end up sampled as coverage --
-        // which would draw it as a solid block of the foreground color.
+        // Set alongside the UVs, so a color glyph is never sampled as coverage.
         let isColor = 0
         if (cellWidth === 0 && pendingWide) {
-          // The spacer draws the right half of the glyph the previous column
-          // started, so the character spans both cells at its true width.
+          // The spacer draws the right half of the previous column's glyph.
           u0 = (pendingWide.u0 + pendingWide.u1) / 2
           v0 = pendingWide.v0
           u1 = pendingWide.u1
@@ -1198,40 +990,32 @@ export class WebGLRenderer {
           isColor = pendingWide.color ? 1 : 0
           pendingWide = null
         } else if (codepoint > 0 && (flags & CELL_INVISIBLE) === 0) {
-          // Invisible keeps the cell's colors — it hides the character, it
-          // does not blank the background — so it skips the glyph only.
+          // Invisible hides the character but keeps the cell's colors.
           const wide = cellWidth === 2
           let style = wide ? GLYPH_WIDE : 0
           if (flags & CELL_BOLD) style |= GLYPH_BOLD
           if (flags & CELL_ITALIC) style |= GLYPH_ITALIC
           if (flags & CELL_UNDERLINE) {
-            // The bit says underlined; attrs2 says which of the five, and is
-            // folded into the glyph key so each shape is its own raster.
+            // attrs2 says which underline style; each is its own raster.
             style |= GLYPH_UNDERLINE | ((attrs2 & CELL2_UNDERLINE_MASK) << GLYPH_UL_SHIFT)
           } else if (rowLink !== null && c >= rowLink.from && c <= rowLink.to) {
-            // The link under the pointer: a solid rule, so it stands out from
-            // the dotted one every other link on screen carries.
+            // The hovered link: solid.
             style |= GLYPH_UNDERLINE
           } else if (rowLinks !== null && rowLinks.some((s) => c >= s.from && c <= s.to)) {
-            // Every other link: dotted, which reads as "this is clickable"
-            // without competing with an underline the program asked for.
+            // Other links: dotted.
             style |= GLYPH_UNDERLINE | (UNDERLINE_DOTTED << GLYPH_UL_SHIFT)
           }
           if (attrs2 & CELL2_OVERLINE) style |= GLYPH_OVERLINE
           if (flags & CELL_STRIKETHROUGH) style |= GLYPH_STRIKETHROUGH
 
-          // The head of a ligature run shapes the whole run into one slot; the
-          // cells after it draw their own slice of what came back. Asked for
-          // here rather than in the row pre-pass because `style` is settled by
-          // the lines above, and the run is keyed on it.
+          // The head of a ligature run shapes the whole run into one slot; later
+          // cells draw their slice of it.
           if (runsThisRow && runs !== null && runs.head[c] === c) {
             const cells = runs.span[c]
             let text = ''
             for (let i = 0; i < cells; i++) text += String.fromCharCode(runs.cp[c + i])
             const shaped = this.atlas.getRunGlyph(text, style, cells)
-            // Null once the run cache is full: the cells then take the
-            // ordinary per-codepoint path below, which is what they did before
-            // runs existed.
+            // Null when the run cache is full; fall back to per-codepoint glyphs.
             if (shaped !== null) {
               runRect = shaped
               runCells = cells
@@ -1239,15 +1023,11 @@ export class WebGLRenderer {
             }
           }
 
-          // A cell whose character carries combining marks or emoji joiners has
-          // to be rasterized from the whole cluster; the cell's own codepoint is
-          // only the first of them.
+          // Clusters (combining marks, emoji joiners) rasterize as a whole.
           const inRun = runRect !== null
           let rect
           if (inRun && runRect !== null) {
-            // One quad per column still, sampling its own slice of the run's
-            // raster — the same split the wide-character path makes at the
-            // midpoint, generalized from two cells to N.
+            // Each column samples its slice of the run's raster.
             const slice = (runRect.u1 - runRect.u0) / runCells
             u0 = runRect.u0 + slice * runIndex
             u1 = u0 + slice
@@ -1287,8 +1067,7 @@ export class WebGLRenderer {
           bgIsDefault = false
         }
 
-        // Under the selection: a search hit you have then dragged over should
-        // look selected, not still look like a hit.
+        // Search tint goes under the selection.
         if (rowHighlights) {
           for (let i = 0; i < rowHighlights.length; i++) {
             const h = rowHighlights[i]
@@ -1296,7 +1075,7 @@ export class WebGLRenderer {
             const tint = h.active ? SEARCH_ACTIVE_BG : SEARCH_MATCH_BG
             finalBgR = tint[0]; finalBgG = tint[1]; finalBgB = tint[2]
             bgIsDefault = false
-            // The active hit is a light background, so dark text reads on it.
+            // The active hit is light, so use dark text.
             if (h.active) {
               finalFgR = 0x1a; finalFgG = 0x1a; finalFgB = 0x1a
             }
@@ -1309,9 +1088,7 @@ export class WebGLRenderer {
           let from: number
           let to: number
           if (this.selection?.rectangular) {
-            // Every row takes the same span, and the drag may have gone right
-            // to left, so the columns are ordered here rather than by the
-            // row-ordering swap above.
+            // Same span on every row; order the columns.
             from = Math.min(selStart.x, selEnd.x)
             to = Math.max(selStart.x, selEnd.x)
           } else {
@@ -1322,45 +1099,30 @@ export class WebGLRenderer {
         }
 
         if (isSelected) {
-          // Lightened rather than inverted so syntax coloring stays readable
-          // through the highlight, and always opaque — a selection that fades
-          // with the pane's transparency is hard to pick out against a desktop.
+          // Lightened rather than inverted, and always opaque.
           finalBgR = (finalBgR * 0.7 + 255 * 0.3) | 0
           finalBgG = (finalBgG * 0.7 + 255 * 0.3) | 0
           finalBgB = (finalBgB * 0.7 + 255 * 0.3) | 0
           bgIsDefault = false
         }
 
-        // Last of the color rules, so a flickering line still goes dark under
-        // a selection or a search hit: those recolor the background, and this
-        // is about the glyph on top of whatever that ended up being.
+        // After the background rules, so a flickering line also hides under a
+        // selection or search hit.
         if (rowHidden !== null) {
           for (let i = 0; i < rowHidden.length; i++) {
             const span = rowHidden[i]
             if (c < span.from || c >= span.to) continue
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
             glyphHidden = true
-            // A color glyph does not read the foreground at all, so matching
-            // it to the background hides everything on the line except an
-            // emoji — which would then be the one character refusing to
-            // flicker. Sending the cell down the coverage path is what hides
-            // it, exactly as the blink rule below does: the sample there is a
-            // slot no coverage was ever written to, and whatever it returns is
-            // mixed between a foreground and a background that are by now the
-            // same color.
+            // A color glyph ignores the foreground; send it down the coverage path
+            // (an empty slot) so it hides too.
             isColor = 0
             break
           }
         }
 
-        // The cursor is the cell's own background rather than a second draw
-        // call: a block cursor is exactly "this cell, recolored", so folding
-        // it in here keeps the pane at one draw and needs no extra GL state.
-        // The glyph underneath is repainted in the background color so it
-        // stays legible through the block, which is what makes it read as a
-        // cursor sitting on the character rather than erasing it.
-        // Sitting on a wide character means covering both of its columns —
-        // half a block over half a glyph reads as a rendering fault.
+        // A block cursor recolors this cell (glyph in the background color), so
+        // it needs no extra draw. On a wide character it covers both columns.
         let atCursor = false
         if (cursor !== null && cursor.row === r) {
           atCursor = cursor.col === c || (cursorOnWide && cellWidth === 0)
@@ -1378,13 +1140,9 @@ export class WebGLRenderer {
                   : GLYPH_CURSOR_OUTLINE // hollow block
               : 0
           if (shaped !== 0) {
-            // A bar or underline genuinely does not cover the character, so it
-            // is drawn *over* the cell in a second pass instead of taking the
-            // cell's one quad. Substituting the glyph here is what used to
-            // erase the character the cursor was sitting on — the cell kept its
-            // colors, but the only thing in it was the bar.
-            // A bar always draws in the leading column, so a wide cell's
-            // trailing spacer must not draw one too.
+            // Bars, underlines and hollow blocks are drawn over the cell in a second
+            // pass so the character stays visible. A bar draws only in the leading
+            // column.
             const spansTwo = shape !== CURSOR_STYLE_BAR && (cellWidth === 2 || cellWidth === 0)
             if (!(shape === CURSOR_STYLE_BAR && cellWidth === 0)) {
               this.pushCursorOverlay(c, r, shaped, spansTwo, cellWidth)
@@ -1394,37 +1152,20 @@ export class WebGLRenderer {
             finalBgR = this.cursorR; finalBgG = this.cursorG; finalBgB = this.cursorB
             bgIsDefault = false
           } else if (!cursor.focused) {
-            // An unfocused pane outlines the cell instead of filling it: it
-            // still says where typing would land, without competing with the
-            // pane that actually has focus. Outlining rather than tinting is
-            // the whole point, so like the bar it goes over the cell in the
-            // second pass — a hollow block that erased the character it was
-            // drawn around would not be hollow in any useful sense.
-            // A cursor on a wide character outlines both its columns, so the
-            // outline is rasterized double-width and split like any wide glyph.
+            // An unfocused pane outlines the cell (over it, in the second pass).
             const spansTwo = cellWidth === 2 || cellWidth === 0
             this.pushCursorOverlay(c, r, GLYPH_CURSOR_OUTLINE, spansTwo, cellWidth)
           }
         }
 
-        // Applied last, once every other rule has settled what this cell's
-        // colors are. Blink is the pane's own phase, not something the core
-        // tracks — it says which cells asked to blink and this decides when
-        // they are in their off half — and hiding the text by matching the
-        // final background is what keeps it right on a cell that is also
-        // inverse, selected, a search hit, or under the cursor.
+        // Blink last, once all colors are settled, so hiding by matching the
+        // background works under inverse, selection, search and cursor.
         if ((flags & CELL_BLINK) !== 0) {
           this.sawBlinkingCell = true
           if (!this.blinkOn) {
             finalFgR = finalBgR; finalFgG = finalBgG; finalFgB = finalBgB
             glyphHidden = true
-            // A color glyph does not read the foreground, so matching it to
-            // the background hides everything except an emoji -- which would
-            // then be the one character on the row refusing to blink. Sending
-            // the cell down the coverage path is what hides it: the sample
-            // there is a slot no coverage was ever written to, and whatever it
-            // returns is mixed between a foreground and a background that are
-            // by now the same color.
+            // Same as hiddenSpans: route color glyphs through the coverage path.
             isColor = 0
           }
         }
@@ -1435,12 +1176,7 @@ export class WebGLRenderer {
         this.instanceData[outIdx++] = finalFgR
         this.instanceData[outIdx++] = finalFgG
         this.instanceData[outIdx++] = finalFgB
-        // Normally opaque — a glyph stays solid over a translucent pane, which
-        // is the whole point of keeping alpha in coverage units. A hidden
-        // glyph is the one exception, and it takes the cell's own background
-        // alpha so the two ends of the shader's mix are identical in all four
-        // channels: the cell then renders exactly as it would have with no
-        // glyph in it, at any background opacity.
+        // Opaque normally; a hidden glyph takes the background's alpha.
         this.instanceData[outIdx++] =
           glyphHidden && bgIsDefault ? this.defaultBgA * 255 : 255
 
@@ -1453,9 +1189,7 @@ export class WebGLRenderer {
         this.instanceData[outIdx++] = v0
         this.instanceData[outIdx++] = u1
         this.instanceData[outIdx++] = v1
-        // Faint reaches a color glyph here rather than through the
-        // foreground, which it does not read: same factor, applied to the
-        // face's own colors instead.
+        // Faint scales a color glyph's own colors.
         this.instanceData[outIdx++] =
           isColor === 0 ? 0 : (flags & CELL_FAINT) !== 0 ? FAINT_SCALE : 1
       }
@@ -1477,18 +1211,14 @@ export class WebGLRenderer {
 
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cols * rows)
 
-    // The cursor shapes that sit on top of the character rather than replacing
-    // it. One or two instances, drawn after the grid is complete so there is
-    // something underneath to composite onto.
+    // Cursor shapes drawn over the finished grid.
     if (this.overlayCount > 0) {
       gl.bindVertexArray(this.overlayVao)
       gl.bindBuffer(gl.ARRAY_BUFFER, this.overlayBuffer)
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.overlayData, 0, this.overlayCount * INSTANCE_FLOATS)
       gl.enable(gl.BLEND)
-      // Separate alpha, because the shapes are straight RGBA rather than
-      // premultiplied: weighting the source's alpha by itself would leave a
-      // translucent pane's cursor edges thinner than its glyph edges, which
-      // the main pass writes at full coverage alpha.
+      // Separate alpha: straight RGBA, so the cursor's edges match glyph edges
+      // on a translucent pane.
       gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.overlayCount)
       gl.disable(gl.BLEND)

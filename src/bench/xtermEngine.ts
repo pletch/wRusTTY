@@ -1,16 +1,9 @@
 import type { CursorStyleSetting } from '../lib/settings'
 /**
- * The xterm.js implementation of `TerminalEngine`. It lives under `src/bench/`
- * rather than `src/lib/` because it is no longer a renderer the app can be
- * asked to use — it is the **reference implementation** the Ghostty path is
- * measured and tested against: the second engine in the A/B harness, and the
- * oracle `gridSnapshot.ts` compares grid state with. See parity.ts's header
- * for the decision that put it here and what it costs.
- *
- * It still satisfies the full `TerminalEngine` interface, deliberately. That
- * interface is what makes the two comparable at all, and a cut-down version
- * would only be able to answer questions about the parts someone remembered
- * to keep.
+ * The xterm.js implementation of `TerminalEngine`: the reference the Ghostty
+ * path is measured and tested against (the harness's second engine and
+ * `gridSnapshot.ts`'s oracle), not a renderer the app can use (see
+ * parity.ts). It implements the full interface so the two stay comparable.
  */
 import { Terminal as XTerm } from '@xterm/xterm'
 import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty/GhosttyEngine'
@@ -151,10 +144,8 @@ export class XtermEngine implements TerminalEngine {
   }
 
   /**
-   * Whether the GPU (WebGL) renderer is actually in use, rather than the DOM
-   * fallback WebglAddon drops to when a context can't be created. The harness
-   * reports this so a "GPU" number measured on a software path is never
-   * mistaken for the real thing.
+   * Whether WebGL is actually in use rather than WebglAddon's DOM fallback, so
+   * a software-path number isn't reported as GPU.
    */
   get usingWebgl(): boolean {
     return this.webglAddon !== null

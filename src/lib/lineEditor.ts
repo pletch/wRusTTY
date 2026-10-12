@@ -1,18 +1,9 @@
 
 
 /** A minimal local line editor for serial's "Readline"/"Readline (hex)"
- * input modes — the terminal engine has no line-editing of its own, so keystrokes are
- * normally sent to the wire one at a time as they're typed. This buffers
- * them locally instead (with basic editing and history, similar to a
- * shell's own readline) and only calls `onSubmit` once with the completed
- * line when Enter is pressed, so devices that expect a whole line at once
- * (or don't echo their own input) work as expected.
- *
- * Deliberately supports only the common case — insert/delete at cursor,
- * left/right/home/end movement, and history recall — not a full emacs-style
- * binding set (kill-line, word-jump, etc.), which real shells' readline
- * implementations have but nothing here needs to match exactly.
- */
+ * modes: keystrokes are buffered locally (insert/delete, left/right/home/end,
+ * history) and `onSubmit` gets the whole line on Enter, for devices expecting
+ * whole lines or not echoing. */
 export class LineEditor {
   private buffer: string[] = []
   private cursor = 0

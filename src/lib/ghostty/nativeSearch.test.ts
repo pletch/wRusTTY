@@ -9,24 +9,14 @@ import type { SearchHighlight } from './WebGLRenderer'
 /**
  * The core's find-in-scrollback, against the binary that ships.
  *
- * Two things are being checked here and they are different in kind. The first
- * is that the native path finds what the JS one finds — same hits, same
- * navigation, same highlights — because a search that is *correct* but
- * behaves differently is still a regression for whoever is using the find bar.
+ * Checks two things: that the native path finds and navigates what the JS
+ * one does, and (as differentials) the cases where the JS one is wrong. Those
+ * all involve the terminal moving while the find bar is open: output, a
+ * resize, eviction. `SearchController` only rebuilds inside `search()`, while
+ * the core is fed every frame and reconciles.
  *
- * The second is the reason for the port, and it is deliberately written as a
- * differential: the same situation put to both paths, where the JS one is
- * wrong. Those cases all have the same shape — the terminal moves while the
- * find bar is open — because that is precisely what `SearchController` cannot
- * see. It rebuilds its match list only when `search()` is called again, so
- * output that arrives, a resize, or scrollback eviction leaves its count and
- * its highlights describing a buffer that no longer exists. The core is fed
- * every frame and reconciles.
- *
- * `frame()` below stands in for the render loop, which is what does the
- * feeding in the app. Everything else goes through the engine's public
- * surface, so the routing between the two controllers is exercised rather
- * than bypassed.
+ * `frame()` stands in for the render loop; everything else goes through the
+ * engine's public surface, so routing between the controllers is exercised.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -64,7 +54,7 @@ describe('native find-in-scrollback', () => {
     if (!inner.termPtr || !inner.wasm) throw new Error('core did not load')
     engine.resize(cols, rows)
 
-    // Only what the search paths touch. Nothing draws.
+    // Only what the search paths touch; nothing draws.
     const renderer = {
       searchHighlights: null as Map<number, SearchHighlight[]> | null,
       selection: null,
@@ -77,8 +67,7 @@ describe('native find-in-scrollback', () => {
     const results: SearchResult[] = []
     engine.onSearchResult((r) => results.push(r))
     if (text) engine.write(new TextEncoder().encode(text))
-    // The JS path reads rows off the render snapshot, which a drawn frame
-    // would have built; see readRows.test.ts.
+    // The JS path reads rows off the render snapshot (see readRows.test.ts).
     inner.wasm.exports.ghostty_render_state_update(inner.termPtr)
 
     return {
@@ -87,8 +76,8 @@ describe('native find-in-scrollback', () => {
       results,
       highlights: () => renderer.searchHighlights,
       last: () => results[results.length - 1],
-      /** What the render loop does for a live search: feed the core and let it
-       *  redraw from what came back. */
+      /** What the render loop does for a live search: feed the core and redraw
+       *  from the result. */
       frame: () => {
         inner.nativeSearch?.onFrame()
         inner.wasm!.exports.ghostty_render_state_update(inner.termPtr)
@@ -105,8 +94,7 @@ describe('native find-in-scrollback', () => {
       '\r\n',
     ) + '\r\n'
 
-  /** Lines wider than the pane, so halving the width reflows every one of them
-   *  and every match lands on a different absolute row. */
+  /** Lines wider than the pane, so halving the width reflows every one. */
   const wideLines = (n: number) =>
     Array.from({ length: n }, (_, i) =>
       i % 3 === 0
@@ -122,10 +110,9 @@ describe('native find-in-scrollback', () => {
     expect(t.last().count).toBe(10)
   })
 
-  /** Upstream's matcher folds ASCII case and cannot be told not to, so a
-   *  case-sensitive query is routed to the JS controller instead. Both counts
-   *  are asserted, because the routing is invisible from outside and a
-   *  silently case-folded "case-sensitive" search would look like it worked. */
+  /** Upstream's matcher always folds ASCII case, so case-sensitive queries go to
+   *  the JS controller. Both counts are asserted, since the routing is invisible
+   *  from outside. */
   it('routes case-sensitive and regex queries to the JS path', async () => {
     const t = await engineWith('Needle\r\nneedle\r\nNEEDLE\r\n')
 
@@ -135,8 +122,7 @@ describe('native find-in-scrollback', () => {
     t.engine.search('needle', { caseSensitive: true })
     expect(t.last().count, 'the JS path honors the toggle').toBe(1)
 
-    // And the regex toggle really is a regex rather than a literal: the same
-    // string finds nothing when the core matches it byte for byte.
+    // The regex toggle really is a regex: the core finds nothing byte for byte.
     t.engine.search('ne+dle', { regex: true })
     expect(t.last().count).toBe(3)
     t.engine.search('ne+dle')
@@ -144,12 +130,9 @@ describe('native find-in-scrollback', () => {
   })
 
   /**
-   * Direction is worth pinning because the two APIs disagree about which way
-   * "next" points. The find bar's Next is a chevron *down* — toward newer
-   * content — which is the core's SELECT_PREV, not its SELECT_NEXT.
-   *
-   * A fresh query lands on the newest hit, the one nearest the prompt, so the
-   * counter opens at n/n and Next wraps round to 1/n from there.
+   * The find bar's Next (a down chevron, toward newer content) is the core's
+   * SELECT_PREV. A fresh query lands on the newest hit (n/n), and Next wraps
+   * to 1/n.
    */
   it('walks forward and back through the hits', async () => {
     const t = await engineWith(lines(30))
@@ -169,10 +152,7 @@ describe('native find-in-scrollback', () => {
   })
 
   /**
-   * The current hit has to look different from the others, or stepping through
-   * them says nothing. The renderer draws `active` amber on dark text and the
-   * rest a dim brown, so this asserts the flag it keys off: exactly one, and it
-   * moves.
+   * Exactly one highlight is `active` (drawn amber), and it moves.
    */
   it('marks exactly one highlight as the current hit, and moves it', async () => {
     const t = await engineWith(`a needle 0\r\nb needle 1\r\nc needle 2\r\nd needle 3\r\n`, 40, 8)
@@ -190,13 +170,12 @@ describe('native find-in-scrollback', () => {
     expect(activeRows().length).toBe(1)
     expect(activeRows()[0]).not.toBe(first)
 
-    // And a frame that changes nothing must not lose it.
+    // A frame that changes nothing keeps it.
     t.frame()
     expect(activeRows().length).toBe(1)
   })
 
-  /** An incremental keystroke re-runs the query without moving the selection,
-   *  which is what stops the view jumping while someone is still typing. */
+  /** An incremental keystroke re-runs the query without moving the selection. */
   it('holds its place on an incremental keystroke', async () => {
     const t = await engineWith(lines(30))
     t.engine.search('needle')
@@ -213,7 +192,7 @@ describe('native find-in-scrollback', () => {
     const rows = [...byRow!.entries()].filter(([, hl]) => hl.length > 0)
     expect(rows.length).toBe(1)
     const [, hl] = rows[0]
-    // "alpha " is six columns, and the endpoints are inclusive.
+    // "alpha " is six columns; endpoints are inclusive.
     expect(hl[0].from).toBe(6)
     expect(hl[0].to).toBe(11)
     expect(hl[0].active).toBe(true)
@@ -225,8 +204,7 @@ describe('native find-in-scrollback', () => {
     expect(t.highlights()).not.toBeNull()
     t.engine.search('')
     expect(t.highlights()).toBeNull()
-    // And it stays cleared across frames, rather than the feed putting the
-    // decorations back.
+    // Stays cleared across frames.
     t.frame()
     expect(t.highlights()).toBeNull()
   })
@@ -238,18 +216,10 @@ describe('native find-in-scrollback', () => {
   })
 
   /**
-   * A scrollback too deep to search inside one frame.
-   *
-   * Two things are being asserted. The first is that it is genuinely sliced:
-   * the keystroke returns with a partial count rather than the pane freezing
-   * until the whole history has been read. The second is that the slicing
-   * converges on the same answer the JS matcher gets from reading every row,
-   * which is the only check that the partial counts are a search in progress
-   * rather than a search that stopped early.
-   *
-   * Progress per frame is bounded by the core's feed chunk, not by our tick
-   * budget, so this needs many more frames than a real session would take at
-   * 60 Hz — hence the generous cap rather than a fixed count.
+   * A scrollback too deep to search in one frame: the keystroke returns a
+   * partial count rather than freezing, and the slices converge on what the JS
+   * matcher counts. Progress per frame is bounded by the core's feed chunk,
+   * hence the generous frame cap.
    */
   it('finishes a deep search across frames rather than blocking one', async () => {
     const t = await engineWith(lines(20000), 80, 24)
@@ -266,31 +236,23 @@ describe('native find-in-scrollback', () => {
     const settled = t.last().count
     expect(settled, 'a slice is a partial answer, not the whole one').toBeGreaterThan(firstSlice)
 
-    // The same buffer read row by row and matched in JS. Both are counting
-    // hits in a scrollback the pane's byte budget has already pruned, so the
-    // number itself is not predictable — that they agree is the point.
+    // The same buffer matched in JS; the count depends on pruning, so only
+    // agreement is asserted.
     const j = await engineWith(lines(20000), 80, 24)
     j.engine.search('needle', { regex: true })
     expect(settled).toBe(j.last().count)
   })
 
   /**
-   * The one that shipped broken, and the reason this test exists: highlights
-   * have to be for the rows the *pane* is showing.
-   *
-   * `VIEWPORT_MATCHES` sounds like the field for this and is not — it is
-   * relative to the core's own viewport, which never moves, because the
-   * offset the renderer draws from is ours and the search is set to
-   * SEARCH_SCROLL_NONE so it does not fight us. The first version drew
-   * highlights pinned to the bottom of the buffer, so a pane scrolled back —
-   * which is where a search leaves you — showed none at all.
+   * Highlights are for the rows the pane is showing. `VIEWPORT_MATCHES` is
+   * relative to the core's viewport, which never moves (our renderer owns the
+   * offset, with SEARCH_SCROLL_NONE).
    */
   it('highlights the rows the pane is showing, not the ones the core thinks it is', async () => {
     const t = await engineWith(lines(3000), 80, 24)
     t.engine.search('needle')
-    // The first keystroke only gets one slice of a 3,000-row buffer, and the
-    // rows it has found are all near the bottom. Let it catch up before
-    // scrolling somewhere it has not looked yet.
+    // The first keystroke only searches one slice of 3,000 rows; let it catch up
+    // before scrolling.
     for (let i = 0; i < 200; i++) t.frame()
 
     const visible = () => {
@@ -305,28 +267,17 @@ describe('native find-in-scrollback', () => {
     t.frame()
     expect(visible(), 'and 1,500 rows back, where the bug was').toBeGreaterThan(0)
 
-    // Every row it claims is one the screen can show; nothing is being drawn
-    // for a screen nobody is looking at.
+    // Every highlighted row is on screen.
     const top = t.engine.viewportY
     const rows = [...t.highlights()!.keys()]
     expect(rows.every((r) => r >= top - 2 && r < top + 24 + 2)).toBe(true)
   })
 
   /**
-   * A search typed while scrolled back starts from what is on screen.
-   *
-   * This one shipped wrong. A fresh query took the newest match — one
-   * `SELECT_NEXT` — which threw the viewport to the bottom of the buffer the
-   * moment the query was typed. Anything read out of history that also occurs
-   * near the prompt, which is most of what one searches for, therefore looked
-   * like it had only been found on the current screen.
-   *
-   * The frames matter as much as the assertion: the scan runs newest to
-   * oldest inside a per-frame budget, so on a 3,000-row buffer the right match
-   * is not in the list yet when `search()` returns, and the selection has to
-   * keep walking back over the following frames. Asserting only after the
-   * first frame passes against a build that settles for the oldest match it
-   * happened to find in 3 ms.
+   * A query typed while scrolled back starts from what's on screen. The scan
+   * runs newest to oldest within a per-frame budget, so the selection keeps
+   * walking back over later frames; asserting after only one frame would pass
+   * a build that settles for whatever it found first.
    */
   it('starts a fresh query from the viewport, not the bottom of the buffer', async () => {
     const t = await engineWith(lines(3000), 80, 24)
@@ -339,8 +290,7 @@ describe('native find-in-scrollback', () => {
     for (let i = 0; i < 200; i++) t.frame()
 
     expect(t.last().count, 'the whole buffer, however far the view is from it').toBe(1000)
-    // Where it landed, not merely that it did not stay put: the match it
-    // selects is the first one at or after the row the query was typed at.
+    // It selects the first match at or after the row the query was typed at.
     const rows = [...t.highlights()!.keys()]
     expect(Math.min(...rows), 'the selection is near where the user was reading').toBeGreaterThanOrEqual(
       anchor - 24,
@@ -351,9 +301,8 @@ describe('native find-in-scrollback', () => {
   /* ---- the differentials: the terminal moves under an open find bar ---- */
 
   /**
-   * The plainest one. Output arrives while the find bar is open; the count has
-   * to follow it. The JS controller rebuilds only inside `search()`, so its
-   * answer stays at the old number until the next keystroke.
+   * Output arriving while the find bar is open updates the count; the JS
+   * controller keeps the old number until the next keystroke.
    */
   it('counts output that arrives after the search, where the JS path does not', async () => {
     const t = await engineWith(lines(30))
@@ -364,7 +313,7 @@ describe('native find-in-scrollback', () => {
     t.frame()
     expect(t.last().count, 'the core was fed and saw the new line').toBe(11)
 
-    // Same situation, JS path: the regex toggle is what routes it there.
+    // Same situation on the JS path (the regex toggle routes there).
     const j = await engineWith(lines(30))
     j.engine.search('needle', { regex: true })
     expect(j.last().count).toBe(10)
@@ -374,9 +323,8 @@ describe('native find-in-scrollback', () => {
   })
 
   /**
-   * A resize reflows the buffer, which moves every row a match is on. The JS
-   * controller is holding absolute row numbers from before the resize and has
-   * no way to learn they moved; the core reconciles on the next feed.
+   * A resize reflows the buffer; the JS controller keeps stale absolute rows,
+   * while the core reconciles on the next feed.
    */
   it('survives a resize, where the JS path is left holding stale rows', async () => {
     const t = await engineWith(wideLines(20), 40, 6)
@@ -388,8 +336,7 @@ describe('native find-in-scrollback', () => {
     t.frame()
     const after = t.highlights()
     expect(after, 'still highlighting something after the reflow').not.toBeNull()
-    // The rows genuinely moved: at half the width every wrapped line is two
-    // rows, so the same hits cannot be on the same absolute rows.
+    // At half width every wrapped line is two rows, so the rows moved.
     expect([...after!.keys()]).not.toEqual([...before!.keys()])
 
     const j = await engineWith(wideLines(20), 40, 6)
@@ -401,10 +348,8 @@ describe('native find-in-scrollback', () => {
   })
 
   /**
-   * A match scrolled out of a capped scrollback stops existing. The core
-   * prunes results that eviction invalidated on the next feed; the JS
-   * controller's list still has them, pointing at rows that now hold something
-   * else entirely.
+   * Matches evicted from a capped scrollback are pruned on the next feed; the
+   * JS controller's list still points at rows now holding something else.
    */
   it('drops matches that scrollback eviction took away', async () => {
     const t = await engineWith(lines(20), 40, 6)
@@ -412,18 +357,16 @@ describe('native find-in-scrollback', () => {
     const found = t.last().count
     expect(found).toBeGreaterThan(0)
 
-    // Push them out with content that does not match. The default pane is an
-    // 8 MB footprint, which is a *byte* budget of about 4 MB and so roughly
-    // eleven thousand rows at this width — see vendor/README.md.
+    // The default 8 MB footprint is a ~4 MB byte budget, roughly eleven thousand
+    // rows at this width (see vendor/README.md).
     t.write(Array.from({ length: 15000 }, (_, i) => `filler ${i}`).join('\r\n') + '\r\n')
     t.frame()
     expect(t.last().count, 'the evicted hits are gone').toBeLessThan(found)
   })
 
   /**
-   * Entering and leaving a fullscreen application. The core keeps the primary
-   * screen's results and restores them on the way back, so a scrollback search
-   * does not restart every time someone opens and closes `vim`.
+   * The core keeps the primary screen's results across an alternate-screen
+   * round trip, so opening `vim` doesn't restart a search.
    */
   it('keeps the primary screen results across an alternate-screen round trip', async () => {
     const t = await engineWith(lines(30))

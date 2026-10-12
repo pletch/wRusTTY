@@ -1,34 +1,23 @@
-//! Opening a file path that was clicked in a local pane.
+//! Opening a file path clicked in a local pane: resolved on this machine and
+//! handed to its Windows association, or the "How do you want to open this
+//! file?" picker. The local counterpart to an SSH pane's files panel reveal.
 //!
-//! The local counterpart to the files panel reveal an SSH pane gets: the
-//! frontend has found text that looks like a path, and this resolves it on
-//! this machine and hands it to whatever Windows has associated with its type
-//! — or, when nothing is, to the "How do you want to open this file?" picker.
+//! # What the text isn't trusted to do
 //!
-//! # What the text is not trusted to do
-//!
-//! A local pane's output is not local in any sense that matters: `ssh`, `cat`
-//! of a downloaded file and `curl` all put someone else's bytes on the screen.
-//! So the path is attacker-chosen, and three things follow:
+//! A local pane shows other people's bytes (`ssh`, `cat`, `curl`), so the path
+//! is attacker-chosen:
 //!
 //! - **No network paths.** `\\host\share\x`, `//host/x` and the `\\?\` / `\\.\`
-//!   device forms are refused before anything touches the filesystem. Merely
-//!   *looking up* a UNC path makes Windows try to authenticate to that host,
-//!   which hands it an NTLM exchange — the same leak `isOpenableUrl` exists to
-//!   stop on the URL side. A working directory that is one is refused too.
-//! - **Nothing runs.** Opening by association means *executing* a `.exe`,
-//!   `.bat`, `.js` or `.lnk`, so anything Windows considers dangerous — its
-//!   own `AssocIsDangerous` list, `PATHEXT`, and a list of shell-handled types
-//!   that are neither — is shown selected in Explorer instead. The user can
-//!   still run it from there; a Ctrl+click just cannot do it for them.
-//! - **It has to exist.** Resolution only returns a path that is there, so
-//!   `and/or` in prose is "not found" rather than a picker for a file that
-//!   isn't.
+//!   device forms are refused before touching the filesystem: even looking up
+//!   a UNC path sends that host an NTLM exchange (as `isOpenableUrl` guards
+//!   for URLs). A network working directory is refused too.
+//! - **Nothing runs.** Anything Windows deems dangerous (`AssocIsDangerous`,
+//!   `PATHEXT`, and shell-handled types) is selected in Explorer instead of
+//!   opened.
+//! - **It has to exist**, so `and/or` in prose is just "not found".
 //!
-//! Windows only, like the panes it serves. Elsewhere `open_local_path`
-//! refuses up front, which leaves everything below it unreached outside the
-//! tests — hence the allow, rather than gating each piece and its tests
-//! separately.
+//! Windows only; elsewhere `open_local_path` refuses up front, hence the
+//! `dead_code` allowance.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
@@ -139,14 +128,10 @@ fn expand_home(p: &str, home: Option<&Path>) -> Option<String> {
     Some(p.to_string())
 }
 
-/// Where a clicked path points on this machine, if it exists.
-///
-/// `cwds` are the directories a relative path might be relative to, best
-/// first: the one the shell last reported, then the one the pane was started
-/// in. The home directory is tried after them — it is where a pane with no
-/// configured directory starts. The first place the path actually exists
-/// wins, which is what makes a stale or missing report cost a lookup rather
-/// than the wrong file.
+/// Where a clicked path points, if it exists. `cwds` are candidate bases,
+/// best first (last reported, then the pane's start directory), then home.
+/// The first existing match wins, so a stale report costs a lookup, not the
+/// wrong file.
 pub(crate) fn resolve(raw: &str, cwds: &[String], home: Option<&Path>) -> Option<PathBuf> {
     let p = expand_home(&to_windows_form(raw)?, home)?;
     let exists = |c: &Path| !names_a_device(c) && std::fs::metadata(c).is_ok();

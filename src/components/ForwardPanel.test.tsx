@@ -6,15 +6,8 @@ import { ForwardPanel } from './ForwardPanel'
 import type { ForwardInfo } from '../lib/forward'
 
 /**
- * A forward that did not survive a reconnect.
- *
- * This is the case the panel exists to make visible, and the one it used to
- * get wrong in the worst possible direction: the list lived in component
- * state, so a forward whose connection had gone kept being drawn exactly like
- * a working one — a tunnel on a local port that accepts connections and
- * carries nothing. Both halves are pinned here: that a dead forward is shown
- * as dead *with its reason*, and that the list is re-read when the pane's
- * connection changes state, which is the only moment it can find out.
+ * A forward that didn't survive a reconnect shows as dead with its reason,
+ * and the list is re-read when the pane's connection changes state.
  */
 
 const listForwards = vi.fn<(sessionId: string) => Promise<ForwardInfo[]>>()
@@ -107,14 +100,10 @@ describe('ForwardPanel', () => {
   })
 
   /**
-   * The ordering bug, pinned.
-   *
-   * `connected` reaches the webview from inside the SSH handshake — before the
-   * backend has re-established anything — so the refetch it triggers reads the
-   * *old* list, in which this forward still looks healthy. Only the event that
-   * follows the restore carries the truth. The earlier version of this test had
-   * the mock already returning the dead row at the moment of the status change,
-   * so it passed against code that could never have shown the failure at all.
+   * `connected` arrives from inside the handshake, before forwards are
+   * restored, so the refetch it triggers reads the old list; only the
+   * following event carries the truth. The mock returns the healthy row at the
+   * status change, as the backend does.
    */
   it('does not trust the list it reads when the status flips to connected', async () => {
     listForwards.mockResolvedValue([live])

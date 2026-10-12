@@ -54,11 +54,8 @@ describe('useDismissable click-away', () => {
   })
 
   it('stays open when a modal raised from it is clicked', async () => {
-    // The regression: `ConfirmProvider` renders at the app root, so a
-    // confirmation asked for *by* a panel is not inside the panel's subtree.
-    // Answering it therefore looked like clicking away, and the panel closed
-    // underneath its own dialog — taking with it any continuation waiting to
-    // put something else on screen.
+    // `ConfirmProvider` renders at the app root, outside the panel's subtree, so
+    // answering a panel's confirmation mustn't count as clicking away from it.
     function PanelWithModal() {
       const [open, setOpen] = useState(true)
       return (

@@ -4,20 +4,17 @@ import { render, cleanup } from '@testing-library/react'
 import { useDragRegionDoubleClickGuard } from './useDragRegionDoubleClickGuard'
 
 /**
- * Two listeners maximize the window on the same gesture and the guard has to
- * stop both — see the hook's header. Neither exists under Vitest, so these
- * stand a spy in for each, registered the way the real one is:
+ * Two listeners maximize the window on the same gesture and the guard must
+ * stop both (see the hook's header). Neither exists under Vitest, so a spy
+ * stands in for each, registered like the real one:
  *
  *   - `tauri`: on `document`, bubble phase, reading `e.detail` off a
- *     `mousedown` — mirrors tauri/src/window/scripts/drag.js.
- *   - `react`: a `dblclick` listener on the spacer itself — mirrors the
- *     `onDoubleClick` App.tsx puts there.
+ *     `mousedown` (tauri/src/window/scripts/drag.js).
+ *   - `react`: a `dblclick` listener on the spacer (App.tsx's
+ *     `onDoubleClick`).
  *
- * They are kept apart because the distinction is the whole lesson: suppressing
- * the presses does nothing to the `dblclick` they compose, so an earlier
- * version of this fix passed a suite that only modeled Tauri, and still
- * maximized the window in the running app. Both were then confirmed by hand to
- * fire on their own, each with the other disabled.
+ * Kept apart because suppressing the presses does nothing to the `dblclick`
+ * they compose.
  */
 
 let tauri: Mock<() => void>
@@ -43,9 +40,8 @@ beforeEach(() => {
 
 afterEach(() => {
   document.removeEventListener('mousedown', tauriListener)
-  // Explicit, because this suite runs without Vitest globals and so without
-  // RTL's automatic cleanup — a Harness left mounted keeps its guard installed
-  // on `document`, where it goes on suppressing in every later test.
+  // Explicit: without Vitest globals there's no automatic RTL cleanup, and a
+  // mounted Harness would keep guarding `document` in later tests.
   cleanup()
 })
 
@@ -54,15 +50,14 @@ function Harness() {
   return null
 }
 
-/** `detail` is read-only on a constructed MouseEvent, so it goes in through the
- *  init dict — which is also how the browser sets it. */
+/** `detail` is read-only on a constructed MouseEvent, so it goes in the init
+ *  dict, as the browser sets it. */
 function press(el: Element, detail: number) {
   el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, detail }))
 }
 
-/** A whole double-click, as the browser delivers one: two presses, then a
- *  `dblclick` at the target of the completing click. Passing different elements
- *  is the bug — the second press lands somewhere the first never aimed at. */
+/** A double-click as the browser delivers it: two presses, then `dblclick` at
+ *  the completing click's target. Different elements reproduce the bug. */
 function doubleClick(first: Element, second: Element) {
   press(first, 1)
   press(second, 2)
@@ -82,8 +77,8 @@ describe('useDragRegionDoubleClickGuard', () => {
 
   it('suppresses both paths when the first press was on a control', () => {
     render(<Harness />)
-    // The reported bug: press 1 closes the tab, the spacer expands under the
-    // stationary cursor, press 2 lands on it still counting as a double-click.
+    // Press 1 closes the tab, the spacer expands under the cursor, press 2
+    // lands on it still counting as a double-click.
     doubleClick(closeButton(), spacer())
     expect(tauri).not.toHaveBeenCalled()
     expect(react).not.toHaveBeenCalled()
@@ -92,8 +87,7 @@ describe('useDragRegionDoubleClickGuard', () => {
   it('leaves a single press on the drag region alone, so dragging still works', () => {
     render(<Harness />)
     press(spacer(), 1)
-    // Not a maximize either way — what matters is that the press still reaches
-    // the listener, since the same event is what starts a window drag.
+    // The press still reaches the listener, since it also starts a window drag.
     expect(tauri).not.toHaveBeenCalled()
     expect(react).not.toHaveBeenCalled()
   })
@@ -102,7 +96,7 @@ describe('useDragRegionDoubleClickGuard', () => {
     render(<Harness />)
     doubleClick(closeButton(), spacer())
     expect(react).not.toHaveBeenCalled()
-    // A fresh double-click, this time aimed at the drag region throughout.
+    // A fresh double-click aimed at the drag region throughout.
     doubleClick(spacer(), spacer())
     expect(tauri).toHaveBeenCalledTimes(1)
     expect(react).toHaveBeenCalledTimes(1)
@@ -116,9 +110,8 @@ describe('useDragRegionDoubleClickGuard', () => {
     expect(tauri).toHaveBeenCalledTimes(1)
   })
 
-  /** The negative control: the same presses the suppression cases make, with
-   *  the guard gone. Without this, a suite that never reached either listener
-   *  would look identical to a working guard. */
+  /** Negative control: without the guard, both listeners fire, so the
+   *  suppression cases above aren't passing vacuously. */
   it('stops guarding once unmounted', () => {
     const { unmount } = render(<Harness />)
     unmount()

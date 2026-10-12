@@ -1,50 +1,38 @@
 /**
  * Query responses on ghostty `main`, which are a callback rather than a queue.
  *
- * ## The model change, and why it is the dangerous one
+ * ## The trap
  *
- * Our ABI queues replies and the host drains them after a write —
- * `has_response` / `read_response`, wrapped by `GhosttyEngine.drainResponses`.
- * `main` has neither. Instead `vt_write` **by default ignores sequences that
- * have side effects or require responses**, and only answers them once the host
- * registers "effects": callbacks invoked synchronously during the write.
- *
- * That default is the trap. A port that maps every read and forgets this
- * renders a perfect screen — every glyph, color and attribute correct — while
- * every device-attributes and status query silently goes unanswered, and the
- * programs that asked wait out their timeouts. There is no error and nothing
- * looks wrong. `effects.test.ts` therefore asserts both that the replies arrive
- * *and* that they do not without the callback installed.
+ * Our ABI queued replies for the host to drain after a write
+ * (`GhosttyEngine.drainResponses`). `main`'s `vt_write` by default ignores
+ * sequences that need responses, answering only once the host registers
+ * "effects" (callbacks invoked synchronously during the write). Without them
+ * the screen renders perfectly while every device-attributes and status query
+ * goes silently unanswered. `effects.test.ts` asserts replies arrive with the
+ * callback and don't without it.
  *
  * ## Getting a JS function into a wasm table
  *
- * `OPT_WRITE_PTY` takes a C function pointer, which in wasm is an index into
- * the module's table. A JS closure is not a `funcref` and `Table.set` rejects it
- * outright (`WebAssembly.Function` would help but is not available here). An
- * *exported wasm function* is a valid entry, though — so this hand-assembles a
- * 60-byte trampoline module that imports a JS function and exports a wasm
- * wrapper around it, and installs that.
+ * `OPT_WRITE_PTY` takes a function pointer, i.e. a table index. A JS closure
+ * isn't a `funcref` (and `WebAssembly.Function` isn't available), but an
+ * exported wasm function is, so this hand-assembles a 60-byte trampoline
+ * module that wraps an imported JS function.
  *
- * Two ABI details, both found by trying the other thing first:
- *
- * - **The value is the function pointer itself**, not a pointer to it. Passing
- *   a pointer-to-pointer returns `GHOSTTY_SUCCESS` and then traps inside
- *   `vt_write` with "table index is out of bounds", because the core used the
- *   address as the index.
- * - **Responses arrive during the write, not after it.** The header is explicit
- *   that callbacks must not re-enter `vt_write` on the same terminal, so they
- *   are buffered here and handed over once the write returns — which is also
- *   what keeps the shape compatible with `drainResponses`.
+ * - **The value is the function pointer itself**, not a pointer to it (a
+ *   pointer-to-pointer succeeds, then traps in `vt_write` with "table index
+ *   is out of bounds").
+ * - **Responses arrive during the write.** Callbacks must not re-enter
+ *   `vt_write`, so they're buffered and handed over after it returns,
+ *   matching `drainResponses`.
  */
 import * as abi from './abi'
 
 /**
  * A module importing `env.cb : (i32 x arity) -> ()` and exporting `f`, which
- * forwards to it. Assembled by hand because it is far smaller than any
- * dependency that would emit it. Every callback we register is all-i32 with no
- * result — `GhosttyTerminalWritePtyFn` takes four, `GhosttyTerminalRenderHoldFn`
- * three (a C `bool` is an i32 in wasm32) — so the arity is the only thing that
- * varies. At four this is byte-for-byte the module this file used to embed.
+ * forwards to it. Hand-assembled, being far smaller than any dependency that
+ * would emit it. Every callback is all-i32 with no result
+ * (`GhosttyTerminalWritePtyFn` takes four, `GhosttyTerminalRenderHoldFn`
+ * three), so only the arity varies.
  */
 function trampolineBytes(arity: number): Uint8Array<ArrayBuffer> {
   const i32s = new Array<number>(arity).fill(0x7f)
@@ -77,11 +65,8 @@ function trampoline(arity: number, cb: (...args: number[]) => void): WebAssembly
 }
 
 /**
- * Table slots freed by `dispose`, per wasm instance.
- *
- * A wasm table only grows, so without this a pane opened and closed repeatedly
- * would add an entry each time and never give one back. Keyed weakly so the
- * list dies with the instance it belongs to.
+ * Table slots freed by `dispose`, per wasm instance. A table only grows, so
+ * reopened panes reuse slots. Weakly keyed, to die with the instance.
  */
 const freeSlots = new WeakMap<object, number[]>()
 
@@ -89,13 +74,11 @@ export interface EffectsHandles {
   ex: abi.GhosttyMainExports & { __indirect_function_table?: WebAssembly.Table }
   term: number
   /**
-   * Synchronized output (mode 2026) beginning or ending. Called *during*
-   * `vt_write`, at the exact byte, which is the point: when `held` is true the
-   * terminal holds precisely the frame the program wants left on screen, even
-   * if the rest of the frame follows in the same write. So unlike the replies
-   * this cannot be buffered — the caller has to act on it before returning.
-   * Taking a render snapshot here is allowed; writing to the terminal is not.
-   * Omitted, no callback is installed and mode 2026 is only a mode bit.
+   * Synchronized output (mode 2026) starting or ending, called during
+   * `vt_write` at the exact byte: when `held` is true the terminal holds exactly
+   * the frame to leave on screen, even if more follows in the same write. So it
+   * can't be buffered. Snapshots are allowed here; writes aren't. Omitted, mode
+   * 2026 is only a mode bit.
    */
   onRenderHold?: (held: boolean) => void
 }
@@ -118,14 +101,12 @@ export class MainEffects {
 
     const inst = trampoline(4, (_term, _userdata, ptr, len) => {
       if (len <= 0) return
-      // "The data is only valid for the duration of the call" — so copy now.
-      // Handing the caller a view over wasm memory would give them bytes that
-      // the next write overwrites, which is a race that reads as corruption.
+      // Only valid for the duration of the call, so copy now.
       this.pending.push(new Uint8Array(ex.memory.buffer, ptr, len).slice())
     })
 
     this.slot = this.claimSlot(inst)
-    // The value IS the function pointer here, not a pointer to it.
+    // The value is the function pointer, not a pointer to it.
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_WRITE_PTY, this.slot), 'set WRITE_PTY')
 
     if (onRenderHold) {
@@ -143,11 +124,8 @@ export class MainEffects {
   }
 
   /**
-   * Everything the terminal answered during writes since the last call.
-   *
-   * Returned as separate replies rather than one concatenated buffer because
-   * that is what they are — a single write can trigger several — and the
-   * existing drain loop already forwards them one at a time.
+   * Everything the terminal answered since the last call, as separate replies
+   * (one write can trigger several).
    */
   takeResponses(): Uint8Array[] {
     if (this.pending.length === 0) return []
@@ -161,9 +139,7 @@ export class MainEffects {
     if (this.disposed) return
     this.disposed = true
     this.pending = []
-    // Cleared rather than left pointing at a live trampoline: the terminal is
-    // usually freed around now, and a stale entry that still resolves is worse
-    // than one that traps.
+    // Cleared so a stale entry traps rather than resolving to a live trampoline.
     const list = freeSlots.get(this.ex) ?? []
     for (const slot of [this.slot, this.holdSlot]) {
       if (slot === null) continue

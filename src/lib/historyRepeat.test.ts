@@ -11,15 +11,10 @@ import {
 import type { PromptInput } from './promptInput'
 
 /**
- * Written as sequences of presses and replies rather than as unit calls: what
- * matters is which presses produce a pulse and which stay quiet, and that only
- * shows up over a run.
- *
- * The load-bearing case is the one with no reply at all. Measured against a
- * live host, recalling a duplicate often puts nothing on the wire — readline
- * writes only the difference between the old line and the new one, and there
- * isn't one — so a version of this that waited for a write could not see the
- * very thing it exists for.
+ * Sequences of presses and replies, since what matters is which presses
+ * pulse over a run. The key case has no reply at all: recalling a duplicate
+ * often writes nothing (readline sends only the difference), so the watcher
+ * mustn't wait for a write.
  */
 
 const esc = (text: string) => new TextEncoder().encode(text)
@@ -224,10 +219,8 @@ describe('HistoryRepeatWatcher', () => {
     const { found, press, reply } = watch()
     press()
     reply('journalctl -u rustguac --no-pager | grep sync_hold')
-    // Someone hunting through history holds the key down. Each press resolves
-    // the one before it — their own keystroke is the evidence that time has
-    // passed — so nothing here waits on a timer at all. Before this, a burst
-    // produced no feedback whatever until the hand stopped moving.
+    // A held key: each press resolves the previous one, so nothing waits on a
+    // timer.
     for (let i = 0; i < 4; i++) {
       vi.advanceTimersByTime(12)
       press()
@@ -243,8 +236,8 @@ describe('HistoryRepeatWatcher', () => {
 
   it('takes its deadline from how fast this session actually answers', () => {
     const { watcher, press, reply } = watch()
-    // Nothing measured yet: assume the worst, because assuming the best would
-    // read a slow link's first press as a repeat that never happened.
+    // Nothing measured: assume the worst, so a slow link's first press isn't
+    // taken for a repeat.
     expect(watcher.deadlineMs).toBe(MAX_DEADLINE_MS)
 
     press()
@@ -329,9 +322,7 @@ describe('HistoryRepeatWatcher', () => {
 
   it('says nothing on the first press of a session that has never answered', () => {
     const { found, press, noReply } = watch()
-    // Nothing measured, so silence could be a duplicate or could be a link
-    // slower than the ceiling. Guessing here is how a slow session greets you
-    // with a flicker under a press that did move the history.
+    // Unmeasured silence could be a duplicate or a slow link; don't guess.
     press()
     noReply()
     vi.advanceTimersByTime(MAX_WAIT_MS)

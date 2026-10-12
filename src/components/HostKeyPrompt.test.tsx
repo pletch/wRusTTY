@@ -62,9 +62,8 @@ describe('the host-key dialog on a changed key', () => {
 })
 
 /**
- * A known host offering a key type nothing is pinned for. This used to render
- * as the first-connection prompt, which is exactly the prompt a man in the
- * middle without the host's key would want the user to see.
+ * A known host offering an unpinned key type must not look like a first
+ * connection, which is what a MITM without the host's key would want.
  */
 describe('the host-key dialog on a new key type from a known host', () => {
   const known = ['ssh-ed25519 SHA256:cccccccccccccccccccccccccccccccccccccccccccc']

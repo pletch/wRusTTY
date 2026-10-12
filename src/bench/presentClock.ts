@@ -1,21 +1,15 @@
 /**
- * Stopping the clock at *presentation*, not at hand-off — the discipline Phase 7
- * asks for.
+ * Stopping the clock at presentation, not at hand-off.
  *
- * Both engines paint on their own `requestAnimationFrame` loop and only when
- * there is damage. So "the frame is on the glass" is knowable without reading
- * pixels back (which would perturb the very timing being measured):
+ * Both engines paint on their own rAF loop only when damaged, so presentation
+ * is knowable without reading pixels back:
  *
- *   1. A paint issued during rAF frame N is submitted to the compositor during
- *      N and presented at the vsync after N — guaranteed visible by the time
- *      rAF frame N+1 runs.
+ *   1. A paint issued during rAF frame N is presented at the vsync after N,
+ *      so it's visible by the time frame N+1 runs.
  *   2. Each engine fires `onRender` on exactly the frames it painted.
  *
- * So the present time of the last paint in a burst is the timestamp of the
- * first rAF that follows it with no paint of its own. That is what this returns.
- *
- * rAF timestamps and `performance.now()` share one time origin, so the start
- * mark and the present mark are directly subtractable.
+ * So a burst is presented at the first rAF after its last paint that has no
+ * paint of its own. rAF timestamps share `performance.now()`'s origin.
  */
 
 import type { IDisposable } from '@xterm/xterm'
@@ -44,19 +38,15 @@ export interface PresentResult {
 
 export interface PresentOptions {
   /**
-   * Hard ceiling on one trial. A measurement should settle in well under a
-   * second; anything approaching this means the engine's render loop died or is
-   * thrashing, and the trial is failed rather than left to hang the whole run.
+   * Hard ceiling on one trial. Approaching it means the render loop died or is
+   * thrashing, so the trial fails rather than hanging the run.
    */
   timeoutMs?: number
 }
 
 /**
- * Times one unit of work from just-before-write to presented.
- *
- * `feed` issues the writes (and may await its own cadence between them); timing
- * starts at a frame boundary right before it runs so the measurement is not
- * biased by landing mid-frame.
+ * Times one unit of work from just before write to presented. Timing starts
+ * at a frame boundary so it isn't biased by landing mid-frame.
  */
 export async function measurePresent(
   engine: Paintable,
@@ -78,13 +68,11 @@ export async function measurePresent(
 
     let idle = 0
     let presentedAt = t0
-    // First idle frame after a paint burst is when that burst is on screen.
+    // The first idle frame after a paint burst is when it's on screen.
     let armed = false
     while (idle < SETTLE_FRAMES) {
       const ts = await nextFrame()
-      // A trial that can't settle must fail, not wedge the run. This catches a
-      // dead render loop (no paints ever) and a runaway one (a paint every
-      // frame) alike.
+      // Catches a dead render loop (no paints) and a runaway one (every frame).
       if (ts - t0 > timeoutMs) {
         return { elapsed: presentedAt - t0, paints, timedOut: true }
       }

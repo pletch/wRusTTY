@@ -5,39 +5,25 @@ import App from './App.tsx'
 import { ConfirmProvider } from './components/ConfirmProvider'
 import { registerBundledFonts } from './lib/bundledFonts'
 
-// Before anything renders, so the settings dialog's resolution report and the
-// atlas both find the shipped families already declared. Declaring is all this
-// does — the bytes are fetched only for a family something actually names.
+// Before anything renders, so the settings dialog and the atlas find the
+// shipped families declared. Bytes are fetched only for a family in use.
 registerBundledFonts()
 
-// The measurement instruments, behind a build flag.
-//
-// What they are, and why they exist on screen rather than in the console:
-// reaching a recorder through devtools means an inspector is attached, and V8
-// runs WebAssembly in a debuggable tier while DevTools is open — 2.75x slower
-// on this build. Every production figure taken during the Phase 7
-// investigation was wrong for exactly that reason. So the ability to take a
-// measurement on a real, uninspected build has to be preserved.
-//
-// But that argues for *on screen*, not for *always shipped*. Unlike the
-// benchmark harness below these were statically imported, so ~1,000 lines of
-// instrumentation — and a hotkey that floods a live pane with synthetic data —
-// went into the entry chunk of every installer, reachable by nobody.
+// The measurement instruments, behind a build flag. They're on screen rather
+// than console-only because attaching DevTools puts V8's WebAssembly in a
+// debuggable tier (2.75x slower here), and statically importing them would
+// ship ~1,000 lines and a pane-flooding hotkey in every installer.
 //
 //   - `__wrusttyDelivery` measures the real PTY delivery path in a live
-//     session: the half of a flood the harness cannot see, because it starts
-//     from a buffer already in the webview.
-//   - `__wrusttyPaneFlood.run()` feeds a real pane from inside the page — no
-//     PTY, no SSH, no IPC — the only way to measure a transport-free pane in
-//     an app whose backend only speaks SSH, telnet and serial.
-//   - The overlay is the same two from the keyboard: Ctrl+Alt+F floods the
+//     session, the half the harness can't see.
+//   - `__wrusttyPaneFlood.run()` feeds a real pane from inside the page, with
+//     no transport.
+//   - The overlay offers both from the keyboard: Ctrl+Alt+F floods the
 //     visible pane, Ctrl+Alt+D arms and reports the real PTY path.
 //
-// Build with `VITE_WRUSTTY_INSTRUMENTS=1` to get them back — `npm run
-// build:instrumented` does exactly that. The recorder's hot-path half
-// (`deliveryStats.record`) is *not* gated and still ships: it's what
-// `Terminal.tsx` calls on every delivery, and it short-circuits on one boolean
-// before any clock read. Only the reporting and UI halves are behind this.
+// `npm run build:instrumented` sets `VITE_WRUSTTY_INSTRUMENTS=1`. The hot-path
+// recorder (`deliveryStats.record`) always ships and short-circuits on one
+// boolean; only the reporting and UI halves are gated.
 if (import.meta.env.VITE_WRUSTTY_INSTRUMENTS) {
   void Promise.all([
     import('./lib/deliveryReport').then((m) => m.install()),
@@ -51,8 +37,8 @@ const root = createRoot(document.getElementById('root')!)
 function renderApp() {
   root.render(
     <StrictMode>
-      {/* Outside App so a prompt raised from anywhere inside it — including
-          a pane's own context menu — renders above the whole window. */}
+      {/* Outside App so a prompt raised from anywhere (including a pane's context
+          menu) renders above the whole window. */}
       <ConfirmProvider>
         <App />
       </ConfirmProvider>
@@ -60,36 +46,19 @@ function renderApp() {
   )
 }
 
-// The Phase 7 benchmark harness, behind its own build flag.
+// The benchmark harness, behind its own build flag. It runs in this WebView
+// with the production engines, which is what makes its numbers meaningful.
+// Opened with a `#bench` fragment or Ctrl+Alt+B.
 //
-// It runs in this exact WebView — same engines, same WASM as production —
-// which is what makes its numbers worth anything. Reached by loading with a
-// `#bench` URL fragment, or at any time with Ctrl+Alt+B (the desktop window
-// has no address bar to type a fragment into).
-//
-// Being dynamically imported kept it out of the *app chunk*, so it never cost
-// anything at startup — but the chunk was still emitted into `dist/`, which
-// means it shipped inside every installer: 564 kB of JS plus 4 kB of CSS,
-// carrying all four xterm packages, reachable in a release build by anyone who
-// pressed Ctrl+Alt+B. Code-splitting answers "does this slow the app down";
-// it does not answer "is this in the shipped artifact".
-//
-// Gating the whole block — the import, the hash check and the hotkey — makes
-// the branch dead in a release build, so rollup emits no chunk at all. The
-// hotkey has to be inside the gate too: left registered, it would reach for a
-// chunk that no longer exists.
-//
-// `npm run dev` and `npm run tauri:dev` set the flag, so nothing changes while
-// developing. `npm run build:instrumented` sets it too — that is the
-// measurement build, and if you are measuring you want both the harness and
-// the on-screen instruments above.
+// Gating the import, hash check and hotkey together makes the branch dead in
+// release builds, so rollup emits no chunk (a dynamic import alone still
+// ships the chunk). `npm run dev`, `npm run tauri:dev` and
+// `npm run build:instrumented` set the flag.
 if (import.meta.env.VITE_WRUSTTY_BENCH) {
   const showBench = () => {
     void import('./bench/BenchmarkHarness.tsx').then(({ BenchmarkHarness }) => {
-      // Rendered outside StrictMode so its engines mount once rather than twice —
-      // the double-mount is harmless for the app but would race two async WASM
-      // loads in the harness. Replacing the tree tears down any live app sessions,
-      // which is expected: this is a deliberate switch into benchmark mode.
+      // Outside StrictMode so engines mount once (a double mount would race two
+      // WASM loads). Replacing the tree tears down live sessions, as intended.
       root.render(<BenchmarkHarness />)
     })
   }

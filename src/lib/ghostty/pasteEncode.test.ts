@@ -7,14 +7,9 @@ import { encodePaste, hasPasteEncoder, pasteIsSafe } from './pasteEncode'
 import { instantiateGhosttyWasm, type GhosttyWasm } from './wasmBindings'
 
 /**
- * Paste encoding, against the binary that ships.
- *
- * The case this file exists for is the first one under "the breakout": what
- * this replaced concatenated the bracket sequences around the clipboard text
- * without looking at it, so text containing the *end* sequence closed the
- * bracket early and everything after it arrived as typing. At a shell prompt
- * that is a command the user never ran, and a clipboard is exactly where such
- * bytes come from.
+ * Paste encoding, against the binary that ships. "The breakout" is the key
+ * case: clipboard text containing the end sequence must not close the
+ * bracket early and turn the rest into typed commands.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -53,8 +48,7 @@ describe('paste encoding', () => {
     })
 
     it('refuses to call such text safe, however few lines it has', () => {
-      // One line, no newline, and completely ordinary to a line count — which
-      // is what the confirmation prompt used to be based on.
+      // One ordinary-looking line, yet unsafe.
       expect(pasteIsSafe(wasm, `rm -rf /${END}`)).toBe(false)
     })
   })

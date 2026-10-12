@@ -14,16 +14,10 @@ import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
 
 /**
- * What autocomplete has remembered, per host, and how to delete it.
- *
- * Not an optional nicety. If the app is going to keep a record of command
- * lines typed on other people's servers, the person it belongs to gets to read
- * that record and remove from it — which is why this ships in the same phase
- * as the store itself rather than after the feature that makes it useful.
- *
- * Deliberately shows the commands themselves rather than a count. A count is
- * unauditable: the whole question someone opens this to answer is "what did it
- * actually keep", and "1,284 commands" does not answer it.
+ * What autocomplete has remembered, per host, and how to delete it. A record
+ * of commands typed on other people's servers must be readable and
+ * removable by its owner, so this lists the commands themselves, not a
+ * count.
  */
 
 /** Rendered per host before the rest are summarized. A busy host reaches the

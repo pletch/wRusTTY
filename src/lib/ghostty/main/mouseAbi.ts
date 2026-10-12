@@ -1,18 +1,9 @@
 /**
- * The mouse-encoding half of ghostty `main`'s C API, as constants.
- *
- * Third sibling to `abi.ts` and `keyAbi.ts`, and transcribed the same way:
- * from the headers at the pin in `../vendorPin.ts`, here
- * `include/ghostty/vt/mouse/{event,encoder}.h`.
- *
- * The encoder exists for the same reason the key one does. There are five
- * wire formats for a mouse report — the original one-byte X10 form, its UTF-8
- * extension, urxvt's, SGR, and SGR in pixels — and five tracking modes that
- * decide *which* events are worth reporting at all. The far end picks both at
- * runtime with DEC private modes, and the combinations are where hand-rolled
- * reporting goes wrong: X10 is press-only, the legacy form cannot describe a
- * column past 223, and a release in that form cannot say which button came up.
- * See `../MouseEncoder.ts` for the wrapper.
+ * The mouse-encoding half of ghostty `main`'s C API, as constants,
+ * transcribed from `include/ghostty/vt/mouse/{event,encoder}.h` at the pin in
+ * `../vendorPin.ts`. Five wire formats (X10, its UTF-8 extension, urxvt, SGR,
+ * SGR pixels) and five tracking modes, chosen by the far end at runtime. See
+ * `../MouseEncoder.ts` for the wrapper.
  */
 
 /** `GhosttyMouseAction`. */
@@ -21,12 +12,9 @@ export const MOUSE_ACTION_RELEASE = 1
 export const MOUSE_ACTION_MOTION = 2
 
 /**
- * `GhosttyMouseButton`. **Not** the DOM's numbering, which is the trap here:
- * `MouseEvent.button` is 0 left, 1 middle, 2 right, and this is 1 left,
- * 2 right, 3 middle. Going through `mouseButtonFor` is what keeps a
- * middle-click from being reported as a right-click.
- *
- * There is no button 0; "no button" is `clear_button`, not a value.
+ * `GhosttyMouseButton`: 1 left, 2 right, 3 middle, unlike the DOM's 0 left,
+ * 1 middle, 2 right. Always go through `mouseButtonFor`. "No button" is
+ * `clear_button`, not a value.
  */
 export const MOUSE_BUTTON_LEFT = 1
 export const MOUSE_BUTTON_RIGHT = 2
@@ -37,9 +25,8 @@ export const MOUSE_BUTTON_SIX = 6
 export const MOUSE_BUTTON_SEVEN = 7
 
 /**
- * The wheel, which the protocols report as buttons rather than as an axis:
- * four and five are one line up and down, six and seven one column left and
- * right. The encoder adds the +64 that marks them as wheel in the wire form.
+ * The wheel, reported as buttons: four and five are a line up and down, six
+ * and seven a column left and right. The encoder adds the wire form's +64.
  */
 export const MOUSE_BUTTON_WHEEL_UP = MOUSE_BUTTON_FOUR
 export const MOUSE_BUTTON_WHEEL_DOWN = MOUSE_BUTTON_FIVE
@@ -47,11 +34,8 @@ export const MOUSE_BUTTON_WHEEL_LEFT = MOUSE_BUTTON_SIX
 export const MOUSE_BUTTON_WHEEL_RIGHT = MOUSE_BUTTON_SEVEN
 
 /**
- * `MouseEvent.button` to `GhosttyMouseButton`.
- *
- * Anything past the fifth button is reported as unknown rather than guessed
- * at: the DOM's numbering runs out of agreed meaning there, and inventing one
- * would put a button on the wire that nobody pressed.
+ * `MouseEvent.button` to `GhosttyMouseButton`. Past the fifth button there's
+ * no agreed meaning, so it's unknown.
  */
 export function mouseButtonFor(domButton: number): number | null {
   switch (domButton) {
@@ -78,12 +62,9 @@ export const MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED = 3
 export const MOUSE_ENCODER_OPT_TRACK_LAST_CELL = 4
 
 /**
- * `GhosttyMouseEncoderSize`, field offsets in bytes on wasm32 where `size_t`
- * is four bytes wide.
- *
- * The padding order is the header's — top, bottom, **right, left** — which is
- * not the order anyone writes CSS in, and swapping the last two puts the
- * origin in the wrong place on any pane with asymmetric padding.
+ * `GhosttyMouseEncoderSize` field offsets on wasm32 (four-byte `size_t`).
+ * Padding is top, bottom, right, left; swapping the last two misplaces the
+ * origin with asymmetric padding.
  */
 export const MOUSE_SIZE_BYTES = 36
 export const MOUSE_SIZE_OFF_SIZE = 0

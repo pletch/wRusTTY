@@ -94,9 +94,8 @@ describe('verdictForMutation', () => {
     expect(verdictForMutation({ watched: false })).toEqual({ ok: true })
   })
 
-  /** The watch holds the old remote path and nothing re-targets it, so a
-   *  rename leaves the next save recreating the old name and a delete leaves it
-   *  bringing the file back — minutes later, and reported as a success. */
+  /** The watch holds the old remote path, so a rename or delete would be undone
+   *  by the next save, reported as success. */
   it('refuses while an edit watch is still pointing at it', () => {
     const verdict = verdictForMutation({ watched: true })
     expect(verdict.ok).toBe(false)
@@ -142,9 +141,8 @@ describe('safeSuggestedName', () => {
     }
   })
 
-  /** The one with teeth. `NUL` is the null device on Windows however it is
-   *  spelled or extended: accepted as a save target, the download would be
-   *  written to nowhere and reported as a success. */
+  /** `NUL` is the null device however it's spelled or extended; as a save
+   *  target the download would vanish, reported as success. */
   it('defuses reserved device names, extension or not', () => {
     expect(safeSuggestedName('NUL')).toBe('_NUL')
     expect(safeSuggestedName('nul.txt')).toBe('_nul.txt')

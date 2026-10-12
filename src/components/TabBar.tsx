@@ -26,39 +26,27 @@ interface Props {
   tabs: Tab[]
   activeTabId: string | null
   statusByPane: Record<string, string>
-  /** Per-pane command state from shell integration — a tab spins while any
-   * of its panes has a command running. */
+  /** Per-pane shell-integration state; a pane's marker runs while a command
+   * runs. */
   activityByPane: Record<string, CommandActivity>
-  /** Per-pane progress a *program* reported for itself (OSC 9;4), for panes
-   * that have any. Drives the same running marker as `activityByPane`, and
-   * deliberately so: to the user "something is working in that pane" is one
-   * fact, whoever happened to say it. The two informants cover disjoint cases
-   * — the shell goes quiet exactly when a full-screen program takes over —
-   * so in practice they rarely both speak at once, and either alone is enough
-   * to spin the marker. All three progress states count, including `error`
-   * and `paused`: each still means a program is there and hasn't finished. */
+  /** Per-pane progress a program reported itself (OSC 9;4). Drives the same
+   * running marker as `activityByPane` (the shell goes quiet when a full-screen
+   * program takes over). Every progress state counts, including `error` and
+   * `paused`. */
   progressByPane: Record<string, AppProgress>
-  /** Panes holding something the user hasn't seen yet: a bell rang, or a long
-   * command finished, while the tab was in the background. Keyed by pane, not
-   * tab, so the marker can sit on the segment of the pane it happened in. */
+  /** Panes with something unseen (a bell, a finished command); keyed by pane so
+   * the marker sits on that pane's segment. */
   attentionPanes: Record<string, true>
-  /** Titles the far ends set for themselves (OSC 0/2), for panes that have
-   * one. Used only for the tab's tooltip: the visible label stays the
-   * connection's, so a shell that retitles itself on every prompt can't
-   * rename what you are looking at — or reflow the strip, since tab width is
-   * content-driven. See lib/remoteIdentity.ts. */
+  /** Titles the far ends set (OSC 0/2). Tooltip only: the label stays the
+   * connection's, so a remote program can't rename or reflow the tab. See
+   * lib/remoteIdentity.ts. */
   titleByPane: Record<string, string>
-  /** The color the terminal beneath is painted, ready to use as a CSS
-   * background. The active tab takes it exactly, so the tab and the pane it
-   * opens onto are one surface and the strip is the only thing separating
-   * them — which is the whole point of a tab. Passed in rather than resolved
-   * here because it follows the chosen theme and the window's background
-   * opacity, neither of which the strip otherwise knows about. */
+  /** The terminal's background color. The active tab takes it exactly, so tab
+   * and pane read as one surface. Passed in because it depends on the theme and
+   * window opacity. */
   paneBackground: string
-  /** The layer a quiet tab lays over `paneBackground` under the pointer, to
-   * land midway between the strip and the active tab. Comes from the same
-   * place `paneBackground` does, and for the same reason: it is measured
-   * from the theme, which the strip has no way to see. */
+  /** The wash a hovered quiet tab lays over `paneBackground`, landing between
+   * the strip and the active tab. Computed from the theme. */
   tabHoverWash: string
   onSelect: (id: string) => void
   onClose: (id: string) => void
@@ -85,71 +73,40 @@ const protocolIcons = {
 /** Separation between segments in the tab strip's pane map, in px. */
 const PANE_MAP_GAP_PX = 2
 
-/** Thickness of one segment. Every leaf gets exactly this whatever the
- * layout, so the bar reads as one consistent object — a lone pane and each
- * row of a four-way stack are all the same 2px line. */
+/** Thickness of one segment; every leaf gets exactly this. */
 const PANE_MAP_SEGMENT_PX = 2
 
-/** Ceiling on how tall the bar may grow. Four rows is already 14px of a
- * 40px tab strip; past that the map stops being a glanceable hint and starts
- * eating the tab.
- *
- * MAX_PANE_ROWS is set to match, so it only binds for a workspace saved by a
- * build that predates the split limits. Such a tree divides
- * the capped height evenly instead, giving segments thinner than
- * PANE_MAP_SEGMENT_PX — the right failure for a case that can no longer be
- * created. */
+/** Ceiling on how tall the bar may grow (matches MAX_PANE_ROWS). Only a
+ * workspace from before the split limits can exceed it; its segments then
+ * divide the capped height evenly. */
 const PANE_MAP_MAX_ROWS = 4
 
-/** Keeps the quarter of a corner fillet that is nearest the tab and drops
- * the rest — see where it is used. `center` is the corner of the 8px box
- * the arc is struck from: the top-left for the fillet on the tab's left,
- * the top-right for the one on its right. */
+/** Masks a corner fillet down to the quarter nearest the tab. `centre` is the
+ * corner of the 8px box the arc is struck from. */
 function filletMask(centre: string): { WebkitMaskImage: string; maskImage: string } {
   const mask = `radial-gradient(circle at ${centre}, transparent 7.5px, #000 8.5px)`
   return { WebkitMaskImage: mask, maskImage: mask }
 }
 
-/** Gap between the top of the tab and the pane map, in px. The map used to
- * sit flush against the edge, which on a square corner was simply where the
- * tab began — but a rounded tab reads as an object with a lip, and a line
- * pinned to the very edge of one looks stuck to it rather than placed on it.
- * Small on purpose: two pixels is enough for the tab's own fill to show above
- * the bar and give it a top edge to sit against, without it starting to look
- * like a detached rule floating in the tab. */
+/** Gap between the top of a tab and its pane map, so the map sits on the tab
+ * rather than stuck to its edge. */
 const PANE_MAP_TOP_PX = 2
 
-/** Shaved off the clearance the tab's contents keep below the pane map.
- * Centering them strictly under the map is safe but sits them low — the space
- * beneath reads as bigger than the gap above, because the map is a thin line
- * rather than a solid block. Lifting them raises the row by half this (the
- * remaining height is centered, so it splits the difference), which is enough
- * to look balanced while staying clear of the map. Also returns an unsplit
- * tab to exactly the centering it had before any of this, since its 2px map
- * needs no clearance at all. */
+/** Taken off the clearance below the pane map so the tab's contents look
+ * balanced (a thin map makes strict centering look low). An unsplit tab then
+ * centers as if there were no map. */
 const PANE_MAP_CONTENT_LIFT_PX = 4
 
-/** Height a branch of `rows` stacked rows needs: one segment each plus the
- * gaps between them. Used for the bar itself and, recursively, for each
- * stacked child of a split — which is what makes every leaf land on exactly
- * one segment's thickness however deeply it's nested. */
+/** Height a branch of `rows` stacked rows needs: a segment each plus the gaps,
+ * so every leaf is exactly one segment thick at any depth. */
 function paneMapExtent(rows: number): number {
   return rows * PANE_MAP_SEGMENT_PX + (rows - 1) * PANE_MAP_GAP_PX
 }
 
-/** Mirrors a tab's pane tree as nested flex rows/columns (row for a
- * horizontal split, column for a vertical one) — so a stacked split renders
- * as stacked segments here too, instead of every split flattening into
- * left-right slices regardless of its real direction.
- *
- * Arrangement only: segments are equal, not scaled to each split's real
- * `sizes`. This is a glanceable "how many panes, grouped how", and at a
- * couple of pixels there isn't the resolution for ratios to say anything a
- * viewer could read — they only made lopsided splits render a sibling as an
- * invisible sliver. `activePaneId` of `null` means this tab itself isn't
- * focused: every leaf renders the same dim tone rather than highlighting
- * one, since there's no meaningful "focused pane" to call out from outside
- * the tab that's actually showing it. */
+/** Mirrors a tab's pane tree as nested flex rows and columns. Segments are
+ * equal rather than scaled to real split sizes (ratios aren't readable at this
+ * size). A null `activePaneId` means the tab isn't focused, so every leaf is
+ * dim. */
 function PaneIndicator({
   node,
   activePaneId,
@@ -161,17 +118,14 @@ function PaneIndicator({
   activePaneId: string | null
   runningPaneIds: Set<string>
   attentionPaneIds: Set<string>
-  /** Whether the bar was given the full height this tree asks for, and so
-   * whether stacked children can be sized in whole segments. False only for
-   * a tree past PANE_MAP_MAX_ROWS, where they fall back to dividing the
-   * capped height evenly — thin, but it stays inside the bar. */
+  /** Whether the bar got its full height, so stacked children can be sized in
+   * whole segments. False past PANE_MAP_MAX_ROWS. */
   exact: boolean
 }) {
   if (node.type === 'leaf') {
     const focused = activePaneId === node.id
     const running = runningPaneIds.has(node.id)
-    // Running wins if a pane somehow has both — it's the live state, and a
-    // bell that rang mid-command is stale news by comparison.
+    // Running wins over attention.
     const attention = !running && attentionPaneIds.has(node.id)
     return (
       <span
@@ -180,33 +134,13 @@ function PaneIndicator({
         }`}
       >
         {running && (
-          // Travels across this leaf's own segment, so in a split the map
-          // shows *which* pane is working rather than just that the tab is.
-          // Red on the sky-toned bar is the highest-contrast pairing
-          // available here, and it stays equally legible over the focused
-          // (full sky) and unfocused (30%) tones — a lighter tint of the
-          // bar's own color washed out against the focused one.
-          //
-          // Fixed 28px rather than a fraction of the segment: proportional
-          // meant the marker changed size with the split layout and the tab
-          // title's length, which read as a different indicator each time.
-          // max-w-full keeps it inside segments narrower than that (a
-          // four-way split on a minimum-width tab), where it simply stops
-          // traveling rather than overflowing.
-          //
-          // Gradient rather than a solid fill so the edges fall off and it
-          // reads as a light passing behind the bar instead of a brick
-          // sliding along it. A glow would be nicer still, but the segment
-          // clips its own overflow, so any box-shadow dies at the edge.
+          // Travels across this leaf's segment so a split shows which pane is
+          // working. Red reads on both bar tones; a fixed 28px width so it looks
+          // the same in any layout; a gradient so it reads as a passing light.
           <span className="animate-pane-run absolute inset-y-0 left-0 w-7 max-w-full bg-gradient-to-r from-transparent via-red-500 to-transparent" />
         )}
         {attention && (
           // The same marker at rest: parked mid-segment, amber, breathing.
-          // Deliberately the same shape and size as the running one so the
-          // two read as one indicator changing state rather than two
-          // unrelated marks — it stops traveling, settles in the middle and
-          // changes color, which is legible at a glance without needing a
-          // separate widget elsewhere on the tab.
           <span className="animate-pane-glow absolute inset-y-0 left-1/2 w-7 max-w-full -translate-x-1/2 bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
         )}
       </span>
@@ -214,21 +148,10 @@ function PaneIndicator({
   }
   const horizontal = node.direction === 'horizontal'
   return (
-    // overflow-hidden: children's flexBasis percentages sum to 100% of this
-    // row on their own, on top of which the gap below adds further width
-    // that flexGrow/flexShrink:0 can't absorb — so each split level
-    // genuinely overflows its own box by (children - 1) * 2px. Left
-    // unclipped, that bleeds outward through every ancestor (invisibly,
-    // since it's solid same-toned overflow) and was inflating the real tab
-    // strip's scrollWidth enough, after a second nested split, to trip the
-    // overflow-fade check below even with nothing actually clipped.
+    // overflow-hidden: the gap adds width beyond the children's 100% basis,
+    // which would otherwise bleed out and trip the strip's overflow check.
     <span
-      // No fill: the gaps show the tab's own background, which is dark on
-      // every tab now — the strip's tone on a quiet one, the terminal's on
-      // the active one — so the space between two segments reads as a line
-      // either way. This carried a hardcoded dark fill back when the active
-      // tab was a lightened tint and the gaps would otherwise have vanished
-      // into it, leaving the segments as one continuous bar.
+      // No fill: the gaps show the tab's own background as lines.
       className={`flex h-full w-full overflow-hidden ${
         horizontal ? 'flex-row' : 'flex-col'
       }`}
@@ -237,21 +160,9 @@ function PaneIndicator({
       {node.children.map((child) => (
         <span
           key={child.id}
-          // Stacked children are sized by the number of rows they actually
-          // contain, not split evenly. Even division is only right when both
-          // branches hold the same number of rows: for `vertical{ A,
-          // vertical{ B, C } }` it hands the lone pane and the nested pair
-          // half the height each, so A draws at full thickness while B and C
-          // share what's left and come out at 1px.
-          //
-          // The arithmetic is exact rather than proportional. A branch of n
-          // rows needs n segments plus the n-1 gaps between them, and
-          // summed over the children that equals the parent's own height by
-          // construction — so every leaf lands on exactly one segment's
-          // thickness at any nesting depth, with nothing left over to clip.
-          //
-          // Side-by-side children need none of this: they divide width,
-          // which carries no row information, so they just share it evenly.
+          // Stacked children are sized by how many rows they contain, so every
+          // leaf is exactly one segment thick. Side-by-side children share width
+          // evenly.
           style={
             horizontal || !exact
               ? undefined
@@ -261,10 +172,7 @@ function PaneIndicator({
                   flexShrink: 0,
                 }
           }
-          // The cross-axis size is explicit rather than left to flexbox's
-          // default stretch: without it two segments meant to match on that
-          // axis can come out very slightly, but visibly, mismatched at
-          // this scale.
+          // Explicit cross-axis size; stretch can leave visible mismatches here.
           className={`min-h-0 min-w-0 ${
             horizontal ? 'h-full flex-1' : `w-full ${exact ? '' : 'flex-1'}`
           }`}
@@ -282,24 +190,13 @@ function PaneIndicator({
   )
 }
 
-/** The badge on the corner of a tab's protocol icon, or null for no badge.
- *
- * `isLocal` suppresses the connected state. Green means "the link is up", and
- * a local shell has no link: the process is either running — in which case the
- * pane exists at all — or gone, in which case the pane closes itself. A green
- * dot there restates the tab's own existence, and the Laptop protocol icon it
- * would be badged onto already says the session is local.
- *
- * The other states still earn a badge, and are the reason this is not simply
- * "no dot for local": a shell that fails to start leaves its pane open with
- * the reason on screen (see `isCleanDisconnect`), and a red corner is exactly
- * how that should read from another tab. */
+/** The badge on a tab's protocol icon, or null. A connected local shell gets
+ * none (it has no link, and the icon already says local); failed states still
+ * show red. */
 function statusDotColor(status: string | undefined, isLocal = false): string | null {
   if (!status) return null
   if (status === 'connected') return isLocal ? null : 'bg-emerald-400'
-  // `lost` joins the red states rather than the amber in-flight ones: the
-  // session is down. A reconnect following it goes amber like any other
-  // not-connected-yet state, which is what it is.
+  // `lost` is red (the session is down); a following reconnect is amber.
   if (status.startsWith('failed') || status === 'disconnected' || status === 'lost') {
     return 'bg-red-400'
   }
@@ -328,10 +225,8 @@ export function TabBar({
   const [menu, setMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
-  // Which tab the pointer is over. `:hover` alone can't express the rule the
-  // separators need — a divider has to vanish when *either* tab it sits
-  // between is hovered, and CSS gives a tab no way to reach its own left-hand
-  // neighbor. Knowing the hovered id outright states the rule directly.
+  // The hovered tab, so the separators on either side of it can hide (CSS
+  // can't reach a tab's left neighbor).
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [paneDragOver, setPaneDragOver] = useState(false)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
@@ -344,20 +239,12 @@ export function TabBar({
     return () => window.removeEventListener('click', close)
   }, [menu])
 
-  // Only fade the tabs container's right edge once it's actually
-  // scrollable — otherwise every tab fits and there's nothing partially
-  // clipped for the fade to hide, so it'd just needlessly dim the last tab.
-  // A ResizeObserver (rather than just watching `tabs`) also catches the
-  // window itself being resized narrower/wider with the same tab count.
+  // Fade the right edge only when the strip actually scrolls. A
+  // ResizeObserver also catches window resizes.
   useEffect(() => {
     const el = tabsContainerRef.current
     if (!el) return
-    // >1 (not >0): scrollWidth rounds up and clientWidth rounds down from
-    // the same fractional layout independently, so a container that's
-    // genuinely fully visible can still come out exactly 1px "over" —
-    // e.g. revealing the split-pane action icons shifts things by a
-    // fraction of a pixel with nothing actually clipped. That's not
-    // scrollable, just rounding noise; only a real gap should fade it.
+    // >1: independent rounding can report a 1px overflow that isn't real.
     const checkOverflow = () => setOverflowing(el.scrollWidth - el.clientWidth > 1)
     checkOverflow()
     const observer = new ResizeObserver(checkOverflow)
@@ -365,17 +252,8 @@ export function TabBar({
     return () => observer.disconnect()
   }, [tabs])
 
-  // The pane map is a header inside each tab, so the tab's own contents sit
-  // below it and center in whatever height is left. Without this a four-row
-  // map (14px of a 40px strip) runs straight into the protocol glyph and the
-  // title, which are otherwise centered in the full height.
-  //
-  // Measured once across the whole strip rather than per tab: map height
-  // varies with each tab's layout, and letting every tab place its own title
-  // accordingly would leave neighboring titles on visibly different
-  // baselines. One clearance for the tallest map on screen keeps the row of
-  // titles an actual row. The logo and "+" button aren't tabs and have no map
-  // above them, so they stay centered in the full strip.
+  // Tab contents sit below the pane map. One clearance for the tallest map
+  // on screen keeps every tab's title on the same baseline.
   const stripRows = Math.min(
     tabs.reduce((most, t) => Math.max(most, verticalRows(t.root)), 1),
     PANE_MAP_MAX_ROWS,
@@ -390,9 +268,8 @@ export function TabBar({
       className={`relative flex min-w-0 shrink items-stretch transition-colors duration-100 ${
         paneDragOver ? 'bg-sky-400/10' : ''
       }`}
-      // Drop target for a pane dragged out of a split (see the grip in
-      // Pane.tsx) — anywhere on the tab strip works, not just onto an
-      // existing tab, since the point is to create a *new* one.
+      // Accepts a pane dragged out of a split (see Pane.tsx); anywhere on the
+      // strip creates a new tab.
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes(DRAG_PANE_MIME)) return
         e.preventDefault()
@@ -409,12 +286,9 @@ export function TabBar({
         onDropPaneAsNewTab(tabId, paneId)
       }}
     >
-      {/* Also gives the tab strip natural clearance from the window's
-       * rounded corner, replacing what used to just be an empty sliver of
-       * padding. */}
-      {/* A handle for the window, like the spacer after the tabs: the icon is
-       * the one thing at this end of the strip that is not a tab. `deep` so a
-       * press on the glyph itself counts, not only on the padding around it. */}
+      {/* A window drag handle (the one non-tab at this end), which also keeps
+       * the strip clear of the window's rounded corner. `deep` so the glyph
+       * itself counts. */}
       <div
         data-tauri-drag-region="deep"
         onDoubleClick={() => getCurrentWindow().toggleMaximize()}
@@ -422,32 +296,14 @@ export function TabBar({
       >
         <TerminalSquare size={16} strokeWidth={2} />
       </div>
-      {/* The fade mask (not just a visual flourish) keeps a tab that's only
-       * partially scrolled into view from ending in a harsh mid-content
-       * clip — one that, at just the wrong container width, would slice
-       * straight through that tab's close button and leave half of it
-       * rendered. Only applied once `overflowing` is actually true — with
-       * every tab fully visible there's nothing partially clipped for it
-       * to hide, so it'd just needlessly dim the last tab. */}
+      {/* The fade mask keeps a partially scrolled tab from ending in a hard
+       * clip (e.g. through its close button). Only while overflowing. */}
       <div
         ref={tabsContainerRef}
-        // The fade above is the intended overflow affordance — the native
-        // scrollbar this row would otherwise grow underneath it (styled
-        // 10px tall in index.css) doesn't fit a 40px tab strip, and shows
-        // up even for the ~1px subpixel-rounding gaps that aren't real
-        // overflow at all. Wheel/trackpad scrolling still works with it
-        // hidden; only the visible bar is gone.
-        // `px-2` reserves the width the first and last tabs' fillets hang
-        // into, which they need for opposite reasons. The fillets are
-        // absolutely positioned outside their tab, and at the end an
-        // out-of-flow descendant still counts toward a scroll container's
-        // scrollable overflow — so on the last tab it added 8px the
-        // container could not show, and the check below called a strip that
-        // fits exactly overflowing and faded its own last tab. At the start
-        // there is no scrollable overflow to be had at all: content before
-        // the content edge is simply clipped, so the first tab's left
-        // shoulder was cut off square. Padding answers both, being inside
-        // clientWidth at one end and inside the content box at the other.
+        // The native scrollbar is hidden (the fade is the affordance; wheel
+        // scrolling still works). `px-2` leaves room for the first and last
+        // tabs' fillets: otherwise the last one counts as overflow and the first
+        // is clipped square.
         className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto px-2"
         style={
           overflowing
@@ -462,13 +318,8 @@ export function TabBar({
         {tabs.map((tab, i) => {
           const soleTab = tabs.length === 1
           const active = tab.id === activeTabId
-          // A hairline between two adjacent *quiet* tabs, and nowhere else.
-          // Both the active tab and a hovered one draw their own shape, and a
-          // line running into the side of one of those is exactly the defect
-          // the rounding was meant to avoid — so the two dividers touching
-          // such a tab are the ones that go. Drawn on the left edge, so it
-          // belongs to the boundary before this tab and the first tab has
-          // none.
+          // A hairline between two adjacent quiet tabs only; not beside the
+          // active or hovered tab, which draw their own shape.
           const separator =
             i > 0 &&
             !active &&
@@ -479,10 +330,7 @@ export function TabBar({
           const trueRows = verticalRows(tab.root)
           const rows = Math.min(trueRows, PANE_MAP_MAX_ROWS)
           const leaf = leaves.find((l) => l.id === tab.activePaneId)
-          // A local pane is named by its *shell*, not by its transport. Five
-          // local sessions all showing the same laptop is the case this
-          // exists for; the generic icon stays as the fallback for a shell
-          // nothing recognizes.
+          // Local panes are named by their shell's icon.
           const src = leaf?.source
           const shellGlyph =
             src?.protocol === 'local'
@@ -504,19 +352,8 @@ export function TabBar({
           const running = runningPaneIds.size > 0
           const attention = attentionPaneIds.size > 0
           const remoteTitle = leaf ? titleByPane[leaf.id] : undefined
-          // Only the leading symbol, never the title itself. The label stays
-          // the connection's name: a remote program renaming the tab it is
-          // running in would cost the user the one thing the strip is for —
-          // which pane is which host — and a program that wants to be found
-          // is not the same as one entitled to that slot.
-          //
-          // The tab's active pane first, so the badge describes what clicking
-          // the tab would actually show you. But a split whose *other* pane is
-          // the one working would then badge nothing, and noticing that pane
-          // without switching to it is the whole point — so any badged pane
-          // beats none, which is also how `running` and `attention` below
-          // already treat a split. Identical to active-pane-only whenever the
-          // tab holds one pane, which is nearly always.
+          // Only the leading symbol of a remote title, never the title. Prefer the
+          // active pane's; otherwise any badged pane in a split.
           const badgeTitle =
             (titleBadge(remoteTitle) !== null ? remoteTitle : undefined) ??
             leaves.map((l) => titleByPane[l.id]).find((t) => titleBadge(t) !== null)
@@ -524,18 +361,12 @@ export function TabBar({
           return (
             <div
               key={tab.id}
-              // The badge is a symbol with no words attached, so the tooltip is
-              // the only place its meaning is readable. When it came from a
-              // pane other than the active one — the split case — that pane's
-              // title is added too, otherwise the tooltip would describe one
-              // pane while the badge beside it describes another.
+              // The badge has no words, so the tooltip explains it (including the
+              // badged pane's title when it isn't the active one).
               title={[tab.title, remoteTitle, badgeTitle !== remoteTitle ? badgeTitle : undefined]
                 .filter(Boolean)
                 .join(' — ')}
-              // With one tab there is nothing to reorder it past and no other
-              // tab to drop it into, so dragging it moves the window instead —
-              // what Chrome does with a lone tab. Its close button still
-              // closes it, and right-click still opens its menu.
+              // A lone tab drags the window instead, like Chrome.
               draggable={!soleTab}
               onMouseDown={(e) => {
                 if (!soleTab || e.button !== 0) return
@@ -557,10 +388,7 @@ export function TabBar({
               onDragStart={(e) => {
                 setDraggedId(tab.id)
                 e.dataTransfer.effectAllowed = 'move'
-                // Lets an empty pane elsewhere in the window (a totally
-                // separate drop target from the other tabs here) recognize
-                // this as "a tab being dragged," to attach its connection
-                // there — see DRAG_TAB_MIME.
+                // Lets an empty pane elsewhere accept this tab; see DRAG_TAB_MIME.
                 e.dataTransfer.setData(DRAG_TAB_MIME, tab.id)
               }}
               onDragEnd={() => {
@@ -568,13 +396,8 @@ export function TabBar({
                 setDropTargetId(null)
               }}
               onDragOver={(e) => {
-                // A pane being dragged out of a split (see the grip in
-                // Pane.tsx) has no `draggedId` of its own — that's only
-                // tracked for *tab* reordering — so without this check,
-                // hovering directly over an existing tab (rather than the
-                // strip's empty space) never calls preventDefault() here
-                // and the browser shows a "not allowed" cursor despite the
-                // container's own handler being able to accept it.
+                // Accept a pane dragged out of a split here too, or the cursor shows
+                // "not allowed" over a tab.
                 if (e.dataTransfer.types.includes(DRAG_PANE_MIME)) {
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'move'
@@ -601,11 +424,8 @@ export function TabBar({
               }}
               style={{
                 paddingTop: `${tabContentTopPx}px`,
-                // Both skipped while this tab is the drop target, so the sky
-                // wash marking it as such isn't painted over by an inline
-                // fill. Hover is driven from `hoveredId` rather than a
-                // `hover:` class because what it paints is a color computed
-                // from the theme, not one Tailwind can name.
+                // Skipped while this is the drop target. Hover uses `hoveredId` since
+                // the color comes from the theme.
                 ...(dropTargetId === tab.id
                   ? {}
                   : active
@@ -614,34 +434,11 @@ export function TabBar({
                       ? { backgroundColor: paneBackground, backgroundImage: tabHoverWash }
                       : {}),
               }}
-              // Only one tab is a shape: the active one. It takes the
-              // window's own corner radius (`rounded-t-lg` — see the root
-              // element in App.tsx) so the tab and the frame it sits in read
-              // as the same object, and the terminal's own background as its
-              // fill, so its lower edge doesn't exist: the tab is the top of
-              // the pane, drawn up into the strip. A lighter tint stood it off
-              // the strip just as well but made it a third surface, neither
-              // strip nor pane. The rest carry no fill at all, which leaves
-              // them the strip's own tone, and no radius — a row of
-              // identically rounded tabs spends the shape on every tab and so
-              // says nothing with it, whereas rounding exactly one is what
-              // makes that one look like the sheet in front. Chrome and Edge
-              // both settled here.
-              //
-              // Hovering an inactive tab lends it the same shape and a fill
-              // partway to the active one's, so the thing under the pointer is
-              // legible as a target without being mistaken for the selection.
-              // Partway *toward* it: this was a white wash, which on a dark
-              // theme moved a hovered tab lighter than the strip while the
-              // tab it was reaching for is darker — the wrong direction, and
-              // the reason it needs a computed color rather than a class.
-              //
-              // `mt-1` drops every tab clear of the window's top edge: a tab
-              // whose corner starts in the same pixel row as the frame's has
-              // its rounding read as part of the frame, and the gap is what
-              // makes it a separate object sitting in the strip. Kept on the
-              // square tabs too, so activating one raises a shape in place
-              // rather than also shifting the row.
+              // Only the active tab is a shape: the window's corner radius
+              // (`rounded-t-lg`) and the terminal's own background, so it reads as the
+              // top of the pane (as in Chrome and Edge). Quiet tabs take the strip's
+              // tone. A hovered tab gets the shape and a fill partway toward the active
+              // one. `mt-1` keeps every tab clear of the window's top edge.
               className={`group relative mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 px-3 text-xs transition-colors duration-150 ${
                 active
                   ? 'z-10 rounded-t-lg text-chrome'
@@ -653,34 +450,12 @@ export function TabBar({
               {separator && (
                 <span className="pointer-events-none absolute inset-y-2 left-0 w-px bg-chrome/10" />
               )}
-              {/* The tab's bottom corners, flared outwards into the strip
-                  instead of stopping square — the join a browser tab makes
-                  with the page it belongs to, and Windows Terminal with its
-                  terminal. Without them the active tab meets the pane in two
-                  right angles, which reads as a rectangle overlapping the
-                  strip rather than as the top of the surface below.
-                  Deliberately absent while a tab is merely hovered: that
-                  shape is a floating highlight, not something joined to
-                  anything.
-
-                  A corner CSS cannot round directly — the curve is convex
-                  from the pane's side, and border-radius only ever cuts
-                  inwards. So each is a square of pane color with the
-                  quarter disc nearest the tab's own corner masked out of it,
-                  leaving exactly the part that should stay: full height
-                  against the tab, nothing at all a radius away.
-
-                  Masked rather than overpainted. Painting the strip back
-                  over the rest of the square is the same shape and antialiases
-                  a little more crisply, but it is 8px of opaque strip laid on
-                  top of whatever is actually there — which on the tab next
-                  door, while the pointer is over it, is its hover fill: a
-                  small wrong-colored box beside the shoulder. Masking leaves
-                  that ground untouched.
-
-                  The two-pixel ramp either side of the radius is what does
-                  the antialiasing; a hard stop leaves the arc visibly
-                  stepped. */}
+              {/* The active tab's bottom corners flare into the strip, joining it
+                  to the pane below (not shown on hover). CSS can't round a convex
+                  corner, so each is a square of pane color with the quarter disc
+                  nearest the tab masked out; masking (not overpainting) leaves a
+                  neighbor's hover fill untouched. The 2px ramp antialiases the
+                  arc. */}
               {active && dropTargetId !== tab.id && (
                 <>
                   <span
@@ -695,36 +470,13 @@ export function TabBar({
                   />
                 </>
               )}
-              {/* A single-pane tab only shows this bar when it's the active
-                  tab — plain and full-bright, same as before. A split tab
-                  always shows it (even unfocused), dimmed, purely to signal
-                  "this tab has multiple panes" at a glance; the active
-                  tab's own split additionally highlights whichever pane has
-                  keyboard focus. */}
-              {/* `running`/`attention` are in the condition so a single-pane
-                  background tab — which otherwise draws no bar at all — still
-                  gets one to carry the marker, since that's now the only
-                  place either signal appears. */}
-              {/* Sized from the number of stacked rows so every segment is
-                  the same 2px line whatever the layout — side-by-side ones
-                  each take the bar's full height, stacked ones divide it, so
-                  the bar has to grow to fit them plus their gaps. A flat
-                  height gave a nested stack two 0.5px lines, i.e. nothing
-                  visible at all. */}
+              {/* The pane map: shown on the active tab, on any split tab (dimmed when
+                  unfocused), and on any tab carrying a running or attention marker.
+                  Its height comes from the number of stacked rows, so every segment
+                  is the same 2px line. */}
               {(active || leaves.length > 1 || running || attention) && (
-                // Held clear of the tab's rounded top corners rather than
-                // clipped by them. `left/right-2` is the corner radius
-                // exactly, which is where the curve meets the top edge — run
-                // full width and the curve would slice this 2px bar
-                // diagonally right where the radius is widest, tapering its
-                // ends away over a few pixels instead of ending them. The
-                // wrapper's own small radius then caps what's left, so the bar
-                // reads as a deliberate shortened line rather than one that
-                // ran out of tab. Kept at the same inset on the square tabs,
-                // which need no clearance: matching them to their own corners
-                // would grow and shrink the bar as tabs are activated or
-                // merely hovered, and the map is meant to be read across the
-                // strip, which wants every one of them the same width.
+                // Inset by the corner radius so the rounded corners don't slice the
+                // bar; the same inset on every tab keeps the maps the same width.
                 <span
                   className="absolute left-2 right-2 overflow-hidden rounded-sm"
                   style={{ top: `${PANE_MAP_TOP_PX}px`, height: `${paneMapExtent(rows)}px` }}
@@ -741,19 +493,9 @@ export function TabBar({
               {dropTargetId === tab.id && draggedId !== tab.id && (
                 <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-sky-400" />
               )}
-              {/* No spinner here any more: the running marker on the pane map
-                  above says the same thing and says *where*, so a second
-                  indicator in this slot was redundant and cost the icon that
-                  tells you the protocol. The connection dot rides on the icon
-                  so link state stays readable alongside it.
-
-                  Always rendered, falling back to a placeholder when the
-                  focused pane has no connection yet. Splitting a pane focuses
-                  the new empty one, and a slot that came and went as you
-                  clicked between a connected pane and a fresh one re-flowed
-                  the title and resized the tab itself — tab width is
-                  content-driven between its min and max, so 12px of icon plus
-                  its gap moved the whole thing. */}
+              {/* The protocol icon, with the connection dot on it. Always rendered
+                  (a placeholder when unconnected) so the tab doesn't resize as focus
+                  moves between panes. */}
               <span
                 className={`relative shrink-0 ${ProtocolIcon || shellGlyph ? 'text-chrome/40' : 'text-chrome/20'}`}
               >
@@ -770,35 +512,18 @@ export function TabBar({
                   />
                 )}
               </span>
-              {/* Decision 5 of docs/ELEVATED_TABS_PLAN.md: the tab running
-                  as administrator is never in doubt. Beside the shell's own
-                  icon rather than instead of it, and in amber rather than the
-                  quiet chrome gray, because it is the one tab worth noticing
-                  from across the strip. */}
+              {/* The administrator tab is always marked, in amber
+                  (docs/ELEVATED_TABS_PLAN.md, decision 5). */}
               {elevated && (
                 <span title="Administrator" className="-ml-0.5 shrink-0 text-amber-400">
                   <ShieldCheck size={12} aria-label="Administrator" />
                 </span>
               )}
-              {/* The mark a program put at the front of its own title. Its own
-                  size and color are whatever the emoji font gives it, so
-                  nothing here tints it: `✳` is green because Segoe UI Emoji
-                  draws it green, and a badge recolored to the chrome gray
-                  would stop being the thing the user recognizes from every
-                  other terminal they use.
-                  `aria-hidden` because the full title is already on the tab's
-                  tooltip, where a screen reader gets it as words rather than
-                  as a symbol it would have to name. */}
+              {/* The mark a program put at the front of its title, in the emoji
+                  font's own colors. `aria-hidden`: the tooltip has the full title. */}
               {badge && (
-                // A fixed box rather than one the glyph sizes, because the
-                // badge swaps between kinds of glyph as the program works: the
-                // color emoji at rest and a text-font spinner frame while it
-                // is busy advance differently, so a box that fitted the glyph
-                // resized several times a second and slid the label — and the
-                // tab itself, whose width is content-driven — along with it.
-                // Centered and allowed to overflow rather than clipped: the
-                // width only has to stop the glyph *moving* its neighbors,
-                // and a hidden overflow would crop a wide one instead.
+                // A fixed-width box so the badge swapping between glyphs (emoji at rest,
+                // spinner frames while busy) doesn't resize the tab.
                 <span
                   aria-hidden
                   className="inline-flex w-[14px] shrink-0 justify-center text-[11px] leading-none"
@@ -807,23 +532,10 @@ export function TabBar({
                 </span>
               )}
               <span className="truncate">{tab.title}</span>
-              {/* Always visible on the active tab, hover-revealed on the rest.
-               *
-               * Hover-gating it everywhere made it unreliable to click, and not
-               * because of hit-testing — an `opacity-0` button still takes
-               * clicks. The problem is that you cannot aim at what you cannot
-               * see. Canceling a confirmation is the clearest case: while the
-               * dialog is up its overlay is what the pointer is over, so the
-               * tab beneath is not hovered, and the browser does not re-evaluate
-               * `:hover` until the pointer *moves*. Cancel, go straight back to
-               * the ✕, and it is invisible — hit it and the tab closes, miss by
-               * a few pixels and you land on the tab body, which re-selects an
-               * already-active tab and looks like the click did nothing.
-               *
-               * The active tab is the one most likely to be closed, and showing
-               * its ✕ unconditionally is also what Edge and Windows Terminal do.
-               * `p-1` over `p-0.5` for the same reason: 13px of icon is a small
-               * target to hit twice. */}
+              {/* Always visible on the active tab, hover-revealed on the rest (as in
+               * Edge and Windows Terminal): `:hover` isn't re-evaluated until the
+               * pointer moves, so after closing a dialog an invisible ✕ is hard to
+               * hit. */}
               <button
                 aria-label={`Close ${tab.title}`}
                 data-tab-close

@@ -10,8 +10,8 @@ import { createWriteScheduler, type SchedulerHooks } from './writeScheduler'
  */
 
 /**
- * A controllable clock, frame source and timer, so budgets are exact — and a
- * `write` that costs a realistic 3.5 ms, the measured median delivery.
+ * A controllable clock, frame source and timer, so budgets are exact, and a
+ * `write` costing a realistic 3.5 ms (the measured median delivery).
  */
 function harness(costPerWriteMs = 3.5) {
   let clock = 0
@@ -83,8 +83,8 @@ describe('writeScheduler', () => {
   })
 
   /**
-   * The measured failure: deliveries arriving faster than they can be written
-   * used to run back to back for 106 ms. The budget is what bounds that.
+   * Deliveries arriving faster than they can be written stop once the frame
+   * budget is spent.
    */
   it('stops writing once the frame budget is spent', () => {
     const h = harness(3.5)

@@ -1,29 +1,14 @@
 /**
- * Splitting text into terminal cells, for anything drawn as DOM *over* the
- * grid rather than into it.
- *
- * The inline suggestion is the only such thing so far, and it is why this
- * exists. A terminal paints every glyph at exactly one cell width; a DOM text
- * run advances by whatever the font says each character is worth. Those two
- * numbers are close and not equal — the engine's cell width is a measured,
- * rounded value — so a run of text laid out by the browser drifts a fraction
- * of a pixel per character against the grid beside it. Over a short word that
- * is invisible; over a fifty-character command it is a visible offset, and the
- * ghost text no longer lines up with the real text above it.
- *
- * Matching fonts and sizes does not fix it, because the mismatch is in the
- * *advance per character*. Boxing each unit to exactly one cell does, by
- * construction — which is also simply what the terminal itself does.
+ * Splitting text into terminal cells, for DOM drawn over the grid (the inline
+ * suggestion). A DOM text run advances by the font's per-character width,
+ * which differs slightly from the engine's rounded cell width, so it drifts.
+ * Boxing each unit to one cell matches the grid by construction.
  */
 
 /**
- * Whether a code point occupies two cells.
- *
- * The ranges a terminal actually cares about, not a full Unicode width table:
- * CJK, Hangul, kana, fullwidth forms, and the emoji blocks. Everything else is
- * one cell. This will be wrong for a handful of exotic code points, and being
- * wrong here costs a column of alignment in dim text — not a corrupted command,
- * because nothing derived from this is ever sent anywhere.
+ * Whether a code point occupies two cells: CJK, Hangul, kana, fullwidth forms
+ * and emoji, not a full width table. Being wrong costs a column of alignment
+ * in dim text, never a sent byte.
  */
 function isWide(code: number): boolean {
   return (
@@ -45,8 +30,8 @@ function isWide(code: number): boolean {
   )
 }
 
-/** Marks that combine with the character before them and take no cell of their
- * own — an accent, a variation selector, a zero-width joiner. */
+/** Marks that combine with the previous character and take no cell (accents,
+ * variation selectors, ZWJ). */
 function isCombining(code: number): boolean {
   return (
     (code >= 0x0300 && code <= 0x036f) ||
@@ -66,8 +51,8 @@ export interface CellUnit {
 }
 
 /**
- * Split `text` into units of one or two cells, folding combining marks into
- * the character they modify so an accent never gets a box of its own.
+ * Splits `text` into one- or two-cell units, folding combining marks into the
+ * character they modify.
  */
 export function toCellUnits(text: string): CellUnit[] {
   const units: CellUnit[] = []
@@ -83,8 +68,8 @@ export function toCellUnits(text: string): CellUnit[] {
 }
 
 /**
- * Take as many units as fit in `maxCells`, never splitting a wide character
- * across the edge — half a glyph in the last column is worse than a blank one.
+ * Takes as many units as fit in `maxCells`, never splitting a wide character
+ * across the edge.
  */
 export function fitToCells(units: CellUnit[], maxCells: number): CellUnit[] {
   const out: CellUnit[] = []

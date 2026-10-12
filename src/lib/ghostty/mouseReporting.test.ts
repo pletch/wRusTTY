@@ -5,21 +5,11 @@ import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
- * Mouse reporting end to end: a real DOM event on the real canvas, through the
- * real core, to the bytes that leave for the far end.
- *
- * `MouseEncoder.test.ts` covers what an event encodes to. This covers the part
- * only the wiring can get wrong, and which nothing covered before: that the
- * engine hands the encoder the right button, the right pixels and the right
- * geometry, and that it does so for the events a program actually wants. Every
- * bug this file exists to catch — a `MouseEvent.button` passed through
- * untranslated, a surface never sized, a listener wired to the wrong reporter
- * call — leaves `MouseEncoder.test.ts` entirely green.
- *
- * The renderer is stubbed to the members the mouse path uses, which is what
- * lets this run without WebGL. The core is not stubbed: tracking mode is real
- * terminal state, so a program has to be able to turn it on the way a program
- * does, by writing the sequence.
+ * Mouse reporting end to end: a DOM event on the canvas, through the real
+ * core, to the bytes sent. `MouseEncoder.test.ts` covers encoding; this
+ * covers the wiring (button translation, surface sizing, listener routing),
+ * whose bugs leave that suite green. The renderer is stubbed; the core is
+ * real, so tracking is turned on by writing the sequence.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -148,8 +138,7 @@ describe('mouse reporting, from the canvas to the wire', () => {
     engine.write('\x1b[?1000h\x1b[?1006h')
     wheelX(-1)
     wheelX(1)
-    // 66 and 67. A trackpad sends both axes at once, so the dominant one wins
-    // rather than both being reported.
+    // 66 and 67. A trackpad sends both axes; the dominant one is reported.
     expect(sent).toEqual(['\x1b[<66;2;2M', '\x1b[<67;2;2M'])
     engine.unmount()
   })
@@ -222,10 +211,8 @@ describe('mouse reporting, from the canvas to the wire', () => {
     const raw: Uint8Array[] = []
     engine.onData((d) => raw.push(d))
     engine.write('\x1b[?1000h')
-    // Column 95 encodes as 32 + 95 = 0x7f, which is DEL. Translating the
-    // whole output channel — which is where this used to happen — turned it
-    // into 0x08 and reported the click as column 8. The translation belongs
-    // on keystrokes, where a 0x7f really is a Backspace.
+    // Column 95 encodes as 0x7f (DEL). DEL-to-BS translation belongs on
+    // keystrokes only, or this click would report as column 8.
     down(945, 25)
     expect([...raw[0]]).toEqual([0x1b, 0x5b, 0x4d, 0x20, 0x7f, 0x20 + 2])
     engine.unmount()

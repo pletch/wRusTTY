@@ -1,16 +1,9 @@
 /**
- * Golden tests: feed each of the four workload profiles (Phase 7's own
- * scenarios — interactive typing, streaming logs, a full-screen TUI, and a
- * large flood) through GhosttyEngine's core and xterm.js's core, headlessly,
- * and assert they agree on what ended up on screen. This is what
- * src/bench/parity.ts's "Glyphs, colors, layout: parity" line rests on —
- * this test is what keeps that claim from silently going stale.
- *
- * Colors and text attributes are compared as well as glyphs. They were not
- * originally, which left the "colors" half of that ledger line as prose: you
- * could break the renderer's default-color remap outright and every test
- * here still passed. Both engines are pinned to one palette to make the
- * comparison mean something — see gridPalette.ts.
+ * Golden tests: the four workload profiles (typing, streaming logs, a TUI, a
+ * flood) through GhosttyEngine's and xterm.js's cores headlessly, asserting
+ * they agree on glyphs, colors and attributes. This keeps parity.ts's
+ * "Glyphs, colors, layout: parity" line honest. Both engines share one
+ * palette (gridPalette.ts).
  */
 import { describe, it, expect } from 'vitest'
 import { typing, streaming, tui, flood } from './workloads'
@@ -208,15 +201,9 @@ describe('color and attribute parity on directed SGR cases', () => {
 })
 
 /**
- * Overline and the five underline styles, which the core has always carried and
- * our cell packing used to drop: every underline arrived as the same single bit
- * and overline never arrived at all.
- *
- * Only overline gets a parity assertion. xterm's buffer API exposes
- * `isOverline()` but not *which* underline it drew, so the style is asserted
- * against the SGR that set it rather than against a second engine. That is
- * weaker on purpose, and saying so is cheaper than a test that looks like
- * parity and is not.
+ * Overline and the five underline styles. Only overline gets a parity
+ * assertion: xterm exposes `isOverline()` but not which underline it drew,
+ * so the style is checked against the SGR that set it.
  */
 describe('overline and underline styles', () => {
   it('agrees with xterm on overline', async () => {

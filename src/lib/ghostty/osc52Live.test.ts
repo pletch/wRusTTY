@@ -6,15 +6,9 @@ import { parseOsc52 } from '../osc52'
 import { OSC_PENDING_MAX } from './oscScanner'
 
 /**
- * A clipboard write reaching the pane, through a real engine and a real core.
- *
- * `osc52.test.ts` pins the grammar and `oscScanner.test.ts` pins the dispatch;
- * this pins the two together against the thing that actually breaks — chunking.
- * An OSC 52 payload is the only sequence here whose length is user data, so it is
- * the only one that routinely spans deliveries, and the scanner's carried-over
- * buffer is what has to hold it. At the old 4 KB cap every copy past a few
- * hundred bytes of text was silently dropped on the chunk boundary it happened to
- * straddle, and nothing in either unit test could see that.
+ * A clipboard write reaching the pane through a real engine and core, across
+ * chunk boundaries: OSC 52 payloads are user-sized, so they routinely span
+ * deliveries, and the scanner's carried-over buffer must hold them.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -83,9 +77,7 @@ describe('a clipboard write arriving over the wire', () => {
 
   it('delivers a copy far past the old carried-over cap', async () => {
     const { engine, writes, writeInChunks } = await ready()
-    // 200 KB of text — a scrollback-sized copy, and ~267 KB once base64'd, so
-    // both the sequence and its carried-over buffer are well past the 4 KB that
-    // used to drop it.
+    // 200 KB of text (~267 KB base64), well past a single delivery.
     const text = 'the quick brown fox jumps over the lazy dog. '.repeat(4600)
     expect(text.length).toBeGreaterThan(200_000)
     writeInChunks(osc52(text), 4096)

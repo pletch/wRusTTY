@@ -291,6 +291,8 @@ manager and front end are protocol-agnostic.
   [`docs/NATIVE_SEARCH_PLAN.md`](docs/NATIVE_SEARCH_PLAN.md)
 - [`docs/PORT_GHOSTTY_MAIN.md`](docs/PORT_GHOSTTY_MAIN.md) — the Ghostty pin and
   the port's record
+- [`docs/DEV_HISTORY.md`](docs/DEV_HISTORY.md) — bugs found, approaches
+  replaced, and the measurements behind design decisions, by area
 
 ## License
 

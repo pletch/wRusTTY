@@ -1,67 +1,45 @@
 /**
- * OSC 133 shell integration — the "semantic prompt" protocol.
- *
- * Over SSH/telnet/serial there is no local PTY to inspect. A terminal that
- * spawns its own shell can call tcgetpgrp() on the PTY master to see which
- * process is in the foreground; nothing equivalent exists here, because the
- * process actually running lives on a machine this app reaches only as a
- * byte stream. So the only reliable source of "a command started" / "it
- * finished, with this exit code" is the remote shell itself, saying so out
- * of band.
- *
- * OSC 133 is that protocol — FinalTerm's originally, now implemented by
- * iTerm2, kitty, WezTerm, Windows Terminal and VS Code. A cooperating shell
- * brackets each prompt and command with:
+ * OSC 133 shell integration (the "semantic prompt" protocol). Over SSH, telnet
+ * or serial there's no local PTY to inspect for the foreground process, so
+ * the remote shell's own reports are the only reliable "command started" /
+ * "finished with this exit code" signal. A cooperating shell emits:
  *
  *   OSC 133 ; A ST          prompt is about to be drawn
  *   OSC 133 ; B ST          prompt drawn; keystrokes from here are the command
  *   OSC 133 ; C ST          command is executing, output follows
  *   OSC 133 ; D ; <code> ST command finished, with its exit status
  *
- * VS Code's OSC 633 is a superset using the same letters plus `E`, which
- * carries the command line as text. Worth handling both: `E` is the only way
- * to name the command in a notification, and shells already set up for VS
- * Code emit it for free. See docs/SHELL_INTEGRATION.md for the snippets.
+ * VS Code's OSC 633 uses the same letters plus `E`, which carries the command
+ * line. See docs/SHELL_INTEGRATION.md for the shell snippets.
  *
- * Deliberately a plain class rather than anything React-aware — it's driven
- * from an engine OSC handler sitting on the hot path of the output stream.
+ * A plain class: it's driven from an OSC handler on the output hot path.
  */
 
 export interface CommandActivity {
   state: 'idle' | 'running'
   /** Epoch ms the running command started; null while idle. */
   startedAt: number | null
-  /** The command line, when the shell reported one (OSC 633's `E`). Null
-   * under plain OSC 133, which has no field for it. */
+  /** The command line, from OSC 633's `E`; null under plain OSC 133. */
   command: string | null
 }
 
 export interface CommandResult {
   command: string | null
-  /** Null when the shell reported no code — a bare `OSC 133 ; D ST`, which
-   * is legal, and also what a partial integration that never emits `D` at
-   * all leaves us to infer from the next prompt. */
+  /** Null when the shell reported no code (a bare `D`, or a partial integration
+   * whose run was closed by the next prompt). */
   exitCode: number | null
   durationMs: number
-  /** The command spent time on the alternate screen, i.e. it was a
-   * full-screen interactive program (vim, top, less). Tracked because
-   * "vim finished after 20 minutes" is not a notification anyone wants —
-   * the user quit it themselves, deliberately, a moment ago. */
+  /** The run used the alternate screen, i.e. it was a full-screen program (vim,
+   * top, less); its completion isn't worth a notification. */
   interactive: boolean
 }
 
 export const IDLE: CommandActivity = { state: 'idle', startedAt: null, command: null }
 
-/** A command that starts and finishes inside this window never shows the
- * indicator at all. Nearly everything typed at a prompt returns in well under a
- * second, and flashing a spinner for each one is noise rather than information —
- * the indicator exists to say "something is still going", which is only a
- * meaningful claim once it has gone on longer than a keystroke. */
+/** Commands shorter than this never show the running indicator. */
 const RUNNING_VISIBLE_AFTER_MS = 400
 
-/** Human-readable run length for a completion notice. Only ever shown for
- * commands past the notification threshold, so it never needs sub-second
- * resolution. */
+/** Human-readable run length for a completion notice (whole seconds). */
 export function formatCommandDuration(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000))
   const h = Math.floor(total / 3600)
@@ -72,12 +50,9 @@ export function formatCommandDuration(ms: number): string {
   return `${s}s`
 }
 
-/** VS Code's OSC 633 escapes backslashes as `\\` and `;` (plus other
- * control characters) as `\xHH`, so command text can't be mistaken for
- * extra protocol fields. Done as one left-to-right pass rather than two
- * replaces, or a command containing a literal `\x3b` would get unescaped
- * into a `;` that was never a separator. Anything that isn't a valid
- * escape is left exactly as it arrived. */
+/** Unescapes OSC 633 command text (`\\` and `\xHH`), in one left-to-right pass
+ * so an escaped `\x3b` can't become a separator. Invalid escapes are left
+ * as-is. */
 function unescapeCommandText(raw: string): string {
   return raw.replace(/\\(\\|x([0-9a-fA-F]{2}))/g, (_match, _all, hex: string | undefined) =>
     hex ? String.fromCharCode(parseInt(hex, 16)) : '\\',
@@ -94,19 +69,16 @@ export class CommandTracker {
   private startedAt = 0
   /** The command line for the run currently in flight. */
   private command: string | null = null
-  /** Reported by `E` *before* the `C` that starts the run it describes, so
-   * it's parked here until then. */
+  /** Reported by `E` before the `C` that starts its run. */
   private pendingCommand: string | null = null
   private sawAltScreen = false
-  /** Whether the alternate screen is up right now (as opposed to `sawAltScreen`,
-   * which records that the run in flight touched it at some point). */
+  /** Whether the alternate screen is up now (`sawAltScreen` records whether the
+   * run touched it). */
   private onAltScreen = false
-  /** A program in the run currently in flight reported progress of its own
-   * (OSC 9;4) — see noteProgress. Sticky for the rest of the run, unlike
-   * `onAltScreen`. */
+  /** A program in this run reported its own progress (OSC 9;4); sticky for the
+   * run. See noteProgress. */
   private sawProgress = false
-  /** Whether a `running` activity is currently showing, so idle is only sent to
-   * undo one that was actually sent. */
+  /** Whether `running` is currently shown, so idle only undoes a real report. */
   private reportedRunning = false
   private showTimer: ReturnType<typeof setTimeout> | null = null
   private readonly handlers: Handlers
@@ -121,8 +93,8 @@ export class CommandTracker {
     this.showTimer = null
   }
 
-  /** Show the indicator once the run has lasted long enough to be worth one, and
-   * only while the run actually owns the screen (see setAltScreen). */
+  /** Show the indicator once the run has lasted long enough, and only while it
+   * owns the screen (see setAltScreen). */
   private armShowTimer() {
     this.clearShowTimer()
     this.showTimer = setTimeout(() => {
@@ -148,56 +120,38 @@ export class CommandTracker {
   }
 
   /**
-   * Feed the payload of an OSC 133 / OSC 633 sequence — everything after the
-   * identifier and its semicolon, which is what the engine's
-   * `registerOscHandler` hands over (`"D;0"` for `OSC 133 ; D ; 0 ST`).
-   *
-   * Always returns true: this app owns 133 and 633, and consuming them keeps
-   * them from being treated as anything else.
+   * Feed an OSC 133 / 633 payload (everything after the identifier, e.g. `"D;0"`).
+   * Always returns true: this app owns these sequences.
    */
   handleOsc(data: string): boolean {
-    // Markers are never gated on the alternate screen being up, even though the
-    // ones emitted from inside a full-screen program describe its commands and
-    // not the outer shell's. The engine dispatches OSC by scanning the raw byte
-    // stream *before* the chunk reaches the parser, so the screen-buffer state
-    // still reads as "alternate" on the very chunk that leaves it — and that is
-    // exactly the chunk carrying the `D`/`A` that ends the run. Dropping those
-    // strands the run open and leaves the indicator stuck on after quitting tmux
-    // or nano. Suppressing the *display* while the alternate screen is up (see
-    // setAltScreen) deals with the noise without losing the transitions.
+    // Markers aren't gated on the alternate screen: OSC dispatch runs before
+    // the parser, so the chunk leaving the alternate screen (carrying the
+    // closing `D`/`A`) still reads as alternate. Only the display is
+    // suppressed (see setAltScreen).
     const sep = data.indexOf(';')
     const kind = sep === -1 ? data : data.slice(0, sep)
     const rest = sep === -1 ? '' : data.slice(sep + 1)
 
     switch (kind) {
       case 'A':
-        // A fresh prompt. Under a complete integration this arrives just
-        // after `D` and there's nothing left to finish. It matters for the
-        // partial ones (and there are plenty in the wild) that mark prompts
-        // and command starts but never report an exit code: a new prompt
-        // still means the previous command is over, so close it out with an
-        // unknown status rather than leaving the pane spinning forever.
+        // A new prompt means the previous command is over, even for partial
+        // integrations that never send `D`; close it with an unknown status.
         if (this.running) this.finish(null)
         break
 
       case 'B':
-        // Prompt finished drawing; whatever is typed next is the command.
-        // Nothing to do beyond dropping a command line left over from a run
-        // that never started, so it can't attach itself to the next one.
+        // Drop any command line left from a run that never started.
         this.pendingCommand = null
         break
 
       case 'C':
-        // Ignored while already running: some shells emit `C` again for each
-        // segment of a pipeline, and restarting the clock there would report
-        // only the last segment's duration.
+        // Some shells repeat `C` per pipeline segment; don't restart the clock.
         if (!this.running) this.start()
         break
 
       case 'D': {
-        // Pressing Enter on an empty prompt produces a `D` with no `C` before
-        // it (the shell reports the *previous* command's status again). No
-        // command ran, so there is nothing to report.
+        // Enter on an empty prompt sends `D` with no `C` (repeating the previous
+        // status); nothing ran.
         if (!this.running) break
         const code = rest.split(';')[0]
         const parsed = Number.parseInt(code, 10)
@@ -206,39 +160,22 @@ export class CommandTracker {
       }
 
       case 'E':
-        // OSC 633 only. `E;<commandline>;<nonce>` — the nonce is optional,
-        // and any `;` inside the command itself is escaped, so the first
-        // unescaped `;` genuinely ends the command text.
+        // OSC 633 only: `E;<commandline>;<nonce>`. Semicolons in the command are
+        // escaped, so the first raw `;` ends it.
         this.pendingCommand = unescapeCommandText(rest.split(';')[0]) || null
         break
 
-      // `P` (OSC 633 property reports such as `P;Cwd=/home/dev`) and any
-      // future letters fall through unhandled but still consumed.
+      // `P` (property reports such as `P;Cwd=`) and unknown letters are consumed.
     }
     return true
   }
 
   /**
-   * A program in this pane reported progress of its own (OSC 9;4), which from
-   * here on owns the pane's indicator for the rest of the run.
-   *
-   * The run is still tracked — its duration, exit code and completion notice
-   * are unaffected — but it stops driving the display, exactly as the
-   * alternate screen does. The reason is the same one: a program that says
-   * "I am working" and "I have stopped" knows something the shell does not,
-   * which is that one `claude` or one `cargo watch` is many pieces of work
-   * rather than one. The shell can only say a command is running, and says it
-   * for the whole session.
-   *
-   * Sticky for the run, not a mirror of whether progress is up right now. If
-   * it went back to following the run each time progress cleared, a pane would
-   * fall back to the running marker between turns — which is precisely the
-   * "it never stops" this exists to fix, and would also mask the attention
-   * marker that a cleared progress is supposed to leave behind.
-   *
-   * A program that reports progress from *inside* the alternate screen (the
-   * common case: Claude Code under a shell that switches buffers) changes
-   * nothing here — the indicator was already suppressed, and stays so.
+   * A program reported its own progress (OSC 9;4), so it owns the pane's
+   * indicator for the rest of the run: one `claude` or `cargo watch` is many
+   * pieces of work, which the shell can't see. The run is still tracked. Sticky
+   * for the run, so the running marker doesn't return between turns (and hide
+   * the attention marker a cleared progress leaves).
    */
   noteProgress() {
     if (this.sawProgress) return
@@ -247,40 +184,30 @@ export class CommandTracker {
     this.emitIdle()
   }
 
-  /** Called whenever the terminal switches screen buffers. Entering the
-   * alternate buffer is how a full-screen program announces itself: mid-run it
-   * marks the run interactive (an interactive program started from the prompt is
-   * still one "command" as far as OSC 133 is concerned), and either way it gates
-   * the semantic-prompt markers emitted from inside it — see handleOsc. */
+  /** The terminal switched screen buffers. Entering the alternate screen during
+   * a run marks it interactive, and suppresses the indicator while it's up. */
   setAltScreen(isAlternate: boolean) {
     this.onAltScreen = isAlternate
     if (isAlternate) {
       if (this.running) this.sawAltScreen = true
-      // A full-screen program is not a job you are waiting on — it is the thing
-      // you are using. Spinning for the whole life of a tmux attach or a vim
-      // session says nothing and never stops, so the indicator stands down for
-      // as long as the alternate screen is up. The run is still tracked; only
-      // its display is suppressed.
+      // A full-screen program is something you're using, not waiting on; don't
+      // spin for a whole vim or tmux session. The run is still tracked.
       this.clearShowTimer()
       this.emitIdle()
     } else if (this.running) {
-      // Back on the primary screen with the run still open: the program has
-      // exited and the shell's `D` is usually a few milliseconds behind, so go
-      // through the delay again rather than flashing the indicator on the way
-      // out of every editor.
+      // The program exited and the shell's `D` usually follows within
+      // milliseconds; re-arm the delay rather than flashing the indicator.
       this.armShowTimer()
     }
   }
 
-  /** Drop any in-flight run without reporting it — for a disconnect, where
-   * the command's fate is genuinely unknown and a completion notification
-   * would be a lie. */
+  /** Drop any in-flight run without reporting it (a disconnect, where its fate
+   * is unknown). */
   reset() {
-    // Cleared unconditionally: a disconnect while a full-screen program was up
-    // would otherwise leave the gate in handleOsc stuck on, silently ignoring
-    // every marker for the rest of the pane's life.
+    // Cleared unconditionally, or a disconnect during a full-screen program
+    // would leave the indicator suppressed.
     this.onAltScreen = false
-    // Sticky for a run, so it has to go with the run.
+    // Sticky per run, so it goes with the run.
     this.sawProgress = false
     this.clearShowTimer()
     if (!this.running) return

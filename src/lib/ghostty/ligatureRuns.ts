@@ -2,46 +2,26 @@ import { parseCellInto, CELL_BYTES, type WasmCellData } from './wasmBindings'
 import { MAX_RUN_CELLS } from './GlyphAtlas'
 
 /**
- * Finding the runs of cells that should be shaped together, which is the whole
- * of the ligature machinery on this side of the atlas: `fillText` does the
- * shaping, and this decides what gets handed to it in one call.
- *
- * Canvas 2D runs the browser's full shaping stack, so `calt` fires as soon as
- * a substitution has both of its inputs in the same call. Drawing one cell at
- * a time is the only reason ligatures never happened here; nothing was
- * disabling them.
- *
- * Kept out of the renderer because it is the part with the interesting
- * decisions in it — what breaks a run, and what deliberately does not — and
- * because those are worth testing without a GL context.
+ * Finding the runs of cells to shape together. Canvas 2D does the shaping
+ * (`calt` fires once a substitution's inputs share one `fillText` call); this
+ * decides what goes into each call. Separate from the renderer so the break
+ * rules are testable without GL.
  */
 
 /**
- * The characters a run may be built from: what the ligature-carrying
- * programming fonts actually form their substitutions out of.
+ * The characters a run may be built from: what programming fonts form
+ * ligatures out of. This alphabet, with `MAX_RUN_CELLS`, bounds the run
+ * cache's key space; prose and paths don't touch it.
  *
- * The alphabet is what bounds the run cache, and is the only thing that does.
- * A run's key is its own text, so unlike a codepoint it has no ceiling from
- * the character repertoire — but a run is at most `MAX_RUN_CELLS` long and
- * built only from these, so the whole key space is bounded by that many of
- * these characters in a row. Prose and paths cost nothing because their letters are not in
- * here at all.
+ * Beyond the operators:
  *
- * Two deliberate inclusions past the operators:
+ * - Punctuation the substitution tables reach: `...`, `?.`, `??`, `;;`, `%%`,
+ *   `^=`, `$>`, `\\`, `#?`, `__`.
+ * - `w`, only for `www`. No common word doubles a w, and pairs like `w.` shape
+ *   to the same glyphs drawn separately, costing a slot but never a pixel.
  *
- * - The punctuation the substitution tables actually reach — `...`, `?.`,
- *   `??`, `;;`, `%%`, `^=`, `$>`, `\\`, `#?`, `__`. Leaving these out was why
- *   a font's dot and question-mark ligatures never fired.
- * - `w`, and only `w`, for `www`. It is the one alphabetic ligature the
- *   programming faces carry, and it is safe precisely because no common word
- *   doubles a w: a lone letter never forms a run, so prose still costs
- *   nothing. The pairs it does make against punctuation — `w.` in `row.map` —
- *   shape to the same glyphs they would have drawn separately, so they cost a
- *   slot and never a wrong pixel.
- *
- * The brackets are deliberately still out. They would buy `[|`, `|]`, `{|`
- * and `#(`, and cost a run slot for every `))`, `}}` and `){` in a file —
- * which is the most common adjacency in code and the least rewarding.
+ * Brackets stay out: they'd buy `[|`, `|]`, `{|` and `#(` at the cost of a
+ * slot for every `))`, `}}` and `){`.
  */
 export const LIGATURE_CHARS = new Uint8Array(128)
 for (const ch of '=<>-!&|:+*/~.?#$%^;\\_@w') LIGATURE_CHARS[ch.charCodeAt(0)] = 1
@@ -72,18 +52,12 @@ function eligible(cell: WasmCellData): boolean {
 }
 
 /**
- * Marks out the maximal runs in one row.
- *
- * A run breaks on anything that would make one column of it look different
- * from another: the flags and the second attribute byte, the resolved colors,
- * the link state, and whatever `brk` marks — the cursor's own cell and any
- * hint label, both of which replace what the cell holds. Breaking under the
- * cursor is what other terminals do, and it means the character you typed is
- * what sits under the block rather than a slice of the ligature it formed.
- *
- * Selection and search highlighting are deliberately *not* breaks. Those only
- * tint a background, and every column carries its own background in the
- * instance data, so a sliced ligature under a selection is already right.
+ * Marks out the maximal runs in one row. A run breaks on anything that makes
+ * one column look different: flags and the second attribute byte, resolved
+ * colors, link state, and `brk` (the cursor's cell and hint labels). Breaking
+ * under the cursor, as other terminals do, keeps the typed character under
+ * the block. Selection and search highlights aren't breaks: they only tint
+ * per-column backgrounds.
  */
 export function computeRuns(
   view: DataView,
@@ -97,9 +71,8 @@ export function computeRuns(
 
   let c = 0
   while (c < cols && c < valid) {
-    // One scratch cell for both reads: everything wanted from the head is
-    // copied into locals immediately below, before the inner loop parses over
-    // the top of it.
+    // One scratch cell for both reads: the head's values are copied to locals
+    // before the inner loop overwrites it.
     const first = parseCellInto(view, baseOffset + c * CELL_BYTES, cell)
     if (brk[c] === 1 || !eligible(first)) {
       c++
@@ -133,8 +106,7 @@ export function computeRuns(
       for (let i = 0; i < len; i++) head[c + i] = c
       span[c] = len
     }
-    // Lands exactly on the cell that ended the run, which may well start one
-    // of its own — a style change mid-operator is a break, not a skip.
+    // Lands on the cell that ended the run, which may start its own.
     c += len
   }
 }

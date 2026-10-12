@@ -1,11 +1,7 @@
 /**
- * Drives wRusTTY without a browser and without a remote host.
- *
- * The app is SSH/telnet/serial only and its PTY lives in Rust, so "launch it
- * and type" needs Tauri *and* something to connect to. The engine underneath
- * does not: it is a WASM core plus a JS renderer, and the core will accept
- * bytes and tell you exactly what it did with them. That is the layer almost
- * every change here touches, so that is what this drives.
+ * Drives wRusTTY's engine without a browser or a remote host: the WASM core
+ * accepts bytes and reports exactly what it did with them, which is the layer
+ * most changes touch.
  *
  *   npx vite-node .claude/skills/run-wrustty/driver.mts smoke
  *       Writes a payload exercising color, wide characters, the underline
@@ -21,15 +17,9 @@
  *       Starts vite and prints the two URLs worth opening. Stays in the
  *       foreground; Ctrl-C to stop.
  *
- * Everything except `serve` is headless and finishes in under a second.
- *
- * It goes through `wasmBindings.ts` — the app's own loader — rather than
- * reaching into the `.wasm` itself, and is run through `vite-node` for that
- * reason. It used to hand-roll the ABI, which was fine until the binary became
- * a ghostty `main` build that speaks a different one: the driver broke while
- * the app was fine, having been a second implementation of the thing under
- * test. Now `instantiateGhosttyModule` picks the ABI, `main/shim.ts` covers the
- * difference, and this sees exactly what a pane sees.
+ * Everything except `serve` is headless and finishes in under a second. It
+ * loads the core through `wasmBindings.ts` (hence `vite-node`), so it sees
+ * exactly what a pane sees.
  */
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -140,10 +130,8 @@ const DEFAULT_FG = [0xcc, 0xcc, 0xcc]
 const coloured = (c: Cell) => c.fg.some((v, i) => v !== DEFAULT_FG[i])
 
 function describe(cells: Cell[]) {
-  // The first interesting run per row: enough to see that attributes landed,
-  // short enough to read. Color counts as interesting — a cell can carry a
-  // foreground and no style bits at all, and an earlier version of this
-  // reported such a row as empty.
+  // The first interesting run per row. Color counts: a cell can carry a
+  // foreground with no style bits.
   const c = cells.find((x) => x.flags !== 0 || x.attrs2 !== 0 || coloured(x))
   if (!c) return ''
   const bits: string[] = []

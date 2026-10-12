@@ -70,143 +70,90 @@ import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
 
 /**
- * Bytes to write before telling the backend it may send more.
- *
- * A sixteenth of the backend's 16 MB window (`DEFAULT_MAX_INFLIGHT_BYTES` in
- * coalesce.rs), so credit flows back steadily rather than in lumps that let the
- * window drain to empty before it is topped up, while still costing one IPC
- * round trip per four deliveries rather than one per delivery.
- *
- * Left at 1 MB when the window went from 4 MB to 16: a larger batch would mean
- * fewer, bigger credit grants, which is the shape that starved the frontend at
- * the smaller window in the first place.
+ * Bytes to write before granting the backend more credit: a sixteenth of its
+ * 16 MB window (`DEFAULT_MAX_INFLIGHT_BYTES` in coalesce.rs), so credit flows
+ * back steadily at one IPC round trip per four deliveries.
  */
 const ACK_THRESHOLD_BYTES = 1024 * 1024
 
-/**
- * Push a dead-engine report into the Rust-side log, which in a release build
- * is the only place it can land: the webview console isn't inspectable on a
- * user's machine, so a `console.error` there is the same as saying nothing.
- * See the log-plugin registration in src-tauri/src/lib.rs.
- *
- * Best-effort by design. `npm run dev` serves this in a plain browser with no
- * Tauri backend to invoke, and a failed report about a failure should never
- * become an unhandled rejection on top of the failure itself.
- */
-/** The theme this pane paints its surroundings from: the configured one, with
- * the unfocused window's background color in place of its own when App has
- * set one. Shared by every surface the engine does not paint, so they cannot
- * drift from the grid. */
+/** The theme for the pane's surroundings: the configured one, with App's
+ *  unfocused-window background override applied. */
 function paneTheme(settings: TerminalSettings) {
   const theme = findTheme(settings.themeName)
   return settings.backgroundOverride ? { ...theme, background: settings.backgroundOverride } : theme
 }
 
+/**
+ * Sends a dead-engine report to the Rust-side log, the only place it is
+ * visible in a release build. Best-effort: there's no backend under `npm run dev`.
+ */
 function reportEngineFailure(message: string) {
   void logError(`terminal engine failed to start: ${message}`).catch(() => {})
 }
 
 interface Props {
   source: ConnectionSource
-  /** The saved session this pane was opened from, if any — so history files
-   * under the session even when it connected through the form. See
-   * `historyKeyForSource`. */
+  /** The saved session this pane was opened from, if any, so history files under
+   * it; see `historyKeyForSource`. */
   savedProfile?: SessionProfile | null
   label: string
   settings: TerminalSettings
-  /** Which byte Backspace sends for this pane: true = ^H, false/null = ^?.
-   * Per-connection rather than a global preference, because one machine
-   * routinely has both kinds of host open at once. */
+  /** Which byte Backspace sends for this pane: true = ^H, false/null = ^?. */
   backspaceSendsCtrlH?: boolean | null
-  /** `false` opts this pane's session out of auto-reconnect; null/absent
-   * follows the global setting. Resolved from the session profile where the
-   * profile is known — see `PaneLeaf.autoReconnect`. */
+  /** `false` opts out of auto-reconnect; null/absent follows the global setting.
+   * See `PaneLeaf.autoReconnect`. */
   autoReconnect?: boolean | null
   logging?: boolean
-  /** Start a transcript at connect even though `logging` is off — Settings'
-   * "log every session", or a saved session that asks for one. */
+  /** Start a transcript at connect even though `logging` is off. */
   autoLog?: boolean
-  /** Told when `autoLog` started one, so the pane's logging state (and the
-   * toolbar that can stop it) says so. */
+  /** Told when `autoLog` started one. */
   onAutoLog?: () => void
   /** Whether this is the focused pane within its (possibly split) tab. */
   active?: boolean
-  /** This pane's id, so a targeted searchRequest can address exactly it. */
+  /** This pane's id, so a targeted searchRequest can address it. */
   paneId: string
-  /** The broadcast group this pane belongs to — its tab. Panes register under
-   * it so input typed anywhere in the tab can be fanned out to all of them. */
+  /** The broadcast group (the pane's tab). */
   broadcastGroupId: string
-  /** Whether this pane's tab is currently in broadcast mode. When it is, what
-   * is typed here goes to every connected pane in the tab rather than only
-   * this one. */
+  /** Whether this pane's tab is broadcasting input to all its panes. */
   broadcasting?: boolean
-  /** Set by App's toolbar search button. When it targets this pane's id with
-   * a nonce not seen before, the search box opens (the box is per-Terminal
-   * local state, so this is how an App-level control reaches into it). */
+  /** App's toolbar search request; opens the search box when it targets this
+   * pane with a new nonce. */
   searchRequest?: { nonce: number; paneId: string } | null
   onStatus?: (status: string) => void
   onSessionId?: (id: string | null) => void
-  /** The fitted grid in cells, reported only when it actually changes — see
-   * `reportDimensions`. Fires on the engine's first fit and on every resize
-   * that crosses a cell boundary, which is the same set of moments the remote
-   * PTY is told about. */
+  /** The fitted grid in cells, reported only when it changes. */
   onDimensions?: (cols: number, rows: number) => void
-  /** Bytes of scrollback this pane's engine was built with, reported once at
-   * mount. Comes from the engine rather than the settings object on purpose:
-   * the core fixes its limit at construction, so a pane opened before the
-   * setting changed is still on the old budget, and the status bar must
-   * describe the pane it is pointing at rather than the preference. */
+  /** Scrollback bytes this pane's engine was built with, reported once at mount.
+   * From the engine, not settings: open panes keep their original budget. */
   onScrollbackBudget?: (budgetBytes: number) => void
-  /** Whether a command is currently running, per the remote shell's own OSC
-   * 133 reports — silent (permanently idle) against a shell with no
-   * integration set up. See lib/shellIntegration.ts. */
+  /** Whether a command is running, per OSC 133. See lib/shellIntegration.ts. */
   onActivity?: (activity: CommandActivity) => void
-  /** What a program on the far end says it is doing, via OSC 9;4 — null when
-   * it has cleared its progress or the session has gone.
-   *
-   * The signal for the case `onActivity` structurally cannot cover: a
-   * full-screen program on a remote host, which the shell sees as one long
-   * command and reports nothing about. See lib/appProgress.ts. */
+  /** OSC 9;4 progress from the far end, or null when cleared or disconnected.
+   * Covers full-screen programs that shell integration can't see. See
+   * lib/appProgress.ts. */
   onProgress?: (progress: AppProgress | null) => void
-  /** A program that had been reporting progress has stopped — it cleared its
-   * own progress, or the shell got back to a prompt, which proves it can't
-   * still be running.
+  /** A program that was reporting progress has stopped (cleared it, or the shell
+   * returned to a prompt). Not raised when the session drops.
    *
-   * The full-screen counterpart to `onCommandComplete`, and the moment that
-   * actually wants you back: a tool that has been working for ten minutes has
-   * either finished or is waiting on you. Not raised when the *session* went
-   * away — a dropped connection says nothing about what the program was doing.
-   *
-   * @param durationMs how long progress had been up. The caller applies its
-   * own floor; a program that flashes progress for a second wants nothing. */
+   * @param durationMs how long progress had been up; the caller applies a floor. */
   onProgressComplete?: (durationMs: number) => void
-  /** The far end asked for a desktop notification by name (OSC 9 / OSC 777),
-   * rather than this app inferring one from a command's exit. */
+  /** The far end asked for a desktop notification (OSC 9 / OSC 777). */
   onRemoteNotify?: (notification: RemoteNotification) => void
-  /** The far end set a window title (OSC 0/2), or cleared it (null). Advisory:
-   * the pane's own label still names the tab. See lib/remoteIdentity.ts. */
+  /** The far end set (or cleared, null) the window title via OSC 0/2. See
+   * lib/remoteIdentity.ts. */
   onRemoteTitle?: (title: string | null) => void
   /** The far end reported its working directory (OSC 7). */
   onRemoteCwd?: (cwd: string) => void
-  /** A file path in the output was Ctrl+clicked (or picked in hint mode), as
-   *  written. Resolving it — against the pane's directory, on its host — is
-   *  the caller's. Path links are only offered where `pathFlavorFor` says the
-   *  source has somewhere to send one, and only when this is given. */
+  /** A file path in the output was activated, as written; the caller resolves
+   *  it. Path links are only offered when this is given. */
   onOpenPath?: (path: string) => void
   /** A command finished, with its exit code and how long it took. */
   onCommandComplete?: (result: CommandResult) => void
-  /** The far end rang the terminal bell (BEL, 0x07) — the oldest and most
-   * portable "I want your attention" signal there is, and the only one that
-   * works with no shell-side setup at all. */
+  /** The far end rang the bell (BEL). */
   onBell?: () => void
-  /** A failed connection (bad credential, unreachable host, etc.) otherwise
-   * leaves this pane stuck showing a dead terminal with no way back to the
-   * connect dialog short of closing the whole pane — this reopens it in
-   * place instead. */
+  /** Reopen the connect dialog in place after a failed connection. */
   onBackToConnect?: () => void
-  /** Retry the same connection in place — surfaced on the failed/disconnected
-   * overlays as a "Reconnect" action. */
-  /** Reopen failed connections in place. */
+  /** Retry the same connection in place. */
   onReconnect?: () => void
 }
 
@@ -231,17 +178,8 @@ interface PendingAuthPrompt {
 }
 
 /**
- * The one trailing newline a copy button leaves behind, removed.
- *
- * Nearly every documentation site's copy icon puts a terminating newline
- * on the clipboard, and that newline is a Return: sent as-is it submits
- * the command instead of leaving it at the prompt to be read first, and
- * where the shell's own bracketed paste holds it back instead, it parks
- * the cursor on a second line of a buffer the user never asked for. A
- * paste should end where its text ends.
- *
- * Exactly one terminator goes: a blank line the user deliberately copied
- * before the last one is text, and survives.
+ * Removes the one trailing newline that copy buttons on documentation sites
+ * add, so a paste doesn't submit the command. Only one is removed.
  */
 function stripTrailingNewline(text: string): string {
   return text.replace(/(\r\n|\r|\n)$/, '')
@@ -284,56 +222,37 @@ export function Terminal({
   onReconnect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  /** The border-only frame over everything in the pane that is not the grid —
-   *  see where it is rendered. Its widths are measured, not styled. */
+  /** Border-only frame over the non-grid parts of the pane; widths are measured. */
   const frameRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
-  /** Whether the search box was open on the previous render, so closing it can
-   * hand focus back without the mount-time run of that effect doing so. */
+  /** Whether search was open last render, so closing it can return focus. */
   const wasSearchOpen = useRef(false)
   const termRef = useRef<TerminalEngine | null>(null)
   const [hostKeyPrompt, setHostKeyPrompt] = useState<PendingHostKey | null>(null)
   const [authPrompt, setAuthPrompt] = useState<PendingAuthPrompt | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
-  /** Keyboard selection is on. Mirrors engine state so the pane can say so —
-   *  a mode that takes the arrow keys with nothing on screen to explain why is
-   *  indistinguishable from a wedged pane. */
+  /** Keyboard selection is on; shown in the pane since it takes the arrow keys. */
   const [markMode, setMarkMode] = useState(false)
-  /** Hint mode is on. Same reasoning as `markMode`: a mode that swallows
-   *  typing has to say so, and has to say how to get back out. */
+  /** Hint mode is on; shown in the pane since it swallows typing. */
   const [hintMode, setHintMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   /**
-   * A full-screen program has the terminal.
-   *
-   * Mirrored into React state solely so the find bar can say what it can see.
-   * The alternate screen has no scrollback -- it is exactly `rows` tall -- so
-   * a search there covers the visible screen and nothing else, and scrolling
-   * inside such a program is the program repainting rather than history
-   * accumulating. Silently returning two hits where the buffer holds hundreds
-   * reads as a broken search; saying so reads as a boundary.
+   * A full-screen program has the terminal. The alternate screen has no
+   * scrollback, so the find bar says it is only searching the visible screen.
    */
   const [altScreen, setAltScreen] = useState(false)
-  // Result position for the "N/M" count, fed by the addon's onDidChangeResults
-  // (set up in the connect effect). index is 0-based, -1 when there are none.
+  // Search position for the "N/M" count; index is 0-based, -1 when none.
   const [searchResults, setSearchResults] = useState<{ index: number; count: number }>({
     index: -1,
     count: 0,
   })
 
-  // The search box is a dismissable surface like any other, so Escape reaches
-  // it only when it is the topmost one. Previously it had its own Escape on
-  // both the container and the input, which fired regardless of what else was
-  // open — so closing search with a forwarding panel up closed that too.
+  // Escape reaches the search box only when it is the topmost surface.
   useDismissable(searchOpen, () => setSearchOpen(false))
 
   /**
-   * The right-click menu offered when the pointer is on a link.
-   *
-   * Right-click otherwise pastes (when that setting is on), and that gesture
-   * is untouched away from a link. On one, a menu is the discoverable path for
-   * anyone who never learns Ctrl+click — the same reason VTE has it — and it
-   * also puts the destination on screen before anything is opened.
+   * Right-click menu on a link. Right-click elsewhere still pastes (when
+   * enabled); the menu shows the destination before anything opens.
    */
   const [linkMenu, setLinkMenu] = useState<{
     x: number
@@ -343,51 +262,34 @@ export function Terminal({
   } | null>(null)
   useDismissable(linkMenu !== null, () => setLinkMenu(null))
 
-  /**
-   * The last directory the host actually *reported*, which is where a dropped
-   * file goes. Fed by OSC 7, by OSC 133/633's `P;Cwd=` and by OSC 1337's
-   * `CurrentDir=` — three roads for one fact, and hosts differ in which they
-   * take. Reading only OSC 7 meant a session that plainly showed its
-   * directory still had none as far as a drop was concerned.
-   */
-  /** What autocomplete is currently offering, or null. Held in React state
-   * because the popover is DOM; the controller that owns the decision lives in
-   * the connection effect and pushes here. */
+  /** What autocomplete is offering, or null; pushed by the controller in the
+   * connection effect. */
   const [suggestion, setSuggestion] = useState<SuggestionView | null>(null)
-  /** Reached by the pane's key handler, which is installed in the same effect
-   * that builds the controller but has to keep working across its lifetime. */
+  /** For the pane's key handler, which outlives individual controllers. */
   const autocompleteRef = useRef<AutocompleteController | null>(null)
+  /** The last directory the host reported (OSC 7, OSC 133/633 `P;Cwd=`, or
+   *  OSC 1337 `CurrentDir=`), where a dropped file goes. */
   const remoteCwdRef = useRef<string | null>(null)
-  /** A directory *guessed* out of the window title. Never a destination on its
-   *  own — only the prefill for the prompt. */
+  /** A directory guessed from the window title; only ever a prompt prefill. */
   const titleCwdRef = useRef<string | null>(null)
   /** A file is being dragged over this pane. */
   const [dropTarget, setDropTarget] = useState(false)
   /**
-   * A dropped file whose destination has to be agreed before it is sent —
-   * either because there is nowhere to put it, or because where it would go is
-   * a claim the host made. Guessing `~`, or scraping it off the prompt, puts
-   * the file somewhere the user did not ask for and did not watch it go.
+   * A dropped file whose destination needs confirming: there's nowhere known to
+   * put it, or the destination is a claim made by the host.
    */
   const [dropDest, setDropDest] = useState<{
     file: File
     path: string
-    /** Where the prefill came from, which is the whole of what the prompt has
-     *  to explain — see the copy below. */
+    /** Where the prefill came from, which the prompt explains. */
     source: 'reported' | 'title' | 'unknown'
   } | null>(null)
   /** What was typed into that prompt last time, to prefill it the next. */
   const lastDestRef = useRef<string | null>(null)
   /**
-   * The reported directory the user has already agreed to send to.
-   *
-   * OSC 7 (and the OSC 633/133/1337 spellings of it) is *reported* rather than
-   * guessed, but reported by the same untrusted party that chose the window
-   * title — a host emitting `OSC 7 ; file://h/var/www/html` redirects the next
-   * drop to a web root while the user believes it went to their working
-   * directory. So a reported path is confirmed once, and again whenever it
-   * changes; a drop into the directory already agreed goes straight out, which
-   * is what keeps dropping several files in a row from being a chore.
+   * The reported directory the user already agreed to send to. Reported paths
+   * come from the untrusted host (OSC 7 could point a drop at a web root), so
+   * each new one is confirmed once; repeat drops into it go straight out.
    */
   const confirmedDestRef = useRef<string | null>(null)
   /** The upload in flight, for the progress readout and its cancel button. */
@@ -400,65 +302,42 @@ export function Terminal({
 
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
   const [searchRegex, setSearchRegex] = useState(false)
-  // Reinitializes to true on every mount, which is what we want — Pane.tsx
-  // remounts this component (via a `key` bump) on every reconnect.
+  // Pane.tsx remounts this component on every reconnect.
   const [connecting, setConnecting] = useState(true)
-  // Set once a connection attempt fails and never cleared by anything short
-  // of a remount (a fresh connect/reconnect) — surfaces the "back to connect
-  // dialog" affordance below instead of leaving a dead terminal with no way
-  // out short of closing the whole pane.
+  // Set when a connection attempt fails; cleared only by a remount. Shows the
+  // "back to connect dialog" affordance.
   const [connectFailed, setConnectFailed] = useState<string | null>(null)
-  // A clean remote-initiated disconnect while "close pane on disconnect" is
-  // off — shows the Reconnect / connection-settings overlay instead of
-  // leaving a dead terminal (or auto-closing, which App does when the setting
-  // is on). Reset to false on every remount, i.e. every reconnect.
+  // A clean remote disconnect with "close pane on disconnect" off; shows the
+  // Reconnect overlay.
   const [disconnected, setDisconnected] = useState(false)
-  // An auto-reconnect in flight. The pane deliberately does *not* remount for
-  // one — that is the whole point, and what keeps the scrollback — so unlike
-  // the two states above this one has to be cleared explicitly when the
-  // connection comes back.
+  // An auto-reconnect in flight. The pane doesn't remount for one (that keeps
+  // the scrollback), so this is cleared explicitly on reconnection.
   const [reconnecting, setReconnecting] = useState<Reconnecting | null>(null)
-  // Read from inside the connection effect's event handler, which closes over
-  // the state from the render that set it up and would never see the update.
+  // Read from the connection effect's handler, which closes over stale state.
   const reconnectingRef = useRef<Reconnecting | null>(null)
   reconnectingRef.current = reconnecting
-  // The rendering engine itself never came up, so this pane will stay blank no
-  // matter what the connection does. Deliberately distinct from the connection
-  // failures above rather than folded into them: the session underneath may be
-  // perfectly healthy, and reconnecting — the one remedy those overlays offer —
-  // fixes nothing here.
+  // The rendering engine never came up. Separate from connection failures:
+  // the session may be fine, and reconnecting won't help.
   const [engineFailed, setEngineFailed] = useState<string | null>(null)
 
-  // Settings can change without reconnecting the session, so they're read
-  // through a ref rather than added to the effect's dependency array.
+  // Settings change without reconnecting, so they're read through a ref.
   const settingsRef = useRef(settings)
   settingsRef.current = settings
-  // Read at each use rather than captured: the session list loads after the
-  // pane may already be connected, and a rename or edit should apply too.
+  // Read at each use: profiles load late and can be edited.
   const savedProfileRef = useRef(savedProfile)
   savedProfileRef.current = savedProfile
 
-  // Same live-ref treatment as `settings`: read inside the connection effect,
-  // which must not re-run (and tear down the session) when this changes.
+  // Live refs for values the connection effect reads but must not re-run on.
   const backspaceRef = useRef(backspaceSendsCtrlH)
   backspaceRef.current = backspaceSendsCtrlH
 
-  // And again, for the same reason: the connection effect reads this when it
-  // dials, and a change to it must not tear the session down to apply — it
-  // describes what happens to the *next* drop, which the running supervisor
-  // was already told about when it started.
   const autoReconnectRef = useRef(autoReconnect)
   autoReconnectRef.current = autoReconnect
 
-  // Same reason again: the paste guard is raised from a DOM listener installed
-  // by the connection effect, which must not re-run when the provider's
-  // identity changes.
   const confirm = useConfirm()
   const confirmRef = useRef(confirm)
   confirmRef.current = confirm
 
-  // Read by the `onData` handler installed inside the connection effect, which
-  // must not re-run when the tab toggles broadcast or the pane changes tab.
   const broadcastingRef = useRef(broadcasting)
   broadcastingRef.current = broadcasting
   const broadcastGroupRef = useRef(broadcastGroupId)
@@ -471,33 +350,23 @@ export function Terminal({
   const onAutoLogRef = useRef(onAutoLog)
   onAutoLogRef.current = onAutoLog
 
-  // Read by applyLogging (below) so logging can start/stop against the live
-  // session from outside the connect effect's local `sessionId`.
+  // Lets applyLogging act on the live session from outside the connect effect.
   const sessionIdRef = useRef<string | null>(null)
-  // Whether a log file is currently open for this session — the single source
-  // of truth that keeps the connect-time start and the mid-session toggle
-  // from double-starting or double-stopping. Fresh (false) on every mount,
-  // i.e. every reconnect.
+  // Whether a log file is open for this session; prevents double start/stop.
   const loggingActiveRef = useRef(false)
-  // label feeds the log filename; read through a ref so a mid-session start
-  // uses the current label without making it a dependency anywhere.
+  // Feeds the log filename.
   const labelRef = useRef(label)
   labelRef.current = label
 
-  // Starts or stops session logging to match `want`, idempotently. Shared by
-  // the connect handler (for "logging already on at connect") and the effect
-  // below (for toggling it during a live session). loggingActiveRef is set
-  // optimistically before the async start so a near-simultaneous second call
-  // can't open a second log file for the same session.
+  // Starts or stops session logging to match `want`, idempotently. The flag is
+  // set before the async start so a second call can't open a second log.
   function applyLogging(sessionId: string, want: boolean | undefined) {
     if (want && !loggingActiveRef.current) {
       loggingActiveRef.current = true
       const { logPlainText, logDirectory } = settingsRef.current
       sessionLog.start(sessionId, labelRef.current, logPlainText, logDirectory).catch((err) => {
         loggingActiveRef.current = false
-        // Said out loud: the likeliest cause now is a chosen folder that has
-        // gone (an unplugged drive), and a log that silently never starts is
-        // found out only when the transcript is needed.
+        // Likeliest cause is a chosen folder that's gone (an unplugged drive).
         toast.error(`Could not start the session log: ${String(err)}`)
       })
     } else if (!want && loggingActiveRef.current) {
@@ -506,22 +375,16 @@ export function Terminal({
     }
   }
 
-  // Toggling the logging setting now takes effect on the live session instead
-  // of only at the next connect. No-op until the session id is known; the
-  // connect handler applies the initial state once it is.
+  // Apply logging toggles to the live session; the connect handler applies the
+  // initial state.
   useEffect(() => {
     const id = sessionIdRef.current
     if (id) applyLogging(id, logging)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [logging])
 
-  // Pane.tsx passes these as fresh inline closures on every render, so
-  // including them in the connect effect's dependency array below would
-  // tear down and reconnect the session on every status update it reports
-  // (status update -> parent re-render -> new closure -> effect re-fires ->
-  // more status updates -> ...), which is exactly the reconnect storm that
-  // produced repeated "connection reset by peer" toasts stacked behind a
-  // host-key prompt that never got a chance to be answered.
+  // Pane.tsx passes fresh closures every render; listing them as effect
+  // dependencies would reconnect the session on every status update.
   const onStatusRef = useRef(onStatus)
   onStatusRef.current = onStatus
 
@@ -534,20 +397,13 @@ export function Terminal({
   const onScrollbackBudgetRef = useRef(onScrollbackBudget)
   onScrollbackBudgetRef.current = onScrollbackBudget
 
-  /** Last grid reported upward, so an unchanged one costs nothing.
-   *
-   * The ResizeObserver fires per pointer-move during a window drag, but the
-   * cell grid only changes when a drag crosses a whole cell — a small
-   * fraction of those. App's reducer treats a repeat as a no-op regardless;
-   * this stops it being dispatched at all, which matters because nothing
-   * downstream of App is memo-effective today (see the note at App.tsx's
-   * paneRuntime). */
+  /** Last grid reported upward, so the many ResizeObserver callbacks during a
+   * drag only dispatch when the cell grid actually changes. */
   const lastDimsRef = useRef<{ cols: number; rows: number } | null>(null)
 
   const reportDimensions = (term: TerminalEngine) => {
     const { cols, rows } = term
-    // A hidden tab fits to 0x0; the callers all guard against that, but a
-    // zero grid is never worth reporting even if one day one doesn't.
+    // A hidden tab fits to 0x0.
     if (cols <= 0 || rows <= 0) return
     const last = lastDimsRef.current
     if (last && last.cols === cols && last.rows === rows) return
@@ -555,9 +411,7 @@ export function Terminal({
     onDimensionsRef.current?.(cols, rows)
   }
 
-  // Same live-ref treatment as onStatus/onSessionId above — App passes these
-  // as fresh inline closures every render, and the connect effect must not
-  // list anything that changes per-render in its dependencies.
+  // Same live-ref treatment as onStatus.
   const onActivityRef = useRef(onActivity)
   onActivityRef.current = onActivity
 
@@ -585,27 +439,16 @@ export function Terminal({
   const onBellRef = useRef(onBell)
   onBellRef.current = onBell
 
-  // Registers this pane as a broadcast target for its tab.
-  //
-  // Its own effect rather than part of the connect effect because the two have
-  // different lifetimes: dragging a pane to another tab changes the group and
-  // must re-register, but must emphatically *not* re-run the connect effect,
-  // which would tear the session down to move it. The writer reads `source`
-  // and the session id through refs, so it stays correct across a reconnect
-  // without this effect having to re-run for that either.
-  //
-  // Registration is unconditional — a pane joins its group whether or not
-  // broadcast is on — because the mode is a property of the tab, decided at
-  // send time by whoever is typing, not of the panes receiving.
+  // Registers this pane as a broadcast target for its tab. Separate from the
+  // connect effect so moving a pane between tabs re-registers without tearing
+  // down the session. Registration is unconditional; broadcast mode is decided
+  // at send time.
   const sourceRef = useRef(source)
   sourceRef.current = source
   useEffect(() => {
     return broadcast.join(paneId, broadcastGroupId, (data) => {
       const id = sessionIdRef.current
-      // A pane still connecting, or one whose session has gone, is silently
-      // skipped: a broadcast is a convenience, and failing the whole send
-      // because one pane of eight isn't up yet would be worse than the
-      // partial delivery the user can see on screen.
+      // Panes without a live session are skipped.
       if (id) conn.write(sourceRef.current, id, data).catch(() => {})
     })
   }, [paneId, broadcastGroupId])
@@ -613,37 +456,29 @@ export function Terminal({
   const activeRef = useRef(active)
   activeRef.current = active
 
-  // Open the search box when App's toolbar button issues a request addressed
-  // to this pane. The nonce guards against re-firing on unrelated re-renders
-  // and lets a repeat click on the same pane reopen/refocus.
+  // Open the search box when App's toolbar targets this pane; the nonce
+  // prevents refiring on unrelated renders.
   const searchReqSeen = useRef(0)
   useEffect(() => {
     if (!searchRequest || searchRequest.paneId !== paneId) return
     if (searchRequest.nonce === searchReqSeen.current) return
     searchReqSeen.current = searchRequest.nonce
     setSearchOpen(true)
-    // Refocus the input if the box was already open (setSearchOpen is a no-op
-    // then, so the searchOpen effect below won't fire to do it).
+    // Refocus if already open (the effect below won't fire).
     searchInputRef.current?.focus()
   }, [searchRequest, paneId])
 
-  // Set inside the connect effect below; lets the theme-update effect above
-  // reach into that closure's scrollbar-coloring function without being
-  // part of the same effect (which would tear down and reconnect the
-  // session on every theme change).
+  // Set inside the connect effect so other effects can reach into it without
+  // reconnecting the session.
   const updateScrollbarColorsRef = useRef<(() => void) | null>(null)
 
-  // Same idea again, for showing/hiding the custom scrollbar based on
-  // whether this pane is the focused one (see the connect effect below).
   const updateScrollbarFocusRef = useRef<((active: boolean) => void) | null>(null)
 
-  // And again, so the font effect below can re-fit this one pane. Dispatching
-  // a window resize event would also work, but every mounted pane runs that
-  // effect, so N panes would each trigger a re-fit of all N.
+  // Lets the font effect re-fit just this pane (a window resize event would
+  // re-fit every pane).
   const refitRef = useRef<(() => void) | null>(null)
 
-  // Theme updates apply live to the existing terminal instance instead of
-  // tearing down and reconnecting the session.
+  // Theme updates apply live, without reconnecting.
   useEffect(() => {
     if (termRef.current) {
       termRef.current.setTheme(
@@ -655,18 +490,9 @@ export function Terminal({
     updateScrollbarColorsRef.current?.()
   }, [settings.themeName, settings.backgroundOpacity, settings.backgroundOverride])
 
-  // Font and scrollback likewise apply to the live terminal rather than
-  // recreating it, which would drop the connection and the scrollback along
-  // with it. Changing the font changes the cell size and so the row/column
-  // count, so this has to re-fit and tell the remote PTY the new size —
-  // otherwise the shell keeps line-wrapping to the old width.
-  /**
-   * The faces to rasterize with, rebuilt only when a font setting moves.
-   * Memoized because it is an effect dependency and because building it
-   * registers `@font-face`s for the OpenType features -- a fresh object every
-   * render would re-run the font effect, and the font effect rebuilds the
-   * renderer and re-fits the grid.
-   */
+  // Font settings apply live too; the effect re-fits so the PTY learns the new
+  // size. Memoized because building the selection registers `@font-face`s and a
+  // new object would rebuild the renderer.
   const {
     fontFamily,
     fontFamilyBold,
@@ -729,24 +555,18 @@ export function Terminal({
     settings.ligatures,
   ])
 
-  // Its own effect because it is a per-session setting rather than one of the
-  // global ones above, and it changes when the session's profile does.
+  // Per-session setting, separate from the global ones above.
   useEffect(() => {
     termRef.current?.setBackspaceSendsCtrlH?.(backspaceSendsCtrlH)
   }, [backspaceSendsCtrlH])
 
-  // Only the focused pane's scrollbar is shown — a background pane's
-  // scrollbar would otherwise be a distracting, non-interactive-feeling
-  // artifact sitting on content you're not looking at.
+  // Only the focused pane shows its scrollbar.
   useEffect(() => {
     updateScrollbarFocusRef.current?.(!!active)
   }, [active])
 
-  // Runs a search through the addon with the current toggle state, always
-  // supplying decorations so every match stays highlighted (not just the one
-  // scrolled to). `next`/`incremental` mirror the addon's own findNext/
-  // findPrevious semantics. An empty query (or one that doesn't compile as a
-  // regex) clears highlights and the count rather than throwing.
+  // Runs a search with the current toggles. An empty or invalid query clears
+  // highlights and the count.
   function runSearch(
     query: string,
     opts: { back?: boolean; incremental?: boolean; caseSensitive?: boolean; regex?: boolean } = {},
@@ -771,35 +591,23 @@ export function Terminal({
   }
 
   /**
-   * How much of a dropped file goes over IPC at a time.
-   *
-   * The bytes have to travel through the webview at all because Tauri's native
-   * drag-drop is off on purpose — enabling it breaks the HTML5 drag events
-   * tab-to-pane dragging is built on (see `dragDropEnabled` in
-   * tauri.conf.json). 256 KB is large enough that the per-call overhead
-   * disappears and small enough that the backend's four-deep queue is a
-   * fraction of a megabyte rather than a buffer worth worrying about.
+   * Upload chunk size over IPC. Bytes go through the webview because Tauri's
+   * native drag-drop is off (it breaks tab dragging; see `dragDropEnabled` in
+   * tauri.conf.json).
    */
   const UPLOAD_CHUNK_BYTES = 256 * 1024
 
-  /** One place for the three sequences that can report a directory, so a pane
-   *  and the status bar can never disagree about which one arrived last. */
+  /** One place for the three sequences that can report a directory. */
   function noteRemoteCwd(cwd: string) {
     onRemoteCwdRef.current?.(cwd)
-    // Kept locally as well as reported upwards: a file dropped on this pane
-    // goes to the directory this pane is sitting in, and the drop handler is
-    // local. Routing it up to App state and back down as a prop would make the
-    // destination a render behind.
+    // Kept locally too: the drop handler needs it without a render's delay.
     remoteCwdRef.current = cwd
   }
 
-  /** Only SSH has a file transfer channel at all. Asked of the shared mapping
-   *  rather than by matching protocols here, so a new source variant cannot
-   *  quietly become "not SSH" in one place and SSH in another. */
+  /** Only SSH can transfer files. */
   const canUpload = conn.transportOf(source) === 'ssh'
 
-  /** The prompt's own Send: remembers the directory as agreed — so a second
-   *  drop into the same reported one goes straight out — and then uploads. */
+  /** The prompt's Send: remembers the directory as agreed, then uploads. */
   function sendDropDest(dest: { file: File; path: string }) {
     const path = dest.path.trim()
     lastDestRef.current = path
@@ -809,12 +617,8 @@ export function Terminal({
   }
 
   /**
-   * Sends one file to `remoteDir` on this pane's host, keeping its name.
-   *
-   * Reads the file in slices and hands each to the backend, which streams them
-   * straight into the SFTP write — so the file is never held whole on either
-   * side, and the progress shown is bytes the server has actually taken rather
-   * than bytes the webview has read.
+   * Sends one file to `remoteDir` on this pane's host, streamed in slices
+   * straight into the SFTP write. Progress is bytes the server has accepted.
    */
   async function uploadFile(file: File, remoteDir: string) {
     const sessionId = sessionIdRef.current
@@ -880,21 +684,14 @@ export function Terminal({
       }
       await sftp.uploadFinish(transferId)
     } catch {
-      // A chunk is refused when the transfer is already over — canceled from
-      // the button, or failed on the far side. Both have reported themselves
-      // through the channel already, so this only has to stop pushing and
-      // make sure nothing is left half-written.
+      // The transfer already ended (canceled or failed, already reported).
       await sftp.cancelTransfer(transferId).catch(() => {})
     }
   }
 
-  /** The file to send, or null having said out loud why not. The rules
-   *  themselves are in `verdictForDrop`. */
+  /** The file to send, or null after reporting why; see `verdictForDrop`. */
   function fileFromDrop(e: React.DragEvent): File | null {
-    // `webkitGetAsEntry` has to be called while the handler runs — the item
-    // list is emptied as soon as it returns — and it is the only reliable way
-    // to tell a folder from a file, since a dropped folder arrives as a `File`
-    // with an empty type and a plausible-looking size.
+    // Must run during the handler; a dropped folder otherwise looks like a file.
     const folder = Array.from(e.dataTransfer.items).some(
       (item) => item.webkitGetAsEntry?.()?.isDirectory,
     )
@@ -917,33 +714,22 @@ export function Terminal({
     if (searchOpen) {
       searchInputRef.current?.focus()
       searchInputRef.current?.select()
-      // Restore highlights for a query still in the box from last time it
-      // was open, rather than making the user retype to see them again.
+      // Restore highlights for a query still in the box.
       if (searchQuery) runSearch(searchQuery, { incremental: true })
     } else {
-      // Leaving search shouldn't leave the whole scrollback stippled with
-      // highlights behind you.
+      // Don't leave highlights behind.
       termRef.current?.clearSearchDecorations()
       setSearchResults({ index: -1, count: 0 })
-      // Closing the box unmounts the input that had focus, which drops focus
-      // to <body> — so every route out of search left the pane looking active
-      // while swallowing every keystroke until you clicked it. Handled here
-      // rather than at each call site so Escape, Ctrl+Shift+F, the close
-      // button and the toolbar toggle all get it.
-      //
-      // Guarded on having actually been open: this effect also runs once on
-      // mount with `searchOpen` already false, and focusing then would steal
-      // focus from whichever pane really has it in a split.
+      // Closing unmounts the focused input, dropping focus to <body>; return it
+      // to the pane. Guarded so the mount-time run doesn't steal focus.
       if (wasSearchOpen.current) termRef.current?.focus()
     }
     wasSearchOpen.current = searchOpen
-    // Only meant to fire when the box opens/closes — searchQuery is read as a
-    // one-shot restore, not a trigger (keystrokes drive search via onChange).
+    // Fires on open/close only; searchQuery is a one-shot restore.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchOpen])
 
-  // Re-run the current query when a toggle flips so the highlights/count
-  // reflect the new mode immediately, without waiting for the next keystroke.
+  // Re-run the query when a toggle flips.
   useEffect(() => {
     if (searchOpen && searchQuery) runSearch(searchQuery, { incremental: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -959,19 +745,8 @@ export function Terminal({
     termRef.current = new GhosttyEngine()
     const term = termRef.current
 
-    // The theme/font effects above are declared before this one, so on a first
-    // mount they run while termRef is still null and their settings never reach
-    // the engine — it was left on its own built-in defaults (gray on black)
-    // rather than the configured theme. Applying them here is also what gets
-    // the palette into the Ghostty core, which resolves every cell's color
-    // against it at construction.
-    //
-    // Every setting the engine takes has to be repeated here, not just added to
-    // the effect above: the effect only ever fires for *changes*, so anything
-    // missing from this list is silently absent on a new pane and correct on
-    // every existing one. That is exactly how the cursor preference shipped
-    // wrong — new panes came up as the engine's own default block instead of
-    // the configured shape.
+    // The settings effects above ran before the engine existed, and only fire on
+    // changes, so every engine setting must be applied here too.
     term.setTheme(
       settingsRef.current.themeName,
       settingsRef.current.backgroundOpacity,
@@ -982,23 +757,16 @@ export function Terminal({
     term.setCursorStyle(settingsRef.current.cursorStyle, settingsRef.current.cursorBlink)
     term.setTextBlending?.(settingsRef.current.textBlending)
     term.setLigatures?.(settingsRef.current.ligatures)
-    // Not part of `settings` — it is per-session, not global — but it obeys
-    // the same rule as everything above: repeated here so a new pane gets it,
-    // because the effect that tracks it only fires on changes.
+    // Per-session, same rule.
     term.setBackspaceSendsCtrlH?.(backspaceRef.current)
-    // Local and elevated shells both run on a ConPTY, which keeps no
-    // scrollback of its own and repaints after a resize, so rows pulled back
-    // out of ours get painted over and lost. Set once per engine: this effect
-    // builds a new one whenever the source changes.
+    // ConPTY keeps no scrollback and repaints after a resize, so rows pulled
+    // back from ours would be lost.
     const transport = conn.transportOf(source)
     term.setResizePullsScrollback?.(transport !== 'local' && transport !== 'elevated')
-    // Paths are links only where there is somewhere to send one — see
-    // `pathFlavorFor`. Same once-per-engine reasoning as above.
+    // Paths are links only where there's somewhere to send one.
     term.setPathLinks?.(onOpenPathRef.current === undefined ? null : pathFlavorFor(source))
-    // Read back rather than echoing the setting: the engine resolves an
-    // unknown tier to its own fallback, and this has to describe what the pane
-    // got. Reported after the setter above and only here — the core fixes the
-    // budget when it builds, so it cannot change for the life of this engine.
+    // Read back from the engine, which resolves unknown tiers and fixes the
+    // budget at construction.
     onScrollbackBudgetRef.current?.(term.scrollbackBudgetBytes)
 
     const searchResultsListener = term.onSearchResult((result) => {
@@ -1006,8 +774,7 @@ export function Terminal({
       setSearchResults({ index: result.index, count: result.count })
     })
 
-    // Engines that can fail to start say so here (see TerminalEngine.
-    // onInitError); ones that can't don't implement it.
+    // Engines that can fail to start report it here.
     const initErrorListener = term.onInitError?.((message) => {
       reportEngineFailure(message)
       if (disposed) return
@@ -1018,28 +785,15 @@ export function Terminal({
     term.fit()
     reportDimensions(term)
 
-    // Custom scrollbar overlay. It originated as a replacement for
-    // xterm.js's own scrollbar widget, which explicitly doesn't support
-    // arrow buttons (its bundled source throws if `verticalHasArrows` is
-    // ever set) — the engine has changed since, but a scrollbar styled to
-    // match native Windows console scrollbars is still what's wanted. See
-    // the .term-scrollbar-* rules in index.css, which also hide any
-    // engine-drawn scrollbar so the two don't overlap.
-    // z-index (not just position) is what actually matters here: without an
-    // explicit value, this element doesn't establish its own CSS stacking
-    // context, so the scrollbar's z-index below "escapes" it and competes
-    // for paint order against its own siblings — the connecting/
-    // connectFailed/searchOpen overlay divs in the JSX below, none of which
-    // set an explicit z-index either — painting over them and silently
-    // eating clicks meant for whatever's underneath instead of respecting
-    // DOM order like a plain position:relative box would.
+    // Custom scrollbar overlay with arrow buttons, styled like the native Windows
+    // console's (see .term-scrollbar-* in index.css). The explicit z-index gives
+    // the container its own stacking context, so the scrollbar doesn't paint over
+    // (and eat clicks meant for) the overlay siblings in the JSX below.
     container.style.position = 'relative'
     container.style.zIndex = '0'
     const scrollbarEl = document.createElement('div')
     scrollbarEl.className = 'term-scrollbar'
-    // Fixed-width inner box for the actual visible/interactive controls,
-    // anchored to the right edge of the (dynamically wider) outer masking
-    // box — see the .term-scrollbar-inner comment in index.css.
+    // Fixed-width controls anchored right inside the wider masking box.
     const innerEl = document.createElement('div')
     innerEl.className = 'term-scrollbar-inner'
     const upBtn = document.createElement('div')
@@ -1055,23 +809,10 @@ export function Terminal({
     scrollbarEl.append(innerEl)
     container.appendChild(scrollbarEl)
 
-    // The CSS width above is only a fallback — FitAddon reserves gutter
-    // space for "wherever a scrollbar will go", but the terminal's actual
-    // rendered canvas (cols * cellWidth) essentially never lands exactly on
-    // that boundary, since an integer column count almost always leaves a
-    // few leftover pixels of a partial column. Measuring the canvas's real
-    // right edge and sizing this overlay to close that exact gap covers it
-    // precisely regardless of font size or how wide that leftover sliver
-    // happens to be, rather than assuming a fixed width matches.
-    //
-    // This has to be recomputed every time the grid resizes, not just when the
-    // OS window does. The box is opaque and sits above the canvas, so a width
-    // measured while the canvas is still at its 80x24 fallback masks the right
-    // half of the pane — and because it paints the theme background, the result
-    // reads as text truncated on a clean column boundary rather than as an
-    // overlay. That is the whole of the "terminal doesn't fill the container
-    // until you resize the window" bug: resizing was simply the only thing that
-    // called this again.
+    // Size the mask to the real gap between the canvas's right edge and the
+    // container (a partial column plus the gutter). Recomputed whenever the grid
+    // resizes, not just the window: a width measured at the 80x24 fallback masks
+    // half the pane.
     const canvasObserver = new ResizeObserver(() => updateScrollbarGeometry())
     const updateScrollbarGeometry = () => {
       let canvasRight = 0
@@ -1087,27 +828,20 @@ export function Terminal({
           canvasBottom = Math.max(canvasBottom, rect.bottom)
         }
       }
-      // Watching the canvases themselves is what makes this self-correcting:
-      // the container doesn't change size when the grid refits from the 80x24
-      // fallback to its real width, so the observer on the container never
-      // fires and the mask keeps its stale width. Re-observing here (observe()
-      // is idempotent per element) also picks up a canvas that was swapped out
-      // from under us by a renderer rebuild.
+      // Observe the canvases themselves: the container doesn't resize when the
+      // grid refits, and a renderer rebuild can swap the canvas.
       for (const canvas of container.querySelectorAll('canvas')) {
         canvasObserver.observe(canvas)
       }
       if (canvasRight === 0) return
       const gap = container.getBoundingClientRect().right - canvasRight
-      // Clamped because the failure modes are wildly asymmetric: too narrow
-      // leaves a sliver of gutter in the wrong shade, too wide hides the
-      // terminal. The area legitimately needing masking is one partial column
-      // plus the gutter, so anything beyond that is a stale measurement.
+      // Clamped to one partial column plus the gutter; anything wider is stale
+      // and would hide the terminal.
       const width = Math.min(Math.max(gap, SCROLLBAR_GUTTER_PX), SCROLLBAR_GUTTER_PX * 8)
       scrollbarEl.style.width = `${width}px`
 
-      // The frame covers exactly what the grid does not: the wrapper's
-      // padding, the gutter, and the partial column and row the grid leaves
-      // at its right and bottom edges. See where it is rendered for why.
+      // The frame covers exactly what the grid doesn't: padding, gutter, and the
+      // partial column and row.
       const frame = frameRef.current
       if (frame) {
         const box = frame.getBoundingClientRect()
@@ -1118,11 +852,8 @@ export function Terminal({
       }
     }
 
-    // Foreground for the thumb/arrows (matching xterm's own default
-    // scrollbarSliderBackground behavior) so they stay legible against any
-    // preset theme. There is no background color to set any more: the
-    // gutter is covered by the frame, at the pane's own opacity, rather than
-    // by an opaque fill here — see the .term-scrollbar comment in index.css.
+    // Thumb/arrow color from the theme foreground. The gutter background comes
+    // from the frame; see .term-scrollbar in index.css.
     function updateScrollbarColors() {
       const theme = findTheme(settingsRef.current.themeName)
       const [fr, fg, fb] = hexToRgb(theme.foreground)
@@ -1131,24 +862,9 @@ export function Terminal({
     updateScrollbarColors()
     updateScrollbarColorsRef.current = updateScrollbarColors
 
-    // The interactive controls (thumb + arrows) are shown only when there's
-    // actual scrollback to reach (updateThumb) *and* this is the focused
-    // pane (updateScrollbarFocusRef) — a background pane's scrollbar would
-    // otherwise sit there as a non-interactive-feeling distraction on
-    // content you're not looking at. `.term-scrollbar` itself (the
-    // background mask covering FitAddon's reserved gutter — see index.css)
-    // stays visible unconditionally: it's not optional decoration, it's
-    // what keeps that gutter matching the pane's background at all, needed
-    // even when nothing is scrollable or focused.
-    // `visibility` rather than `display`: reading layout (track.clientHeight,
-    // below) from a `display: none` subtree always returns 0, which would
-    // corrupt the thumb's position/size if updateThumb() ever runs while
-    // hidden (e.g. this pane's container resizing when a sibling pane is
-    // split off it, while this one isn't the newly-focused pane) — and
-    // nothing would recompute it again until the next scroll/write, leaving
-    // the wrong position baked in even after this pane regains focus.
-    // `visibility: hidden` keeps real layout geometry available throughout,
-    // and is equally non-interactive/invisible.
+    // Controls show only when there's scrollback and the pane is focused; the
+    // mask itself always stays. `visibility`, not `display`, so track geometry
+    // stays measurable while hidden.
     let hasOverflow = false
     let isFocused = activeRef.current ?? false
     function applyScrollbarVisibility() {
@@ -1195,9 +911,7 @@ export function Terminal({
       }
       window.addEventListener('mouseup', stop)
     }
-    // preventDefault on mousedown (rather than an explicit refocus after)
-    // is what stops the browser from shifting focus off the terminal when
-    // clicking these — the standard scrollbar-widget trick.
+    // preventDefault keeps focus on the terminal.
     const onUpMouseDown = (e: MouseEvent) => {
       e.preventDefault()
       startRepeat(() => term.scrollLines(-1))
@@ -1209,8 +923,7 @@ export function Terminal({
     upBtn.addEventListener('mousedown', onUpMouseDown)
     downBtn.addEventListener('mousedown', onDownMouseDown)
 
-    // Page up/down when clicking the track itself, above/below the thumb —
-    // dragging the thumb is handled separately below.
+    // Clicking the track pages up or down.
     const onTrackMouseDown = (e: MouseEvent) => {
       if (e.target !== track) return
       e.preventDefault()
@@ -1251,37 +964,25 @@ export function Terminal({
 
     const scrollListener = term.onScroll(() => {
       updateThumb()
-      // A list drawn against a line that has just moved is worse than no list:
-      // it would sit over unrelated text and complete a prompt that is no
-      // longer on screen. Clearing also forgets the last query, so the next
-      // parsed write re-offers if the prompt is still there.
+      // A list drawn against a line that just moved would sit over unrelated text.
       autocomplete.clear()
     })
     const writeParsedListener = term.onWriteParsed(() => {
       updateThumb()
-      // Where a pending `B` origin is finally measured — the OSC scanner runs
-      // ahead of the parser, so at marker time the prompt is not on the grid
-      // yet. Also the moment the offered list is re-checked against what the
-      // line now says, which is how a suggestion goes away when the far end
-      // redraws underneath it.
+      // Pending `B` origins are measured here (the OSC scanner runs ahead of the
+      // parser), and the offered list is re-checked against the redrawn line.
       promptInput.noteParsed()
-      // The far end is answering: brings the comparison forward, and is where
-      // the round trip this session is measured at comes from.
+      // The far end answered; also how the session's round trip is measured.
       historyRepeats.noteParsed()
       autocomplete.refresh()
       harvestOnce()
     })
 
-    // Shell integration. Nothing here fires unless the far end is actually
-    // emitting OSC 133/633 — an un-integrated shell (or a switch console,
-    // which will never have one) simply leaves the tracker idle forever, so
-    // there's no setting gating the tracking itself, only the notifications
-    // it can produce. Both identifiers get the same handler: OSC 633 is
-    // VS Code's superset of the same letters, and a shell configured for
-    // one commonly emits the other alongside it.
-    // Whether this host has ever named a command it ran, via OSC 633 `E`.
-    // Once it has, passive capture from the screen has nothing left to add —
-    // see `captureTypedLine`.
+    // Shell integration via OSC 133 and VS Code's superset OSC 633 (same
+    // handler). Without integration the tracker just stays idle.
+    //
+    // Whether this host has reported a command via OSC 633 `E`; once it has,
+    // screen capture is unnecessary (see `captureTypedLine`).
     let reportsCommandText = false
     const tracker = new CommandTracker({
       onChange: (activity) => {
@@ -1290,24 +991,12 @@ export function Terminal({
       onComplete: (result) => {
         if (disposed) return
         onCommandCompleteRef.current?.(result)
-        // The shell named what it ran, so it will keep doing so, and there is
-        // no longer any reason to reconstruct command lines from the screen.
-        // See `captureTypedLine`.
         if (result.command) reportsCommandText = true
-        // Tier 2 capture. The command line arrives here already verbatim —
-        // the shell said what it ran, via OSC 633 `E` — so there is nothing to
-        // reconstruct and nothing that can be mistaken for a password: a
-        // shell that reports its command lines does not report the reply to
-        // `read -s`.
-        //
-        // Recorded on completion rather than on start, because that is where
-        // the tracker hands the text over, and because a line that never
-        // reached `D` is one the session dropped under — a half-run command
-        // nobody wants offered back. Its exit code is deliberately ignored:
-        // a command that failed is still one you may want to recall and fix,
-        // and under a partial integration the code is often null anyway.
+        // Tier 2 capture: the shell reported the command verbatim, so nothing can
+        // be mistaken for a password. Recorded on completion (a line that never
+        // reached `D` was dropped); failed commands are still worth recalling.
         if (!settingsRef.current.autocompleteEnabled || !result.command) return
-        // Null for a pane that records nothing — see `historyKeyForSource`.
+        // Null for a pane that records nothing; see `historyKeyForSource`.
         const historyKey = historyKeyForSource(source, savedProfileRef.current)
         if (!historyKey) return
         void recordCommand({
@@ -1316,17 +1005,12 @@ export function Terminal({
           cwd: remoteCwdRef.current,
           source: 'integration',
         }).catch(() => {
-          // Best-effort, and deliberately silent. Autocomplete failing to
-          // remember a command is not something to interrupt a terminal
-          // session over, and the store is offline entirely under `npm run
-          // dev`, where there is no backend to invoke.
+          // Best-effort; the store is offline under `npm run dev`.
         })
       },
     })
-    // What a program on the far end last reported through OSC 9;4, so a
-    // repeat can be recognized and dropped before it reaches App. A busy app
-    // re-sends the same indeterminate state for as long as it runs, and this
-    // handler is on the output hot path.
+    // Drops repeated OSC 9;4 reports before they reach App; busy apps resend the
+    // same state constantly, on the output hot path.
     const progressTracker = new ProgressTracker({
       onChange: (progress) => {
         if (!disposed) onProgressRef.current?.(progress)
@@ -1334,31 +1018,16 @@ export function Terminal({
       onComplete: (durationMs) => {
         if (!disposed) onProgressCompleteRef.current?.(durationMs)
       },
-      // A full terminal reset takes any progress with it: the program that set
-      // it has just had the screen pulled out from under it, which is what
-      // `reset` at a shell, or a full-screen program starting up, does to a
-      // half-finished report. The core handles the RIS itself — this is only
-      // the indicator on the tab strip, which the core knows nothing about.
-      //
-      // The tracker holds this open only while a report is showing, because
-      // watching is not free; see the note on `watchReset`.
+      // A full reset (RIS) clears the tab's progress indicator. Watched only
+      // while a report is showing; see `watchReset`.
       watchReset: (cb) => term.registerResetHandler(cb),
     })
 
-    // What is being typed at the prompt right now, read off the grid rather
-    // than modeled from keystrokes — see lib/promptInput.ts for why that is
-    // the only version of this that works.
+    // The line being typed, read off the grid; see lib/promptInput.ts.
     const promptInput = new PromptInputTracker(term)
-    // Feedback for walking the shell's history: an Up that lands on the
-    // command already showing blinks it, so a stretch of duplicates stops
-    // looking like a key that never arrived. Reads the same line the tracker
-    // above does. Independent of autocomplete and of its setting — this is
-    // about whether a keypress did anything, which is not a completion
-    // feature.
-    //
-    // Straight to the renderer rather than through React state: these arrive
-    // as fast as someone can hold Up, and each one is a field write and a
-    // repaint rather than a re-render of the pane.
+    // Blinks the command when Up lands on the one already showing, so duplicate
+    // history entries don't look like a dropped key. Independent of
+    // autocomplete. Goes straight to the renderer, not React state.
     const historyFlicker = new HistoryFlicker((spans) => {
       if (!disposed) term.setHiddenSpans?.(spans)
     })
@@ -1402,31 +1071,18 @@ export function Terminal({
     autocompleteRef.current = autocomplete
 
     /**
-     * Tier 1: import this host's own shell history, once.
-     *
-     * Fired on the first output rather than from the connect path — which is
-     * as close to "the first prompt" as this can get without shell
-     * integration, and shell integration is exactly what a host that needs
-     * this most does not have. Waiting also keeps it off the critical path of
-     * a connection: nothing here should make a session take longer to become
-     * usable.
-     *
-     * Once per session, whatever the outcome. A host that refuses — a
-     * restricted shell, `ForceCommand`, an appliance whose `exec` is its own
-     * CLI — must not be asked again every time output arrives, and a host that
-     * answered has nothing more to say until its history file grows.
+     * Tier 1: import this host's shell history once per session, on first output
+     * (the closest thing to "first prompt" without integration, and off the
+     * connect path). Never retried, so a refusing host isn't asked repeatedly.
      */
     let harvestAttempted = false
     function harvestOnce() {
       if (harvestAttempted) return
-      // SSH only: importing needs a second channel on the live connection, and
-      // neither a telnet session nor a serial line has one.
+      // SSH only: it needs a second channel.
       if (conn.transportOf(source) !== 'ssh') return
       const id = sessionIdRef.current
       if (!id) return
-      // The outer gate, and the only one this side owns — the harvest's own
-      // setting and the saved session's override of it are resolved backend
-      // side, before any channel is opened. See `harvestRemoteHistory`.
+      // The harvest's own setting and profile override are resolved backend side.
       if (!settingsRef.current.autocompleteEnabled) return
       const historyKey = historyKeyForSource(source, savedProfileRef.current)
       if (!historyKey) return
@@ -1435,55 +1091,29 @@ export function Terminal({
         sessionId: id,
         host: historyKey,
         importGlobally: settingsRef.current.autocompleteImportRemoteHistory,
-        // The profile's own import override applies whenever the history is
-        // filed under it, which is the same decision as the key above.
+        // The profile's import override applies when history is filed under it.
         profileId: historyKey.startsWith('profile://') ? historyKey.slice('profile://'.length) : null,
       }).catch(() => {
-        // A host that will not answer is an ordinary outcome, not something to
-        // interrupt a session over.
+        // An ordinary outcome.
       })
     }
 
     /**
-     * Tier 3 capture: remember a command on a host that never said it ran one.
-     *
-     * Only for hosts with no shell integration — where there is one, its `E`
-     * report is verbatim and this reconstruction could only be worse. The
-     * two conditions below are what make it safe rather than merely
-     * plausible:
-     *
-     *   - **Everything typed has to have shown up.** If less is visible than
-     *     went out, something swallowed it, and the thing that swallows
-     *     keystrokes is a password prompt. One unechoed character disqualifies
-     *     the whole line.
-     *   - **The text comes off the grid**, so what gets stored is what was on
-     *     screen — never a keystroke buffer that might hold something the
-     *     screen never showed.
+     * Tier 3 capture, for hosts without shell integration. Safe because every
+     * typed character must have appeared on screen (an unechoed one suggests a
+     * password prompt), and the stored text comes off the grid, not keystrokes.
      */
     function captureTypedLine() {
       if (!settingsRef.current.autocompleteEnabled) return
-      // This host reports its own command lines, so reading one off the grid
-      // would only add a worse copy of the same thing.
-      //
-      // Keyed on having actually seen a reported command rather than on the
-      // prompt being marked, and the difference matters: a shell that brackets
-      // its prompt without emitting OSC 633 `E` — the original OSC 133, which
-      // has no field for the command text — would otherwise have a marked
-      // prompt, no reported commands, and nothing recorded at all. Our own
-      // snippets emit both, so for them this flips on the first command and
-      // stays on.
+      // Keyed on having seen a reported command, not on a marked prompt: plain
+      // OSC 133 marks prompts but can't report command text.
       if (reportsCommandText) return
       const input = promptInput.read()
       if (!input || input.text.trim() === '') return
-      // An unmarked prompt is a guessed one, and a guess cannot tell a shell
-      // prompt from a program waiting for a keypress. The `n` that answers
-      // apt's `[Y/n]` would otherwise be stored as a command. See
-      // `tooShortToInfer`.
+      // A guessed prompt can't tell a shell from `[Y/n]`; see `tooShortToInfer`.
       if (!promptInput.exact && tooShortToInfer(input.text)) return
       if (input.text.length < promptInput.typedCount) return
-      // The gate decision 2 turns on: a PowerShell or CMD pane never reaches
-      // the screen-harvest path at all, rather than having its results
-      // filtered after the fact.
+      // PowerShell and CMD panes never reach screen capture.
       const historyKey = historyKeyForSource(source, savedProfileRef.current)
       if (!historyKey) return
       void recordCommand({
@@ -1494,101 +1124,64 @@ export function Terminal({
       }).catch(() => {})
     }
 
-    /** What the core looked like when the command now running started — see
-     *  the `C` case below. */
+    /** Core modes when the running command started; see the `C` case below. */
     let modesAtCommandStart: ModeSnapshot | null = null
     const oscListeners = [133, 633].map((ident) =>
       term.registerOscHandler(ident, (data) => {
-        // A prompt being drawn, or a command reporting its exit, means the
-        // program that set any progress is gone. Apps are supposed to clear
-        // their own with `9;4;0` on the way out, and a great many do — but one
-        // killed with SIGKILL, or cut off mid-run, never gets to, and the
-        // indicator would otherwise spin for the rest of the pane's life. The
-        // shell reaching a fresh prompt is the proof that it can't still be
-        // running. Done here rather than inside CommandTracker: this is not
-        // the shell's signal to own, only the moment that invalidates it.
+        // A new prompt or exit report proves the program that set progress is gone
+        // (one killed with SIGKILL never clears its own).
         const kind = data.split(';')[0]
         if (kind === 'A' || kind === 'D') progressTracker.set(null)
-        // The same proof covers the modes it set. A program killed outright
-        // leaves mouse reporting or the Kitty protocol on, and bash then reads
-        // pointer movement as typed text and ignores the keyboard — what a
-        // dropped link does, with the link still up. Taken at the first `C`
-        // only, since some shells repeat it per pipeline segment and a later
-        // one would count the first segment's modes as the shell's.
+        // Likewise reset modes a killed program left on (mouse reporting, Kitty
+        // keyboard). Snapshot at the first `C` only; some shells repeat it per
+        // pipeline segment.
         if (kind === 'C') modesAtCommandStart ??= term.captureModes?.() ?? null
         else if ((kind === 'A' || kind === 'D') && modesAtCommandStart) {
           term.resetLeftoverModes?.(modesAtCommandStart)
           modesAtCommandStart = null
         }
-        // `P;Cwd=` rides in on the same sequence. Read here rather than in
-        // `CommandTracker` because it is not part of what the shell is
-        // *doing* — it is the same fact OSC 7 carries, arriving by another
-        // road, and plenty of hosts take only this one.
+        // `P;Cwd=` carries the same fact as OSC 7.
         const reported = parseCwdProperty(data)
         if (reported) noteRemoteCwd(reported)
-        // Same markers, a second reader: `A`/`B` say where the prompt ends and
-        // the typed line begins, and `C`/`D` say when there is no line to
-        // complete because something is running.
+        // `A`/`B` bound the typed line; `C`/`D` mean nothing to complete.
         promptInput.handleOsc(data)
         return tracker.handleOsc(data)
       }),
     )
-    // Progress and notifications the *application* emits, as opposed to the
-    // shell markers above. This is the only signal that survives a full-screen
-    // program over SSH: there is no local PTY to inspect, and the shell sees
-    // the whole session as one command and says nothing until it ends. See
-    // lib/appProgress.ts.
+    // Application progress and notifications: the only signal that survives a
+    // full-screen program over SSH. See lib/appProgress.ts.
     oscListeners.push(
       term.registerOscHandler(9, (data) => {
         const result = parseOsc9(data)
         if (result.kind === 'progress') {
           progressTracker.set(result.progress)
-          // A program reporting for itself supersedes the shell's account of
-          // the same run — see CommandTracker.noteProgress. Told on the report
-          // rather than from `progressTracker.onChange`, because a repeat of a
-          // state already showing is dropped there as a no-op, and because a
-          // clear counts: `9;4;0` is a program saying it is not working, which
-          // is exactly as much of an answer as `9;4;3`. Claude Code opens with
-          // one, and taking it means its pane is quiet from launch instead of
-          // sweeping until the first turn.
+          // The program's own report supersedes the shell's account of the run,
+          // including a clear (`9;4;0`); see CommandTracker.noteProgress.
           tracker.noteProgress()
         } else if (result.kind === 'notify') onRemoteNotifyRef.current?.(result.notification)
-        // A Windows directory is only this pane's if the shell is on this
-        // machine. Over SSH it would become the next drop's destination.
+        // A Windows directory only applies to a local shell.
         else if (result.kind === 'cwd' && conn.transportOf(sourceRef.current) !== 'ssh') {
           noteRemoteCwd(result.cwd)
         }
-        // Claimed either way, including the ignored forms: nothing else here
-        // handles OSC 9, and letting an unrecognized subcommand fall through
-        // gains nothing.
+        // Claimed either way; nothing else handles OSC 9.
         return true
       }),
       term.registerOscHandler(777, (data) => {
         const notification = parseOsc777(data)
         if (notification) onRemoteNotifyRef.current?.(notification)
-        // Not claimed unconditionally: OSC 777 has subcommands beyond
-        // `notify` that this doesn't implement, and swallowing them would
-        // silently block a later handler that does.
+        // OSC 777 has other subcommands a later handler may implement.
         return notification !== null
       }),
     )
-    // What the far end says it is and where it is. Like the progress
-    // sequences above, these come from whatever is running rather than from
-    // the shell's prompt markers, so they work with no integration set up and
-    // keep reporting through a full-screen program. Neither renames the tab —
-    // see lib/remoteIdentity.ts.
+    // Title and directory from the far end; work without integration. Neither
+    // renames the tab; see lib/remoteIdentity.ts.
     oscListeners.push(
-      // OSC 0 sets the icon name and the title together; OSC 2 the title
-      // alone. Not claimed: OSC 0's icon-name half is a real part of the
-      // sequence that this doesn't implement, and the engine keeps its own
-      // notion of the title from the same bytes.
+      // OSC 0 (icon name + title) and OSC 2 (title). Not claimed.
       ...[0, 2].map((ident) =>
         term.registerOscHandler(ident, (data) => {
           const title = parseWindowTitle(data)
           onRemoteTitleRef.current?.(title)
-          // Not a reported directory — a guess at one, kept only to prefill
-          // the prompt a drop puts up when nothing has reported anything. See
-          // `guessCwdFromTitle`.
+          // Only a guess, used to prefill the drop prompt.
           titleCwdRef.current = guessCwdFromTitle(title)
           return false
         }),
@@ -1596,13 +1189,10 @@ export function Terminal({
       term.registerOscHandler(7, (data) => {
         const cwd = parseCwd(data)
         if (cwd) noteRemoteCwd(cwd)
-        // Claimed only when it parsed. A payload that isn't a directory is
-        // something else using the number, and swallowing it would silently
-        // block a handler that understands it.
+        // Claimed only when it parsed.
         return cwd !== null
       }),
-      // iTerm2's `CurrentDir=`, which several shells emit alongside or instead
-      // of OSC 7.
+      // iTerm2's `CurrentDir=`.
       term.registerOscHandler(1337, (data) => {
         const cwd = parseCwdProperty(data)
         if (cwd) noteRemoteCwd(cwd)
@@ -1610,30 +1200,22 @@ export function Terminal({
         return cwd !== null
       }),
     )
-    // OSC 52 is the only copy path a program on the far end of a session has:
-    // it cannot reach this machine's clipboard, and while it is grabbing the
-    // mouse for its own UI the user cannot drag out a selection either. Reads
-    // are parsed and dropped — answering one would hand whatever the user last
-    // copied (a password, a token) to the remote end unasked.
+    // OSC 52: the far end's only route to the clipboard. Reads are dropped, so
+    // the host can't read what the user copied.
     oscListeners.push(
       term.registerOscHandler(52, (data) =>
         applyOsc52(data, {
           allowWrite: settingsRef.current.clipboardWriteFromRemote,
           writeText,
-          // The write is the point of the feature, but doing it silently is
-          // what makes clipboard poisoning work: the user pastes into a
-          // *local* shell believing the contents are their own. A toast costs
-          // nothing when the write was wanted, and is the whole defense when
-          // it wasn't.
+          // Toast on every write: silent writes are what make clipboard poisoning
+          // work.
           onWrote: () => toast.info('The remote host set your clipboard'),
           onError: logError,
         }),
       ),
     )
-    // Entering the alternate screen mid-command means a full-screen program
-    // took over (vim, top, less). Recorded on the run so the completion it
-    // eventually reports can be recognized as "you quit an editor", not "a
-    // batch job you were waiting on has landed".
+    // Alternate screen mid-command means a full-screen program, so its
+    // completion isn't reported like a finished batch job.
     const bufferListener = term.onBufferChange((isAlternate) => {
       setAltScreen(isAlternate)
       promptInput.setAltScreen(isAlternate)
@@ -1652,27 +1234,17 @@ export function Terminal({
           onStatusRef.current?.(event.status)
           const retry = parseReconnecting(event.status)
           if (event.status.startsWith('failed') || isDisconnect(event.status)) {
-            // Before the status line, so it lands on the primary screen in
-            // plain colors rather than inside a dead program's alternate
-            // screen — and so a reconnect's new shell isn't handed the mouse
-            // and keyboard modes that program never got to turn off.
+            // Before the status line, so it lands on the primary screen, and so a new
+            // shell doesn't inherit the dead program's modes.
             term.resetSessionModes?.()
             modesAtCommandStart = null
             term.writeln(`\r\n[${event.status}]`)
-            // Whatever was running went down with the connection. Its real
-            // outcome is unknowable from here, so drop it silently rather
-            // than leaving the tab spinning or claiming a completion. The
-            // same goes for any progress an application had set: it had no
-            // chance to clear it, and there is now no session it could
-            // describe.
+            // The running command's outcome and any progress are now unknowable.
             tracker.reset()
             progressTracker.reset()
           }
           if (retry) {
-            // Supersedes both terminal states: the run is still going, and the
-            // "failed" the last attempt reported is a step in it rather than a
-            // verdict. Giving up arrives as its own `failed`, which is what
-            // finally sticks.
+            // The retry run supersedes both terminal states until it gives up.
             setReconnecting(retry)
             setConnectFailed(null)
             setDisconnected(false)
@@ -1681,12 +1253,7 @@ export function Terminal({
             setConnectFailed(event.status.replace(/^failed: /, ''))
           } else if (event.status === 'connected') {
             if (reconnectingRef.current) {
-              // Be honest about what came back. SSH has no session resumption:
-              // the remote process is gone, the working directory is back to
-              // the login default, and anything unsaved in a full-screen
-              // program is lost. The scrollback survives because it is ours,
-              // not the server's — so say where the seam is rather than let
-              // the old output imply continuity with the new.
+              // SSH has no session resumption; mark the seam in the scrollback.
               term.writeln('\r\n[reconnected — this is a new shell]')
             }
             setReconnecting(null)
@@ -1694,12 +1261,7 @@ export function Terminal({
             isDisconnect(event.status) &&
             !shouldAutoClosePane(event.status, settingsRef.current.closeOnDisconnect)
           ) {
-            // Suppressed only when the pane is actually about to close, where
-            // the overlay would flash for the ~800ms before it vanishes.
-            // Keying that off the *setting* rather than off what the setting
-            // will do left a `lost` pane with auto-close on showing nothing at
-            // all — no overlay, and no close either, since only a clean
-            // disconnect closes now.
+            // Suppressed only when the pane is about to auto-close.
             setReconnecting(null)
             setDisconnected(true)
           }
@@ -1730,30 +1292,17 @@ export function Terminal({
       }
     }
 
-    // PTY output arrives on its own raw-bytes channel (see lib/connection.ts)
-    // rather than as a base64 string on `onEvent` — no decode step needed.
-    // Session logging happens Rust-side before these bytes are even sent,
-    // so there's nothing to do here beyond rendering.
-    // Metered against the frame rather than written the instant IPC hands the
-    // bytes over. Writing inline froze the window for up to 106 ms during a
-    // flood — not one slow parse, but ~30 deliveries of 3.5 ms each running
-    // with no chance to render between them, because IPC had a queue behind it.
-    // An idle terminal is unaffected: a keystroke echo is one small delivery
-    // into a full budget and still goes in synchronously. See lib/writeScheduler.
-    // Bytes written but not yet credited to the backend. Batched rather than
-    // acked per delivery: the backend's window is 4 MB, so crediting every
-    // 1 MB keeps it comfortably fed at a quarter of the IPC round trips.
+    // PTY output arrives on its own raw-bytes channel (see lib/connection.ts);
+    // logging happens Rust-side. Writes are metered per frame rather than
+    // inline, so a flood can't freeze the window (see lib/writeScheduler).
+    // Credit is returned in ACK_THRESHOLD_BYTES batches.
     let unacked = 0
     const scheduler = createWriteScheduler(
       (bytes) => {
-        // Wrapped rather than called directly so the real delivery path can be
-        // measured in a live session — see lib/deliveryStats.ts. Off by default,
-        // and when off this is a branch and a call, no clock reads.
+        // Measurable in a live session; see lib/deliveryStats.ts.
         deliveryStats.record(bytes.length, () => term.write(bytes))
         unacked += bytes.length
-        // Also sent the moment the queue drains, so a quiet session cannot
-        // leave credit stranded below the batch size and slowly starve itself
-        // over a long connection.
+        // Also ack when the queue drains, so credit isn't stranded.
         if (unacked >= ACK_THRESHOLD_BYTES || scheduler.pending === 0) {
           const credit = unacked
           unacked = 0
@@ -1763,8 +1312,7 @@ export function Terminal({
       },
       undefined,
       undefined,
-      // Declared so the report can tell pacing from starvation; without it a
-      // deliberate yield reads as the frontend failing to keep up.
+      // Distinguishes deliberate pacing from starvation in the report.
       deliveryStats.recordPaced,
     )
     const onData = (bytes: Uint8Array) => {
@@ -1773,9 +1321,8 @@ export function Terminal({
       scheduler.push(bytes)
     }
 
-    // Readline/Readline-hex (serial only) buffer keystrokes locally and
-    // only hand a completed line to the wire on Enter, instead of the
-    // normal one-keystroke-at-a-time passthrough — see lib/lineEditor.ts.
+    // Readline modes (serial only) send whole lines on Enter; see
+    // lib/lineEditor.ts.
     const inputMode = source.protocol === 'serial' ? source.config.inputMode : 'Normal'
     const lineEditor =
       inputMode === 'Readline' || inputMode === 'ReadlineHex'
@@ -1789,30 +1336,15 @@ export function Terminal({
               }
               conn.write(source, sessionId, bytes).catch(() => {})
             } else {
-              // Appending a bare CR and letting the existing line-ending
-              // translation (already applied to everything written to the
-              // serial port) rewrite it means Readline mode's Enter key
-              // behaves exactly like a normal typed Enter would.
+              // The serial line-ending translation turns this CR into a normal Enter.
               conn.write(source, sessionId, new TextEncoder().encode(`${line}\r`)).catch(() => {})
             }
           })
         : null
 
-    // The container measures 0x0 on the first few frames after mount — React
-    // has committed the node but the flex/resizable-panel layout above it
-    // hasn't resolved a width yet. Connecting at that point creates the PTY at
-    // the fallback 80x24, so the shell generates its MOTD (and every prompt
-    // until the first SIGWINCH lands) wrapped to a width the pane never had,
-    // which is what left the output stranded in a narrow column that only a
-    // manual window resize cleaned up. Waiting for a real measurement costs a
-    // frame or two and gets the size right the first time.
-    //
-    // The timeout matters as much as the wait: a pane created in a background
-    // tab is `display: none` and therefore legitimately 0x0 for as long as
-    // that tab stays hidden, so this can't block on a size that may never
-    // arrive. Falling back to connecting anyway just restores the old
-    // behavior for that case, and the existing ResizeObserver still corrects
-    // the size once the tab is shown.
+    // Wait for the container to settle before connecting, so the PTY is created
+    // at the real size rather than 80x24 (which wraps the MOTD wrongly). Capped,
+    // since a pane in a hidden tab stays 0x0; the ResizeObserver fixes it later.
     const beginConnect = () => {
       if (disposed) return
       termRef.current?.fit(true)
@@ -1831,22 +1363,13 @@ export function Terminal({
       const el = containerRef.current
       const w = el?.clientWidth ?? 0
       const h = el?.clientHeight ?? 0
-      // "Settled" has to mean held steady for a while, not merely non-zero and
-      // not merely equal twice. The pane climbs to its final width in stages
-      // as react-resizable-panels resolves the layout, and it rests on an
-      // intermediate width long enough to satisfy a two-frame check — which
-      // is how the PTY ended up created at ~38 columns and the server sent a
-      // MOTD truncated to match. Nothing can repair that text afterward: the
-      // later resize fixes the PTY, but the characters the server already
-      // dropped are gone, which is exactly the cropped output that only went
-      // away once something forced the shell to redraw.
+      // "Settled" means unchanged for several frames: the panel layout pauses on
+      // intermediate widths, and text the server already wrapped can't be fixed.
       if (w > 0 && h > 0 && w === lastW && h === lastH) stableFrames++
       else stableFrames = 0
       lastW = w
       lastH = h
-      // ~100ms of no movement, or a hard cap so a pane in a hidden tab (which
-      // is legitimately 0x0 for as long as that tab stays hidden) still
-      // connects rather than waiting forever.
+      // ~100ms steady, or a 1s cap.
       if (stableFrames >= 6 || performance.now() - mountedAt > 1000) {
         beginConnect()
         return
@@ -1873,8 +1396,7 @@ export function Terminal({
         }
         setConnecting(false)
       
-        // Now that the session is established, force a fit to ensure the backend
-        // PTY gets the actual layout dimensions instead of the initial 80x24.
+        // Fit again now that the session exists so the PTY gets the real size.
         termRef.current?.fit(true)
         setTimeout(() => {
           if (termRef.current) {
@@ -1890,13 +1412,10 @@ export function Terminal({
         onSessionIdRef.current?.(id)
         const { cols: initialCols, rows: initialRows } = term
         conn.resize(source, id, initialCols, initialRows).catch(() => {})
-        // So you can start typing immediately instead of having to click
-        // into the pane first — this is the point a new connection is
-        // actually usable.
+        // Ready to type into immediately.
         term.focus()
         lineEditor?.start()
-        // Here rather than as a prop default so it applies once, at connect:
-        // stopping an automatic log from the toolbar has to stay stopped.
+        // Applied once at connect, so stopping an automatic log stays stopped.
         const wantLog = loggingRef.current || autoLogRef.current === true
         applyLogging(id, wantLog)
         if (wantLog && !loggingRef.current) onAutoLogRef.current?.()
@@ -1912,80 +1431,43 @@ export function Terminal({
 
     const dataListener = term.onData((data) => {
       if (lineEditor) {
-        // Not translated: the line editor is local and matches on the
-        // engine's own ^? for its own editing. What it eventually sends is a finished
-        // line, which never contains a backspace anyway.
-        //
-        // Decoded here and nowhere else: the line editor works in characters,
-        // and this path only ever carries typing — never a mouse report, which
-        // is what made the byte channel necessary in the first place.
+        // The line editor works in characters and edits on the engine's ^?; this
+        // path only carries typing.
         lineEditor.handleData(new TextDecoder().decode(data))
         return
       }
-      // Applied here rather than via a key handler so it covers every route
-      // the engine takes to produce the byte, and only on what actually goes out
-      // on the wire. Null means the session never expressed a preference,
-      // which is ^? — what modern Unix expects.
+      // Raw bytes to the wire; Backspace translation already happened in the engine.
       if (sessionId) conn.write(source, sessionId, data)
     })
 
-    // The fan-out point, deliberately on `onInput` and not `onData`.
-    //
-    // `onData` also carries mouse tracking reports, DEC 1004 focus reports and
-    // the core's replies to host queries (DSR, DA, OSC color). None of those
-    // may leave this pane: a mouse report carries *this* pane's geometry, so
-    // in a differently-sized sibling the click lands on the wrong cell; a
-    // focus report tells a pane it gained focus it did not gain; and a reply
-    // belongs to the host that asked for it — fanning it out both leaves that
-    // host waiting out its timeout and delivers unasked-for text to panes on
-    // other machines entirely.
-    //
-    // Only what a human typed or pasted is broadcast, and it *adds* to this
-    // pane's own write above rather than replacing it (see `broadcast.send`'s
-    // `exceptPaneId`), so the single-pane path is identical either way.
-    //
-    // The backspace translation is re-derived here from this pane's setting
-    // and travels with the bytes, which is the wrong-in-principle-but-right-
-    // in-practice choice: it is a per-pane setting, and a group could in
-    // theory mix ^H and ^? hosts. Translating per target would mean fanning
-    // out the *string*, which is more machinery than a case nobody has hit is
-    // worth. Noted here rather than silently.
+    // Broadcast fans out from `onInput`, not `onData`: `onData` also carries
+    // mouse reports (this pane's geometry), focus reports and replies to host
+    // queries, none of which belong to other panes. Broadcast adds to this pane's
+    // own write (see `broadcast.send`'s `exceptPaneId`). Backspace translation
+    // uses this pane's setting for every target, which is wrong in principle for
+    // a group mixing ^H and ^? hosts.
     const inputListener = term.onInput((data) => {
-      // Autocomplete's view of typing. `onInput` rather than `onData` because
-      // this must not be fed by mouse reports or the replies the core sends to
-      // host queries — neither is someone typing at a prompt.
-      //
-      // Enter and `^C` end the line: whatever was being composed is gone, and
-      // the next thing on screen is output or a fresh prompt. Everything else
-      // is a keystroke that may have started a line on a host with no markers
-      // to say so.
+      // Autocomplete's view of typing. Enter and `^C` end the line.
       if (!lineEditor) {
         const submitted = data.some((b) => b === 0x0d || b === 0x0a)
         const abandoned = data.some((b) => b === 0x03)
         if (submitted) captureTypedLine()
         if (submitted || abandoned) {
-          // `^C` throws the line away rather than running it, so it is an end
-          // of line for tracking purposes but never something to remember.
+          // `^C` discards the line, so it's never remembered.
           promptInput.reset()
           autocomplete.reset()
           historyRepeats.reset()
           historyFlicker.stop()
         } else {
           promptInput.noteInput(data)
-          // After `noteInput`, never before: at an idle prompt with no shell
-          // integration the origin does not exist until that call infers it,
-          // and a read taken a line earlier would have nothing to compare.
+          // After `noteInput`, which may infer the prompt origin.
           historyRepeats.noteInput(data)
-          // Arms the offer on printable input and disarms it on anything else,
-          // so a list never opens because the far end redrew the line — see
+          // Only printable input arms the offer; see
           // `AutocompleteController.noteInput`.
           autocomplete.noteInput(data)
         }
       }
-      // A line-edited session (telnet without remote echo) sends whole lines
-      // from the local editor, not keystrokes; there is nothing here to fan
-      // out until the line is finished, and the keystrokes themselves would
-      // be meaningless to a remote shell.
+      // A line-edited session sends whole lines; keystrokes aren't fanned out.
       if (lineEditor) return
       if (!broadcastingRef.current) return
       broadcast.send(broadcastGroupRef.current, data, paneId)
@@ -1997,66 +1479,47 @@ export function Terminal({
       if (text) writeText(text).catch(() => {})
     })
 
-    // Mark mode copies through the engine rather than by reaching for the
-    // clipboard itself — see TerminalEngine.onCopyRequest. Unconditional:
-    // pressing Enter to copy is an explicit request, not copy-on-select.
+    // Mark mode copies via the engine; unconditional since Enter is explicit.
     const copyListener = term.onCopyRequest?.((text) => {
       if (text) writeText(text).catch(() => {})
     })
     const markModeListener = term.onMarkModeChange?.(setMarkMode)
     const hintModeListener = term.onHintModeChange?.(setHintMode)
 
-    // The engine decides *that* a link was activated; opening it is the
-    // platform's business and therefore this side's. The engine has already
-    // checked the scheme immediately before asking — see `activateLink` — so
-    // there is deliberately no second policy here, only the call.
-    //
-    // The opener plugin enforces a *scope* of its own on top of the command
-    // permission, and the two are separate grants: `opener:allow-open-url`
-    // enables the command "without any pre-configured scope", which means
-    // every URL is refused until the capability also names one. Both live in
-    // `src-tauri/capabilities/default.json`, where the scope is `http://*`
-    // and `https://*` — deliberately the same allow-list `isOpenableUrl`
-    // enforces, rather than the plugin's `allow-default-urls` set, which
-    // would also grant `mailto:` and `tel:`.
+    // The engine has already checked the scheme (see `activateLink`). The opener
+    // plugin also needs a URL scope, separate from the command permission; it is
+    // `http://*` and `https://*` in `src-tauri/capabilities/default.json`, the
+    // same allow-list as `isOpenableUrl` (not `allow-default-urls`, which adds
+    // `mailto:` and `tel:`).
     const linkListener = term.onLinkActivate?.((url) => {
       openUrl(url).catch((err) => {
         void logError(`opening a link failed: ${String(err)}`).catch(() => {})
-        // The reason is in the message — a refused scope and a missing
-        // browser are different problems and looked identical without it.
+        // Include the reason: a refused scope and a missing browser look alike.
         toast.error(`Could not open that link: ${String(err)}`)
       })
     })
 
-    // A path never goes near the opener above: it names a file on the remote
-    // host, and the caller resolves and looks it up there.
+    // A path names a file on the remote host; the caller resolves it.
     const pathListener = term.onPathActivate?.((path) => onOpenPathRef.current?.(path))
 
-    // The single paste path, shared by right-click, Ctrl+Shift+V and
-    // Shift+Insert. Its own function precisely so the multi-line guard cannot
-    // apply to one route and not another: a keyboard paste that silently ran
-    // forty lines while the mouse route asked first would be the worst of both.
+    // The single paste path for right-click, Ctrl+Shift+V and Shift+Insert, so
+    // the multi-line guard applies to all of them.
     const pasteFromClipboard = () => {
       readText()
         .then((raw) => {
           if (!raw) return
           const text = stripTrailingNewline(raw)
-          // All the clipboard held was a newline; there is nothing left to send.
           if (!text) return
           const lines = countLines(text)
-          // The engine's own judgment where there is one. It refuses the same
-          // multi-line pastes this used to catch by counting, and one more it
-          // could not: a single line carrying a bracketed-paste terminator,
-          // which looks perfectly ordinary and is the case that matters.
+          // The engine also flags a single line carrying a bracketed-paste
+          // terminator.
           const safe = term.isPasteSafe?.(text) ?? lines === 1
           if (safe) {
             term.paste(text)
             return
           }
           const multiLine = lines > 1
-          // Both reasons get said when both apply. Naming only the line count
-          // for a multi-line paste that *also* carries an escape sequence left
-          // the more dangerous of the two properties unmentioned.
+          // Give both reasons when both apply.
           const reasons: string[] = []
           if (multiLine) {
             reasons.push(
@@ -2070,10 +1533,7 @@ export function Terminal({
           }
           void confirmRef.current({
             title: multiLine ? `Paste ${lines} lines?` : 'Paste this text?',
-            // The fallback is unreachable today — the core calls a paste
-            // unsafe only for a newline or an embedded terminator, and each
-            // has a reason above — but an empty dialog would be the worst
-            // possible way to find out that had changed.
+            // The fallback is currently unreachable.
             body: reasons.join(' ') || 'This text may not be safe to paste as typed.',
             confirmLabel: 'Paste',
           }).then((ok) => {
@@ -2084,9 +1544,7 @@ export function Terminal({
     }
 
     const onContextMenu = (e: MouseEvent) => {
-      // A right-click on a link offers the link; anywhere else the gesture is
-      // exactly what it was. Checked first because the paste setting would
-      // otherwise swallow the event before the link was ever considered.
+      // Links take precedence over right-click paste.
       const url = term.linkAtPointer?.(e) ?? null
       if (url) {
         e.preventDefault()
@@ -2106,43 +1564,27 @@ export function Terminal({
     container.addEventListener('contextmenu', onContextMenu)
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // Autocomplete first, and only ever while a suggestion is actually on
-      // screen: `handleKey` returns false for everything else, so the arrows
-      // and Escape reach the far end untouched the rest of the time. Tab is
-      // never claimed at all — it stays the remote's own completion key.
-      // Consumed the same way as the chords below — `GhosttyInputHandler`
-      // skips any event that has been `preventDefault`ed.
+      // Autocomplete only claims keys while a suggestion is showing; Tab is never
+      // claimed. `GhosttyInputHandler` skips `preventDefault`ed events.
       if (autocompleteRef.current?.handleKey(e)) {
         e.preventDefault()
         e.stopPropagation()
         return
       }
-      // The chords are configurable (lib/keybindings.ts), and why each default
-      // is what it is lives beside it there. Runs on capture so the pane's
-      // input element never sees a claimed chord.
-      //
-      // That capture is the whole of the protection: since the engine's own
-      // key encoder replaced our table, even Ctrl+Shift+C encodes — `CSI
-      // 99;5u`, and under the Kitty protocol a program may well be listening
-      // for it. Every branch below therefore has to consume what it claims.
-      // `GhosttyInputHandler` skips any event that has been `preventDefault`ed,
-      // which is what makes that enough.
+      // Configurable chords (lib/keybindings.ts), on capture. Every branch must
+      // consume what it claims: the key encoder encodes even Ctrl+Shift+C, and a
+      // program may be listening for it.
       if (isRecordingShortcut()) return
       const action = actionForEvent(e, settingsRef.current.keybindings, 'pane')
       if (action === 'copy') {
         const text = term.getSelection()
-        // With no selection there is nothing to copy, and consuming the key
-        // would only mask whatever else might want it — which, now that the
-        // chord encodes, includes the program on the far end.
+        // Nothing selected: let the key through.
         if (!text) return
         e.preventDefault()
         e.stopPropagation()
         writeText(text).catch(() => {})
       } else if (action === 'paste') {
-        // Doesn't respect `rightClickPaste`: that setting is about what the
-        // mouse does, not about whether pasting is allowed at all. Without a
-        // key, turning it off left no way to paste — the same hole the copy
-        // binding was added to close.
+        // Independent of `rightClickPaste`, which only governs the mouse.
         e.preventDefault()
         e.stopPropagation()
         pasteFromClipboard()
@@ -2150,15 +1592,12 @@ export function Terminal({
         e.preventDefault()
         setSearchOpen((v) => !v)
       } else if (action === 'markMode') {
-        // The engine owns the mode itself — this is only the way in.
         e.preventDefault()
         e.stopPropagation()
         term.toggleMarkMode?.()
       } else if (action === 'paneDump') {
-        // Capturing a copy fault that nobody can reproduce on demand. Bound to
-        // a key rather than offered in a menu because the state worth having is
-        // the state at the moment it is noticed, and anything that takes a
-        // mouse and two clicks to reach has already let output scroll over it.
+        // Bound to a key so the dump captures the state the moment a copy fault
+        // is noticed.
         e.preventDefault()
         e.stopPropagation()
         const dump = term.dumpState?.()
@@ -2171,123 +1610,71 @@ export function Terminal({
           .then((path) => toast.success(`Pane dump written to ${path}`))
           .catch((err) => toast.error(`Could not write the pane dump: ${String(err)}`))
       } else if (action === 'hintMode') {
-        // Opening a link with the keyboard — the only link gesture that works
-        // while a full-screen program is holding the mouse.
+        // The only link gesture that works while a program holds the mouse.
         e.preventDefault()
         e.stopPropagation()
         term.toggleHintMode?.()
       }
-      // Escape is not handled here. Closing search runs through the shared
-      // dismiss stack instead, so it competes properly with anything else
-      // open. Note it is never preventDefault'd on any path: ESC has to keep
-      // reaching the engine, or vim stops working.
+      // Escape is handled by the dismiss stack and never preventDefault'd here;
+      // it has to reach the engine.
     }
     container.addEventListener('keydown', onKeyDown, true)
 
-    // One per session: it also holds the last size actually delivered, which is
-    // what lets a tab switch that changed nothing send nothing.
+    // One per session; it remembers the last size sent.
     const ptyResize = createPtyResizeSender((cols, rows) => {
       if (!sessionId) return
       conn.resize(source, sessionId, cols, rows).catch(() => {})
     })
 
     const onResize = () => {
-      // Switching away from this tab sets its container to `display:
-      // none`, collapsing it to 0x0 — which the ResizeObserver below
-      // faithfully reports. Fitting to that would resize the remote PTY
-      // down to nothing and back on every tab switch, which is exactly
-      // the kind of double-resize that left the client-side cursor
-      // rendering a few columns off from the shell's own idea of where
-      // it is, until the next full redraw (e.g. pressing Enter) resynced
-      // them. A hidden container has nothing useful to fit to anyway.
+      // A hidden tab is 0x0; fitting to it would shrink the PTY and back on every
+      // tab switch, desyncing the cursor.
       if (container.clientWidth === 0 || container.clientHeight === 0) return
-      // Fitted immediately: the canvas has to track the container while the
-      // pointer is still moving, or the pane visibly lags the window.
+      // Fit immediately so the canvas tracks the container during a drag.
       const gridBefore = `${term.cols}x${term.rows}`
       term.fit()
       reportDimensions(term)
-      // A reflow moves text between rows, which is the one thing an absolute
-      // row cannot survive — so anything holding one about the current line
-      // lets go of it here. Guarded on the grid actually changing because this
-      // also fires on a tab becoming visible again, at pointer rate during a
-      // drag, and on any resize that does not cross a cell boundary.
+      // A reflow invalidates absolute rows held about the current line.
       if (`${term.cols}x${term.rows}` !== gridBefore) {
         promptInput.noteResized()
         autocomplete.reset()
         historyRepeats.reset()
         historyFlicker.stop()
       }
-      // The far end is told once the drag settles — see ptyResize.ts. This
-      // observer fires at pointer rate, and every intermediate size that
-      // crosses a row boundary is its own SIGWINCH there. A program pinning a
-      // status line to the last row redraws it on each one and leaves the row
-      // it drew on before behind as ordinary text: measured against apt's
-      // progress bar, a drag across five row boundaries left five stranded
-      // bars and scrolled the real output off the top of the screen.
+      // The far end is told once the drag settles (see ptyResize.ts): each
+      // intermediate SIGWINCH makes status-line programs leave stray copies.
       if (sessionId) ptyResize.post(term.cols, term.rows)
-      // Guarding against the 0x0 fit stopped the PTY-side desync, but the
-      // canvas can still end up visually stale after this — most sharply
-      // when a pane is dragged between tabs, since that detaches and
-      // reattaches its DOM node elsewhere (React portal retargeting), and
-      // detaching/reattaching a WebGL canvas can silently clear its actual
-      // drawing buffer even though the JS-level context survives. The
-      // renderer still believes already-painted rows are valid and only
-      // repaints cells that changed, so old (cleared) content stays blank
-      // while newly written rows still render correctly — clearTextureAtlas
-      // + refresh() wasn't enough to fix this, since both still defer to
-      // that same "nothing changed here" assumption. Tearing down and
-      // rebuilding the addon from scratch forces a genuinely fresh full
-      // repaint with no assumptions left over from before the move.
-      // Delegate webgl rebuilding to engine
+      // Force a full repaint: moving a pane between tabs re-parents its canvas,
+      // which can clear the drawing buffer while the renderer thinks it's valid.
       term.rebuildWebglRenderer?.()
       term.refresh(0, term.rows - 1)
       updateScrollbarGeometry()
       updateThumb()
-      // This only reaches here on a real (non-zero) resize, which is
-      // exactly what happens when a hidden tab becomes visible again
-      // (App.tsx's refit() dispatches a resize event on tab switch) — so
-      // this doubles as "the tab holding this pane just became active."
-      // Guarded on `active` too so, in a split, switching tabs doesn't
-      // steal focus from a pane other than the one you'd last clicked
-      // into within it.
+      // A non-zero resize also means a hidden tab became visible (App's refit()
+      // dispatches one); refocus if this is the tab's active pane.
       if (activeRef.current) term.focus()
     }
     window.addEventListener('resize', onResize)
     refitRef.current = onResize
 
-    // Returning to the app from another window (Alt-Tab, a native dialog, the
-    // Windows Hello prompt) leaves the active pane wedged — no keystrokes, no
-    // cursor blink — until a tab switch refocuses it. On blur the input element
-    // blurs (the engine reports focus loss and stops the blink); on return the
-    // browser doesn't restore focus to it, and the Ghostty engine's input lives
-    // on an invisible, pointer-events:none textarea Chromium won't re-focus on
-    // its own. Crucially this is a *native* window activation — WebView2 does
-    // not emit a DOM 'focus' event for it — so we listen to Tauri's window focus
-    // event and re-assert focus on the active, visible pane (0×0 = a hidden tab,
-    // which must not steal focus, matching the onResize guard).
+    // Refocus the active pane when the native window regains focus (Alt-Tab, a
+    // dialog, Windows Hello). WebView2 emits no DOM focus event for this and
+    // won't refocus the hidden textarea itself. Hidden tabs (0x0) are skipped.
     let unlistenFocus: (() => void) | null = null
     getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         if (!focused) return
         if (!activeRef.current) return
         if (container.clientWidth === 0 || container.clientHeight === 0) return
-        // Defer past WebView2's own focus handling: the native event can arrive
-        // before the webview finishes restoring focus (often to <body>), and a
-        // synchronous .focus() would then be overridden. Re-check on the next
-        // frame that this pane is still the active, on-screen one before taking
-        // focus, so a fast tab switch in between doesn't get overridden.
+        // Defer past WebView2's own focus restore, then re-check.
         requestAnimationFrame(() => {
           if (disposed || !activeRef.current) return
           if (container.clientWidth === 0 || container.clientHeight === 0) return
-          // A selection the native transition left dangling (the browser can
-          // also drop a stray gray selection where you clicked to refocus)
-          // swallows input; clear it before handing focus back.
+          // A dangling selection swallows input.
           window.getSelection()?.removeAllRanges()
           const refocusTarget = termRef.current
-          // Window deactivation can sever the input element's IME/input context
-          // in WebView2 so a plain focus() leaves printable input dead (only
-          // Enter/arrows work). resetInputContext rebuilds it; fall back to
-          // focus() for engines that don't need it.
+          // WebView2 can sever the IME context on deactivation, leaving printable
+          // keys dead; resetInputContext rebuilds it.
           if (refocusTarget?.resetInputContext) refocusTarget.resetInputContext()
           else refocusTarget?.focus()
         })
@@ -2297,22 +1684,14 @@ export function Terminal({
         else unlistenFocus = un
       })
 
-    // The container can shrink or grow without the OS window itself
-    // resizing — e.g. the status footer appearing/disappearing as a
-    // connection's status changes reflows the flex layout above it. A
-    // plain 'resize' listener on window misses that entirely, leaving
-    // the engine's row count stale and its rendering overlapping whatever
-    // ends up occupying the space it no longer actually has.
+    // The container can resize without the window (e.g. the status footer).
     const resizeObserver = new ResizeObserver(onResize)
     resizeObserver.observe(container)
 
     return () => {
       disposed = true
-      // A disposed pane must not resize a session it no longer owns.
       ptyResize.cancel()
-      // Before the engine goes: the scheduler may be holding a queue and a
-      // pending frame callback, and draining either into a disposed terminal
-      // is a write to a freed core.
+      // Before the engine goes, so nothing drains into a freed core.
       scheduler.dispose()
       window.removeEventListener('resize', onResize)
       unlistenFocus?.()
@@ -2339,17 +1718,13 @@ export function Terminal({
       autocompleteRef.current = null
       autocomplete.reset()
       promptInput.resetAll()
-      // Both hold a timer, which would otherwise fire against a disposed
-      // engine and read a freed core.
+      // Both hold timers.
       historyRepeats.reset()
       historyFlicker.stop()
       for (const listener of oscListeners) listener.dispose()
-      // Reported directly rather than through the tracker (whose own reset
-      // is a no-op when nothing was running) so a pane torn down mid-command
-      // can't leave a spinner behind on a tab that no longer has a session.
+      // Reported directly: the trackers' resets would be no-ops, leaving a
+      // spinner on the tab.
       onActivityRef.current?.(IDLE)
-      // Same reasoning, and reported directly for the same reason: `disposed`
-      // is already set by this point, so setProgress would refuse it.
       onProgressRef.current?.(null)
       upBtn.removeEventListener('mousedown', onUpMouseDown)
       downBtn.removeEventListener('mousedown', onDownMouseDown)
@@ -2371,17 +1746,12 @@ export function Terminal({
       updateScrollbarFocusRef.current = null
       term.dispose()
     }
-    // `label` is display-only text for the "Connecting to..." line, not a
-    // reconnect trigger — intentionally excluded so relabeling a pane
-    // doesn't tear down its session. `logging`, `onStatus`, and
-    // `onSessionId` are all read through refs so none of them reconnect
-    // the session either (onStatus/onSessionId are fresh closures from
-    // Pane.tsx on every render — see the refs above).
+    // `label` is display-only and the callbacks are read through refs, so only
+    // a new source reconnects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source])
 
-  // Shared by both the failed and clean-disconnect overlays: retry the same
-  // host, or drop back to the (pre-filled) connect dialog to change it.
+  // Shared by the failed and disconnected overlays.
   const disconnectActions = (
     <div className="flex items-center gap-2">
       {onReconnect && (
@@ -2405,11 +1775,8 @@ export function Terminal({
     </div>
   )
 
-  // Geometry for the suggestion overlays, read at render time rather than
-  // carried in the controller's state: cell size and scroll position change
-  // for reasons that have nothing to do with what is being suggested (a
-  // resize, a font change, scrolling back through history), and a copy taken
-  // when the list opened would be stale for all three.
+  // Read at render time: cell size and scroll position change independently
+  // of the suggestion.
   const gridAnchor = (() => {
     if (!suggestion) return null
     const term = termRef.current
@@ -2421,19 +1788,10 @@ export function Terminal({
   return (
     <div
       className="relative h-full w-full px-1.5 pt-3"
-      // Painted here, from the exact same findTheme() call that configures
-      // the engine's own theme a few lines up, rather than duplicated in a
-      // separate wrapper — one source of truth means this padding can
-      // never drift out of sync with whatever the terminal itself paints,
-      // which a previous attempt at this (matching color one level up, in
-      // App.tsx) did the moment a non-default theme was actually tested.
+      // Painted from the same theme as the engine, so the padding can't drift.
       style={{ background: backgroundWithOpacity(paneTheme(settings), settings.backgroundOpacity) }}
-      // A file dragged in from Explorer, as a DOM event rather than Tauri's
-      // own drag-drop — that is switched off because it intercepts OS drags on
-      // WebView2 and breaks the HTML5 events tab-to-pane dragging needs. The
-      // `Files` check is what keeps the two apart: a pane being dragged
-      // between tabs carries its own MIME type and must fall straight through
-      // to the handlers that expect it.
+      // File drops from Explorer, via DOM events (Tauri's drag-drop is off; it
+      // breaks tab dragging). Only `Files` drags are handled here.
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes('Files')) return
         e.preventDefault()
@@ -2441,8 +1799,7 @@ export function Terminal({
         if (!dropTarget) setDropTarget(true)
       }}
       onDragLeave={(e) => {
-        // Moving onto a child fires leave on the parent; the pointer has only
-        // really left when what it moved to is outside this pane.
+        // Leave also fires when moving onto a child.
         if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
         setDropTarget(false)
       }}
@@ -2453,23 +1810,13 @@ export function Terminal({
         const file = fileFromDrop(e)
         if (!file) return
         const cwd = remoteCwdRef.current
-        // Already agreed, and still the same directory: the point of asking
-        // was that the host chose this path, and it has not chosen a new one
-        // since. See `confirmedDestRef`.
+        // Already confirmed this directory; see `confirmedDestRef`.
         if (cwd && cwd === confirmedDestRef.current) {
           void uploadFile(file, cwd)
           return
         }
-        // No OSC 7 means the shell never said where it is. Asking is the only
-        // honest option — guessing `~` puts the file somewhere the user did
-        // not choose and did not watch it go.
-        //
-        // With OSC 7 the prompt is a confirmation rather than a question: the
-        // path is filled in and one Enter sends it.
-        //
-        // Failing both, prefer a path read off the window title over the last
-        // one typed: it is at least this session's, and on a stock bash prompt
-        // it is usually exactly right — it just isn't reported at all.
+        // Otherwise ask, prefilled with the reported directory, then one guessed
+        // from the window title, then the last one typed.
         setDropDest({
           file,
           path: cwd ?? titleCwdRef.current ?? lastDestRef.current ?? '',
@@ -2477,30 +1824,10 @@ export function Terminal({
         })
       }}
     >
-      {/* Deliberately loud, and on every pane in the group rather than only
-          the focused one: the failure mode this guards against is typing a
-          `reload` into what you believed was one switch. A ring around the
-          whole pane is visible in peripheral vision in a way a toolbar badge
-          is not, and it is the only state in the app that changes what a
-          keystroke does. */}
-      {/* One layer at the terminal's own opacity, over everything in the pane
-          that the grid does not cover: the padding, the scrollbar gutter, and
-          the partial column and row left at the grid's edges.
-
-          The grid is seen through one more layer than its surroundings — the
-          engine paints its cells over this wrapper — so without this the
-          padding composited to a lighter gray than the text area beside it.
-          Invisible while nearly opaque; three distinct grays once the window
-          fades. A border-only box rather than four strips because borders meet
-          mitred, so the corners are not painted twice.
-
-          Clear of the grid, so it never sits over text, and *under* the
-          container below: that container is its own stacking context at
-          z-index 0, so the scrollbar's z-20 only ranks inside it. A frame at
-          z-10 here painted the gutter's color straight over the thumb and
-          arrows, leaving them all but invisible. At z-0 and earlier in the
-          DOM, the container — transparent wherever it has no controls — paints
-          after it. */}
+      {/* One layer at the pane's opacity over everything the grid doesn't cover
+          (padding, gutter, partial column and row), so the surroundings match the
+          grid's compositing. Border-only so corners aren't painted twice. Under
+          the container, whose stacking context holds the scrollbar. */}
       <div
         ref={frameRef}
         aria-hidden
@@ -2514,26 +1841,13 @@ export function Terminal({
           ),
         }}
       />
+      {/* Every pane in a broadcast group gets a ring: typing goes to all of them. */}
       {broadcasting && (
         <div className="pointer-events-none absolute inset-0 z-30 rounded-sm ring-2 ring-inset ring-amber-400/70" />
       )}
       <div ref={containerRef} className="relative h-full w-full">
-        {/* Inside the container so it is positioned against the grid itself,
-            and after it so it paints over the canvas. `pointer-events-none` on
-            the wrapper keeps the rest of the pane clickable — the list itself
-            re-enables them for its own rows.
-
-            `overflow-hidden` is the structural half of keeping the list inside
-            its pane. `placeSuggestions` bounds its height to the space
-            actually available, which is what stops it covering the line being
-            typed; this is what stops it painting *outside the pane
-            altogether* — over the status bar, or over a neighboring pane in a
-            split. Without it nothing at all constrains the overlay, because
-            the grid is a few pixels shorter than the container that holds it
-            and absolutely-positioned children happily paint past both. Belt
-            and braces on purpose: a suggestion list drawn over the app's own
-            chrome looks like a rendering fault, and one bad number should not
-            be able to produce it. */}
+        {/* Positioned against the grid. `overflow-hidden` keeps the list inside
+            the pane (never over the status bar or a neighbor). */}
         {suggestion && gridAnchor && (
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
             {suggestion.mode === 'inline' ? (
@@ -2571,10 +1885,7 @@ export function Terminal({
         </div>
       )}
       {connectFailed && (
-        // Otherwise a failed connection (bad credential, unreachable host,
-        // etc.) leaves this pane stuck showing a dead terminal with no way
-        // back to the connect dialog short of closing the whole pane —
-        // which, in a split, takes any sibling panes down with it too.
+        // Otherwise a failed pane has no way back to the connect dialog.
         <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-chrome/60 duration-fast">
           <AlertTriangle size={20} className="text-red-400" />
           <p className="max-w-xs text-chrome/70">{connectFailed}</p>
@@ -2582,10 +1893,7 @@ export function Terminal({
         </div>
       )}
       {reconnecting && (
-        // Deliberately not a full cover: the scrollback behind it is the whole
-        // reason the pane did not remount, and hiding it would make a
-        // four-second outage look like a pane that died. A strip, so what was
-        // on screen stays readable while the connection comes back.
+        // A strip, not a cover: the scrollback is why the pane didn't remount.
         <div className="animate-in fade-in slide-in-from-top-1 pointer-events-none absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-200/90 duration-fast">
           <Unplug size={13} className="animate-pulse" />
           <span>
@@ -2595,9 +1903,7 @@ export function Terminal({
         </div>
       )}
       {disconnected && !connectFailed && (
-        // A clean remote-initiated disconnect with auto-close turned off:
-        // offer to reconnect or reopen the connect dialog rather than leaving
-        // a dead terminal behind.
+        // A clean disconnect with auto-close off.
         <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-chrome/60 duration-fast">
           <Unplug size={20} className="text-chrome/40" />
           <p className="max-w-xs text-chrome/70">Connection closed.</p>
@@ -2605,18 +1911,8 @@ export function Terminal({
         </div>
       )}
       {engineFailed && (
-        // Last of the state overlays deliberately, so plain DOM order paints
-        // it over the connecting/failed/disconnected ones (see the z-index
-        // note by the scrollbar above — these divs rank by document order, not
-        // z-index). If the renderer never started, none of what those three
-        // report is actionable and this is the only true thing on screen.
-        //
-        // Worth having at all because Ghostty is the default for new panes:
-        // when its WASM core can't load, every method on the engine no-ops and
-        // the pane is simply, silently blank — which reads as "the app is
-        // broken" rather than as one component failing. There is no in-app
-        // engine switch to point at, so this says what happened and where the
-        // detail is, and stops short of implying a fix that doesn't exist.
+        // Last of the overlays so DOM order paints it on top. A failed WASM core
+        // otherwise leaves a silently blank pane.
         <div className="animate-in fade-in absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#16171d] px-8 text-center text-xs text-chrome/60 duration-fast">
           <AlertTriangle size={20} className="text-red-400" />
           <p className="max-w-xs text-chrome/70">This pane's terminal renderer failed to start.</p>
@@ -2625,10 +1921,8 @@ export function Terminal({
         </div>
       )}
       {markMode && (
-        // Bottom-left, clear of the search bar: both can be open at once, and
-        // the mode is the thing you need to see while looking at text in the
-        // middle of the pane. The keys are spelled out because a mode that
-        // swallows typing has to say how to get back out of it.
+        // Bottom-left, clear of the search bar; spells out the keys since the mode
+        // swallows typing.
         <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-surface px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
           <TextCursorInput size={13} className="text-emerald-400" />
           <span className="font-medium">Mark</span>
@@ -2636,10 +1930,7 @@ export function Terminal({
         </div>
       )}
       {hintMode && (
-        // Beside mark mode's indicator and worded the same way: the mode has
-        // taken the keyboard, so it has to say what the keys do now and how to
-        // get out. An empty screen of labels means there were no links, which
-        // this leaves visible rather than explaining away.
+        // Same as mark mode's indicator.
         <div className="animate-in fade-in slide-in-from-bottom-1 pointer-events-none absolute bottom-2 left-2 z-40 flex items-center gap-2 rounded-lg border border-chrome/10 bg-surface px-2 py-1.5 text-xs text-chrome/70 shadow-xl duration-fast ease-swift">
           <ExternalLink size={13} className="text-amber-400" />
           <span className="font-medium">Links</span>
@@ -2647,9 +1938,7 @@ export function Terminal({
         </div>
       )}
       {dropTarget && canUpload && (
-        // Deliberately just a ring and a word: the pane underneath is what the
-        // file is being aimed at, and covering it would hide the directory the
-        // prompt line is showing.
+        // A ring, not a cover, so the prompt's directory stays visible.
         <div className="pointer-events-none absolute inset-0 z-40 flex items-start justify-center rounded-sm bg-sky-400/5 ring-2 ring-inset ring-sky-400/70">
           <span className="mt-3 rounded-md border border-chrome/10 bg-surface px-2 py-1 text-xs text-chrome/80 shadow-xl">
             {remoteCwdRef.current && remoteCwdRef.current === confirmedDestRef.current
@@ -2661,8 +1950,7 @@ export function Terminal({
         </div>
       )}
       {dropDest && (
-        // Where the destination is agreed rather than assumed: once per
-        // directory, and again whenever the reported one changes.
+        // Confirm the destination: once per directory, and again when it changes.
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-80 rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl">
             <p className="mb-1 font-medium text-chrome/90">Send {dropDest.file.name}</p>
@@ -2734,15 +2022,9 @@ export function Terminal({
         </div>
       )}
       {linkMenu && (
-        // Fixed to the pointer, like the tab strip's own menu. The URL is
-        // shown in full rather than only acted on: the destination is the one
-        // thing worth seeing before a browser opens on it, and it is the same
-        // disclosure an OSC 8 link will need when that arrives, where the text
-        // on screen and the target need not agree at all.
+        // The URL is shown in full before anything opens it.
         <>
-          {/* A click anywhere else closes it, including a click meant for the
-              grid — which would otherwise land in the terminal underneath
-              while the menu stayed up. */}
+          {/* A click anywhere else closes it without reaching the terminal. */}
           <div className="fixed inset-0 z-40" onMouseDown={() => setLinkMenu(null)} />
           <div
             className="animate-in fade-in zoom-in-95 fixed z-50 max-w-xs origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
@@ -2797,13 +2079,8 @@ export function Terminal({
               if (e.key === 'Enter') {
                 runSearch(searchQuery, { back: e.shiftKey })
               } else if (actionForEvent(e, settings.keybindings, 'pane') === 'find') {
-                // Repeated from the pane-level binding because this input is a
-                // *sibling* of the terminal container, not a child — so the
-                // container's capture-phase handler never sees a keystroke
-                // typed in here. Without this the toggle is one-way in exactly
-                // the state where closing is the obvious thing to want: the box
-                // focuses and selects itself the moment it opens, so the second
-                // press of the same chord went nowhere.
+                // The input is a sibling of the container, so the pane's capture handler
+                // never sees this; repeat the binding so the chord also closes.
                 e.preventDefault()
                 setSearchOpen(false)
               }
@@ -2882,26 +2159,15 @@ export function Terminal({
           onAnswer={(accept) => {
             conn.respondHostKey(hostKeyPrompt.requestId, accept)
             setHostKeyPrompt(null)
-            // The initial auto-focus (in the connect().then() below) fires
-            // as soon as the session id comes back, which for a fresh host
-            // is *before* the SSH handshake actually finishes — host-key
-            // verification blocks inside connect() itself, not before it's
-            // called. Clicking Accept/Reject on this dialog's own button
-            // steals focus, and once the button unmounts the browser drops
-            // it to <body> with nothing left to reclaim it. Re-focus here,
-            // right as the dialog closes, so the terminal is left with
-            // focus regardless of which one of these two fired first.
+            // The dialog's button took focus; return it to the terminal.
             termRef.current?.focus()
           }}
         />
       )}
       {authPrompt && (
         <AuthPrompt
-          // Keyed by request so each round of a multi-step exchange gets a
-          // fresh dialog. Without it React reuses the mounted one and the
-          // previous round's typed values sit in the new round's fields —
-          // which for "Password:" then "Verification code:" means submitting
-          // the password as the code.
+          // Keyed per request so a multi-step exchange doesn't carry the previous
+          // round's values into the next (e.g. a password into a code field).
           key={authPrompt.requestId}
           name={authPrompt.name}
           instructions={authPrompt.instructions}
@@ -2912,9 +2178,7 @@ export function Terminal({
           onAnswer={(responses) => {
             conn.respondAuthPrompt(authPrompt.requestId, responses)
             setAuthPrompt(null)
-            // Same focus handoff as the host-key dialog above: this dialog's
-            // own input held focus, and once it unmounts the browser drops
-            // focus to <body> with nothing left to reclaim it.
+            // Same focus handoff as the host-key dialog.
             termRef.current?.focus()
           }}
         />

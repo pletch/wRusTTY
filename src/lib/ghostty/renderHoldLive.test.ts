@@ -6,15 +6,10 @@ import { allocBuffer, parseCell, CELL_BYTES, type GhosttyWasm } from './wasmBind
 import { RENDER_HOLD_TIMEOUT_MS } from './main/shim'
 
 /**
- * Synchronized output through a real engine's `renderFrame`, with the renderer
- * replaced by one that records what each frame drew.
- *
- * `main/renderHold.test.ts` pins the shim, but it asks `is_held` on every
- * frame, and the engine does not: it only reaches that question while a redraw
- * is pending. That difference hid a bug the shim tests could not see. The
- * frame that draws a hold's captured snapshot cleared the pending flag, so the
- * timeout was never checked again and a program that set 2026 and died froze
- * the pane until something else wrote to it. Found in a browser; pinned here.
+ * Synchronized output through a real engine's `renderFrame`, with a renderer
+ * that records each frame. Unlike `main/renderHold.test.ts`, the engine asks
+ * `is_held` only while a redraw is pending, so the hold's timeout must still
+ * be checked after the frame that draws the captured snapshot.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

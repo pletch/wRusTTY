@@ -1,14 +1,8 @@
 /**
- * Recent-command autocomplete: what to offer, when to offer it, and what a
- * keystroke means while it is showing.
- *
- * Phase 4 of docs/AUTOCOMPLETE_PLAN.md. Sits between `PromptInputTracker`
- * (what is typed, read off the grid) and the store (what has been run before),
- * and owns the one thing neither of them can: the decision to put something on
- * screen in front of a terminal the user is working in.
- *
- * Deliberately not React-aware. The pane drives it from an effect and renders
- * whatever state it reports, so the rules below can be tested as rules.
+ * Recent-command autocomplete: what to offer, when, and what a keystroke means
+ * while it is showing (docs/AUTOCOMPLETE_PLAN.md, Phase 4). Sits between
+ * `PromptInputTracker` (what is typed, read off the grid) and the store (what
+ * has been run before). Not React-aware, so the rules are testable.
  */
 
 import {
@@ -30,111 +24,49 @@ export type SuggestionKeyAction =
   | 'ignore'
 
 /**
- * How the offer is shown.
- *
- * `inline` is the default and is what a terminal should do by default: dim
- * text after the cursor, occupying cells that are already empty. It cannot
- * cover the line being typed, cannot overflow the pane, and needs no
- * navigation keys — which is to say it structurally cannot produce any of the
- * three faults the list produced in practice.
- *
- * `list` is the same offer opened out, for when a prefix really is ambiguous
- * and the second or third candidate is the wanted one. Reached deliberately,
- * with Ctrl+Space, the way PSReadLine's F2 switches between its inline and
- * list views.
+ * How the offer is shown. `inline` (the default) is dim text in the empty
+ * cells after the cursor: it can't cover the line, overflow the pane, or need
+ * navigation keys. `list` opens the same offer out on Ctrl+Space, like
+ * PSReadLine's F2.
  */
 export type SuggestionMode = 'inline' | 'list'
 
 /**
- * Decide what a keystroke means. `ignore` means the key belongs to the remote
- * and must be left completely alone.
+ * Decide what a keystroke means. `ignore` leaves the key to the remote.
  *
- * Every rule here is chosen to collide with nothing the far end reasonably
- * wants at a prompt, and each one is a decision rather than a convention:
+ *   - **Tab is never taken**: it's the shell's own completion. Pressing it
+ *     disarms the offer.
+ *   - **Right arrow** accepts, only at the end of the line (fish/zsh
+ *     autosuggestion binding).
+ *   - **Alt+Right** accepts one word, also only at the end of the line.
+ *   - **Up/Down belong to the shell** except in list mode, which exists only
+ *     because the user summoned it; there they move the selection.
+ *     **Ctrl+Up/Down** do the same, since Ctrl is often still held from
+ *     Ctrl+Space.
+ *   - **Ctrl+Space** opens the list.
+ *   - **Enter**, in the list only, accepts without running (like fish's pager
+ *     and zsh's `menu-select`). Inline, Enter always runs the line.
+ *   - **Escape** dismisses and isn't forwarded.
+ *   - **Shift+Delete** forgets the highlighted suggestion (deleted and blocked
+ *     until allowed again in Settings), the browser/Windows binding. bash and
+ *     zsh don't bind `CSI 3;2~` by default.
  *
- *   - **Tab is never taken.** It is the remote's own completion key, and that
- *     is the whole job it keeps: a directory name, a flag, whatever the shell
- *     would have offered. Claiming it while a suggestion happened to be on
- *     screen made the two completions race for the same key, and the one that
- *     won was the one the user had *not* asked for — a remembered command
- *     instead of the path being typed. So Tab passes straight through in every
- *     state, and pressing it disarms the offer (`noteInput` treats it as
- *     non-printable), which leaves the line to whatever the far end completes.
- *   - **Right arrow** is the accept key, and the only one. It accepts only at
- *     the end of the line, where it would otherwise be a no-op; in the middle
- *     of a line it is a cursor move the user meant. This is the fish/zsh
- *     autosuggestion binding, so the finger already knows it.
- *   - **Alt+Right** takes one word of it, for the common case where a
- *     remembered command is right for its first word or two and wrong after —
- *     `git commit -m` from a suggestion whose message belongs to last week.
- *     Also fish's binding, and gated on the end of the line for the same
- *     reason as plain Right: `forward-word` there has nothing to move over.
- *   - **Up and Down belong to the shell**, except in the one state where the
- *     user has explicitly asked for something else. Walking history is the
- *     single most common thing done at a prompt, and an offer that appeared on
- *     its own has no business interrupting it — which the inline view, needing
- *     no keys at all, never does.
- *
- *     The list is different, because it exists only when it was summoned with
- *     Ctrl+Space. Someone who has just opened a list of candidates wants to
- *     move through it, and there is nothing to conflict with: they asked for
- *     this, and Escape hands the arrows straight back. So plain Up/Down
- *     navigate, but *only* in list mode.
- *
- *     This is the third rule these two keys have had, and the history is the
- *     argument. They were first claimed whenever anything was showing, which
- *     broke history recall — worse, recalling a command redrew the line, which
- *     itself opened a list, so the second Up was eaten by a popup the first Up
- *     had conjured. Then they were given up entirely, which was right while
- *     anything could appear unbidden and needlessly strict once nothing could.
- *   - **Ctrl+Up/Ctrl+Down** do the same thing, and are kept because Ctrl+Space
- *     is how the list was opened: the modifier is often still held when the
- *     first arrow is pressed, and that should not be a dead key.
- *   - **Ctrl+Space** opens the inline suggestion out into the list. Nothing
- *     at a shell prompt wants it (readline's `set-mark` is Ctrl+@, which is
- *     the same byte on some terminals — hence "only while a suggestion is
- *     showing", which is when the user has just typed and is not marking
- *     anything).
- *   - **Enter, in the list only**, accepts the highlighted item without
- *     running it — a second Enter runs it, the way fish's completion pager
- *     and zsh's `menu-select` both behave. It is safe only in the list: the
- *     list was summoned by name and has a highlighted row, so Enter has an
- *     obvious referent. Inline there is no selection to speak of, and Enter
- *     means what it has always meant at a prompt, which is *run this now* —
- *     swallowing that to append a remembered command would be the worst key
- *     in the feature.
- *   - **Escape** dismisses and sends nothing further. It is not forwarded,
- *     because the user is dismissing this, not talking to vim.
- *   - **Shift+Delete** forgets the highlighted suggestion — deletes it from
- *     the store and blocks it from being recorded, imported or suggested
- *     again, until it is allowed back from Settings. The browser and Windows binding for
- *     removing an entry from an autocomplete dropdown, so it is the one people
- *     already try. Claimed in both views, since inline there is still exactly
- *     one thing being offered. Taking it from the shell costs little: bash
- *     and zsh have no default binding for `CSI 3;2~`, and PSReadLine's (Cut)
- *     has no selection to act on at the moment a suggestion is showing.
- *
- * Any modifier disqualifies everything: Ctrl+Right, Alt+Up and friends are
- * bindings elsewhere or sequences the remote wants, and none of them mean
- * "take this suggestion".
+ * Any other modifier combination is left alone.
  */
 export function suggestionKeyAction(
   e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean },
   opts: { open: boolean; atLineEnd: boolean; mode: SuggestionMode },
 ): SuggestionKeyAction {
   if (!opts.open) return 'ignore'
-  // Navigation is the one thing that *wants* a modifier, so it is settled
-  // before the unmodified keys below.
+  // Modified navigation first.
   if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
     if (e.key === ' ' || e.key === 'Spacebar') return 'expand'
-    // Still held from Ctrl+Space, most likely. Same actions as the bare
-    // arrows below, and for the same reason: only in list mode.
+    // Likely still held from Ctrl+Space; list mode only.
     if (opts.mode === 'list' && e.key === 'ArrowDown') return 'next'
     if (opts.mode === 'list' && e.key === 'ArrowUp') return 'previous'
     return 'ignore'
   }
-  // Alt is the word-wise modifier everywhere else a line is edited, and it is
-  // the only other one that means anything here.
+  // Alt is the word-wise modifier.
   if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
     if (e.key === 'ArrowRight') return opts.atLineEnd ? 'accept-word' : 'ignore'
     return 'ignore'
@@ -144,18 +76,15 @@ export function suggestionKeyAction(
   }
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return 'ignore'
   switch (e.key) {
-    // Not a case at all — Tab belongs to the remote. Listed here only so the
-    // next reader does not add it back.
+    // Tab deliberately has no case: it belongs to the remote.
     case 'ArrowRight':
       return opts.atLineEnd ? 'accept' : 'ignore'
-    // Only in the list, which only exists because it was asked for. In the
-    // inline view these stay the shell's history keys.
+    // List mode only; inline these stay the shell's history keys.
     case 'ArrowDown':
       return opts.mode === 'list' ? 'next' : 'ignore'
     case 'ArrowUp':
       return opts.mode === 'list' ? 'previous' : 'ignore'
-    // Confirms the highlighted row; it does not run it. Inline, where there is
-    // no highlighted row, Enter stays the shell's.
+    // Confirms the highlighted row without running it; list mode only.
     case 'Enter':
       return opts.mode === 'list' ? 'accept' : 'ignore'
     case 'Escape':
@@ -169,31 +98,21 @@ export function suggestionKeyAction(
 export interface SuggestionPlacement {
   /** Distance from the top of the grid to the element's top edge. */
   top: number
-  /** True when the list hangs below the line; false when it sits above it and
-   * is shifted up by its own height. */
+  /** True when the list hangs below the line; false when it sits above, shifted
+   * up by its own height. */
   below: boolean
   /** How tall it may grow before scrolling internally. */
   maxHeight: number
 }
 
 /**
- * Decide which side of the typed line the list goes on.
+ * Decide which side of the typed line the list goes on, or null when the line
+ * is scrolled out of view.
  *
- * Returns null when the line is not on screen at all — scrolled out of view
- * while a suggestion was open, which leaves nothing to anchor to.
- *
- * **Nothing here multiplies by the list's own height**, and that is the whole
- * point. An earlier version decided by asking whether `items.length` *cells*
- * were free below the cursor, which is not the same question: a row of this
- * list is a cell of text plus padding plus a border, comfortably half again as
- * tall as a terminal row. With the prompt near the bottom of the pane it would
- * answer "fits below", decline to flip, and then spill back up over the very
- * line being typed — the case where the list matters most.
- *
- * So the side is chosen by which has more room, and the flipped case is
- * anchored to the cursor's own row and shifted up by its own height in CSS
- * (`translateY(-100%)`). Its bottom edge then lands exactly on the boundary of
- * the typed line however tall it turns out to be, with no measuring pass.
+ * Doesn't use the list's own height (a list row is taller than a terminal row,
+ * so counting items as cells misjudged the fit and covered the line). It picks
+ * the side with more room; when above, it anchors to the cursor row and
+ * shifts up by its own height in CSS (`translateY(-100%)`).
  */
 export function placeSuggestions(opts: {
   /** The row the cursor is on, in absolute buffer coordinates. */
@@ -214,112 +133,79 @@ export function placeSuggestions(opts: {
   return {
     below,
     top: (below ? screenRow + 1 : screenRow) * opts.cellHeight,
-    // At least one row's worth, so a list on a two-row pane is a sliver that
-    // scrolls rather than nothing at all.
+    // At least one row, so a tiny pane gets a scrolling sliver.
     maxHeight: Math.max(1, below ? spaceBelow : spaceAbove) * opts.cellHeight,
   }
 }
 
 /** What the pane renders. Null when nothing should be on screen. */
 export interface SuggestionView {
-  /** Best first. Never empty — no suggestions means no view at all. */
+  /** Best first; never empty. */
   items: string[]
   /** Which one Right-arrow would take. */
   index: number
   /** The text these complete, so a stale view can be recognized. */
   typed: string
-  /** Where the input starts, in absolute buffer coordinates — what the popover
-   * is anchored to. Anchored to the *origin* rather than the cursor so the
-   * list does not slide sideways with every character typed. */
+  /** Where the input starts, in absolute buffer coordinates; the list anchors
+   * here so it doesn't slide with every character typed. */
   origin: Cell
-  /** Where the cursor is — the row so the list can sit under a wrapped line,
-   * and the column so the inline text can start exactly at it. */
+  /** The cursor: the row for a wrapped line, the column for inline text. */
   cursor: Cell
   /** Inline dim text, or the list opened out. */
   mode: SuggestionMode
 }
 
-/** The part of the highlighted suggestion that is not yet typed — what inline
- * view shows after the cursor, and what accepting sends. */
+/** The untyped part of the highlighted suggestion: shown inline, and sent on
+ * accept. */
 export function suggestionSuffix(view: SuggestionView): string {
   const command = view.items[view.index] ?? ''
   return command.startsWith(view.typed) ? command.slice(view.typed.length) : ''
 }
 
 /**
- * The first word of a suffix — what Alt+Right takes.
- *
- * A word here is whitespace-delimited: any leading space, then the run of
- * non-space that follows. So from `git ` + `commit -m "wip"` the first press
- * takes `commit`, the second ` -m`, the third ` "wip"`.
- *
- * Splitting on punctuation too — readline's `forward-word`, which would stop
- * at every `/` in a path — was the other option and is the wrong one for a
- * *command* line. The unit a user changes their mind about is the argument,
- * not the path segment, and a rule that needs three presses to cross
- * `/etc/nginx/nginx.conf` is a rule that makes the whole-line accept look
- * better than it is.
- *
- * Returns the entire suffix when it holds no word boundary, which makes a
- * word-accept of a one-word remainder identical to accepting the lot.
+ * The first word of a suffix, for Alt+Right: leading whitespace plus the next
+ * run of non-space. Whitespace-delimited (not readline's `forward-word`, which
+ * stops at every `/`), since arguments are what users change their minds
+ * about. Returns the whole suffix if it has no boundary.
  */
 export function firstWordOfSuffix(suffix: string): string {
   const match = /^\s*\S+/.exec(suffix)
   return match ? match[0] : suffix
 }
 
-/** How many to offer. Five is enough to be worth looking at and few enough to
- * read without taking the eye off the prompt; past that the list becomes a
- * menu, which is a different feature. */
+/** How many to offer. */
 const MAX_SUGGESTIONS = 5
 
 export interface AutocompleteDeps {
   tracker: PromptInputTracker
-  /** Queries the store. Rejects are treated as "no suggestions" — see
-   * `refresh`. */
+  /** Queries the store; rejects mean "no suggestions". */
   suggest: (typed: string, limit: number) => Promise<string[]>
   /** Send bytes to the far end, as if typed. */
   send: (text: string) => void
   /** Tell the store a suggestion was taken. Best-effort. */
   noteAccepted: (command: string) => void
-  /** Delete a command from the store and block it from coming back. Rejects
-   * are treated like a refill that found it still there — see `forget`. */
+  /** Delete a command from the store and block it; see `forget`. */
   forget: (command: string) => Promise<void>
-  /** Whether the feature is on right now. Read per call rather than captured,
-   * because the setting can change while a pane is open. */
+  /** Whether the feature is on; read per call since it can change. */
   enabled: () => boolean
   onChange: (view: SuggestionView | null) => void
 }
 
 /**
- * Owns the suggestion currently on offer for one pane.
- *
- * The flow is: something happened (a keystroke, a write) → re-read the prompt
- * line off the grid → if it changed, ask the store → publish a view. Every
- * step can decide there is nothing to show, and that is the common case.
+ * Owns the suggestion on offer for one pane: on a keystroke or write, re-read
+ * the prompt line, ask the store if it changed, and publish a view.
  */
 export class AutocompleteController {
   private readonly deps: AutocompleteDeps
   private view: SuggestionView | null = null
-  /** Guards against an out-of-order reply overwriting a newer one: the store
-   * is behind an IPC round trip, and the user keeps typing during it. */
+  /** Drops out-of-order replies; the store is an IPC round trip away. */
   private queryId = 0
-  /** What the last query asked about, so an unchanged line does not re-ask on
-   * every parsed write. */
+  /** The line last asked about, so an unchanged line isn't re-queried. */
   private lastQueried: string | null = null
   /**
-   * Whether the line's current contents got there by being typed.
-   *
-   * Gates *opening* a list, and it is the difference between a suggestion
-   * appearing because you are writing a command and one appearing because the
-   * far end redrew the line under you. Recalling a shell command with Up
-   * rewrites the whole line, which reads exactly like a large amount of typing
-   * from the grid's point of view — and a list that opens on it is a list
-   * nobody asked for, sitting over the history someone is in the middle of
-   * walking through.
-   *
-   * Set by a printable keystroke and cleared by anything else, so it follows
-   * intent rather than content.
+   * Whether the line's contents got there by typing. Gates opening an offer, so
+   * a history recall (which redraws the line) doesn't summon one. Set by a
+   * printable keystroke, cleared by anything else.
    */
   private typedSinceRedraw = false
 
@@ -331,33 +217,25 @@ export class AutocompleteController {
     return this.view
   }
 
-  /** Whether the cursor is at the end of the line right now — the condition
-   * Right-arrow acceptance is gated on. */
+  /** Whether the cursor is at the end of the line (gates Right-arrow accept). */
   private atLineEnd(): boolean {
     return this.deps.tracker.read()?.atEnd ?? false
   }
 
-  /** Open the inline suggestion out into the list. Does nothing when there is
-   * nothing showing, or when it is already open. */
+  /** Open the inline suggestion into the list. */
   expand(): void {
     if (!this.view || this.view.mode === 'list') return
     this.publish({ ...this.view, mode: 'list' })
   }
 
   /**
-   * The user pressed a key. Printable input arms the offer; anything else —
-   * an arrow, Home, `^R`, a function key — disarms it.
-   *
-   * The disarming half is what keeps a list from following someone through
-   * their shell's history: Up is not typing, so whatever the recall puts on
-   * the line is not something to complete.
+   * The user pressed a key. Printable input arms the offer; anything else
+   * (arrows, Home, `^R`) disarms it, so recalled history isn't completed.
    */
   noteInput(data: Uint8Array): void {
     let printable = false
     for (const byte of data) {
-      // Printable ASCII, or any byte of a multi-byte UTF-8 character. An
-      // escape sequence — every arrow, every editing key — starts with 0x1b
-      // and is therefore not typing.
+      // Printable ASCII or UTF-8 bytes; escape sequences start with 0x1b.
       if (byte >= 0x20 && byte !== 0x7f) printable = true
       else return this.disarm()
     }
@@ -376,9 +254,8 @@ export class AutocompleteController {
     if (!this.shouldOffer(input)) return this.clear()
     const typed = input!.text
     if (typed === this.lastQueried) return
-    // Not typing, so whatever put this on the line was the far end — a history
-    // recall, a Tab completion, a redraw. Record what the line now says so a
-    // later keystroke is compared against it, but offer nothing.
+    // Not typed (a recall, Tab completion or redraw): remember the line but
+    // offer nothing.
     if (!this.typedSinceRedraw) {
       this.lastQueried = typed
       return this.hide()
@@ -389,8 +266,7 @@ export class AutocompleteController {
     this.deps
       .suggest(typed, MAX_SUGGESTIONS)
       .then((items) => {
-        // A reply for a line the user has already moved on from is not an
-        // error, just late. Dropping it is the whole point of the id.
+        // A late reply for a line the user has moved past.
         if (id !== this.queryId) return
         const still = this.deps.tracker.read()
         if (!this.shouldOffer(still) || still!.text !== typed) return this.clear()
@@ -401,30 +277,20 @@ export class AutocompleteController {
           typed,
           origin: still!.origin,
           cursor: still!.cursor,
-          // Every new offer starts inline. Opening the list is a deliberate
-          // act about one particular ambiguous prefix, not a mode to be stuck
-          // in for the rest of the session.
+          // Every new offer starts inline.
           mode: 'inline',
         })
       })
       .catch(() => {
-        // No backend (a plain `npm run dev` browser), or the store failed to
-        // load. Autocomplete going quiet is the right failure; a toast over a
-        // terminal session is not.
+        // No backend (`npm run dev`) or the store failed: go quiet.
         if (id === this.queryId) this.clear()
       })
   }
 
   /**
-   * Whether this input is one to complete at all.
-   *
-   * `atEnd` is the load-bearing one: accepting appends, so offering while the
-   * cursor sits mid-line would splice text into the middle of the command.
-   *
-   * The length floor applies only to an inferred origin, and only there
-   * because an inferred origin cannot tell a shell prompt from a program
-   * pausing for a keypress — see `tooShortToInfer`. Pressing `n` at apt's
-   * `[Y/n]` should not summon the history of everything beginning with `n`.
+   * Whether to complete this input. Requires the cursor at the end (accepting
+   * appends). For an inferred origin, short input is skipped so a `[Y/n]` answer
+   * doesn't summon suggestions; see `tooShortToInfer`.
    */
   private shouldOffer(input: PromptInput | null): input is PromptInput {
     if (input === null || !input.atEnd || input.text.trim() === '') return false
@@ -435,42 +301,24 @@ export class AutocompleteController {
   move(delta: number): void {
     if (!this.view) return
     const count = this.view.items.length
-    // Wraps, because a five-item list read with the keyboard is a ring — and
-    // stopping at the end silently does nothing, which reads as a broken key.
+    // Wraps around.
     const index = (((this.view.index + delta) % count) + count) % count
     this.publish({ ...this.view, index })
   }
 
   /**
-   * Take the current suggestion, whole.
-   *
-   * **Re-reads the grid first**, and this is what makes a wrong origin
-   * harmless rather than destructive. Between the suggestion being drawn and
-   * the key being pressed, output may have arrived and redrawn the line, or
-   * the origin may have been a guess that was wrong all along. If what is on
-   * screen right now is not still a prefix of what is about to be sent, this
-   * sends nothing and dismisses instead.
-   *
-   * Only ever appends: the suffix, never the whole line. There is no path here
-   * that deletes what the user typed.
+   * Take the current suggestion. Re-reads the grid first and sends nothing if
+   * the screen no longer has the typed text as a prefix (output redrew the line,
+   * or the origin was wrong). Only ever appends the suffix.
    */
   accept(): void {
     this.take(false)
   }
 
   /**
-   * Take the first word of the current suggestion and no more.
-   *
-   * Nothing is remembered as "accepted" for a partial take — the user has
-   * said the first word was right, not that this command was the one they
-   * wanted, and ranking the whole line up on that is reading too much into a
-   * keystroke.
-   *
-   * The offer is dropped rather than trimmed in place, because the word is
-   * only on the line once the far end echoes it. The echo lands, `refresh`
-   * re-reads a longer prefix and asks the store again, and the rest of the
-   * command comes back as a fresh suggestion — which is also what makes a
-   * second Alt+Right take the second word.
+   * Take only the first word. Not recorded as an acceptance. The offer is
+   * dropped; once the far end echoes the word, `refresh` offers the rest again,
+   * which is how a second Alt+Right takes the next word.
    */
   acceptWord(): void {
     this.take(true)
@@ -488,33 +336,19 @@ export class AutocompleteController {
     if (suffix === '') return
     const text = wordOnly ? firstWordOfSuffix(suffix) : suffix
     this.deps.send(text)
-    // A word that turned out to be the whole remainder is a full accept, and
-    // is treated as one. Anything short of that leaves `lastQueried` null so
-    // the echo re-opens the offer on the longer prefix.
+    // A word that was the whole remainder counts as a full accept; otherwise
+    // leave `lastQueried` null so the echo re-offers.
     if (text !== suffix) return
     this.deps.noteAccepted(command)
-    // The line now reads as the full command, so the next refresh has nothing
-    // longer to offer. Saying so here avoids a flicker of the list re-opening
-    // on the echo of what we just sent.
+    // The line now holds the full command; don't re-offer on the echo.
     this.lastQueried = command
   }
 
   /**
-   * Delete the highlighted suggestion from the store — which also blocks it
-   * from returning — and offer what is left.
-   *
-   * It comes off screen at once rather than after the round trip, so the key
-   * feels like it did something; then the store is asked again for the same
-   * line, which both backfills a candidate that the forgotten one had been
-   * crowding out of the top five and shows the truth if the delete failed —
-   * a command that reappears is a more honest answer than a toast over a
-   * terminal. The refill keeps the mode and position, because someone working
-   * down a list deleting stale entries should not be thrown back to inline
-   * after each one.
-   *
-   * The refill goes out only once the delete has settled. Both are calls into
-   * the same store, and nothing orders two in-flight invokes, so asking
-   * straight away could read the entry back before it was gone.
+   * Delete the highlighted suggestion from the store (which also blocks it) and
+   * offer what's left. It disappears immediately; once the delete settles the
+   * store is asked again, backfilling the list (and showing the entry again if
+   * the delete failed). Mode and position are kept.
    */
   forget(): void {
     const view = this.view
@@ -544,8 +378,7 @@ export class AutocompleteController {
     this.deps.forget(command).then(refill, refill)
   }
 
-  /** Handle a keystroke. Returns whether it was consumed, i.e. whether the
-   * caller should stop it reaching the far end. */
+  /** Handle a keystroke; returns whether it was consumed. */
   handleKey(e: {
     key: string
     ctrlKey: boolean
@@ -585,22 +418,20 @@ export class AutocompleteController {
     }
   }
 
-  /** Drop the offer without touching what is known about the prompt. Also
-   * forgets the last query, so the same line can be offered again after the
-   * user dismisses and keeps typing. */
+  /** Drop the offer and forget the last query, so the same line can be offered
+   * again after a dismiss. */
   clear(): void {
     this.lastQueried = null
     this.hide()
   }
 
-  /** Take the list off screen but remember what was last asked about — for
-   * the case where the line changed without being typed, which should not
-   * re-ask the store on every parsed write for as long as it stays that way. */
+  /** Take the list off screen but remember the last query, so an untyped line
+   * isn't re-queried on every write. */
   private hide(): void {
     if (this.view !== null) this.publish(null)
   }
 
-  /** A line ended (Enter, `^C`) — nothing to complete until the next prompt. */
+  /** A line ended (Enter, `^C`). */
   reset(): void {
     this.queryId++
     this.typedSinceRedraw = false

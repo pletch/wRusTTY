@@ -1,60 +1,31 @@
 //! TPM-backed vault unlock via `Windows.Security.Credentials.KeyCredentialManager`.
 //!
-//! # Why this exists
-//!
-//! The OS-keyring unlock method (`OsKeyringProvider` in `vault.rs`) stores a
-//! key encryption key in DPAPI-protected Credential Manager. That key is
-//! readable by *any* process running as the signed-in user, with a plain
-//! `CredRead` and no prompt — the Windows Hello check in front of it is a
-//! consent gate on our own code path, which an attacker simply doesn't call.
-//! It is also recoverable offline from a stolen disk given the account
-//! password, since that's what protects the DPAPI master key.
-//!
-//! This provider stores **nothing recoverable at rest**. It enrolls an
-//! asymmetric key credential whose private key lives in the TPM and is gated
-//! by the Hello gesture, keeps a random challenge in the clear next to the
-//! vault, and derives the KEK by signing that challenge:
+//! The OS-keyring method (`OsKeyringProvider` in `vault.rs`) keeps a KEK in
+//! DPAPI-protected Credential Manager, readable by any process running as the
+//! user and recoverable offline with the account password. This provider
+//! stores nothing recoverable at rest: it enrolls a key credential whose
+//! private key lives in the TPM behind the Hello gesture, keeps a random
+//! challenge beside the vault, and derives the KEK by signing it:
 //!
 //! ```text
 //! KEK = HKDF-SHA256(RequestSignAsync(challenge), hkdf_salt, "wrustty vault kek v1")
 //! ```
 //!
-//! Recovering the KEK therefore requires a live gesture from the person at
-//! the machine, and the TPM's own anti-hammering bounds guessing. Malware
-//! running as the user cannot extract it, and a stolen disk yields nothing.
-//!
 //! # The assumption this rests on
 //!
-//! Signature *determinism*: signing the same challenge twice must produce
-//! identical bytes. Today it does — the credential is RSA and the signature
-//! is PKCS#1 v1.5, which has no random component. **Microsoft has never
-//! documented this as a guarantee.** If a future Windows build moves to
-//! RSA-PSS (randomized salt) or to ECDSA without RFC 6979, every Hello
-//! wrapper stops opening on the same day.
+//! Signing the same challenge twice must produce identical bytes. It does
+//! today (RSA, PKCS#1 v1.5), but Microsoft has never documented it. A move to
+//! RSA-PSS or randomized ECDSA would break every Hello wrapper at once, which
+//! is survivable only because the master password wrapper can't be removed
+//! (`Vault::remove_unlock_method`). Never make this the sole unlock method.
 //!
-//! That is survivable rather than catastrophic only because the master
-//! password wrapper always exists and cannot be removed (see
-//! `Vault::remove_unlock_method`). Do not let anyone talk you into making
-//! this the sole unlock method for a vault.
+//! The AEAD tag already detects a wrong KEK at unlock, so determinism is only
+//! checked on the failure path (`explain_unlock_failure`), where it tells a
+//! rotated credential (re-enroll) from a non-deterministic one (re-enrolling
+//! would loop forever).
 //!
-//! Detecting a determinism failure matters because the naive handling is a
-//! *loop*, not an error: enrollment succeeds (one signature is trivially
-//! self-consistent), the next unlock fails, its message sensibly says
-//! "re-enroll", and that succeeds and fails again, forever, with nothing
-//! naming the cause.
-//!
-//! The check is deferred to the failure path rather than run at enrollment,
-//! because the wrapped key's AEAD tag *already* detects a wrong signature at
-//! unlock — a second enrollment signature would only be re-deriving something
-//! the tag tells us anyway. What the tag can't say is *why* the KEK was
-//! wrong, and the two causes need opposite advice: a rotated credential is
-//! fixed by re-enrolling, a non-deterministic signature is made worse by it.
-//! So `explain_unlock_failure` does the twice-and-compare, on a path that has
-//! already failed, and every user who never hits it pays one prompt fewer.
-//!
-//! Every signing operation requires a fresh gesture — that's the design of a
-//! Hello key credential, not an artifact here. Enrollment therefore costs two
-//! prompts (create, then sign) and unlock costs exactly one.
+//! Each signing needs a fresh gesture: enrollment costs two prompts (create,
+//! sign) and unlock one.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -72,38 +43,33 @@ use wr_vault::{Kek, KeyProvider, ProviderError, WrapperKind, WrapperMeta, Wrappe
 use zeroize::Zeroize;
 
 /// Name of the key credential in the Hello container. Stored in each wrapper
-/// too, so a vault carried to another machine can say which credential it
-/// wants rather than just failing.
+/// so a vault on another machine can say which credential it wants.
 const CREDENTIAL_NAME: &str = "wrustty-vault-unlock";
 
 /// HKDF `info` string. Versioned: changing the derivation without changing
-/// this would produce a different KEK from the same signature and silently
-/// orphan every existing wrapper.
+/// this would silently orphan every existing wrapper.
 const HKDF_INFO: &[u8] = b"wrustty vault kek v1";
 
 const CHALLENGE_LEN: usize = 32;
 const HKDF_SALT_LEN: usize = 16;
 
-/// Maps a `KeyCredentialStatus` onto the taxonomy the UI acts on. `Success`
-/// is handled by the caller; everything reaching here is a failure.
+/// Maps a `KeyCredentialStatus` onto the UI's taxonomy. `Success` is handled
+/// by the caller.
 fn status_error(status: KeyCredentialStatus) -> ProviderError {
     match status {
-        // Both mean the user declined at the prompt. `UserPrefersPassword` is
-        // the "use a different sign-in option" escape hatch, which for our
-        // purposes is the same answer: they're not doing this right now.
+        // Both mean the user declined; `UserPrefersPassword` is "use a different
+        // sign-in option".
         KeyCredentialStatus::UserCanceled | KeyCredentialStatus::UserPrefersPassword => {
             ProviderError::Cancelled
         }
-        // On open: the credential is gone — a reset PIN, a cleared Hello
-        // container, a migrated profile. The wrapper is dead and the user
-        // must unlock another way and re-enroll.
+        // The credential is gone (reset PIN, cleared container, migrated profile):
+        // unlock another way and re-enroll.
         KeyCredentialStatus::NotFound => ProviderError::Invalidated(
             "the Windows Hello credential for this vault no longer exists — \
              unlock with your master password and set it up again"
                 .to_string(),
         ),
-        // Too many failed gestures. Transient: Windows unlocks it again after
-        // a successful sign-in, so this is worth retrying later.
+        // Too many failed gestures. Transient: cleared by a successful sign-in.
         KeyCredentialStatus::SecurityDeviceLocked => ProviderError::Failed(
             "Windows Hello is locked out after too many attempts — sign in to Windows again first"
                 .to_string(),
@@ -112,10 +78,8 @@ fn status_error(status: KeyCredentialStatus) -> ProviderError {
     }
 }
 
-/// WinRT activation needs a COM apartment, and every one of these runs on a
-/// fresh `spawn_blocking` thread that has none. Safe to call unconditionally:
-/// it no-ops (S_FALSE) if something already initialized this thread, and
-/// these threads never touch COM again after returning to the pool.
+/// WinRT activation needs a COM apartment, which a fresh `spawn_blocking`
+/// thread lacks. A no-op (S_FALSE) if already initialized.
 fn init_com() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -140,13 +104,9 @@ fn from_ibuffer(buffer: &IBuffer) -> Result<Vec<u8>, ProviderError> {
     Ok(bytes)
 }
 
-/// Whether `KeyCredentialManager` can be used at all on this machine.
-///
-/// Note carefully what this does *not* tell you: it returns true whenever
-/// Hello is enrolled for the user, including on machines with no TPM, where
-/// key credentials fall back to a software key store and the whole
-/// "nothing recoverable at rest" property is lost. Attestation, checked at
-/// enrollment, is what distinguishes the two.
+/// Whether `KeyCredentialManager` can be used at all. True whenever Hello is
+/// enrolled, including without a TPM (a software key store, which loses the
+/// "nothing at rest" property); attestation at enrollment tells them apart.
 pub(crate) async fn is_supported() -> bool {
     tokio::task::spawn_blocking(|| {
         init_com();
@@ -158,13 +118,9 @@ pub(crate) async fn is_supported() -> bool {
     .unwrap_or(false)
 }
 
-/// Whether this machine still holds the vault's key credential.
-///
-/// Called on every vault-menu open and at startup, so it must not prompt —
-/// `OpenAsync` only retrieves a handle, with the gesture deferred to
-/// `RequestSignAsync`. `credential_open_does_not_prompt` in the tests below
-/// pins that down, because getting it wrong would mean a Hello dialog every
-/// time the menu opens.
+/// Whether this machine still holds the vault's key credential. Called on
+/// every vault-menu open, so it must not prompt: `OpenAsync` only retrieves a
+/// handle (pinned by `credential_open_does_not_prompt`).
 pub(crate) async fn credential_exists() -> bool {
     tokio::task::spawn_blocking(|| {
         init_com();
@@ -178,12 +134,9 @@ pub(crate) async fn credential_exists() -> bool {
     .unwrap_or(false)
 }
 
-/// Removes the vault's key credential from the Hello container.
-///
-/// Best-effort and idempotent: a credential that isn't there is the desired
-/// end state. Without this, turning the toggle off — or deleting the vault
-/// outright — leaves an orphaned TPM credential behind forever, litter that
-/// nothing will ever reference again.
+/// Removes the vault's key credential from the Hello container, so turning
+/// the method off or deleting the vault leaves no orphan. Best-effort and
+/// idempotent.
 pub(crate) async fn forget_credential() {
     let _ = tokio::task::spawn_blocking(|| {
         init_com();
@@ -192,21 +145,16 @@ pub(crate) async fn forget_credential() {
     .await;
 }
 
-/// Signs `challenge` with the vault's key credential, prompting for the Hello
-/// gesture. Returns the raw signature — the caller derives the KEK from it
-/// and is responsible for zeroizing it.
+/// Signs `challenge` with the vault's key credential, prompting for the
+/// gesture. The caller derives the KEK and zeroizes the signature.
 fn sign_challenge_blocking(
     credential_name: &str,
     challenge: &[u8],
 ) -> Result<Vec<u8>, ProviderError> {
     init_com();
 
-    // Open, never create: `RequestCreateAsync` with `ReplaceExisting` here
-    // would destroy the very key we're trying to sign with and hand back a
-    // fresh one, whose signature derives a different KEK — turning "the
-    // credential rotated" into "the vault silently stopped opening, and the
-    // wrapper is now unrecoverable". Enrollment is the only place a credential
-    // is created.
+    // Open, never create: `ReplaceExisting` here would destroy the key and make
+    // the wrapper unrecoverable. Only enrollment creates a credential.
     let opened = KeyCredentialManager::OpenAsync(&HSTRING::from(credential_name))
         .and_then(|op| op.join())
         .map_err(|e| ProviderError::Failed(e.to_string()))?;
@@ -238,8 +186,8 @@ fn sign_challenge_blocking(
     from_ibuffer(&signature)
 }
 
-/// Creates (or replaces) the key credential. Returns whether the TPM
-/// successfully attested it.
+/// Creates (or replaces) the key credential. Returns whether the TPM attested
+/// it.
 fn create_credential_blocking(credential_name: &str) -> Result<bool, ProviderError> {
     init_com();
 
@@ -252,10 +200,8 @@ fn create_credential_blocking(credential_name: &str) -> Result<bool, ProviderErr
         ));
     }
 
-    // `ReplaceExisting` rather than `FailIfExists`: enrollment always mints a
-    // fresh challenge and rewraps the DEK anyway, so there is nothing to
-    // preserve, and reusing a credential left over from a previous enrollment
-    // would mean depending on a key whose provenance we no longer know.
+    // `ReplaceExisting`: enrollment mints a fresh challenge and rewraps anyway,
+    // and a leftover credential's provenance is unknown.
     let created = KeyCredentialManager::RequestCreateAsync(
         &HSTRING::from(credential_name),
         KeyCredentialCreationOption::ReplaceExisting,
@@ -272,20 +218,15 @@ fn create_credential_blocking(credential_name: &str) -> Result<bool, ProviderErr
         .Credential()
         .map_err(|e| ProviderError::Failed(e.to_string()))?;
 
-    // Best-effort: a machine with no TPM still gets a working (software-
-    // backed) credential, and refusing to enroll there would be worse than
-    // enrolling and saying so. `TemporarilyUnavailable` is also common on
-    // perfectly good hardware — attestation needs a provisioned AIK, which
-    // Windows fetches lazily — so a false here means "not proven", not
-    // "proven absent".
+    // Best-effort: a software-backed credential still works and refusing would be
+    // worse. `TemporarilyUnavailable` is common on good hardware (the AIK is
+    // provisioned lazily), so false means "not proven", not "absent".
     let attestation = credential
         .GetAttestationAsync()
         .and_then(|op| op.join())
         .and_then(|result| result.Status());
-    // Logged rather than merely reduced to a bool: `TemporarilyUnavailable`
-    // (no attestation identity key provisioned yet) and `NotSupported` (no
-    // TPM at all) mean very different things, and collapsing them leaves
-    // nobody able to tell which happened.
+    // Logged: `TemporarilyUnavailable` (no AIK yet) and `NotSupported` (no TPM)
+    // mean very different things.
     match &attestation {
         Ok(status) => log::info!("Windows Hello key credential attestation: {status:?}"),
         Err(e) => log::info!("Windows Hello key credential attestation failed: {e}"),
@@ -337,13 +278,9 @@ impl HelloProvider {
         Self { app }
     }
 
-    /// Works out *why* an unlock failed, after it already has.
-    ///
-    /// The AEAD tag on the wrapped key established that the derived KEK was
-    /// wrong; it cannot say which of two very different things went wrong,
-    /// and the remedies are opposite — re-enrolling fixes a rotated
-    /// credential and is futile for a non-deterministic one. Costs up to two
-    /// prompts, spent only here, on a path that has already failed.
+    /// Works out why an unlock failed. The AEAD tag says the KEK was wrong but
+    /// not why, and the remedies are opposite: re-enrolling fixes a rotated
+    /// credential and loops for a non-deterministic one. Costs up to two prompts.
     pub(crate) async fn explain_unlock_failure(&self, meta: &WrapperMeta) -> String {
         const ROTATED: &str = "the Windows Hello credential for this vault was replaced or \
                                removed — unlock with your master password, then switch \
@@ -355,8 +292,7 @@ impl HelloProvider {
                 .to_string();
         };
 
-        // Costs nothing and catches the common case (a reset PIN destroys the
-        // credential outright), so try it before spending any gestures.
+        // Free, and catches the common case (a reset PIN), so try it first.
         if !credential_exists().await {
             return ROTATED.to_string();
         }
@@ -373,11 +309,10 @@ impl HelloProvider {
             .await;
 
         match (first, second) {
-            // Stable, but not the signature this vault was wrapped with: the
-            // keypair behind the credential changed.
+            // Stable, but not the signature the vault was wrapped with: the keypair
+            // changed.
             (Ok(a), Ok(b)) if a == b => ROTATED.to_string(),
-            // The assumption this whole method rests on no longer holds here.
-            // Say so plainly, and steer away from the re-enroll loop.
+            // Determinism no longer holds. Say so, and steer away from re-enrolling.
             (Ok(_), Ok(_)) => "Windows Hello on this machine no longer produces a stable \
                                signature, so it can't derive this vault's key. Use your master \
                                password — re-enrolling will not help."
@@ -386,10 +321,8 @@ impl HelloProvider {
         }
     }
 
-    /// Runs `f` on a blocking thread, then hands keyboard focus back to the
-    /// webview — the gesture prompt is broker-hosted and strands focus
-    /// whichever way it resolves, so this wraps *every* prompting call rather
-    /// than only the successful ones.
+    /// Runs `f` on a blocking thread, then hands focus back to the webview. The
+    /// broker-hosted prompt strands focus however it resolves.
     async fn prompting<T, F>(&self, f: F) -> Result<T, ProviderError>
     where
         T: Send + 'static,
@@ -399,10 +332,7 @@ impl HelloProvider {
             .app
             .get_webview_window("main")
             .ok_or_else(|| ProviderError::Failed("no main window".to_string()))?;
-        // HWND isn't Send; round-trip through a plain isize rather than
-        // moving the value itself across the thread boundary. `WebviewWindow`
-        // is Send (it's handles and ids under the hood), so it moves in
-        // directly.
+        // HWND isn't Send, so pass it as an isize. `WebviewWindow` is Send.
         let hwnd_value = window
             .hwnd()
             .map_err(|e| ProviderError::Failed(e.to_string()))?
@@ -410,21 +340,11 @@ impl HelloProvider {
 
         tokio::task::spawn_blocking(move || {
             let hwnd = HWND(hwnd_value as _);
-            // Must happen before the call, not after: the prompt is modal and
-            // blocks this thread until answered, so there is no "after" until
-            // the user has already found the invisible dialog.
+            // Before the call: the prompt is modal and blocks this thread.
             let foreground = crate::win_focus::allow_broker_foreground(hwnd);
-            // The prompt's window is unowned and so earns a taskbar button of
-            // its own, wearing a generic icon and grouped under the broker
-            // rather than under us. Dropped once `f` returns, which is also
-            // when the prompt has closed.
-            //
-            // Gated on having taken the foreground, because that button is
-            // also the user's way of *finding* a prompt that opened behind
-            // something. When the grant is good the prompt comes to the
-            // front and the button is pure clutter; when it isn't, removing
-            // it would hide a modal dialog that is already hidden. Keep the
-            // clutter in exactly the case where it might be load-bearing.
+            // The prompt's unowned window gets its own generic taskbar button; hide it
+            // until `f` returns. Only when foreground was granted: otherwise that button
+            // is how the user finds a prompt that opened behind something.
             let button = foreground.then(crate::win_focus::hide_broker_taskbar_button);
             let result = f();
             drop(button);
@@ -462,9 +382,8 @@ impl KeyProvider for HelloProvider {
             .prompting(|| create_credential_blocking(CREDENTIAL_NAME))
             .await?;
 
-        // Neither of these is secret: the challenge is stored in the clear
-        // beside the vault, and the scheme never relies on its secrecy — only
-        // on the TPM's refusal to sign it without a gesture.
+        // Not secret: the scheme relies on the TPM refusing to sign without a
+        // gesture, not on the challenge.
         let challenge: [u8; CHALLENGE_LEN] = wr_vault::random_bytes();
         let hkdf_salt: [u8; HKDF_SALT_LEN] = wr_vault::random_bytes();
 
@@ -491,14 +410,9 @@ impl KeyProvider for HelloProvider {
 mod tests {
     use super::*;
 
-    /// Exercises the WinRT activation path for real, without prompting.
-    ///
-    /// Worth its own test because this is precisely the failure mode that
-    /// bit the `UserConsentVerifier` work (see the note in `vault.rs`): a
-    /// wrong activation route compiles perfectly and then fails at *runtime*
-    /// with "Class not registered". Asserts only that activation succeeded —
-    /// whether Hello is actually enrolled is a property of the machine, not
-    /// of this code.
+    /// Exercises WinRT activation for real, without prompting. A wrong activation
+    /// route compiles and then fails at runtime with "Class not registered".
+    /// Asserts only activation; whether Hello is enrolled depends on the machine.
     #[tokio::test]
     async fn key_credential_manager_activates() {
         let result = tokio::task::spawn_blocking(|| {
@@ -515,11 +429,9 @@ mod tests {
         eprintln!("Windows Hello key credentials supported here: {result:?}");
     }
 
-    /// Runs `f` on the blocking pool but gives up after `secs`, so a WinRT
-    /// call that never returns is reported as such instead of hanging the
-    /// test run. The blocking thread is abandoned rather than canceled —
-    /// there is no way to interrupt a stuck WinRT call, which is precisely
-    /// the property being investigated.
+    /// Runs `f` on the blocking pool with a timeout, so a WinRT call that never
+    /// returns is reported rather than hanging the run. The thread is abandoned,
+    /// since a stuck WinRT call can't be interrupted.
     async fn with_timeout<T: Send + 'static>(
         label: &str,
         secs: u64,
@@ -535,11 +447,9 @@ mod tests {
         }
     }
 
-    /// `credential_exists` runs on every vault-menu open, so a prompt hiding
-    /// inside `OpenAsync` would mean a Hello dialog every time — and, as this
-    /// project learned the hard way, an *invisible* one when the process
-    /// isn't foreground. Headless here, so a prompt would manifest as a call
-    /// that never returns: finishing at all is the assertion.
+    /// A prompt inside `OpenAsync` would mean a Hello dialog on every vault-menu
+    /// open. Headless, a prompt shows as a call that never returns, so finishing
+    /// is the assertion.
     #[tokio::test(flavor = "multi_thread")]
     async fn credential_open_does_not_prompt() {
         let opened = with_timeout("OpenAsync", 15, || {
@@ -558,19 +468,13 @@ mod tests {
         eprintln!("OpenAsync status: {opened:?}");
     }
 
-    /// Drives the real enrollment sequence step by step, with a timeout on
-    /// each, and reports whether the two signatures actually match on this
-    /// hardware. Uses its own credential name so it can't disturb a real
-    /// vault, and deletes it afterward.
+    /// Drives the real enrollment sequence step by step with timeouts, and
+    /// reports whether the two signatures match on this hardware. Uses its own
+    /// credential name and deletes it afterward.
     ///
-    /// **A timeout here does not mean the call hung.** `cargo test` has no
-    /// window and is not the foreground process, so the Hello prompt opens
-    /// invisibly behind everything and waits forever for an answer nobody
-    /// can see — and `allow_broker_foreground` can't help, since the grant
-    /// requires the granting process to hold foreground. Read a timeout as
-    /// "nobody answered the prompt", and check the taskbar before concluding
-    /// anything about the code. Only the running app exercises this path
-    /// realistically.
+    /// A timeout doesn't mean a hang: `cargo test` isn't foreground, so the Hello
+    /// prompt opens invisibly and waits. Check the taskbar before concluding
+    /// anything; only the running app exercises this path realistically.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "prompts for a Windows Hello gesture; run with --ignored --nocapture"]
     async fn enrolment_diagnostic() {

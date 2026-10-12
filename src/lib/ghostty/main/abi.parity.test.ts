@@ -6,26 +6,18 @@ import { describe, expect, it } from 'vitest'
 import * as abi from './abi'
 
 /**
- * Proves `abi.ts` against a real ghostty `main` build, because almost nothing in
- * that file fails loudly when it is wrong.
+ * Proves `abi.ts` against a real ghostty `main` build, since almost nothing
+ * there fails loudly: a mistyped key or wrong offset returns a plausible
+ * number. The binary is driven and compared against content we wrote.
  *
- * A mistyped key reads a different field of the same struct and returns a
- * plausible number. A wrong `GhosttyPoint` offset reads a real cell from the
- * wrong place. Neither raises. The only way to know the constants are right is
- * to drive the binary and compare against content we wrote ourselves — which is
- * what this does.
+ * ## The binary isn't in the tree
  *
- * ## The binary is not in the tree
- *
- * It is a 5 MB comparison artifact, not something we ship, so this suite skips
- * unless one is provided:
+ * It's a 5 MB comparison artifact, so this suite skips unless provided:
  *
  *   GHOSTTY_MAIN_WASM=/path/to/ghostty-vt.wasm npx vitest run abi.parity
  *
- * It must be built from the pin in `docs/PORT_GHOSTTY_MAIN.md`
- * (b1d9492cfa5d0d22c534a00e81bea623957113e7) with Zig 0.16.0. Skipping is
- * deliberate: CI has no such binary, and a suite that silently passed without
- * one would assert nothing while looking like coverage.
+ * Build it from the pin in `docs/PORT_GHOSTTY_MAIN.md`
+ * (b1d9492cfa5d0d22c534a00e81bea623957113e7) with Zig 0.16.0.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -288,17 +280,10 @@ run('ghostty main ABI, against a build at the pin', () => {
   })
 
   /**
-   * Swallows `ESC k` payloads, which is what `#176` is for.
-   *
-   * This assertion was the other way round until the patch existed: against a
-   * stock `main` build `SCREENTITLE` reaches the grid, and that is how the fix
-   * was confirmed to still be needed. It is inverted now because the binary
-   * under `vendor-main/` is built **with** `patches/ghostty-main-esc-k.patch`.
-   *
-   * So this is the check that the patch actually applied, and it is a behavior
-   * rather than `git apply`'s exit code. If it fails after a rebuild, the patch
-   * was skipped or silently no-op'd; if it fails against a build you believe is
-   * unpatched, `#176` has landed upstream and can be dropped from the recipe.
+   * Swallows `ESC k` payloads (`#176`), since the binary under `vendor-main/`
+   * is built with `patches/ghostty-main-esc-k.patch`. This checks the patch
+   * actually applied. If it fails against a build believed unpatched, `#176`
+   * has landed upstream and can leave the recipe.
    */
   it('swallows ESC k payloads, which is what #176 is carried for', () => {
     const h = boot(moduleOnce())

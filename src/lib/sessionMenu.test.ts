@@ -2,20 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { menuAnchor } from './sessionMenu'
 
 /**
- * Where the menu opens.
- *
- * Beside the row, never under the cursor. Opening it at the click point laid
- * it over the sessions *below* the one it belongs to, and both consequences
- * were real: a click that missed an item slightly connected the wrong host,
- * and after the menu closed the cursor sat on a highlighted row that was not
- * the one being worked on, which reads as the app having selected it.
+ * Where the menu opens: beside the row, never under the cursor.
  */
 describe('menuAnchor', () => {
   const wide = 1200
   const tall = 800
 
   it('opens to the right of the row, clear of every session', () => {
-    // A row ending at 490 must not have the menu starting before it.
+    // The menu starts at or after the row's right edge.
     expect(menuAnchor(490, 260, wide, tall).x).toBeGreaterThanOrEqual(490)
   })
 

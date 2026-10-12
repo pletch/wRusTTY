@@ -1,11 +1,6 @@
-//! The parts every session importer shares: minting ids, appending without
-//! clobbering, and saying what happened.
-//!
-//! There are two importers — PuTTY's registry and OpenSSH's `~/.ssh/config` —
-//! and they differ only in where the sessions come from and how a foreign
-//! session maps onto a [`SessionProfile`]. Everything after that mapping is
-//! identical, and the identical part is the part with the sharp edges in it
-//! (see [`next_id`]), so it lives here rather than being written twice.
+//! What every session importer (PuTTY, `~/.ssh/config`) shares after mapping
+//! a foreign session to a [`SessionProfile`]: minting ids, appending without
+//! clobbering, and reporting.
 
 use serde::Serialize;
 
@@ -17,27 +12,21 @@ use crate::profiles::SessionProfile;
 pub struct ImportSummary {
     /// Profiles added.
     pub imported: usize,
-    /// Sessions already present by label and host — see [`merge_into`].
+    /// Already present by label and host (see [`merge_into`]).
     pub skipped_duplicates: usize,
-    /// Sessions this app can't represent — what that means is the importer's
-    /// own business (a raw-protocol PuTTY session, a wildcard `Host` pattern).
+    /// Sessions this app can't represent, as each importer defines it.
     pub skipped_unsupported: usize,
-    /// Labels of what was imported, so the UI can show it rather than a count.
+    /// Labels of what was imported, for the UI.
     pub labels: Vec<String>,
 }
 
-/// Appends the candidates that aren't already saved, leaving the rest alone.
+/// Appends candidates not already saved.
 ///
-/// Additive by design. A session already present — same label *and* same host —
-/// is left alone rather than overwritten, so running an import twice is
-/// harmless and a profile the user has since edited is never silently reverted
-/// to the other client's version of it. Matching on both fields rather than the
-/// label alone means an unrelated profile that happens to share a name doesn't
-/// block the import.
-///
-/// `existing` is mutated in place: the caller holds the profile lock around the
-/// whole read-modify-write, and the duplicate check has to see everything added
-/// so far or two identical foreign sessions would both import.
+/// A session with the same label and host is left alone, so re-running is
+/// harmless and edits aren't reverted; matching both fields keeps a
+/// same-named unrelated profile from blocking it. `existing` is mutated in
+/// place under the caller's profile lock, so duplicates within one run are
+/// caught too.
 pub fn merge_into(
     existing: &mut Vec<SessionProfile>,
     candidates: Vec<SessionProfile>,
@@ -58,24 +47,12 @@ pub fn merge_into(
     summary
 }
 
-/// An id not already in use, and one that will never be minted again.
+/// An id not in use and never minted again: `prefix` (`"putty"`, `"sshcfg"`)
+/// plus eight random bytes (like `wr-vault`'s `new_wrapper_id`).
 ///
-/// Profile ids are UUIDs when the frontend makes them, but nothing requires
-/// that — they are opaque strings compared for equality. `prefix` (`"putty"`,
-/// `"sshcfg"`) keeps an imported profile identifiable as such in
-/// `sessions.json`; the random suffix is what makes it safe.
-///
-/// This counted (`putty-0`, `putty-1`, …) and picked the first free number,
-/// which made ids *reusable*: deleting profiles frees their numbers, and the
-/// next import hands them to different hosts. A profile id is also its vault
-/// key — `resolve_auth` looks up `vault.get(&profile.id)` — and a credential
-/// can outlive its profile, because deleting a profile with the vault locked
-/// leaves the entry behind. A reused id therefore let a new profile silently
-/// authenticate to one host with the secret saved for another, which presents
-/// as a server-side problem rather than as a bug here.
-///
-/// Eight random bytes, the same shape as `wr-vault`'s `new_wrapper_id`. The
-/// existence check stays, and is now only a formality.
+/// A profile id is also its vault key, and a credential can outlive its
+/// profile (deleting with the vault locked leaves it), so a reused id would
+/// silently authenticate a new host with another's secret.
 pub fn next_id(existing: &[SessionProfile], prefix: &str) -> String {
     loop {
         let suffix: String = wr_vault::random_bytes::<8>()
@@ -119,8 +96,7 @@ mod tests {
         }
     }
 
-    /// The whole promise of "running one twice is harmless": an edited profile
-    /// must not be reverted to the other client's version of it.
+    /// Re-running doesn't revert an edited profile.
     #[test]
     fn an_already_saved_session_is_left_exactly_as_it_is() {
         let mut existing = vec![profile("mine", "prod", "10.0.0.5")];
@@ -135,8 +111,7 @@ mod tests {
         assert_eq!(existing[0].username, "tim");
     }
 
-    /// Matching on the label alone would let an unrelated profile that happens
-    /// to share a name block the import of a real host.
+    /// A same-named unrelated profile doesn't block an import.
     #[test]
     fn a_shared_name_on_a_different_host_still_imports() {
         let mut existing = vec![profile("mine", "router", "192.168.1.1")];
@@ -146,8 +121,7 @@ mod tests {
         assert_eq!(existing.len(), 2);
     }
 
-    /// The duplicate check has to see what this same run just added, or two
-    /// identical foreign sessions both land.
+    /// Duplicates within one run are caught.
     #[test]
     fn two_identical_candidates_import_once() {
         let mut existing = Vec::new();
@@ -159,9 +133,8 @@ mod tests {
         assert_eq!(summary.skipped_duplicates, 1);
     }
 
-    /// A profile id is also its vault key, so an id that can come back around
-    /// is a credential that can be inherited by a different host. Deleting
-    /// profiles used to free their numbers for the next import to hand out.
+    /// Ids never recur, since a recycled id could inherit another host's
+    /// credential.
     #[test]
     fn a_deleted_imports_id_is_never_handed_out_again() {
         let mut existing: Vec<SessionProfile> = (0..10)
@@ -170,8 +143,7 @@ mod tests {
 
         let retired: Vec<String> = existing.split_off(8).into_iter().map(|p| p.id).collect();
 
-        // The vault still holds an entry under each retired id: deleting a
-        // profile with the vault locked can't take its credential with it.
+        // The vault keeps entries under retired ids.
         for _ in 0..64 {
             let minted = next_id(&existing, "putty");
             assert!(
@@ -182,8 +154,7 @@ mod tests {
         }
     }
 
-    /// The prefix is what keeps an imported profile identifiable as one in
-    /// `sessions.json`, and the suffix is what makes it unrepeatable.
+    /// The prefix marks an import; the suffix makes it unrepeatable.
     #[test]
     fn imported_ids_are_prefixed_and_random() {
         let id = next_id(&[], "sshcfg");

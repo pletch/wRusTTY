@@ -82,14 +82,9 @@ describe('parseThemeFile, iTerm2', () => {
   })
 
   it('leaves a neutral gray exactly itself when converting from P3', () => {
-    // The one conversion result checkable without a colorimeter: the two
-    // spaces share a white point, so the matrix rows sum to 1 and the grays
-    // are invariant. A transposed or mistyped matrix breaks this.
-    //
-    // 0.6 rather than 0.5 deliberately. Half lands on 127.5 exactly, where
-    // the last bit of float error in a row that sums to 0.9999999999999997
-    // decides which way the channel rounds -- so a correct matrix fails, for
-    // a reason that has nothing to do with color.
+    // Checkable without a colorimeter: the spaces share a white point, so grays
+    // are invariant, which a transposed matrix breaks. 0.6, not 0.5: 127.5
+    // would round on float error in a row summing to 0.9999999999999997.
     const file = itermFile({ 'Background Color': itermColor(0.6, 0.6, 0.6, 'P3') })
     const [r, g, b] = hexToRgb(parseThemeFile(file, 'Scheme').theme.background)
     expect(r).toBe(g)

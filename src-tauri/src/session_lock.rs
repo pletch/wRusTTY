@@ -1,15 +1,7 @@
-//! Auto-locks the vault when the Windows session locks (Win+L, or an RDP
-//! client disconnecting without an explicit lock) — otherwise a vault
-//! unlocked once stays unlocked indefinitely, even across a screen lock,
-//! which defeats the point of gating it with Windows Hello in the first
-//! place: anyone who reaches the already-unlocked session reaches the vault
-//! too.
-//!
-//! Tauri doesn't expose tao's internal message-loop hook to application
-//! code (it's wired up only for Tauri's own accelerator handling), so the
-//! only workable route is subclassing the main window ourselves via
-//! `SetWindowSubclass`, the same Win32 mechanism tao already uses
-//! internally on its own window.
+//! Locks the vault when the Windows session locks (Win+L, or an RDP
+//! disconnect), so anyone reaching an unlocked session doesn't also reach an
+//! unlocked vault. Tauri doesn't expose tao's message-loop hook, so the main
+//! window is subclassed with `SetWindowSubclass`, as tao does internally.
 
 #[cfg(target_os = "windows")]
 pub fn register(app: &tauri::AppHandle) {
@@ -22,20 +14,13 @@ pub fn register(app: &tauri::AppHandle) {
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
-    // `window.hwnd()` returns tauri's own copy of `windows::Win32::Foundation::HWND`,
-    // which isn't guaranteed to be the same crate instance as this crate's
-    // pinned `windows = "=0.62.2"` dependency — passing it directly into a
-    // function typed against our own copy is a hard type mismatch (the
-    // exact issue the Windows Hello feature's HWND handling already works
-    // around). Round-trip through a plain isize instead.
+    // Tauri's HWND may come from a different `windows` crate instance than our
+    // pinned `=0.62.2`, so pass it as an isize.
     let hwnd_value = hwnd.0 as isize;
     let hwnd = windows::Win32::Foundation::HWND(hwnd_value as _);
 
-    // SetWindowSubclass's callback is a plain `extern "system" fn` — it
-    // can't capture `app`. `dwrefdata` exists exactly for this: leak an
-    // AppHandle once at startup and pass its address through. Nothing ever
-    // frees it, but there's only ever one for the process's whole lifetime,
-    // and process exit reclaims it regardless.
+    // The callback can't capture `app`, so leak one AppHandle at startup and
+    // pass its address as `dwrefdata`. It lives for the whole process.
     let app_ptr = Box::leak(Box::new(app.clone())) as *mut tauri::AppHandle as usize;
 
     unsafe {
@@ -65,16 +50,12 @@ unsafe extern "system" fn subclass_proc(
     if msg == WM_WTSSESSION_CHANGE {
         let reason = wparam.0 as u32;
         if reason == WTS_SESSION_LOCK || reason == WTS_REMOTE_DISCONNECT {
-            // Safe: `dwrefdata` is the address of a `Box::leak`'d AppHandle
-            // that lives for the process's whole lifetime.
+            // Safe: `dwrefdata` is a leaked AppHandle that lives for the process.
             let app = unsafe { &*(dwrefdata as *const tauri::AppHandle) }.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = crate::vault::vault_lock(app.state::<crate::vault::VaultState>()).await;
-                // vault_lock only updates Rust-side state — nothing tells the
-                // frontend this happened on its own, since no command
-                // invocation triggered it. Without this, the vault menu keeps
-                // showing "unlocked" (and the lock button) until something
-                // else happens to re-fetch status.
+                // No command triggered this, so tell the frontend, or the vault menu keeps
+                // showing "unlocked".
                 let _ = app.emit("vault-locked", ());
             });
         }

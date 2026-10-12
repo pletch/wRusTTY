@@ -11,49 +11,42 @@ import {
 } from './main/mouseAbi'
 
 /**
- * Telling the program on the far end about the mouse.
+ * Telling the far-end program about the mouse. The wire format is the
+ * engine's (`MouseEncoder.ts`); this keeps the policy no encoder can know:
+ * which button is down, and how often to report.
  *
- * The wire format used to live here — a button number with modifier bits
- * added on, a branch for SGR, and the one-byte X10 form. It is the engine's
- * now (`MouseEncoder.ts`), which is what brought X10's press-only rule, the
- * urxvt and UTF-8 formats, and SGR-pixels with it. What is left is the policy
- * that no encoder can know: which button is down, and how often to speak.
- *
- * The DOM listeners stay on the engine — they're part of what `mount` sets up,
- * and each one has to choose between reporting and selecting before it can do
- * either. This owns the reporting half of that choice; `SelectionController`
- * owns the other.
+ * The DOM listeners stay on the engine, where each chooses between reporting
+ * (here) and selecting (`SelectionController`).
  */
 
 /** Where the pointer is, in both units the reporter needs at once. */
 export interface MousePoint {
-  /** Surface pixels, clamped into the surface — see `MouseEncoder`. */
+  /** Surface pixels, clamped into the surface (see `MouseEncoder`). */
   x: number
   y: number
-  /** The cell those pixels fall in, for the motion rate check below. */
+  /** The cell those pixels fall in, for the motion rate check. */
   col: number
   row: number
 }
 
 /** What the reporter needs from the engine. */
 export interface MouseHost {
-  /** Is the program on the far end asking to be told about the mouse at all? */
+  /** Whether the far end wants mouse reports at all. */
   tracking(): boolean
   /** Pointer position, or null when there is nothing rendered to measure. */
   at(e: MouseEvent): MousePoint | null
   /** The encoder, or null before the core is up. */
   encoder(): MouseEncoder | null
   /**
-   * Whether the far end asked for pixel coordinates (DEC 1016). It is the one
-   * mode the reporter still has to know about, because it is what makes
-   * motion inside a single cell worth sending.
+   * Whether the far end asked for pixel coordinates (DEC 1016), which makes
+   * motion within one cell worth sending.
    */
   pixelReporting(): boolean
-  /** Send an encoded report as if it had been typed. */
+  /** Sends an encoded report as if typed. */
   send(bytes: Uint8Array): void
 }
 
-/** `GhosttyMods` for a mouse event — the same bits the key encoder sends. */
+/** `GhosttyMods` for a mouse event, the same bits the key encoder sends. */
 function modsOf(e: MouseEvent): number {
   let mods = 0
   if (e.shiftKey) mods |= 1
@@ -64,9 +57,8 @@ function modsOf(e: MouseEvent): number {
 }
 
 export class MouseReporter {
-  /** Which DOM button is currently held, for the drag reports that have to
-   *  name it. `null` means none — and it is cleared on blur, because a release
-   *  outside the window never reaches us. */
+  /** The DOM button held, for drag reports. Cleared on blur, since a release
+   *  outside the window never arrives. */
   private buttonDown: number | null = null
   private lastCol = -1
   private lastRow = -1
@@ -82,18 +74,16 @@ export class MouseReporter {
   }
 
   /**
-   * A release that never arrived. Called on blur: left set, a stuck "still
-   * held" keeps reporting drags on the next hover.
+   * A release that never arrived. Called on blur, or the next hover would
+   * report drags.
    */
   forgetButton(): void {
     this.buttonDown = null
   }
 
   /**
-   * Drops the remembered cell. Called when the geometry changes, because the
-   * cell it names is measured against the old one — after a resize or a font
-   * change, "same cell as last time" is comparing two different grids, and the
-   * first motion in a genuinely new cell can be suppressed as a duplicate.
+   * Drops the remembered cell when the geometry changes (resize, font), so the
+   * first move into a new cell isn't suppressed as a duplicate.
    */
   forgetLastCell(): void {
     this.lastCol = -1
@@ -101,9 +91,8 @@ export class MouseReporter {
   }
 
   /**
-   * The wheel, which the protocols report as a button press rather than as an
-   * axis. Horizontal is included because a trackpad sends it constantly and a
-   * program that asked for mouse reporting is entitled to hear it.
+   * The wheel, reported as button presses. Horizontal too: trackpads send it
+   * constantly.
    */
   reportWheel(e: WheelEvent, up: boolean): void {
     this.emit(e, MOUSE_ACTION_PRESS, up ? MOUSE_BUTTON_WHEEL_UP : MOUSE_BUTTON_WHEEL_DOWN)
@@ -114,32 +103,22 @@ export class MouseReporter {
   }
 
   reportPress(e: MouseEvent): void {
-    // Recorded whatever the encoder decides to do with it: the button is held
-    // from now on either way, and a release still has to be able to name it.
+    // Recorded whatever the encoder does, so a release can name it.
     this.buttonDown = e.button
     this.emit(e, MOUSE_ACTION_PRESS, mouseButtonFor(e.button))
   }
 
   /**
-   * Motion, at most once per cell.
-   *
-   * Whether motion is reported at all is the encoder's call — 1002 wants it
-   * only while a button is held, 1003 always, and the rest not at all — so
-   * there is deliberately no mode check here. What is here is the rate: pixel
-   * motion inside one cell would send a burst of identical reports, and the
-   * encoder's own `TRACK_LAST_CELL` option does not suppress them in this
-   * build (the same cell encodes to the same bytes with it on or off).
-   *
-   * Under DEC 1016 the report carries pixels, so every move is a different
-   * report and the cell check would throw away exactly what was asked for.
+   * Motion, at most once per cell. Whether motion is reported at all (1002
+   * while held, 1003 always) is the encoder's call; this sets the rate, since
+   * the encoder's `TRACK_LAST_CELL` doesn't deduplicate in this build. Under DEC
+   * 1016 every pixel move is a distinct report, so the cell check is skipped.
    */
   reportMotion(e: MouseEvent): void {
     const p = this.host.at(e)
     if (!p) return
-    // Cell first, mode second: `pixelReporting` is a call into the core, and
-    // asking it on a move that has changed cell — which is reported under
-    // every format — answers a question whose answer cannot matter. Only a
-    // move that stayed put has to know whether pixels are being reported.
+    // Cell first: `pixelReporting` calls into the core, and only a move within
+    // the same cell needs the answer.
     if (p.col === this.lastCol && p.row === this.lastRow && !this.host.pixelReporting()) return
     this.lastCol = p.col
     this.lastRow = p.row
@@ -147,8 +126,7 @@ export class MouseReporter {
     this.emitAt(p, e, MOUSE_ACTION_MOTION, button)
   }
 
-  /** Reports the release of whichever button was held, if one was. Whether it
-   *  reaches the wire is the encoder's decision — X10 reports no releases. */
+  /** Reports the release of the held button, if any (X10 reports none). */
   reportRelease(e: MouseEvent): void {
     if (this.buttonDown === null) return
     const button = this.buttonDown
@@ -172,8 +150,8 @@ export class MouseReporter {
       x: p.x,
       y: p.y,
       mods: modsOf(e),
-      // A release still counts as "a button was pressed for this event",
-      // which is what tells a 1002 drag report from a bare hover.
+      // A release counts as a pressed button, which tells a 1002 drag from a
+      // hover.
       anyButtonPressed: this.buttonDown !== null || action === MOUSE_ACTION_RELEASE,
     })
     if (bytes) this.host.send(bytes)

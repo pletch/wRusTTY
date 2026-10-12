@@ -23,27 +23,18 @@ use crate::prompt::{AuthPrompt, AuthPromptField, AuthPrompter};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How many prompt rounds a keyboard-interactive exchange may take before it
-/// is treated as a server that will never finish. Generous against real
-/// stacks — password plus a 2FA challenge plus a retry or two is under five —
-/// and the only thing standing between a misbehaving server and a handshake
-/// that prompts forever.
+/// Prompt rounds a keyboard-interactive exchange may take before the server is
+/// treated as never finishing. Real stacks use under five.
 const MAX_AUTH_ROUNDS: usize = 32;
 
-/// Everything needed to open an SSH session, before one exists.
-///
-/// Separate from `SshSession` because the handshake here is the longest of
-/// any transport — TCP connect, KEX, auth, and a host-key prompt that blocks
-/// on a human reading a fingerprint. Driving it against a value nothing else
-/// can reach is what keeps a resize or a keystroke from queueing behind it.
-/// See `wr_core::Connector`.
+/// Everything needed to open an SSH session, before one exists. Separate from
+/// `SshSession` so the long handshake (including a host-key prompt waiting on a
+/// human) doesn't block input or resizes. See `wr_core::Connector`.
 pub struct SshConnector {
     config: SshConfig,
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     verifier: Arc<dyn HostKeyVerifier>,
-    /// Answers the server's own auth questions, for keyboard-interactive.
-    /// Second of the two ways this handshake blocks on a human, alongside
-    /// `verifier` — see `crate::prompt`.
+    /// Answers the server's keyboard-interactive questions; see `crate::prompt`.
     prompter: Arc<dyn AuthPrompter>,
     remote_forwards: forward::RemoteForwardRegistry,
     initial_cols: u16,
@@ -54,17 +45,14 @@ pub struct SshConnector {
 /// two channels feeding it.
 pub struct SshSession {
     handle: Option<Arc<client::Handle<ClientHandler>>>,
-    /// `Option` only so `disconnect` can drop them, which is what ends the
-    /// pump tasks. Always `Some` on a freshly connected session.
+    /// `Option` so `disconnect` can drop them, which ends the pump tasks.
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     resize_tx: Option<mpsc::Sender<(u16, u16)>>,
     remote_forwards: forward::RemoteForwardRegistry,
-    // Opened lazily on first use and reused for the connection's lifetime —
-    // a `OnceCell` keeps this on a shared `&self`, matching `add_forward`'s
-    // shape, rather than requiring `&mut self` everywhere SFTP is touched.
+    // Opened lazily and reused for the connection's lifetime; a `OnceCell`
+    // keeps this on `&self`.
     sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
-    // A second, identical channel used only by bulk transfers. See
-    // `get_or_open_transfer_sftp` for why there are two.
+    // A second channel for bulk transfers; see `get_or_open_transfer_sftp`.
     transfer_sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
 }
 
@@ -104,45 +92,25 @@ impl SshSession {
         Self::get_or_open(&self.sftp, self.handle.clone()).await
     }
 
-    /// A handle for running things as root on this connection.
-    ///
-    /// Returns rather than borrows, for the same reason `get_or_open_sftp`
-    /// hands back an `Arc`: elevated work outlives the session mutex by a long
-    /// way — a privileged helper stays open for the life of an edit — and
-    /// holding the lock for that would stop every keystroke in the pane.
-    ///
-    /// Opening no channel here is deliberate. Whether a host needs a password
-    /// at all is only knowable by trying, so the decision belongs to the caller
-    /// that can put a dialog in front of the user. See [`crate::sudo`].
+    /// A handle for running things as root on this connection. Returned owned
+    /// because elevated work outlives the session mutex. Opens no channel; whether
+    /// a password is needed is only known by trying. See [`crate::sudo`].
     pub fn sudo(&self) -> Result<crate::sudo::SudoRunner, SshError> {
         let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
         Ok(crate::sudo::SudoRunner::new(handle))
     }
 
-    /// Run one command on a channel of its own and collect what it prints.
+    /// Run one command on its own `exec` channel and collect its stdout: one more
+    /// channel on the established session, with no new authentication.
     ///
-    /// The same move as `get_or_open_transfer_sftp` below — `channel_open_session`
-    /// on the connection that is already up — but requesting `exec` instead of
-    /// a subsystem, and closing the channel when the command is done. No second
-    /// TCP connection, no second authentication, nothing in the server's auth
-    /// log: to sshd this is one more channel on an established session.
+    /// Bounded, since the host is untrusted:
     ///
-    /// Everything about it is bounded, because the caller is asking a machine
-    /// it does not control to print something:
+    ///   - **`max_bytes`** caps collection; the channel is then dropped.
+    ///   - **`timeout`** caps the wait; hitting it is an error, not a short read.
+    ///   - stderr is discarded rather than spliced into the output.
     ///
-    ///   - **`max_bytes`** caps what is collected. Past it, collection stops
-    ///     and the channel is dropped; the result is whatever arrived, which
-    ///     the caller can use or discard.
-    ///   - **`timeout`** caps the wait, for a host that accepts the channel and
-    ///     then says nothing. Hitting it is an error rather than a short read:
-    ///     a truncated answer that *looks* complete is worse than none.
-    ///   - stderr is discarded rather than merged. The callers here want the
-    ///     command's output, and a shell that prints a warning to stderr would
-    ///     otherwise have it spliced into the middle of that.
-    ///
-    /// Not every host allows this. `ForceCommand`, a restricted shell, and any
-    /// appliance whose "shell" is its own CLI will refuse the request or answer
-    /// something unusable — so callers must treat failure as ordinary.
+    /// Hosts with `ForceCommand`, restricted shells or appliance CLIs may refuse or
+    /// answer nonsense; callers must treat failure as ordinary.
     pub async fn exec_capture(
         &self,
         command: &str,
@@ -157,10 +125,7 @@ impl SshSession {
             loop {
                 match channel.wait().await {
                     Some(ChannelMsg::Data { data }) => {
-                        // Take only up to the cap, then stop reading. Breaking
-                        // here drops the channel, which tells the far end to
-                        // stop rather than letting it keep sending into a
-                        // buffer nobody is growing.
+                        // Stop at the cap; dropping the channel tells the far end to stop.
                         let room = max_bytes.saturating_sub(out.len());
                         if room == 0 {
                             break;
@@ -170,11 +135,9 @@ impl SshSession {
                             break;
                         }
                     }
-                    // The command finished, or the transport went away. Either
-                    // way what has arrived is all there is.
+                    // Finished, or the transport went away.
                     Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                    // Exit status, stderr, window adjustments: nothing this
-                    // needs. stderr in particular is deliberately dropped.
+                    // Exit status, stderr, window adjustments: ignored.
                     _ => {}
                 }
             }
@@ -184,21 +147,9 @@ impl SshSession {
         .map_err(|_| SshError::ExecTimeout)?
     }
 
-    /// The same thing again, on a channel of its own, for bulk transfers.
-    ///
-    /// One SFTP client serializes everything asked of it: requests queue behind
-    /// whatever is in flight. That is invisible while every operation is a
-    /// directory listing or a few-kilobyte config file, and intolerable the
-    /// moment a download runs for a minute — the Files panel would stop
-    /// responding for the length of the transfer, including the cancel button's
-    /// own refresh afterward.
-    ///
-    /// So browsing and editing keep `get_or_open_sftp`, and anything with a
-    /// progress bar comes here. Both are lazy, so a session that never
-    /// transfers anything never pays for the second channel. Opening one is a
-    /// `channel_open_session` plus a subsystem request on the connection that
-    /// is already up — cheap now, and much harder to retrofit once the UI
-    /// assumes it can browse mid-transfer.
+    /// A second SFTP client on its own channel, for bulk transfers. One client
+    /// serializes requests, so a long download would freeze browsing. Lazy, so
+    /// sessions that never transfer don't open it.
     pub async fn get_or_open_transfer_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
         Self::get_or_open(&self.transfer_sftp, self.handle.clone()).await
     }
@@ -208,9 +159,7 @@ impl SshSession {
         handle: Option<Arc<client::Handle<ClientHandler>>>,
     ) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
         cell.get_or_try_init(|| async {
-            // Mirrors the existing `request_pty`/`request_shell` sequence in
-            // `connect_inner` — a fresh independent channel off the same live
-            // connection, requesting a subsystem instead of a shell.
+            // A fresh channel on the live connection, requesting the subsystem.
             let handle = handle.ok_or(SshError::NotConnected)?;
             let channel = handle.channel_open_session().await?;
             channel.request_subsystem(true, "sftp").await?;
@@ -256,19 +205,10 @@ impl Connector for SshConnector {
         result
     }
 
-    /// The rule is not "did this fail" but "does trying again cost anything".
-    ///
-    /// Every rejected credential spends one of the server's `MaxAuthTries`
-    /// (OpenSSH allows 6 by default), so a background retry loop would lock
-    /// the account out on the user's behalf without ever showing them why —
-    /// and would do it while nobody is watching, which is the whole point of
-    /// auto-reconnect. A rejected host key is worse: retrying past it is
-    /// exactly the thing the prompt exists to prevent.
-    ///
-    /// Timeouts are the other way round. `Timeout` and `AuthTimeout` both mean
-    /// the far side went quiet, which is a network symptom rather than a
-    /// verdict on the credential, and is precisely the case auto-reconnect
-    /// exists for.
+    /// Whether retrying costs anything. Rejected credentials spend the server's
+    /// `MaxAuthTries` (OpenSSH defaults to 6), so an unattended loop would lock the
+    /// account out; a rejected host key must never be retried past. Timeouts are
+    /// network symptoms and are retryable.
     fn retryable(error: &SshError) -> bool {
         !matches!(
             error,
@@ -278,8 +218,7 @@ impl Connector for SshConnector {
                 | SshError::AuthPartial { .. }
                 | SshError::AuthMethodUnavailable { .. }
                 | SshError::AuthTooManyRounds { .. }
-                // Neither of these is fixed by waiting: the agent is not
-                // running, or it is and the server refused everything in it.
+                // No agent, or it holds nothing the server accepts.
                 | SshError::AgentUnavailable(_)
                 | SshError::AgentRejected { .. }
                 // A missing or unreadable key file is a configuration fault.
@@ -310,17 +249,12 @@ impl Session for SshSession {
     async fn disconnect(&mut self) -> Result<(), SshError> {
         self.input_tx = None;
         self.resize_tx = None;
-        // Both cells, not just the first. `transfer_sftp` was missed here, and
-        // was harmless only for as long as a disconnected session was always
-        // on its way to being dropped: a cell still holding a client for a
-        // channel on a dead connection hands that same dead channel back
-        // forever. The moment a session id survives its transport — which is
-        // what auto-reconnect is — that becomes a live bug.
+        // Reset both SFTP cells, so a reconnected session doesn't hand out
+        // channels on the dead connection.
         self.sftp = tokio::sync::OnceCell::new();
         self.transfer_sftp = tokio::sync::OnceCell::new();
         if let Some(handle) = self.handle.take() {
-            // Dropping input/resize senders stops the pumping tasks; ignore
-            // errors here since the transport may already be gone.
+            // Dropping the senders stops the pumps; the transport may already be gone.
             let _ = handle
                 .disconnect(Disconnect::ByApplication, "", "English")
                 .await;
@@ -348,19 +282,10 @@ impl SshConnector {
                 .await?
             }
             Some(jump_config) => {
-                // The jump hop gets its own throwaway remote-forward
-                // registry — incoming forwarded-tcpip requests are only
-                // meaningful on the final hop, which is what
-                // `self.remote_forwards` is shared with.
-                //
-                // It does share the prompter, flagged `is_jump` so a prompt
-                // can say which hop is asking. Both hops can run their own
-                // interactive exchange, and "Password:" with no host beside
-                // it is how a target's password gets typed into a bastion.
-                //
-                // The proxy, if there is one, carries this first socket — the
-                // only one that leaves this machine. The target is reached from
-                // the jump host's side, where the proxy is no longer involved.
+                // The jump hop gets its own throwaway remote-forward registry (forwarded
+                // connections only matter on the final hop). It shares the prompter,
+                // flagged `is_jump` so prompts say which hop is asking. A proxy, if any,
+                // carries only this first socket.
                 let jump_handle = connect_direct(
                     jump_config,
                     self.config.proxy.as_ref().or(jump_config.proxy.as_ref()),
@@ -372,10 +297,8 @@ impl SshConnector {
                 )
                 .await?;
 
-                // Same primitive as an SSH port forward (see forward.rs): a
-                // `direct-tcpip` channel on the jump host's connection,
-                // piped into the target's own SSH handshake instead of a
-                // fresh TCP socket — the standard ProxyJump shape.
+                // A `direct-tcpip` channel on the jump connection, piped into the target's
+                // handshake (the standard ProxyJump shape; see forward.rs).
                 let channel = jump_handle
                     .channel_open_direct_tcpip(
                         self.config.host.clone(),
@@ -398,43 +321,16 @@ impl SshConnector {
         };
 
         let channel = handle.channel_open_session().await?;
-        // Advertise 24-bit color. The terminal has always rendered it —
-        // the engine handles `ESC[38;2;R;G;Bm` directly — but remote programs
-        // won't *emit* it unless something says the terminal can: vim,
-        // neovim, tmux, bat and friends all key off `COLORTERM`, and `TERM`
-        // alone can't express it (`xterm-256color` says 256 and means it).
-        //
-        // Sent with `want_reply: false` because this legitimately fails on
-        // most servers and must not be treated as an error: sshd only honors
-        // variables listed in `AcceptEnv`, which defaults to `LANG LC_*`. It
-        // costs one message to try and silently does nothing when refused;
-        // where it matters, the fix is server-side (`AcceptEnv COLORTERM`),
-        // in the remote shell's rc, or `TERM=xterm-direct`.
-        //
-        // Must precede `request_shell` — environment set after the shell
-        // starts cannot reach it.
+        // Advertise 24-bit color; vim, tmux, bat and others check `COLORTERM`.
+        // Best-effort (`want_reply: false`): sshd drops it unless `AcceptEnv`
+        // allows it. Must precede `request_shell`.
         let _ = channel.set_env(false, "COLORTERM", "truecolor").await;
-        // Advertise progress reporting — OSC 9;4, the sequence that spins a
-        // pane's marker while a program works (see lib/appProgress.ts).
-        //
-        // `ConEmuANSI` rather than a name of our own because programs do not
-        // probe for this capability, they recognize terminals by name from a
-        // fixed list. Claude Code is the concrete case: it emits OSC 9;4 only
-        // when it sees `ConEmuANSI`/`ConEmuPID`/`ConEmuTask`, or a
-        // `TERM_PROGRAM` of `ghostty` >= 1.2.0 or `iTerm.app` >= 3.6.6 — and
-        // it explicitly *disables* progress under `WT_SESSION`. With none of
-        // those set it never emits, whatever its own progress setting says.
-        //
-        // Claiming ConEmu's name is a claim about the protocol, not the
-        // program: OSC 9;4 is ConEmu's, and this app implements it. The
-        // alternative — impersonating Ghostty or iTerm2 — would also opt us
-        // into their unrelated private sequences, which this app does not
-        // implement. Nothing else keys off `ConEmuANSI` in a way that changes
-        // rendering, so the blast radius is the capability itself.
-        //
-        // Same best-effort caveat as `COLORTERM` above, and it bites harder
-        // here: a default sshd drops both, so the reliable fix is a line in
-        // the remote shell's rc. See docs/SHELL_INTEGRATION.md.
+        // Advertise OSC 9;4 progress reporting (see lib/appProgress.ts). Programs
+        // recognize terminals by name rather than probing; Claude Code, for one,
+        // emits it only for ConEmu, recent Ghostty or iTerm2, and disables it under
+        // `WT_SESSION`. `ConEmuANSI` names the protocol's origin without claiming
+        // Ghostty's or iTerm2's other private sequences. Same `AcceptEnv` caveat;
+        // see docs/SHELL_INTEGRATION.md.
         let _ = channel.set_env(false, "ConEmuANSI", "ON").await;
         channel
             .request_pty(
@@ -455,12 +351,8 @@ impl SshConnector {
         let mut writer = channel.make_writer();
         tokio::spawn(async move {
             while let Some(data) = input_rx.recv().await {
-                // Paced rather than written straight through -- see
-                // `wr_core::WRITE_CHUNK`. Here rather than at the paste site
-                // because every route to the wire passes through this one
-                // task: the three paste shortcuts, a broadcast fan-out, a drop
-                // upload. One of them being missed is exactly how this would
-                // come back.
+                // Paced (see `wr_core::WRITE_CHUNK`); every input route passes through
+                // this task.
                 if write_paced(&mut writer, &data).await.is_err() {
                     break;
                 }
@@ -479,20 +371,15 @@ impl SshConnector {
                                     break;
                                 }
                             }
-                            // The far end finished — the shell exited, or the
-                            // server closed the channel. Reconnecting after
-                            // this would fight the user.
+                            // The far end finished (shell exited or channel closed); not reconnected.
                             Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
                                 let _ = output_events.send(ConnectionEvent::Status(
                                     ConnectionStatus::Disconnected(DisconnectKind::Closed),
                                 )).await;
                                 break;
                             }
-                            // `wait()` yielding nothing is the *transport*
-                            // having gone: the russh session task ended under
-                            // us, which is what a dropped link or an expired
-                            // keepalive looks like from here. Nobody asked for
-                            // it, so it is the one worth undoing.
+                            // The russh session ended under us: a dropped link or expired
+                            // keepalive. This is the one worth reconnecting.
                             None => {
                                 let _ = output_events.send(ConnectionEvent::Status(
                                     ConnectionStatus::Disconnected(DisconnectKind::Lost),
@@ -527,11 +414,9 @@ impl SshConnector {
     }
 }
 
-/// Connects and fully authenticates a fresh TCP connection to `config`,
-/// sharing `known_hosts`/`verifier` (host-key trust) and `remote_forwards`
-/// (which registry incoming `forwarded-tcpip` requests get matched against)
-/// with whatever's driving this hop. Used directly for a plain connection,
-/// and as the first hop of a jump connection (see `connect_via_stream`).
+/// Connects and authenticates a fresh TCP connection (optionally via a proxy),
+/// sharing host-key trust and the remote-forward registry with the caller. Used
+/// for a plain connection and for a jump connection's first hop.
 async fn connect_direct(
     config: &SshConfig,
     proxy: Option<&crate::proxy::ProxyConfig>,
@@ -541,7 +426,7 @@ async fn connect_direct(
     is_jump: bool,
     remote_forwards: forward::RemoteForwardRegistry,
 ) -> Result<client::Handle<ClientHandler>, SshError> {
-    // Key types already pinned for this host go first — see
+    // Key types already pinned for this host go first; see
     // `KnownHostsStore::host_key_preference`.
     let preferred = known_hosts
         .lock()
@@ -551,18 +436,9 @@ async fn connect_direct(
         keepalive_interval: config.keepalive_interval(),
         keepalive_max: crate::config::KEEPALIVE_MAX,
         preferred,
-        // Nagle's algorithm off. russh leaves it *on* by default; OpenSSH and
-        // PuTTY both turn it off for an interactive session, and this is one.
-        // A keystroke is a packet of a few bytes, and under Nagle it waits in
-        // the kernel until the previous segment is acknowledged -- against a
-        // peer doing delayed ACK, up to ~40ms added to every character on top
-        // of the round trip. The remote tty is what echoes what you type, so
-        // that delay lands squarely on the thing the connection exists for.
-        //
-        // Only meaningful here. russh applies this to a real socket, and
-        // `connect_via_stream`'s stream is a channel on a jump hop rather
-        // than one. The jump hop's own socket is opened by this function, so
-        // a jump connection is covered by the first hop setting it.
+        // Nagle off, as OpenSSH and PuTTY do for interactive sessions (russh
+        // leaves it on); otherwise delayed ACKs can add ~40ms per keystroke.
+        // Only meaningful on a real socket, which is this function's.
         nodelay: true,
         ..Default::default()
     });
@@ -583,8 +459,7 @@ async fn connect_direct(
                 client::connect(ssh_config, (config.host.as_str(), config.port), handler);
             await_handshake(config, connect_fut, verify_started, prompter, is_jump).await
         }
-        // The same handshake over a tunnel the proxy opened, which to russh is
-        // just another stream — the ProxyJump trick, one layer further out.
+        // The same handshake over a stream the proxy opened.
         Some(proxy) => {
             let stream = crate::proxy::connect(proxy, &config.host, config.port)
                 .await
@@ -598,12 +473,8 @@ async fn connect_direct(
     }
 }
 
-/// Same as `connect_direct`, but runs the handshake over an already-open
-/// stream rather than opening a fresh TCP socket — the `direct-tcpip`
-/// channel from a jump hop, in this crate's case. This is the whole trick
-/// behind ProxyJump: `russh::client::connect_stream` doesn't care whether
-/// its stream is a raw TCP socket or a channel tunneled through another SSH
-/// connection.
+/// Like `connect_direct`, but over an already-open stream (a jump hop's
+/// `direct-tcpip` channel): ProxyJump.
 async fn connect_via_stream<S>(
     config: &SshConfig,
     stream: S,
@@ -615,7 +486,7 @@ async fn connect_via_stream<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    // The final hop is checked against its own pins, same as a direct one.
+    // Checked against its own pins.
     let preferred = known_hosts
         .lock()
         .await
@@ -638,15 +509,12 @@ where
     );
 
     let connect_fut = client::connect_stream(ssh_config, stream, handler);
-    // Always the final hop: a stream only exists because a jump hop opened
-    // it, so this is the destination the user actually asked for.
+    // Always the final hop.
     await_handshake(config, connect_fut, verify_started, prompter, false).await
 }
 
-/// Shared by `connect_direct` and `connect_via_stream`: waits for the
-/// handshake future to resolve (bounded by `CONNECT_TIMEOUT`, except while
-/// waiting on a human to accept/reject an unknown host key — see
-/// `verify_started`), then authenticates (bounded by `AUTH_TIMEOUT`).
+/// Waits for the handshake (bounded by `CONNECT_TIMEOUT`, except while a
+/// host-key prompt is up), then authenticates (bounded by `AUTH_TIMEOUT`).
 async fn await_handshake<F>(
     config: &SshConfig,
     connect_fut: F,
@@ -675,22 +543,11 @@ where
         }
     };
 
-    // A real hang here (bad server, network stall) should surface as an error
-    // rather than leaving the UI stuck on "Connecting..." forever. But since
-    // keyboard-interactive, auth *can* be waiting on a human — the assumption
-    // that only host-key verification does no longer holds, and a flat
-    // `timeout` around the whole exchange would fail every 2FA login in the
-    // time it takes to read a push notification.
-    //
-    // So the budget bounds *server* silence rather than the exchange: each
-    // expiry is forgiven while a prompt is on screen, and once more if one was
-    // answered during the window just elapsed. What that buys is a full
-    // `AUTH_TIMEOUT` of quiet after the user's last keystroke before the
-    // connection is declared dead — at the cost of a genuinely dead server
-    // taking up to two windows to be called, but only on a connection that
-    // prompted at all.
-    // Scoped so the pinned future — and with it the `&mut handle` borrow it
-    // holds — is dropped before the handle is returned.
+    // The auth timeout bounds server silence, not the exchange, since
+    // keyboard-interactive may wait on a human (2FA push). Each expiry is
+    // forgiven while a prompt is up, and once more if one was answered during
+    // the window, giving a full `AUTH_TIMEOUT` after the user's last answer.
+    // Scoped so the pinned future's `&mut handle` borrow ends first.
     {
         let progress = Arc::new(AuthProgress::default());
         let auth_fut = authenticate(config, &mut handle, prompter, is_jump, progress.clone());
@@ -716,15 +573,9 @@ where
     Ok(handle)
 }
 
-/// Lets `await_handshake`'s timeout tell "the server is not answering" apart
-/// from "a person is reading a fingerprint off their phone", without either
-/// side needing to know how the other measures time.
-///
-/// Two counters rather than one flag because the flag alone is only true
-/// *during* a prompt: a user who answers at second 14 of a 15-second window
-/// would leave a bare flag false again by the time it is read, and the
-/// connection would be failed after one second of server silence rather than
-/// fifteen.
+/// Lets the auth timeout tell server silence from a person answering a prompt.
+/// Counts answers as well as tracking an open prompt, so answering late in a
+/// window still earns a full window.
 #[derive(Default)]
 struct AuthProgress {
     awaiting_user: AtomicBool,
@@ -745,11 +596,9 @@ impl AuthProgress {
         self.answers.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Whether an elapsed timeout window should be forgiven rather than
-    /// failing the connection, advancing `seen_answers` to this moment when it
-    /// is. Called once per expiry; `false` means the server has been silent for
-    /// a full window with no human involved, which is the case the timeout
-    /// exists for.
+    /// Whether an elapsed timeout window should be forgiven, advancing
+    /// `seen_answers` when it is. `false` means a full window of server silence
+    /// with no human involved.
     fn should_extend(&self, seen_answers: &mut u64) -> bool {
         let answers = self.answers();
         let extend = self.awaiting_user.load(Ordering::Relaxed) || answers != *seen_answers;
@@ -814,15 +663,9 @@ async fn authenticate(
     }
 }
 
-/// Drives an RFC 4256 keyboard-interactive exchange, relaying each round of
-/// the server's questions to `prompter` and its answers back.
-///
-/// Unlike every other method here this is a loop, because the server decides
-/// how many rounds there are and what each one asks: a plain password host
-/// sends one, a PAM stack with 2FA sends "Password:" and then "Verification
-/// code:" as two separate rounds, and a wrong answer can be followed by
-/// another attempt rather than a failure. Nothing about that is knowable
-/// before the exchange starts, which is the whole reason this method exists.
+/// Drives an RFC 4256 keyboard-interactive exchange, relaying each round to
+/// `prompter`. A loop because the server decides the rounds (e.g. password then
+/// 2FA code, or a retry after a wrong answer).
 async fn authenticate_keyboard_interactive(
     config: &SshConfig,
     handle: &mut client::Handle<ClientHandler>,
@@ -832,24 +675,20 @@ async fn authenticate_keyboard_interactive(
 ) -> Result<(), SshError> {
     use russh::client::KeyboardInteractiveAuthResponse as Response;
 
-    // No submethod hint: it's a request for a *preferred* flavor that
-    // servers are free to ignore, and there is nothing to prefer here.
+    // No submethod hint; servers may ignore it anyway.
     let mut response = handle
         .authenticate_keyboard_interactive_start(config.username.clone(), None::<String>)
         .await?;
 
-    // Whether the server has asked the user anything yet. Separates "this
-    // server won't do keyboard-interactive" from "that was the wrong answer",
-    // which arrive as the same `Failure`.
+    // Distinguishes "method unsupported" from "wrong answer"; both arrive as
+    // `Failure`.
     let mut asked_anything = false;
 
     for _ in 0..MAX_AUTH_ROUNDS {
         let (name, instructions, fields) = match response {
             Response::Success => return Ok(()),
-            // Accepted, but the server's policy wants a second method on top.
-            // Only this one method is driven here, so there is nothing further
-            // to offer — but the credential was right, and an "authentication
-            // failed" here would send the user to change a working password.
+            // Accepted, but policy requires another method too. Not "auth failed":
+            // the credential was right.
             Response::Failure {
                 partial_success: true,
                 remaining_methods,
@@ -858,23 +697,11 @@ async fn authenticate_keyboard_interactive(
                     remaining: render_methods(&remaining_methods),
                 })
             }
-            // A server that does not do keyboard-interactive at all refuses
-            // the opening request, before asking anything — which is not a
-            // rejected credential, because nothing was offered yet. This is
-            // the common case, not an exotic one: Debian and Ubuntu ship
-            // `KbdInteractiveAuthentication no` with `PasswordAuthentication
-            // yes`, so the whole method is off on a large share of hosts.
-            //
-            // The rejection carries the methods that *would* work, so when a
-            // password is among them, ask for one and use it. "Prompt me"
-            // means asking the user at connect time rather than storing a
-            // secret; which wire method carries the answer is the server's
-            // business, not something the user chose.
-            //
-            // Only before the first question, and only when the server named
-            // `password` itself. A failure *after* a round is a wrong answer,
-            // and retrying it as a password would spend another of the
-            // server's limited attempts to ask the same thing again.
+            // Refused before asking anything: the server doesn't do
+            // keyboard-interactive (Debian and Ubuntu default to
+            // `KbdInteractiveAuthentication no`). If it offers `password`, ask for one
+            // instead; "Prompt me" is about not storing the secret, not the wire
+            // method. After a round, a failure is a wrong answer and isn't retried.
             Response::Failure {
                 remaining_methods, ..
             } => {
@@ -899,16 +726,12 @@ async fn authenticate_keyboard_interactive(
         };
 
         let answers = if fields.is_empty() {
-            // A round with nothing to fill in is legal, and is the server
-            // talking rather than asking — an expiry notice, a policy banner.
-            // It needs an (empty) response to move the exchange along, but
-            // putting a dialog on screen with no field and one OK button
-            // trains people to dismiss this whole class of prompt unread.
+            // A round with no fields is the server talking (a banner, an expiry
+            // notice); answer it without showing an empty dialog.
             Zeroizing::new(Vec::new())
         } else {
             asked_anything = true;
-            // The one place auth blocks on a human. Bracketed so the
-            // handshake's timeout can tell this apart from a stalled server.
+            // Bracketed so the timeout knows a human is involved.
             progress.begin_prompt();
             let answered = prompter
                 .prompt(AuthPrompt {
@@ -927,9 +750,8 @@ async fn authenticate_keyboard_interactive(
                 })
                 .await;
             progress.end_prompt();
-            // Canceling abandons the connection rather than sending blanks:
-            // an empty answer is a *wrong* answer, and burns one of the
-            // server's limited attempts on the user's behalf.
+            // Canceling abandons rather than sending blanks, which would spend an
+            // attempt.
             answered.ok_or(SshError::AuthCancelled)?
         };
 
@@ -943,18 +765,9 @@ async fn authenticate_keyboard_interactive(
     })
 }
 
-/// Asks for a password and authenticates with the plain `password` method.
-///
-/// The fallback for a server that refuses keyboard-interactive but takes a
-/// password — which is most of them, since Debian and Ubuntu ship
-/// `KbdInteractiveAuthentication no` by default. From the user's side this is
-/// indistinguishable from the interactive path, and it should be: "Prompt me"
-/// is a statement about not storing the secret, not about a wire method.
-///
-/// One attempt. The server counts every failure against `MaxAuthTries`
-/// (OpenSSH defaults to 6, and each rejection here spends one), so silently
-/// re-prompting on a typo would burn that budget invisibly and lock the user
-/// out of the retry they would have made themselves.
+/// Asks for a password and authenticates with the plain `password` method: the
+/// fallback when keyboard-interactive is off. One attempt, since each failure
+/// spends one of the server's `MaxAuthTries`.
 async fn authenticate_password_interactively(
     config: &SshConfig,
     handle: &mut client::Handle<ClientHandler>,
@@ -969,8 +782,7 @@ async fn authenticate_password_interactively(
         .prompt(AuthPrompt {
             name: String::new(),
             instructions: String::new(),
-            // Worded like the prompt a server would have sent, because to the
-            // user this *is* that prompt.
+            // Worded like the prompt a server would send.
             fields: vec![AuthPromptField {
                 prompt: "Password:".to_string(),
                 echo: false,
@@ -994,9 +806,7 @@ async fn authenticate_password_interactively(
     }
 }
 
-/// Renders a server's list of acceptable auth methods for an error message.
-/// Empty lists happen and must not render as an empty string, which reads as
-/// a bug in us rather than a statement about the server.
+/// A server's acceptable auth methods for an error message; never empty.
 fn render_methods(methods: &russh::MethodSet) -> String {
     if methods.is_empty() {
         return "no other methods".to_string();
@@ -1008,20 +818,10 @@ fn render_methods(methods: &russh::MethodSet) -> String {
         .join(", ")
 }
 
-/// Connects to whichever SSH agent is running and tries each identity it
-/// holds until one authenticates.
-///
-/// Both Windows agents are attempted because users routinely run either, and
-/// often don't know which: the OpenSSH agent ships as a Windows service and
-/// speaks over a named pipe, while Pageant is what anyone arriving from
-/// PuTTY already has open. Trying both means "your existing keys work"
-/// without asking the user to classify their own setup.
-///
-/// Keys are offered in the order the agent lists them. Servers commonly cap
-/// authentication attempts (OpenSSH's `MaxAuthTries` defaults to 6), so an
-/// agent loaded with many keys can exhaust that budget before reaching the
-/// right one and fail with what looks like a rejected key — hence the
-/// distinct error rather than a bare `AuthFailed`.
+/// Tries each identity in the running SSH agent until one authenticates. On
+/// Windows both the OpenSSH agent (named pipe) and Pageant are tried. Many keys
+/// can exhaust the server's `MaxAuthTries` before the right one, hence the
+/// distinct `AgentRejected` error.
 #[cfg(windows)]
 async fn authenticate_with_agent(
     handle: &mut russh::client::Handle<ClientHandler>,
@@ -1051,7 +851,7 @@ async fn authenticate_with_agent(
 ) -> Result<(), SshError> {
     use russh::keys::agent::client::AgentClient;
 
-    // Elsewhere the convention is a single agent addressed by SSH_AUTH_SOCK.
+    // Elsewhere: a single agent at SSH_AUTH_SOCK.
     let mut agent = AgentClient::connect_env()
         .await
         .map_err(|e| SshError::AgentUnavailable(format!("no SSH agent found: {e}")))?
@@ -1085,12 +885,10 @@ where
     let offered = identities.len();
     for identity in identities {
         let AgentIdentity::PublicKey { key, .. } = identity else {
-            // Certificate identities need `authenticate_certificate_with`,
-            // which is a different flow; skip rather than mis-offer them.
+            // Certificates need a different flow; skip them.
             continue;
         };
-        // The agent, not this process, holds the private half and produces
-        // the signature — `agent` is passed as the `Signer`.
+        // The agent produces the signature.
         let result = handle
             .authenticate_publickey_with(username, key, Some(HashAlg::Sha256), agent)
             .await
@@ -1103,21 +901,13 @@ where
     Err(SshError::AgentRejected { offered })
 }
 
-/// PuTTY key files open with `PuTTY-User-Key-File-2:` or `-3:` — distinct
-/// enough from every OpenSSH/PEM header (`-----BEGIN ... PRIVATE KEY-----`
-/// or `ssh-...`) that a prefix check is all the dispatch needs.
+/// PuTTY key files start `PuTTY-User-Key-File-2:` or `-3:`.
 fn is_ppk(content: &str) -> bool {
     content.trim_start().starts_with("PuTTY-User-Key-File-")
 }
 
-/// Loads a private key from disk, dispatching to PuTTY's `.ppk` decoder or
-/// OpenSSH/PEM's depending on the file's own header. PuTTY's format is
-/// structurally unrelated to OpenSSH/PEM (its own header, section layout,
-/// and — for v3 — Argon2id KDF), so it needs its own decoder rather than
-/// falling out of `decode_secret_key`. russh already pulls in `ssh-key`
-/// with the "ppk" feature enabled, so both v2 and v3, encrypted or not,
-/// are supported for free via `PrivateKey::from_ppk`. Pulled out of
-/// `authenticate` so it's unit-testable without a live connection.
+/// Loads a private key from disk; `.ppk` (v2 and v3, via `ssh-key`'s "ppk"
+/// feature) or OpenSSH/PEM by header.
 fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<PrivateKey, SshError> {
     let expanded = expand_tilde(key_path);
     if !expanded.exists() {
@@ -1127,11 +917,8 @@ fn load_private_key(key_path: &str, passphrase: Option<&str>) -> Result<PrivateK
     parse_private_key(&key_content, passphrase)
 }
 
-/// Parses already-in-hand key content (from disk or from the vault),
-/// dispatching to PuTTY's `.ppk` decoder or OpenSSH/PEM's depending on the
-/// content's own header. Public so `src-tauri`'s vault-key-import command
-/// can validate a key (and its passphrase) before storing it, without this
-/// crate needing to know anything about the vault.
+/// Parses key content (from disk or the vault), `.ppk` or OpenSSH/PEM. Public so
+/// the vault key-import command can validate a key and passphrase.
 pub fn parse_private_key(content: &str, passphrase: Option<&str>) -> Result<PrivateKey, SshError> {
     if is_ppk(content) {
         PrivateKey::from_ppk(content, passphrase.map(str::to_string))
@@ -1150,16 +937,13 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// The rules `await_handshake`'s auth timeout runs on. Worth pinning
-/// separately from a live handshake because getting these wrong fails
-/// silently in one direction (every 2FA login dies at 15 seconds) and
-/// invisibly in the other (a dead server never times out at all).
+/// The auth-timeout rules. Wrong in one direction, every 2FA login dies at 15
+/// seconds; in the other, a dead server never times out.
 #[cfg(test)]
 mod auth_timeout_tests {
     use super::*;
 
-    /// The case the timeout exists for: nobody was asked anything, the server
-    /// simply stopped talking.
+    /// Nobody was asked anything; the server just stopped.
     #[test]
     fn a_silent_server_with_no_prompt_is_not_forgiven() {
         let progress = AuthProgress::default();
@@ -1167,7 +951,7 @@ mod auth_timeout_tests {
         assert!(!progress.should_extend(&mut seen));
     }
 
-    /// A dialog is on screen — the "server" is us, waiting on a person.
+    /// A dialog is on screen.
     #[test]
     fn a_prompt_on_screen_is_forgiven_indefinitely() {
         let progress = AuthProgress::default();
@@ -1178,10 +962,7 @@ mod auth_timeout_tests {
         }
     }
 
-    /// The reason there is a counter and not just a flag: answering at second
-    /// 14 of a 15-second window leaves the flag false again by the time the
-    /// window is read, and the connection would be failed after one second of
-    /// server silence rather than a full window of it.
+    /// Answering late in a window still buys a full window.
     #[test]
     fn answering_late_in_a_window_still_buys_a_full_window() {
         let progress = AuthProgress::default();
@@ -1191,9 +972,7 @@ mod auth_timeout_tests {
         assert!(progress.should_extend(&mut seen));
     }
 
-    /// ...but only one. A server that goes quiet after the user has answered
-    /// must still be called dead, or a canceled-looking connection hangs
-    /// forever.
+    /// ...but only one, or a dead server after an answer hangs forever.
     #[test]
     fn silence_after_an_answer_is_forgiven_once_and_then_fails() {
         let progress = AuthProgress::default();
@@ -1204,8 +983,7 @@ mod auth_timeout_tests {
         assert!(!progress.should_extend(&mut seen));
     }
 
-    /// Each round of a multi-step exchange gets its own grace, so a password
-    /// followed by a 2FA code doesn't spend a budget the first round set.
+    /// Each round of a multi-step exchange gets its own grace.
     #[test]
     fn every_round_earns_its_own_extension() {
         let progress = AuthProgress::default();
@@ -1224,9 +1002,8 @@ mod auth_timeout_tests {
 mod ppk_tests {
     use super::*;
 
-    // Real PuTTY-generated key files, borrowed from ssh-key's own test
-    // suite (Apache-2.0/MIT) — these exercise the actual PuTTY-3 + Argon2id
-    // decode path, not just our own dispatch logic.
+    // Real PuTTY key files from ssh-key's test suite (Apache-2.0/MIT),
+    // exercising the PuTTY-3 + Argon2id path.
     const ED25519_PLAIN: &str = include_str!("../tests/fixtures/id_ed25519.ppk");
     const ED25519_ENCRYPTED: &str = include_str!("../tests/fixtures/id_ed25519_enc.ppk");
 

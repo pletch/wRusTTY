@@ -1,18 +1,12 @@
 /**
- * The two exports added when we took ownership of the WASM shim, both of which
- * closed a parity gap that used to be marked "upstream, cannot be fixed here".
+ * The two exports our WASM shim added:
  *
  *   ghostty_terminal_is_scrollback_row_wrapped  — search across a wrapped line
  *   ghostty_render_state_get_cursor_style       — DECSCUSR shape
  *
- * Driven against the core directly rather than through GhosttyEngine: both are
- * one call deep, and a DOM-less test says plainly which side a failure is on.
- *
- * The third thing that shim added — `last_reset_seq` / `last_cursor_style_seq`,
- * the tick pair the host used to order a RIS against a DECSCUSR — is gone with
- * the port to ghostty `main`, which holds the configured cursor across the
- * reset itself. What was a comparison of two counters is now a property of the
- * terminal, and it is tested that way below.
+ * Driven against the core directly, so a failure is plainly on that side.
+ * The configured cursor surviving a reset is a terminal property on ghostty
+ * `main`, tested below.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -158,20 +152,10 @@ describe('ghostty_render_state_get_cursor_style', () => {
 })
 
 /**
- * Keeping the configured cursor across a full reset.
- *
- * RIS puts a terminal back to its default cursor, discarding whatever DECSCUSR
- * had asked for. The question is only ever "which default" — and on ghostty
- * `main` the embedder gets to say, through the cursor fields in the config,
- * which the core then holds across the reset.
- *
- * That replaces a two-counter comparison in the host (`last_reset_seq` against
- * `last_cursor_style_seq`, then rewriting DECSCUSR when the reset was the more
- * recent). The counters had a failure mode this shape cannot have: a TUI that
- * resets and then sets its own cursor inside one write had to be distinguished
- * from one that only reset, and getting the order wrong overwrote the choice
- * the application had just made. Here the application's DECSCUSR simply wins,
- * because it happens after.
+ * The configured cursor across a full reset. RIS returns to the default
+ * cursor, and on ghostty `main` the embedder sets that default through the
+ * config, so the core holds it. An application's DECSCUSR after the reset
+ * simply wins.
  */
 describe('the cursor a reset returns to', () => {
   const configured = (style: number, blink: boolean) => {
@@ -206,8 +190,7 @@ describe('the cursor a reset returns to', () => {
   })
 
   it('is the configured cursor when there is one, with no host involvement', () => {
-    // The whole of what `restoreCursorAfterReset` used to do, done by the core:
-    // nothing writes DECSCUSR between the reset and the assertion.
+    // Done by the core: nothing writes DECSCUSR between reset and assertion.
     const ptr = configured(CURSOR_STYLE_BAR, true)
     expect(shape(ptr)).toBe(CURSOR_STYLE_BAR)
     write(ptr, '[2 q')
@@ -242,12 +225,8 @@ describe('the cursor a reset returns to', () => {
   })
 
   it('is restored by a soft reset too, as xterm does', () => {
-    // DECSTR was ignored outright until upstream f473f3109, and this case
-    // used to assert that the application's bar survived it — an assumption
-    // nothing had checked. The core now resets what xterm's soft reset does,
-    // beyond the VT510 list, and the cursor style is part of that. What it
-    // returns to is the *configured* default, the same as for RIS: the
-    // preference holds, the application's bar does not.
+    // DECSTR (since upstream f473f3109) resets as xterm's soft reset does,
+    // cursor style included, back to the configured default as for RIS.
     const ptr = configured(CURSOR_STYLE_UNDERLINE, false)
     write(ptr, cursorStyleSequence('bar', true))
     write(ptr, '[!p')

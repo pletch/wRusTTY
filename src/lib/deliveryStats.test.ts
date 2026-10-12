@@ -86,12 +86,9 @@ describe('deliveryStats', () => {
   })
 
   /**
-   * The frontend can now wait on purpose — `writeScheduler` holds bytes back
-   * once a frame's write budget is spent. Between two deliveries that looks
-   * exactly like a producer with nothing to send, and the first report taken
-   * after the scheduler landed duly called it `idle (starved) … BLOCKED` and
-   * blamed the frontend for a delay it had chosen. Pacing must be named, and
-   * must not be judged.
+   * `writeScheduler` holds bytes back on purpose once a frame's budget is
+   * spent, which looks like starvation between deliveries. Pacing must be
+   * named, not judged.
    */
   describe('pacing versus starvation', () => {
     const paced = {
@@ -286,9 +283,8 @@ describe('deliveryStats', () => {
 
     it('excludes the wait before the first bulk delivery', () => {
       const s = floodAfterWarmup(1000)
-      // Everything before the window: the 1 ms echo write plus the 1000 ms
-      // wait. It must equal what activeSpanMs left out, since the same figure
-      // is used to correct the backend's span.
+      // Before the window: the 1 ms echo plus the 1000 ms wait, matching what
+      // activeSpanMs excluded (used to correct the backend's span).
       expect(s.warmupMs).toBe(1001)
       expect(s.spanMs - s.activeSpanMs).toBe(s.warmupMs)
       // 10 deliveries of 8 ms plus 9 inter-delivery gaps of 2 ms.
@@ -297,9 +293,8 @@ describe('deliveryStats', () => {
     })
 
     /**
-     * The shape a real run actually had: echo, the long wait, *another* small
-     * delivery, then bulk. Charging only the gap immediately before the window
-     * reported 11 ms of warm-up where 2258 ms had been excluded.
+     * Echo, a long wait, another small delivery, then bulk: the whole warm-up is
+     * counted, not just the last gap.
      */
     it('counts the whole warm-up when more than one small delivery precedes it', () => {
       let now = 0

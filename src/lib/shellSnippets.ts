@@ -1,22 +1,12 @@
 /**
- * The shell-side half of OSC 133 and OSC 7 support, as copyable text.
+ * The shell side of OSC 133 and OSC 7 support, as copyable text. Canonical
+ * copies; docs/SHELL_INTEGRATION.md reproduces them (shellSnippets.test.ts
+ * checks they agree).
  *
- * These are the canonical copies — docs/SHELL_INTEGRATION.md reproduces them
- * for anyone reading the repo rather than running the app, so a change here
- * needs the same change there.
- *
- * Deliberately vendor-neutral in their naming. The sequences are a standard
- * (see lib/shellIntegration.ts), so a host with this installed also lights up
- * iTerm2, kitty, WezTerm, Windows Terminal and VS Code — calling the
- * functions `__wrustty_*` would misrepresent that to whoever reads the rc
- * file next.
- *
- * OSC 7 rides along with the 133 sequences because the shell is the only thing
- * that can answer either question, and one paste is better than two. It is a
- * separate feature though: it drives the directory in the status bar and the
- * destination a drag-and-drop upload lands in (lib/dropUpload.ts refuses the
- * drop without one), and it is parsed by lib/remoteIdentity.ts rather than
- * lib/shellIntegration.ts.
+ * Vendor-neutral names: the sequences are standard (lib/shellIntegration.ts)
+ * and light up iTerm2, kitty, WezTerm, Windows Terminal and VS Code too.
+ * OSC 7 rides along since only the shell can answer it; it drives the status
+ * bar directory and drop-upload destination, parsed by lib/remoteIdentity.ts.
  */
 
 export interface ShellSnippet {
@@ -33,16 +23,10 @@ const PREAMBLE = `# Shell integration: OSC 133 semantic-prompt sequences, which 
 # Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
 # silently discarded by terminals that don't implement them.`
 
-// Why every snippet encodes the path by hand rather than shelling out to
-// `python -c urllib...` or similar: this runs on every prompt, on hosts that
-// are often a switch, a router or a busy jump box, and a fork per prompt is
-// the sort of thing people feel on a slow link. It is also the sort of host
-// that has no python.
-//
-// `LC_ALL=C` in a subshell is what makes the loop walk *bytes*. In a UTF-8
-// locale the shell reads a multi-byte character as one character and encodes
-// its codepoint, so `é` comes out as `%E9` instead of `%C3%A9` and the far
-// side decodes a different path — or fails to decode at all.
+// Paths are encoded in shell, not via `python -c urllib...`: this runs every
+// prompt, on hosts (switches, jump boxes) where a fork hurts and python may
+// be absent. `LC_ALL=C` in a subshell makes the loop walk bytes; in a UTF-8
+// locale `é` would encode as `%E9` instead of `%C3%A9`.
 const POSIX_OSC7 = `# OSC 7: the working directory, as a percent-encoded file:// URL.
 __osc7_encode() (
   LC_ALL=C

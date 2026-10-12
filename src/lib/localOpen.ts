@@ -11,19 +11,17 @@ export type LocalOpenOutcome =
   | { kind: 'notFound' }
 
 /**
- * Opens a path clicked in a local pane with whatever Windows associates with
- * it, or the "Open with" picker when nothing is. Programs and scripts are shown
- * in Explorer instead of run — see local_open.rs, which also owns resolving the
- * path and every guard on it.
- *
- * `cwds` are where a relative path might be relative to, best first.
+ * Opens a path clicked in a local pane with its Windows association, or the
+ * "Open with" picker. Programs and scripts are shown in Explorer instead of
+ * run; local_open.rs owns resolution and every guard. `cwds` are candidate
+ * bases for a relative path, best first.
  */
 export function openLocalPath(path: string, cwds: string[]) {
   return invoke<LocalOpenOutcome>('open_local_path', { path, cwds })
 }
 
-/** Whether a local source runs WSL, whose output is full of Linux paths this
- *  machine cannot open as written. */
+/** Whether a local source runs WSL, whose Linux paths can't be opened as
+ *  written. */
 function isWsl(source: ConnectionSource): boolean {
   switch (source.protocol) {
     case 'local':
@@ -37,12 +35,9 @@ function isWsl(source: ConnectionSource): boolean {
 }
 
 /**
- * Which paths a pane's output can link, or null for none.
- *
- * An SSH host's are POSIX, and go to its files panel. A local shell's are
- * Windows paths, and go to this machine's file associations. Nothing else has
- * anywhere to send a path: telnet and serial have no file channel, and WSL
- * prints paths inside a Linux filesystem.
+ * Which paths a pane's output can link, or null: POSIX for SSH (to the files
+ * panel), Windows for a local shell (to file associations). Telnet, serial
+ * and WSL have nowhere to send one.
  */
 export function pathFlavorFor(source: ConnectionSource): PathFlavor | null {
   const transport = transportOf(source)

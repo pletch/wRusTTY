@@ -272,8 +272,7 @@ describe('atlas growth', () => {
 
   it('stops at the largest texture the GL implementation offers', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // A driver that will not go past the starting size: growth is refused on
-    // the first attempt and the old warn-and-blank is what is left.
+    // A driver that refuses growth past the starting size: warn and blank.
     const atlas = new GlyphAtlas(makeGlStub(1024), FONTS, 14, HUGE, HUGE)
     for (const cp of [65, 66, 67]) atlas.getGlyph(cp)
     const blank = atlas.getGlyph(32)
@@ -353,8 +352,7 @@ describe('weight', () => {
 
 describe('letter spacing', () => {
   it('draws the glyph centered in the widened cell rather than against its edge', () => {
-    // Cell 12 wide, 4 of which is spacing: 2 either side, measured from the
-    // origin of the one-slot scratch surface everything is drawn on.
+    // Cell 12 wide, 4 of it spacing (2 either side) on the scratch surface.
     const atlas = new GlyphAtlas(makeGlStub(), FONTS, 14, 12, 16, 4)
     ctxStub.fillText.mockClear()
     atlas.getGlyph(65)

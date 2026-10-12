@@ -1,15 +1,9 @@
 /**
- * "Is the WebGL path actually on the GPU?" — Phase 7's third checkbox.
- *
- * WebGL2 can quietly resolve to a software rasterizer (SwiftShader in Chromium,
- * WARP / "Microsoft Basic Render Driver" on Windows, llvmpipe on Linux),
- * especially inside WebView2 with a flaky driver or under remote desktop. A
- * throughput number measured on that path is real but meaningless as a "GPU
- * renderer" result, so the harness refuses to let it pass unlabeled.
- *
- * A throwaway context is enough: every WebGL2 context in a page shares the same
- * underlying device, so the renderer string a probe reads is the same one the
- * engines got.
+ * Whether the WebGL path is on the GPU. WebGL2 can resolve to a software
+ * rasterizer (SwiftShader, WARP / "Microsoft Basic Render Driver", llvmpipe),
+ * especially in WebView2 with a flaky driver or over remote desktop, and the
+ * harness labels such results. A throwaway context suffices: all contexts in a
+ * page share one device.
  */
 
 const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|software|basic render|microsoft basic|warp|mesa offscreen/i
@@ -19,7 +13,7 @@ export interface GpuInfo {
   webgl2: boolean
   /** UNMASKED_VENDOR_WEBGL, or null if the debug extension was blocked. */
   vendor: string | null
-  /** UNMASKED_RENDERER_WEBGL — the string we classify. */
+  /** UNMASKED_RENDERER_WEBGL, the string we classify. */
   renderer: string | null
   /** True when the renderer string names a known software rasterizer. */
   software: boolean
@@ -39,8 +33,7 @@ export function probeGpu(): GpuInfo {
   const renderer = dbg ? (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) as string) : null
   const version = gl.getParameter(gl.VERSION) as string
 
-  // Release the probe context immediately rather than waiting on GC — the
-  // context ceiling this whole engine dances around is real.
+  // Released immediately rather than on GC; the context ceiling is real.
   gl.getExtension('WEBGL_lose_context')?.loseContext()
 
   return {

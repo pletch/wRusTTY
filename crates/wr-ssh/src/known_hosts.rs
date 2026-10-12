@@ -1,9 +1,6 @@
-//! Host-key trust-on-first-use (TOFU) store. Deliberately not delegated to
-//! `russh`'s built-in `known_hosts` helpers: we want full control over the
-//! prompt/accept/reject flow (surfaced through the UI, not auto-trusted —
-//! unlike r-shell, whose `check_server_key` unconditionally returns `Ok(true)`)
-//! and a format we can unit-test without touching the filesystem convention
-//! OpenSSH uses.
+//! Host-key trust-on-first-use (TOFU) store. Not delegated to `russh`'s
+//! `known_hosts` helpers, so the accept/reject flow goes through the UI and the
+//! format is unit-testable without OpenSSH's filesystem conventions.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,40 +8,32 @@ use std::path::{Path, PathBuf};
 use russh::keys::ssh_key::{Algorithm, HashAlg};
 use russh::keys::PublicKey;
 
-/// Temp-file-plus-rename write, owner-only on Unix. A crash or power loss
-/// mid-write could otherwise leave a truncated/empty known_hosts file,
-/// silently resetting the host-key trust anchor and reopening a MITM window
-/// on the next connect. See `wr_fs` for the full reasoning.
+/// Temp-file-plus-rename write, owner-only on Unix, so a crash can't truncate
+/// the trust anchor (see `wr_fs`).
 use wr_fs::write_atomic as atomic_write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostKeyStatus {
-    /// No entry for this host — first connection, or the entry was removed.
+    /// No entry for this host: first connection, or the entry was removed.
     Unknown,
     /// Entry exists and matches the offered key.
     Trusted,
-    /// Entry exists but the offered key is different. Never auto-accept
-    /// this: it's either a reprovisioned host or an active MITM.
+    /// Entry exists but the offered key differs. Never auto-accept: it's either a
+    /// reprovisioned host or an active MITM.
     Changed { stored_fingerprint: String },
-    /// Keys are on record for this host, but none of the offered key's type.
-    /// Nothing is contradicted outright, which is why this is not `Changed` —
-    /// but it is not a first connection either, and must not be worded as one.
-    /// It is exactly what a man in the middle *without* the host's key would
-    /// produce: offer a type we hold no pin for, and hope for the routine
-    /// prompt. [`KnownHostsStore::host_key_preference`] makes an honest server
-    /// that still has a pinned key present that one, so arriving here means
-    /// the server no longer offers any key type we trusted.
+    /// Keys are on record for this host, but none of the offered key's type. Not
+    /// `Changed` (nothing is contradicted), but not a first connection either:
+    /// it's what a MITM without the host's key would produce. Since
+    /// [`KnownHostsStore::host_key_preference`] makes an honest server present a
+    /// pinned type, arriving here means the server no longer offers any.
     ///
     /// `known` is each key on record, as `algorithm fingerprint`.
     NewKeyType { known: Vec<String> },
 }
 
-/// One stored host key, as the management UI needs to show it.
-///
-/// `algorithm` and `fingerprint` are optional because a line that will not
-/// parse still has to be *listable*: those are precisely the entries that pin a
-/// host to `Changed` forever, so a UI that could only show the well-formed ones
-/// would hide the only entries a user urgently needs to delete.
+/// One stored host key, for the management UI. `algorithm` and `fingerprint`
+/// are optional because an unparseable line must still be listable: those
+/// entries pin a host to `Changed` and most need deleting.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnownHostEntry {
@@ -52,31 +41,23 @@ pub struct KnownHostEntry {
     pub port: u16,
     pub algorithm: Option<String>,
     pub fingerprint: Option<String>,
-    /// The stored line itself, and the identifier `forget` takes.
-    ///
-    /// A fingerprint would be the natural id and is wrong here for the same
-    /// reason as above: an unparseable entry has none. The raw text is exact,
-    /// works for every entry, and is what actually has to be removed from the
-    /// file.
+    /// The stored line itself, and the id `forget` takes (an unparseable entry has
+    /// no fingerprint).
     pub key_text: String,
 }
 
 pub struct KnownHostsStore {
     path: PathBuf,
-    /// One entry *per key algorithm* per `host:port`, matching what OpenSSH
-    /// does — a server offers a different host key depending on the
-    /// negotiated `HostKeyAlgorithms`, so a single stored key per host means
-    /// any shift in that negotiation (a russh version bump reordering its
-    /// preference list, a server config change, a load-balanced host)
-    /// surfaces as `Changed`, i.e. as "possible MITM". A user who is shown
-    /// that dialog once for a benign reason is a user who clicks through the
-    /// next one, so a false positive here costs more than it looks like.
+    /// One entry per key algorithm per `host:port`, as OpenSSH does. A server's
+    /// key depends on the negotiated algorithm, so a single key per host would
+    /// turn any negotiation shift into a false "possible MITM", which trains
+    /// users to click through.
     entries: HashMap<String, Vec<String>>,
 }
 
 impl KnownHostsStore {
-    /// Loads the store from `path`, creating an empty in-memory store if the
-    /// file doesn't exist yet (it's created on first `learn`).
+    /// Loads the store from `path`; a missing file is an empty store (created on
+    /// first `learn`).
     pub fn load(path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
         let mut entries: HashMap<String, Vec<String>> = HashMap::new();
@@ -89,11 +70,8 @@ impl KnownHostsStore {
                         continue;
                     }
                     if let Some((id, key_text)) = line.split_once(' ') {
-                        // Normalizing on read rather than only on write means
-                        // entries written before `host_id` lowercased don't
-                        // reprompt as `Unknown` on the next connect. The id is
-                        // `host:port`, so lowercasing the whole string is the
-                        // same as lowercasing the host — digits are unaffected.
+                        // Normalized on read too, so entries written before ids were lowercased
+                        // still match. Lowercasing `host:port` only affects the host.
                         entries
                             .entry(id.to_ascii_lowercase())
                             .or_default()
@@ -108,12 +86,9 @@ impl KnownHostsStore {
         Ok(Self { path, entries })
     }
 
-    /// `Changed` means "we hold a key of this algorithm for this host and the
-    /// offered one differs" — not "we hold some key and it differs". Holding
-    /// an Ed25519 key and being offered an RSA one is `NewKeyType`: nothing is
-    /// contradicted, so it is not the changed-key alarm, but there is prior
-    /// trust in this host that the offered key does not share, and the prompt
-    /// has to say so rather than pass it off as a first connection.
+    /// `Changed` means a key of this algorithm is held and differs. A held Ed25519
+    /// key and an offered RSA one is `NewKeyType`: not the changed-key alarm, but
+    /// not a first connection either.
     pub fn check(&self, host: &str, port: u16, key: &PublicKey) -> HostKeyStatus {
         let id = host_id(host, port);
         let Some(stored) = self.entries.get(&id) else {
@@ -143,9 +118,7 @@ impl KnownHostsStore {
             Some(stored_key) => HostKeyStatus::Changed {
                 stored_fingerprint: fingerprint(&stored_key),
             },
-            // A corrupted entry could be the one that would have matched, so
-            // it can't be treated as "no key of this algorithm" and quietly
-            // relearned over. Fail closed, as before.
+            // A corrupt entry might have matched, so fail closed rather than relearn.
             None if saw_unparseable => HostKeyStatus::Changed {
                 stored_fingerprint: "<unparseable stored entry>".to_string(),
             },
@@ -156,20 +129,12 @@ impl KnownHostsStore {
         }
     }
 
-    /// russh's default host-key algorithm order, with every type we already
-    /// hold a key for this host moved to the front.
+    /// russh's default host-key algorithm order, with every type already held for
+    /// this host moved to the front, as OpenSSH does. The server picks the first
+    /// algorithm on our list it supports, so without this a host pinned under
+    /// Ed25519 could be negotiated onto another type by a version bump or a MITM.
     ///
-    /// What OpenSSH does, and for the same reason: the server picks the first
-    /// algorithm on *our* list that it supports, so without this a host we
-    /// pinned under Ed25519 can be negotiated onto some other type on any
-    /// connection — by a version bump reordering the defaults, or on purpose,
-    /// by a man in the middle who has no Ed25519 key to offer. With it, an
-    /// honest server always presents the key we can check, and only one that
-    /// genuinely lacks every pinned type reaches [`HostKeyStatus::NewKeyType`].
-    ///
-    /// Only reorders; nothing is added or removed, and the default order is
-    /// kept within each half. RSA's hash variants count as one type, as they
-    /// do to russh: the stored key is `ssh-rsa` whichever signature was used.
+    /// Only reorders. RSA's hash variants count as one type, as in russh.
     pub fn host_key_preference(&self, host: &str, port: u16) -> russh::Preferred {
         let known: Vec<Algorithm> = self
             .entries
@@ -193,28 +158,21 @@ impl KnownHostsStore {
         }
     }
 
-    /// Records `key` as trusted for `host:port`, replacing any previous entry
-    /// *of the same algorithm* and leaving the host's other algorithms alone,
-    /// then persists the store to disk.
+    /// Records `key` as trusted for `host:port`, replacing any entry of the same
+    /// algorithm and keeping the others, then persists.
     pub fn learn(&mut self, host: &str, port: u16, key: &PublicKey) -> std::io::Result<()> {
         let id = host_id(host, port);
         let key_text = key
             .to_openssh()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        // Re-read before writing, because this store is not the only writer.
-        // Every connector loads its own copy, and the management UI has a third
-        // — so persisting from a copy loaded minutes ago would rewrite the whole
-        // file from stale state and resurrect a key the user had just deleted.
-        // A trust anchor that comes back from the dead is exactly the failure
-        // this file exists to prevent.
+        // Re-read first: every connector and the management UI hold their own copy,
+        // and writing from a stale one would resurrect a just-deleted key.
         self.reload();
 
         let stored = self.entries.entry(id).or_default();
-        // An unparseable entry has no knowable algorithm, so it can't be
-        // matched against this key's — dropping it here is what stops a
-        // corrupt line pinning the host to `Changed` forever once the user
-        // has explicitly accepted a key.
+        // An unparseable entry has no algorithm to match; dropping it on an explicit
+        // accept stops it pinning the host to `Changed` forever.
         stored.retain(|text| match PublicKey::from_openssh(text) {
             Ok(stored_key) => stored_key.algorithm() != key.algorithm(),
             Err(_) => false,
@@ -247,12 +205,8 @@ impl KnownHostsStore {
         out
     }
 
-    /// Forgets one stored key. Returns whether it was there.
-    ///
-    /// Removing trust is the safe direction — the worst outcome is a
-    /// first-connection prompt — which is why this needs no confirmation from
-    /// the store's side and why `learn` is the operation that had to grow a
-    /// reload rather than this one.
+    /// Forgets one stored key. Returns whether it was there. Removing trust is the
+    /// safe direction (at worst, a first-connection prompt).
     pub fn forget(&mut self, host: &str, port: u16, key_text: &str) -> std::io::Result<bool> {
         self.reload();
         let id = host_id(host, port);
@@ -263,8 +217,7 @@ impl KnownHostsStore {
         stored.retain(|text| text != key_text);
         let removed = stored.len() != before;
         if stored.is_empty() {
-            // Dropped rather than left as an empty list, so `check` reports
-            // `Unknown` for the host and `list` has nothing to show.
+            // Removed rather than left empty, so the host reads as `Unknown`.
             self.entries.remove(&id);
         }
         if removed {
@@ -273,13 +226,9 @@ impl KnownHostsStore {
         Ok(removed)
     }
 
-    /// Forgets every key held for one host, returning how many there were.
-    ///
-    /// A host offers a different key per algorithm, so "this host is
-    /// reprovisioned, forget it" is a distinct intent from removing one entry —
-    /// and doing it one row at a time invites stopping halfway, which leaves the
-    /// host in the state most likely to produce a confusing `Changed` prompt
-    /// later.
+    /// Forgets every key for one host, returning how many. "This host was
+    /// reprovisioned" is a distinct intent from deleting one entry, and doing it
+    /// row by row invites stopping halfway.
     pub fn forget_host(&mut self, host: &str, port: u16) -> std::io::Result<usize> {
         self.reload();
         let removed = self
@@ -292,11 +241,9 @@ impl KnownHostsStore {
         Ok(removed)
     }
 
-    /// Re-reads the file into `entries`, discarding in-memory state.
-    ///
-    /// Failure is deliberately ignored: this runs on the write path, and a
-    /// transiently unreadable file is not a reason to lose what is already
-    /// trusted in memory. The write that follows will report its own error.
+    /// Re-reads the file into `entries`. Failure is ignored: a transiently
+    /// unreadable file isn't a reason to drop what's trusted in memory, and the
+    /// following write reports its own error.
     fn reload(&mut self) {
         if let Ok(fresh) = Self::load(&self.path) {
             self.entries = fresh.entries;
@@ -308,9 +255,7 @@ impl KnownHostsStore {
         let mut ids: Vec<&String> = self.entries.keys().collect();
         ids.sort();
         for id in ids {
-            // Sorted within the host too: the file is diffable and
-            // byte-stable across saves only if both levels are ordered, and
-            // `HashMap`'s iteration order is not.
+            // Sorted within the host too, so the file is byte-stable across saves.
             let mut keys: Vec<&String> = self.entries[id].iter().collect();
             keys.sort();
             for key_text in keys {
@@ -328,23 +273,15 @@ impl KnownHostsStore {
     }
 }
 
-/// Lowercased: DNS names are case-insensitive, so `Example.com:22` and
-/// `example.com:22` are the same host. Keying on the raw string made them two
-/// entries, which meant connecting to a saved session by a differently-cased
-/// name reprompted as `Unknown` for a host already trusted. ASCII-only
-/// lowercasing on purpose — Unicode case folding on an IDN label is not a
-/// transformation this should be inventing.
+/// Lowercased, since DNS names are case-insensitive. ASCII-only: Unicode case
+/// folding on an IDN label isn't this function's call.
 fn host_id(host: &str, port: u16) -> String {
     format!("{}:{port}", host.to_ascii_lowercase())
 }
 
-/// `host_id` in reverse, for listing.
-///
-/// Split from the *right*, because an IPv6 literal is full of colons —
-/// `[::1]:22` has to come back as `[::1]` and `22`, not `[` and `:1]:22`. An id
-/// with no port at all should not exist, but if one does it is shown with the
-/// SSH default rather than dropped from the list, since an entry the UI cannot
-/// display is an entry the user cannot delete.
+/// `host_id` in reverse, for listing. Split from the right for IPv6
+/// (`[::1]:22`). An id without a port shows with the SSH default rather than
+/// becoming undeletable.
 fn split_host_id(id: &str) -> (String, u16) {
     match id.rsplit_once(':') {
         Some((host, port)) => match port.parse() {
@@ -368,15 +305,13 @@ pub fn fingerprint(key: &PublicKey) -> String {
 mod tests {
     use super::*;
 
-    // Fixed throwaway Ed25519 test keys (generated once with `ssh-keygen`,
-    // no corresponding private key kept anywhere) so tests don't need a
-    // keypair-generation dependency just to compare/persist public keys.
+    // Throwaway Ed25519 keys (no private key kept), so tests need no keypair
+    // generation.
     const KEY_A: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILqSDt0cbD+ayGxAMPpVeNgzLGdNQRRrFt3stCpi4oWu";
     const KEY_B: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHIIJJ3Yz6AjlhL3dNONdg1RVwIgO14o6Y3As7ihoXmj";
-    /// A second *algorithm*, not just a second key — the per-algorithm
-    /// storage below can't be tested with two Ed25519 keys.
+    /// A second algorithm, for testing per-algorithm storage.
     const KEY_ECDSA: &str = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGz0rNnU1O1z+Z74/aAD3WNLCnuzG8s0vm8V9Oupz1F6bye2ZNFhUasm4bNWiLfu4NBmYT5uP73ozZEQCzWQL+4=";
 
     fn key(text: &str) -> PublicKey {
@@ -403,7 +338,7 @@ mod tests {
         store.learn("example.com", 22, &k).unwrap();
         assert_eq!(store.check("example.com", 22, &k), HostKeyStatus::Trusted);
 
-        // Reload from disk to prove persistence, not just in-memory state.
+        // Reload from disk to prove persistence.
         let reloaded = KnownHostsStore::load(&path).unwrap();
         assert_eq!(
             reloaded.check("example.com", 22, &k),
@@ -436,7 +371,7 @@ mod tests {
         assert_eq!(store.check("example.com", 2222, &k), HostKeyStatus::Unknown);
     }
 
-    /// DNS is case-insensitive, so a differently-cased name must not reprompt.
+    /// A differently-cased name doesn't reprompt.
     #[test]
     fn host_matching_is_case_insensitive() {
         let dir = tempfile::tempdir().unwrap();
@@ -447,7 +382,7 @@ mod tests {
         store.learn("Example.COM", 22, &k).unwrap();
         assert_eq!(store.check("example.com", 22, &k), HostKeyStatus::Trusted);
 
-        // And through a reload, so the on-disk id is normalized too.
+        // Through a reload too, so the on-disk id is normalized.
         let reloaded = KnownHostsStore::load(&path).unwrap();
         assert_eq!(
             reloaded.check("EXAMPLE.com", 22, &k),
@@ -455,8 +390,7 @@ mod tests {
         );
     }
 
-    /// A file written before ids were lowercased must still match, rather
-    /// than silently degrading into a first-connection prompt.
+    /// A file written before ids were lowercased still matches.
     #[test]
     fn legacy_mixed_case_entries_are_normalised_on_load() {
         let dir = tempfile::tempdir().unwrap();
@@ -470,8 +404,7 @@ mod tests {
         );
     }
 
-    /// The whole point of the per-algorithm store: learning a second
-    /// algorithm must not evict the first.
+    /// Learning a second algorithm doesn't evict the first.
     #[test]
     fn algorithms_are_stored_side_by_side() {
         let dir = tempfile::tempdir().unwrap();
@@ -492,10 +425,8 @@ mod tests {
         );
     }
 
-    /// An algorithm we hold no key for contradicts nothing, so it is not
-    /// `Changed` — but the host is known, so it is not `Unknown` either. That
-    /// was the gap: a man in the middle offering an unpinned type got the
-    /// routine first-connection prompt. It now names what is on record.
+    /// An unpinned algorithm on a known host is `NewKeyType`, naming what's on
+    /// record.
     #[test]
     fn unseen_algorithm_on_a_known_host_is_a_new_key_type() {
         let dir = tempfile::tempdir().unwrap();
@@ -511,7 +442,7 @@ mod tests {
         );
     }
 
-    /// Accepting a new key type adds it beside the old one, as before.
+    /// Accepting a new key type adds it beside the old one.
     #[test]
     fn accepting_a_new_key_type_trusts_both() {
         let dir = tempfile::tempdir().unwrap();
@@ -526,8 +457,7 @@ mod tests {
         }
     }
 
-    /// A pinned type goes first, so an honest server presents the key we can
-    /// check; everything else keeps russh's own order behind it.
+    /// A pinned type goes first; everything else keeps russh's order.
     #[test]
     fn negotiation_prefers_the_key_types_on_record() {
         let dir = tempfile::tempdir().unwrap();
@@ -537,7 +467,7 @@ mod tests {
         let defaults = russh::Preferred::default();
         let ordered = store.host_key_preference("example.com", 22);
         assert_eq!(ordered.key[0], key(KEY_ECDSA).algorithm());
-        // A reordering only: the same algorithms, and the rest in default order.
+        // Only a reordering.
         let mut a = ordered.key.to_vec();
         let mut b = defaults.key.to_vec();
         assert_eq!(a.len(), b.len());
@@ -552,18 +482,17 @@ mod tests {
         b.sort_by_key(|x| x.to_string());
         assert_eq!(a, b);
 
-        // A host with nothing on record gets the defaults untouched.
+        // A host with nothing on record gets the defaults.
         assert_eq!(
             store.host_key_preference("other.example", 22).key,
             defaults.key
         );
     }
 
-    /// RSA is one key type across its signature hashes, so a pinned `ssh-rsa`
-    /// key brings every RSA variant forward, in the default's own order.
+    /// A pinned `ssh-rsa` key brings every RSA variant forward, in default order.
     #[test]
     fn a_pinned_rsa_key_brings_every_rsa_variant_forward() {
-        // Throwaway, like the others; 1024-bit because only its type matters.
+        // Throwaway; only its type matters.
         const KEY_RSA: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQDxp3u5yaChgiQhn/yorBW+XaPt4/KiOUYjzaIBWvkAK0UEzSJDgcUeIW4u33LB5IoaXS/BLe3ijXwwt/N00IeER/dF+jNxl7DhvF7FP8dkApYfcKl04dopQ29Gg12SqsW+v02UTdh1Bd6lMOTMmXf5ISSH3UiZc2jTRCRpyPx0NQ==";
         let rsa = key(KEY_RSA);
         let dir = tempfile::tempdir().unwrap();
@@ -576,9 +505,8 @@ mod tests {
         assert!(ordered.key[..rsa_count].iter().all(is_rsa));
     }
 
-    /// ...but a differing key of an algorithm we *do* hold is still the loud
-    /// case, and reports that algorithm's fingerprint rather than some other
-    /// key's.
+    /// A differing key of a held algorithm is still `Changed`, with that
+    /// algorithm's fingerprint.
     #[test]
     fn changed_reports_the_matching_algorithms_fingerprint() {
         let dir = tempfile::tempdir().unwrap();
@@ -596,9 +524,8 @@ mod tests {
         }
     }
 
-    /// Relearning the same algorithm replaces rather than accumulates —
-    /// otherwise an accepted host-key rotation would leave the old key on
-    /// disk and still matching.
+    /// Relearning an algorithm replaces its key, so a rotated-away key stops
+    /// matching.
     #[test]
     fn relearning_same_algorithm_replaces_the_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -637,9 +564,7 @@ mod tests {
         assert_eq!(other.algorithm.as_deref(), Some("ssh-ed25519"));
     }
 
-    /// The entries that most need deleting are the ones that will not parse —
-    /// they pin a host to `Changed` forever — so they have to be listable even
-    /// though they have no fingerprint to show.
+    /// Unparseable entries are listable, though they have no fingerprint.
     #[test]
     fn list_includes_an_unparseable_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -669,13 +594,11 @@ mod tests {
                 .check("example.com", 22, &key(KEY_A)),
             HostKeyStatus::Unknown
         );
-        // Gone from the file, not just emptied — an id with no keys would show
-        // as a host with nothing under it.
+        // Gone from the file, not just emptied.
         assert!(KnownHostsStore::load(&path).unwrap().list().is_empty());
     }
 
-    /// Removing one algorithm must leave the host's others trusted, or
-    /// "delete the stale RSA entry" would silently drop Ed25519 trust too.
+    /// Removing one algorithm keeps the host's others trusted.
     #[test]
     fn forgetting_one_key_leaves_the_other_algorithm_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -696,8 +619,7 @@ mod tests {
             reloaded.check("example.com", 22, &key(KEY_ECDSA)),
             HostKeyStatus::Trusted
         );
-        // The forgotten type is no longer trusted. The host still is, under
-        // ECDSA, so this is a new key type rather than a first connection.
+        // Still trusted under ECDSA, so a new key type, not a first connection.
         assert!(matches!(
             reloaded.check("example.com", 22, &key(KEY_A)),
             HostKeyStatus::NewKeyType { .. }
@@ -727,12 +649,8 @@ mod tests {
         assert_eq!(listed[0].host, "other.example");
     }
 
-    /// The store is not the only writer: every connector loads its own copy and
-    /// the management UI has a third. Without the reload on the write path, a
-    /// connector persisting from a copy loaded before a deletion would rewrite
-    /// the whole file from stale state and bring the deleted key back — a trust
-    /// anchor returning from the dead, which is the one thing this file exists
-    /// to prevent.
+    /// A connector writing from a copy loaded before a deletion doesn't bring the
+    /// deleted key back.
     #[test]
     fn a_stale_writer_does_not_resurrect_a_forgotten_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -743,12 +661,12 @@ mod tests {
             .learn("example.com", 22, &key(KEY_A))
             .unwrap();
 
-        // Someone deletes it through the management UI, using its own store.
+        // Deleted through the management UI's own store.
         let mut ui_copy = KnownHostsStore::load(&path).unwrap();
         let entry = ui_copy.list().pop().unwrap();
         ui_copy.forget("example.com", 22, &entry.key_text).unwrap();
 
-        // The connector, still holding the old view, learns an unrelated host.
+        // The connector, holding the old view, learns an unrelated host.
         connector_copy
             .learn("other.example", 22, &key(KEY_B))
             .unwrap();
@@ -765,8 +683,7 @@ mod tests {
         );
     }
 
-    /// An IPv6 literal is full of colons, so the id has to be split from the
-    /// right or the host comes back mangled and the entry cannot be deleted.
+    /// An IPv6 id splits from the right, so the entry stays deletable.
     #[test]
     fn an_ipv6_host_survives_the_round_trip_through_an_id() {
         let dir = tempfile::tempdir().unwrap();
@@ -778,8 +695,7 @@ mod tests {
         assert_eq!(listed[0].port, 2222);
     }
 
-    /// A corrupt line could be the entry that would have matched, so it must
-    /// not degrade to `Unknown` and get quietly relearned over.
+    /// A corrupt line doesn't degrade to `Unknown`.
     #[test]
     fn unparseable_entry_still_fails_closed() {
         let dir = tempfile::tempdir().unwrap();

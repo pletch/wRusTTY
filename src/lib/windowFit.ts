@@ -14,13 +14,9 @@ export interface Rect {
 }
 
 /**
- * Where a window has to go to be wholly inside the work area, or null when it
- * already is.
- *
- * Shrinks before it moves: a window taller than the work area cannot be moved
- * onto it, which is the case that prompted this — geometry saved on a larger
- * display came back 1091px tall on a 1032px work area with its top at y=780,
- * and the dialog in the middle of it landed below the bottom of the screen.
+ * Where a window must go to be wholly inside the work area, or null when it
+ * already is. Shrinks before moving, since a window taller than the work
+ * area can't be moved onto it.
  */
 export function fitToWorkArea(win: Rect, work: Rect): Rect | null {
   const width = Math.min(win.width, work.width)
@@ -33,16 +29,10 @@ export function fitToWorkArea(win: Rect, work: Rect): Rect | null {
 
 /**
  * Pulls the window back onto the monitor it was restored to.
- *
- * tauri-plugin-window-state only makes sure a restored window is on *some*
- * monitor, not that it fits — so a layout saved on another display, or before
- * the scale changed, can come back mostly off the bottom of the screen.
- *
- * Works on the inner rectangle: on Windows an undecorated window's outer one
- * includes invisible resize borders, which may hang off the edge harmlessly
- * and would otherwise leave an 8px gap the user never asked for.
- *
- * Maximized and fullscreen windows are the OS's to place, and are left alone.
+ * tauri-plugin-window-state only ensures it's on some monitor, not that it
+ * fits. Uses the inner rectangle: an undecorated window's outer one includes
+ * invisible resize borders that may harmlessly hang off the edge. Maximized
+ * and fullscreen windows are left to the OS.
  */
 export async function keepWindowOnScreen(): Promise<void> {
   const win = getCurrentWindow()

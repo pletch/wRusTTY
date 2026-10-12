@@ -1,10 +1,7 @@
 //! Per-session transcript logging: raw PTY/serial/telnet bytes written to a
-//! timestamped file, mirroring PuTTY's "log all session output". The bytes
-//! are written here, on the Rust side of the coalescer (see `coalesce.rs`),
-//! not round-tripped back from the webview — the frontend only toggles
-//! logging on/off. Besides skipping a whole IPC hop (as a JSON number
-//! array, no less) on the output hot path, this means the log stays
-//! complete even if the webview stalls or drops output.
+//! timestamped file, like PuTTY's "log all session output". Written on the
+//! Rust side of the coalescer (`coalesce.rs`), so the log stays complete even
+//! if the webview stalls; the frontend only toggles it.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -16,25 +13,20 @@ use tauri_plugin_opener::OpenerExt;
 
 #[derive(Default)]
 pub struct LoggingState {
-    // A std (not tokio) mutex: `write` is called from the coalescer's flush
-    // path, which is synchronous, and the critical section is one file
-    // write — nothing awaits while holding it.
+    // A std mutex: the coalescer's flush path is synchronous and nothing awaits
+    // while holding it.
     files: Mutex<HashMap<String, LogSink>>,
 }
 
-/// One open log file plus, for plain-text logs, the streaming filter that
-/// strips escape sequences from what's written to it. `None` filter = raw
-/// mode (bytes written verbatim, PuTTY "all session output" style).
+/// One open log file plus, for plain-text logs, the escape-stripping filter.
+/// No filter is raw mode (bytes verbatim).
 struct LogSink {
     file: std::fs::File,
     filter: Option<LogFilter>,
 }
 
-/// Appends `bytes` to `session_id`'s log file, if logging is active for
-/// that session (silently a no-op otherwise). Called by the coalescer on
-/// every flush. In raw mode the bytes are logged exactly as sent to the UI;
-/// in plain-text mode they're run through the escape-stripping filter first
-/// (the terminal still renders the untouched raw stream regardless).
+/// Appends `bytes` to `session_id`'s log, if one is active. Called by the
+/// coalescer on every flush; plain-text mode filters first.
 pub(crate) fn write(state: &LoggingState, session_id: &str, bytes: &[u8]) {
     let mut files = state.files.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(sink) = files.get_mut(session_id) {
@@ -51,12 +43,9 @@ pub(crate) fn write(state: &LoggingState, session_id: &str, bytes: &[u8]) {
     }
 }
 
-/// Streaming filter that removes terminal escape sequences (CSI, OSC and the
-/// other string sequences, and short ESC sequences) plus non-printable
-/// control bytes, leaving human-readable text (tab/newline/carriage-return
-/// are kept). Stateful on purpose: PTY output is chunked at arbitrary
-/// boundaries, so a sequence can be split across two `push` calls and the
-/// mid-sequence position has to survive between them.
+/// Streaming filter that removes escape sequences (CSI, OSC and other string
+/// sequences, short ESC sequences) and non-printable controls, keeping tab,
+/// newline and carriage return. Stateful, since a sequence can span chunks.
 #[derive(Default)]
 struct LogFilter {
     state: FilterState,
@@ -83,8 +72,7 @@ impl LogFilter {
                         out.push(b);
                         FilterState::Ground
                     }
-                    // Drop other C0 controls and DEL; keep everything else,
-                    // including UTF-8 bytes (>= 0x80), verbatim.
+                    // Drop other C0 controls and DEL; keep everything else (UTF-8 included).
                     0x00..=0x1F | 0x7F => FilterState::Ground,
                     _ => {
                         out.push(b);
@@ -110,8 +98,7 @@ impl LogFilter {
                     0x1B => FilterState::StringEsc,
                     _ => FilterState::StringSeq,
                 },
-                // The \ of an ST (ESC \) — or a malformed lone ESC; either way
-                // the string sequence is over.
+                // The \ of an ST, or a malformed lone ESC: the string is over either way.
                 FilterState::StringEsc => FilterState::Ground,
             };
         }
@@ -125,12 +112,9 @@ fn logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The folder the user chose in Settings, or `None` for the default.
-///
-/// Only an absolute path is taken. A relative one would resolve against
-/// whatever the process's working directory happens to be — for an app
-/// started from the Start menu, usually `System32` — and a transcript landing
-/// somewhere nobody would look is worse than being told the setting is wrong.
+/// The folder chosen in Settings, or `None` for the default. Absolute paths
+/// only: a relative one would resolve against the process's cwd (often
+/// `System32`).
 fn chosen_dir(directory: Option<&str>) -> Result<Option<PathBuf>, String> {
     match directory.map(str::trim) {
         None | Some("") => Ok(None),
@@ -148,8 +132,7 @@ fn chosen_dir(directory: Option<&str>) -> Result<Option<PathBuf>, String> {
 }
 
 /// Where transcripts go: the chosen folder, else the default under the app's
-/// log directory. Created if missing, so a folder on a drive that was
-/// reconnected, or one deleted since it was picked, still works.
+/// log directory. Created if missing.
 fn transcript_dir(app: &AppHandle, directory: Option<&str>) -> Result<PathBuf, String> {
     let dir = match chosen_dir(directory)? {
         Some(dir) => dir,
@@ -179,13 +162,9 @@ fn timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-/// Opens a file only its owner can read.
-///
-/// The mode goes on the open rather than on the created file: `create` then
-/// `set_permissions` leaves a window, however brief, in which the file exists
-/// at the default umask and another local user can open it. Once they hold the
-/// descriptor, tightening the mode afterward doesn't take it back. No-op on
-/// Windows, where the per-user %APPDATA% ACL already covers this.
+/// Opens a file only its owner can read. The mode is set on open, since
+/// `create` then `set_permissions` leaves a window in which another user can
+/// grab a descriptor. No-op on Windows, where the %APPDATA% ACL covers it.
 fn create_private(path: &std::path::Path) -> Result<std::fs::File, String> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -199,20 +178,11 @@ fn create_private(path: &std::path::Path) -> Result<std::fs::File, String> {
 
 /// Records a resize in the session log, if one is running.
 ///
-/// A raw log is replayed to rebuild the grid it produced, and a replay needs
-/// the width: the same bytes wrapped at 80 columns and at 66 are different
-/// screens, so a log that never says which is not replayable at all. A resize
-/// is also a suspect in its own right -- it reflows every wrapped line in the
-/// buffer -- which makes when one landed worth as much as what it changed to.
-///
-/// Written as an APC string (ESC _ ... ESC \), the envelope terminals are
-/// required to ignore. That is what keeps the log replayable: feeding it back
-/// renders exactly what the session rendered, marker included, because the
-/// marker draws nothing. `LogFilter` treats APC as a string sequence, so
-/// plain-text logs drop it without knowing it exists.
-///
-/// Deliberately not `ESC _ G`: that prefix is the Kitty graphics protocol, and
-/// a terminal implementing it would try to decode this.
+/// Replaying a raw log needs the width (the same bytes at 80 and 66 columns
+/// are different screens), and a resize reflows the buffer, so when it landed
+/// matters too. Written as an APC string (ESC _ ... ESC \), which terminals
+/// ignore, so replay renders exactly what the session did and `LogFilter`
+/// drops it from plain-text logs. Not `ESC _ G`, the Kitty graphics prefix.
 pub(crate) fn note_resize(state: &LoggingState, session_id: &str, cols: u16, rows: u16) {
     let marker = format!("\x1b_wrustty;resize;{cols}x{rows};{}\x1b\\", timestamp());
     write(state, session_id, marker.as_bytes());
@@ -225,21 +195,14 @@ pub async fn session_log_start(
     session_id: String,
     label: String,
     plain_text: bool,
-    // Settings → Logging's folder; `None` or empty for the default.
+    // Settings > Logging's folder; `None` or empty for the default.
     directory: Option<String>,
     state: State<'_, LoggingState>,
 ) -> Result<String, String> {
     let dir = transcript_dir(&app, directory.as_deref())?;
     let path = dir.join(format!("{}-{}.log", sanitize(&label), timestamp()));
-    // Session logs can contain anything typed or displayed in the terminal —
-    // restrict to the owner, same as the vault and known_hosts files. No-op
-    // on Windows, where the per-user %APPDATA% ACL already covers this.
-    //
-    // The mode goes on the open rather than on the created file: `create`
-    // then `set_permissions` leaves a window, however brief, in which the
-    // transcript exists at the default umask and another local user can open
-    // it. Once they hold the descriptor, tightening the mode afterward
-    // doesn't take it back.
+    // Logs can contain anything typed or displayed: owner-only, like the vault
+    // and known_hosts (see `create_private`).
     let file = create_private(&path)?;
     let sink = LogSink {
         file,
@@ -266,21 +229,12 @@ pub async fn session_log_stop(
     Ok(())
 }
 
-/// Opens the session-logs folder in the OS file manager. Creates it first so
-/// the action still works before anything has been logged this run (the dir
-/// is only otherwise created lazily on the first `session_log_start`).
 /// Writes a pane dump beside the session logs, returning its path.
 ///
-/// The contents are built in the webview (`GhosttyEngine.dumpState`) because
-/// that is where the grid lives; this end owns only where such a file may go
-/// and who may read it, and that answer is the same as for a transcript --
-/// the logs directory, owner-only. A dump holds whatever was on screen, so it
-/// is exactly as sensitive as the log it sits beside.
-///
-/// Timestamped rather than overwritten. The fault this exists for is
-/// intermittent, so a second dump is a second sample and not a correction of
-/// the first; a fixed filename would quietly destroy the only copy of a state
-/// nobody can reproduce.
+/// Built in the webview (`GhosttyEngine.dumpState`), where the grid lives;
+/// this end decides where it goes and who may read it (owner-only, like a
+/// transcript). Timestamped, since each dump of an intermittent fault is a
+/// separate sample.
 #[tauri::command]
 pub async fn write_pane_dump(
     app: AppHandle,
@@ -296,6 +250,7 @@ pub async fn write_pane_dump(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Opens the session-logs folder in the OS file manager, creating it first.
 #[tauri::command]
 pub async fn reveal_session_logs(app: AppHandle, directory: Option<String>) -> Result<(), String> {
     let dir = transcript_dir(&app, directory.as_deref())?;
@@ -319,26 +274,25 @@ mod tests {
 
     #[test]
     fn strips_csi_color_and_keeps_text() {
-        // A colored prompt then some output: "\x1b[31mERR\x1b[0m ok\r\n"
+        // A colored prompt, then output.
         assert_eq!(filtered(&[b"\x1b[31mERR\x1b[0m ok\r\n"]), "ERR ok\r\n");
     }
 
     #[test]
     fn strips_osc_title_sequence() {
-        // OSC 0 ; title BEL — a window-title set, common in shell prompts.
+        // OSC 0 ; title BEL: a window-title set.
         assert_eq!(filtered(&[b"\x1b]0;my-host\x07$ "]), "$ ");
     }
 
     #[test]
     fn strips_osc_terminated_by_st() {
-        // Same, but terminated by ST (ESC \) instead of BEL.
+        // Terminated by ST (ESC \) instead of BEL.
         assert_eq!(filtered(&[b"\x1b]0;t\x1b\\done"]), "done");
     }
 
     #[test]
     fn handles_sequence_split_across_writes() {
-        // The whole point of the state machine: a CSI split mid-sequence
-        // across two pushes must still be fully stripped.
+        // A CSI split mid-sequence across two pushes is still stripped.
         assert_eq!(filtered(&[b"a\x1b[3", b"1mb"]), "ab");
         // ESC alone at a boundary, its bracket and body in the next chunk.
         assert_eq!(filtered(&[b"x\x1b", b"[0mY"]), "xY");
@@ -374,7 +328,7 @@ mod tests {
 
     #[test]
     fn strips_charset_designation_escape() {
-        // ESC ( B — select US-ASCII charset (intermediate + final).
+        // ESC ( B: select US-ASCII charset (intermediate + final).
         assert_eq!(filtered(&[b"\x1b(Bhi"]), "hi");
     }
 }

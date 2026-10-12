@@ -1,15 +1,6 @@
-//! End-to-end keyboard-interactive auth against a real SSH server.
-//!
-//! The one method here whose behavior is *not* knowable at connect time: the
-//! server decides how many rounds there are, what each asks, and which fields
-//! are secret. None of that can be covered by unit tests on our side of the
-//! wire, so this stands up an actual `russh` server, connects a real
-//! `SshConnector` to it over a loopback socket, and drives the exchange.
-//!
-//! Cheap enough to be an ordinary `cargo test` — no container, no sshd, no
-//! network beyond `127.0.0.1` — which is what makes it worth having for the
-//! cases that are otherwise only reachable by finding a Duo-protected bastion
-//! and typing at it.
+//! End-to-end keyboard-interactive auth against a real `russh` server on
+//! loopback: the server decides the rounds, questions and secret fields, so
+//! only a live exchange covers them. No container or sshd needed.
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -492,11 +483,8 @@ async fn a_wrong_answer_fails_authentication() {
     );
 }
 
-/// The reported bug: "Prompt me" against a server with
-/// `KbdInteractiveAuthentication no` failed with "authentication failed"
-/// before a dialog was ever shown. The server refuses the method, names
-/// `password` as what it will take instead, and that answer used to be thrown
-/// away.
+/// "Prompt me" against `KbdInteractiveAuthentication no`: the server refuses
+/// the method and names `password`, which must reach the user.
 #[tokio::test]
 async fn a_server_that_refuses_the_method_falls_back_to_asking_for_a_password() {
     let (port, tried) = serve_password_only("hunter2", &[russh::MethodKind::Password]).await;

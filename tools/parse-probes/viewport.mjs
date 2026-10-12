@@ -1,23 +1,16 @@
 /**
  * Costs the two ways of getting a frame's cells out of the core.
  *
- * Today (ghostty-web's 1.2 shim) the whole viewport comes back in ONE call:
+ * The vendored ABI returns the whole viewport in one call:
  *
  *   ghostty_render_state_update(term)
  *   ghostty_render_state_get_viewport(term, ptr, cellCount)   // packed, 16 B/cell
  *   -> read straight out of linear memory as a typed array
  *
- * Ghostty main's libghostty-vt render API has no packed-buffer equivalent. It
- * exposes a row iterator and a per-cell cursor, and cell data is fetched with
- * ghostty_render_state_row_cells_get(cells, key, outPtr) — one C call per cell
- * per attribute. include/ghostty/vt/render.h says so itself, noting that span
- * queries can avoid "one C API call per cell" for *selection state* only.
- *
- * The upgrade therefore hinges on what a JS->WASM call costs, because that is
- * the floor of the iterator model no matter how fast the Zig behind it is.
- * That floor is measurable with the binary we already ship — no 1.3 build
- * needed to find it — using two exports whose shapes match the ones the
- * iterator model would use:
+ * Ghostty main's render API has no packed equivalent: a row iterator and a
+ * per-cell cursor, with one `row_cells_get` call per cell per attribute. So
+ * the floor is the cost of a JS->WASM call, measurable with exports of the
+ * same shapes:
  *
  *   get_cols(term)                   ~ row_cells_next(cells)      1 arg
  *   get_mode(term, mode, outPtr)     ~ row_cells_get(c, key, out) 3 args + out
@@ -58,7 +51,7 @@ function write(term, s) {
   ex.ghostty_wasm_free_u8_array(p, b.length)
 }
 
-/** A screenful of styled text, so cells carry real styles rather than blanks. */
+/** A screenful of styled text, so cells carry real styles. */
 function fill(term, cols, rows) {
   let s = '\x1b[H'
   for (let r = 0; r < rows; r++) {
@@ -88,11 +81,9 @@ ex.ghostty_render_state_update(t80)
 
 const outPtr = ex.ghostty_wasm_alloc_u8_array(8)
 
-// Shape vs work. get_mode costs the same with an out pointer (16.16 ns) as with
-// a null one (16.30), so the out parameter is free and its expense is its own
-// mode-table lookup, not the call. Simple exports that only read a field land
-// near 4.2 ns, and that is the real boundary cost. Measuring only get_mode
-// would overstate the iterator model by ~4x.
+// get_mode costs the same with an out pointer (16.16 ns) as with null
+// (16.30): its cost is its lookup. Plain field reads land near 4.2 ns, the
+// real boundary cost; get_mode alone would overstate the model ~4x.
 const calls = [
   bench('get_cursor_x(term)      1 arg', () => ex.ghostty_render_state_get_cursor_x(t80), 2_000_000),
   bench('is_row_dirty(term,row)  2 arg', () => ex.ghostty_render_state_is_row_dirty(t80, 3), 2_000_000),
@@ -121,7 +112,7 @@ for (const [cols, rows] of GRIDS) {
 
   const up = bench('u', () => ex.ghostty_render_state_update(term), 20_000)
   const gv = bench('g', () => ex.ghostty_render_state_get_viewport(term, buf, cells), 20_000)
-  // What WebGLRenderer then does: walk the packed buffer in linear memory.
+  // What WebGLRenderer does next: walk the packed buffer.
   const rd = bench('r', () => {
     const v = new DataView(mem.buffer, buf, cells * CELL_BYTES)
     let acc = 0
@@ -140,11 +131,9 @@ for (const [cols, rows] of GRIDS) {
 console.log('(u = microseconds)')
 
 // ---- projected iterator model ----------------------------------------------
-// Per cell: one _next, plus one _get per attribute the renderer needs.
-// Our WebGLRenderer needs at minimum codepoint, fg, bg and styling flags.
-// The real cost of row_cells_get is unknown without a 1.3 build, so this is a
-// band rather than a figure: what the model costs if each per-cell call is a
-// bare field read, a modest lookup, or as heavy as get_mode.
+// Per cell: one _next, plus one _get per attribute (at least codepoint, fg,
+// bg and flags). Without a main build, row_cells_get's cost is unknown, so
+// this is a band: a field read, a modest lookup, or as heavy as get_mode.
 console.log('\n--- projected: row/cell iterator (ghostty main) ---')
 console.log(`${'grid'.padEnd(9)} ${'calls/frame'.padStart(11)} ${'@4.2ns'.padStart(9)} ${'@8ns'.padStart(9)} ${'@16ns'.padStart(9)}   vs today   worst as % of 8.33ms`)
 const GETS_PER_CELL = 4

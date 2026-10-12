@@ -1,22 +1,15 @@
 /**
- * Receive-side instrumentation for the real PTY delivery path.
- *
- * The engine benchmarks in `src/bench` measure a parser against a buffer that
- * is already in the webview. They cannot see the half of a flood that happens
- * before that — transport read, coalescer, IPC hop — so they cannot say whether
- * a slow `cat` is the terminal engine's fault or the pipeline's. This records
- * the frontend end of the real path; `coalesce.rs` records the backend end
- * (`delivery_stats`), and the two together locate the ceiling:
+ * Receive-side instrumentation for the real PTY delivery path, paired with the
+ * backend's `delivery_stats` (`coalesce.rs`) to locate a throughput ceiling:
  *
  *   - backend B/s ≈ frontend B/s, parse share high  → the engine is the limit
  *   - backend B/s ≈ frontend B/s, parse share low   → upstream is the limit
- *     (transport or coalescer); the frontend is idle waiting for bytes
+ *     (transport or coalescer); the frontend waits for bytes
  *   - backend B/s  > frontend B/s                   → the IPC hop or the
- *     frontend's own event loop is the limit, and the backend is running ahead
+ *     frontend's event loop is the limit
  *
- * Off by default and free when off: `record` runs the callback and returns,
- * touching no clock. Enabling costs two `performance.now()` calls per delivery,
- * of which there are a few thousand across a 100 MB flood.
+ * Off by default and free when off; on, it costs two `performance.now()` calls
+ * per delivery.
  */
 
 export interface DeliverySnapshot {
@@ -35,40 +28,25 @@ export interface DeliverySnapshot {
   medianBytes: number
   p95Bytes: number
   maxBytes: number
-  /** Per-delivery time inside the engine, ms. `maxParseMs` is the closest
-   *  thing to a real user-visible stall this records. */
+  /** Per-delivery time inside the engine, ms; `maxParseMs` approximates a
+   *  user-visible stall. */
   medianParseMs: number
   p95ParseMs: number
   maxParseMs: number
-  /** Longest gap between the end of one delivery and the start of the next.
-   *  A large value means the frontend was starved, not busy. */
+  /** Longest gap between deliveries; large means starved, not busy. */
   maxIdleMs: number
-  /** Longest gap between consecutive animation frames over the whole run.
-   *  rAF stops firing exactly when the main thread is blocked, so this is the
-   *  perceived freeze regardless of what caused it. */
+  /** Longest gap between animation frames (rAF stops while the main thread is
+   *  blocked), i.e. the perceived freeze. */
   maxFrameGapMs: number
-  /** The same two numbers restricted to the single longest idle gap above.
-   *  This is the pair that separates the two reasons the frontend can sit
-   *  there with no bytes: if frames kept firing across the window the main
-   *  thread was free and the bytes were not delivered (transport/IPC stall);
-   *  if frames stopped too, the thread was blocked and could not take
-   *  delivery. */
+  /** Frame activity during the longest idle gap: frames firing means bytes
+   *  weren't delivered (transport/IPC stall); frames stopping means the thread
+   *  was blocked. */
   framesDuringMaxIdle: number
   maxFrameGapInIdleMs: number
   /**
-   * The run with its warm-up removed — the numbers to reason from.
-   *
-   * A flood is started by typing a command, so the first delivery is the
-   * shell's echo of it and the bulk arrives only once the producer has spun
-   * up. Measured on `yes | head -c 100000000`, that wait was ~1.0 s, and
-   * counting it made a local flood read 19.1 MB/s instead of 24.0 and pulled
-   * the parse share under the threshold that decides the verdict. It is not
-   * app latency and does not belong in either.
-   *
-   * The window opens at the first delivery of at least half the median size:
-   * echo and prompt are tiny next to a coalesced flood delivery, so the split
-   * is unambiguous in the case that matters and degrades to "no warm-up" when
-   * deliveries are uniform.
+   * The run with its warm-up (the shell echoing the command, the producer
+   * spinning up) removed: the numbers to reason from. The active window starts
+   * at the first delivery of at least half the median size.
    */
   warmupMs: number
   activeSpanMs: number
@@ -76,36 +54,25 @@ export interface DeliverySnapshot {
   activeBytesPerSec: number
   activeParseMs: number
   activeParseShare: number
-  /** Every idle window summed, and its share of `spanMs`. `maxIdleMs` alone
-   *  cannot distinguish one long stall from a run of medium ones, and the two
-   *  imply different causes — so the total is what says how much of the
-   *  shortfall is stalls at all, rather than steady per-delivery overhead. */
+  /** All idle windows summed, and their share of the active span; distinguishes
+   *  one long stall from many medium ones. */
   totalIdleMs: number
   idleShare: number
   /**
-   * Of `totalIdleMs`, how much the frontend spent waiting on purpose.
-   *
-   * `writeScheduler` holds bytes back once a frame's write budget is spent, so
-   * the window can render. Those waits sit between deliveries and are
-   * indistinguishable, from here, from a producer with nothing to send — which
-   * is how a deliberate pause came to be reported as `idle (starved) …
-   * BLOCKED` with the verdict blaming the frontend for a delay it chose. The
-   * scheduler reports its own waits so the two can be told apart.
+   * Of `totalIdleMs`, the time `writeScheduler` deliberately held bytes back so
+   * the window could render, which would otherwise look like starvation.
    */
   pacedMs: number
-  /** Idle that was not self-imposed — the real wait on the producer. */
+  /** Idle that wasn't self-imposed: waiting on the producer. */
   starvedMs: number
   /** The largest gaps, longest first. */
   topGaps: IdleGap[]
 }
 
 /**
- * One window where the frontend had no bytes to work on.
- *
- * Located as well as sized, because the two candidate explanations for a long
- * gap predict different locations: a pause that recurs on a timer lands at
- * unrelated byte offsets across runs, while one tripped by a buffer or
- * allocation threshold lands at the same `afterBytes` every time.
+ * One window where the frontend had no bytes. Located in time and in the byte
+ * stream: a timer-driven pause lands at different offsets across runs, while a
+ * buffer threshold lands at the same `afterBytes`.
  */
 export interface IdleGap {
   ms: number
@@ -113,8 +80,7 @@ export interface IdleGap {
   atMs: number
   /** Bytes already delivered when the gap began. */
   afterBytes: number
-  /** rAF activity inside this specific window — the same blocked/free
-   *  discrimination as `maxFrameGapInIdleMs`, per gap. */
+  /** rAF activity inside this window (blocked vs free). */
   framesDuring: number
   maxFrameGapMs: number
 }
@@ -136,35 +102,24 @@ let firstAt = 0
 let lastEndAt = 0
 let lastAt = 0
 let parseTotal = 0
-/** Per delivery, aligned with `sizes`: when it started (offset from the first
- *  delivery) and how long the frontend had been idle immediately before it. */
+/** Per delivery: start offset and the idle time before it. */
 let starts: number[] = []
 let idles: number[] = []
 let frameTimes: number[] = []
-/** Time the write scheduler deliberately waited, so it is not read as
- *  starvation. See recordPaced. */
+/** Time the write scheduler deliberately waited; see recordPaced. */
 let pacedTotal = 0
 let frameLoopId: number | null = null
 
-/** Bounds memory if instrumentation is left on for a long session: a 100 MB
- *  flood is only a few thousand deliveries, so this is generous, but an
- *  overnight `tail -f` should not accumulate forever. Once full, the arrays
- *  stop growing and the distribution describes the first N deliveries. */
+/** Bounds memory if left on (an overnight `tail -f`); past this the arrays stop
+ *  growing. */
 const MAX_SAMPLES = 100_000
 
-/** ~90 minutes at 60 Hz. Frame timestamps are only 8 bytes each, and the loop
- *  stops with `stop()`, so this exists for the same reason as `MAX_SAMPLES`:
- *  an instrument left on overnight must not grow without bound. */
+/** ~90 minutes of frames at 60 Hz; bounded for the same reason. */
 const MAX_FRAMES = 320_000
 
 /**
- * Free-running rAF loop, live only while recording.
- *
- * It records nothing but frame arrival times. That is enough, because the
- * browser cannot deliver a frame while the main thread is busy: a gap in this
- * series *is* a main-thread stall, whatever produced it (parse, GC, layout).
- * Pairing it with the delivery series is what distinguishes "the frontend was
- * blocked" from "the frontend had nothing to do".
+ * Free-running rAF loop while recording, logging frame times only; a gap in
+ * frames is a main-thread stall, whatever caused it.
  */
 function startFrameLoop(): void {
   if (typeof requestAnimationFrame !== 'function' || frameLoopId !== null) return
@@ -207,19 +162,14 @@ export function reset(): void {
 }
 
 /**
- * Records a wait the frontend imposed on itself — see `writeScheduler`.
- *
- * Without this the report cannot tell a scheduler holding bytes back from a
- * producer with none to send, and calls both starvation.
+ * Records a wait the frontend imposed on itself (see `writeScheduler`).
  */
 export function recordPaced(ms: number): void {
   if (!enabled) return
   pacedTotal += ms
 }
 
-/** Injects a frame series without a real rAF loop, so the correlation logic is
- *  testable in a headless run. Timestamps share `performance.now()`'s origin,
- *  as rAF's do. */
+/** Injects frame times for headless tests (same origin as `performance.now()`). */
 export function recordFrameForTest(t: number): void {
   frameTimes.push(t)
 }
@@ -229,18 +179,14 @@ export function isEnabled(): boolean {
 }
 
 /**
- * Runs `write` — always — and times it when instrumentation is on.
- *
- * Shaped as a wrapper rather than a pair of `mark` calls so the caller cannot
- * accidentally time a different span than the one that matters, and so the
- * disabled path is a single branch with no clock reads.
+ * Runs `write` and times it when instrumentation is on. A wrapper so the timed
+ * span can't be wrong and the disabled path has no clock reads.
  */
 export function record<T>(bytes: number, write: () => T): T {
   if (!enabled) return write()
   const t0 = performance.now()
   if (firstAt === 0) firstAt = t0
-  // Gap since the previous delivery finished: time the frontend spent with
-  // nothing to do, which is the signature of an upstream bottleneck.
+  // Time since the previous delivery finished: idle.
   const idle = lastEndAt > 0 ? t0 - lastEndAt : 0
   try {
     return write()
@@ -264,9 +210,8 @@ function quantile(sorted: number[], q: number): number {
   return sorted[i]
 }
 
-/** Largest gap between consecutive frames, over the whole series or over a
- *  window. Frames bounding the window are included so a stall that starts
- *  before `from` and ends after it is still seen. */
+/** Largest gap between consecutive frames, overall or within a window
+ *  (boundary frames included). */
 function frameGaps(from = -Infinity, to = Infinity): { count: number; maxGapMs: number } {
   let count = 0
   let maxGap = 0
@@ -282,15 +227,12 @@ function frameGaps(from = -Infinity, to = Infinity): { count: number; maxGapMs: 
   return { count, maxGapMs: maxGap }
 }
 
-/** How many gaps the report enumerates. Enough to see whether the idle time is
- *  one event or a pattern, without turning the report into a log. */
+/** How many gaps the report lists. */
 const TOP_GAPS = 5
 
-/** The largest idle windows, each located in time and in the byte stream and
- *  annotated with what the main thread was doing across it. */
+/** The largest idle windows, located and annotated with main-thread activity. */
 function topIdleGaps(from: number): IdleGap[] {
-  // Bytes delivered before each index, so a gap can be placed in the stream
-  // and not just on the clock.
+  // Bytes delivered before each index.
   const before: number[] = []
   let running = 0
   for (const s of sizes) {
@@ -299,9 +241,7 @@ function topIdleGaps(from: number): IdleGap[] {
   }
   return idles
     .map((ms, i) => ({ ms, i }))
-    // Gaps inside the warm-up are not stalls in the run — leaving them in put
-    // the startup wait at the top of the list, where it crowded out the
-    // millisecond-scale stalls the list exists to surface.
+    // Warm-up gaps aren't stalls in the run.
     .filter((g) => g.ms > 0 && g.i > from)
     .sort((a, b) => b.ms - a.ms)
     .slice(0, TOP_GAPS)
@@ -319,21 +259,15 @@ function topIdleGaps(from: number): IdleGap[] {
 }
 
 /**
- * Index of the first delivery that is bulk rather than warm-up, and the idle
- * that preceded it.
- *
- * Returns index 0 when nothing qualifies as warm-up, which is the common case
- * for a steady stream and for any synthetic run of uniform deliveries.
+ * Index of the first bulk (non-warm-up) delivery and the warm-up time before
+ * it; 0 when nothing qualifies.
  */
 function activeStart(medianBytes: number): { index: number; warmupMs: number } {
   const bulk = medianBytes / 2
   for (let i = 0; i < sizes.length; i++) {
     if (sizes[i] >= bulk) {
-      // Everything before the window, not just the gap immediately preceding
-      // it: a real run opened with an echo, a long wait, *another* small
-      // delivery, and then bulk, so charging only the last gap reported 11 ms
-      // of warm-up where 2258 ms had been excluded — and understated the
-      // backend's rate threefold, since the same figure corrects its span.
+      // All time before the window, not just the last gap (a run may start with
+      // echo, a wait, another small delivery, then bulk).
       return { index: i, warmupMs: starts[i] }
     }
   }
@@ -347,19 +281,15 @@ export function snapshot(): DeliverySnapshot {
   const bytes = sizes.reduce((n, s) => n + s, 0)
   const medianBytes = quantile(bySize, 0.5)
   const { index: from, warmupMs } = activeStart(medianBytes)
-  // Idle is measured over the active window too — otherwise the warm-up wait
-  // dominates the total and the share describes startup, not the flood.
+  // Idle over the active window only.
   const idleTotal = idles.slice(from + 1).reduce((n, ms) => n + ms, 0)
   const gaps = topIdleGaps(from)
   const activeBytes = sizes.slice(from).reduce((n, s) => n + s, 0)
   const activeParseMs = parses.slice(from).reduce((n, ms) => n + ms, 0)
-  // `starts[from]` already covers the echo delivery and the warm-up gap that
-  // followed it, so the active window is simply what remains of the span.
+  // `starts[from]` covers the warm-up.
   const activeSpanMs = Math.max(0, spanMs - (starts[from] ?? 0))
   const allFrames = frameGaps()
-  // The longest gap and its frame correlation both come from the ranked list,
-  // so there is one definition of "worst stall" rather than two that can
-  // disagree about whether the warm-up counts.
+  // One definition of "worst stall", from the ranked list.
   const worst = gaps[0]
   return {
     count: sizes.length,
@@ -387,9 +317,7 @@ export function snapshot(): DeliverySnapshot {
     maxFrameGapInIdleMs: worst?.maxFrameGapMs ?? 0,
     totalIdleMs: idleTotal,
     idleShare: activeSpanMs > 0 ? idleTotal / activeSpanMs : 0,
-    // Capped at the idle actually observed: the scheduler's clock and this
-    // one are the same, but a wait that straddles the warm-up boundary would
-    // otherwise report more pacing than there was idle to account for.
+    // Capped at observed idle (a wait straddling the warm-up boundary).
     pacedMs: Math.min(pacedTotal, idleTotal),
     starvedMs: Math.max(0, idleTotal - pacedTotal),
     topGaps: gaps,

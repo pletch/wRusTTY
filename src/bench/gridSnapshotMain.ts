@@ -1,21 +1,12 @@
 /**
- * The same `GridSnapshot` as `gridSnapshot.ts`, read through ghostty **main**'s
+ * The same `GridSnapshot` as `gridSnapshot.ts`, read through ghostty main's
  * render API instead of the vendored build's batched `get_viewport`.
  *
- * This is the oracle for the port. `gridSnapshot.ts` compares our engine against
- * xterm.js to catch VT regressions; this compares the *same core* through two
- * different ABIs, which is a much sharper instrument — any difference is the
- * port's own doing, because both sides are the same terminal implementation
- * fed identical bytes. Nothing else can distinguish a correct port from a
- * plausible one, and almost every trap found so far (`GhosttyPoint`'s offsets,
- * the palette stride, the blank scrollback reads) produced *plausible* output.
+ * The port's oracle: the same core through two ABIs, so any difference is
+ * the port's own. Deliberately unoptimized (per-cell calls, no clean-row
+ * skipping), so it can't share a bug with the optimized renderer.
  *
- * Deliberately unoptimized. It fetches per cell with separate calls where the
- * real renderer would use `get_multi` and skip clean rows, because a parity
- * oracle that shares the optimizations of the thing it checks cannot catch a
- * bug in them. Speed is `iter.mjs`'s job.
- *
- * Requires a build at the pin — see `../lib/ghostty/main/vendor-main/README.md`.
+ * Requires a build at the pin; see `../lib/ghostty/main/vendor-main/README.md`.
  */
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -70,14 +61,8 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 }
 
 /**
- * Mirrors `gridSnapshot.ts`'s `trimRow` exactly, which means **not** truncating
- * `attrs2` even though the other three are truncated.
- *
- * That asymmetry is real and load-bearing here: the vendored snapshot leaves
- * attrs2 at full row width while trimming fg/bg/flags to the trimmed string.
- * Truncating it here too produced arrays that agreed on every value and
- * differed only in length, which reads as a color/attribute divergence and
- * sends you looking in the wrong place entirely.
+ * Mirrors `gridSnapshot.ts`'s `trimRow` exactly, including not truncating
+ * `attrs2` (the vendored snapshot leaves it at full width), so lengths match.
  */
 function trimRow(line: string, fg: number[], bg: number[], flags: number[]) {
   const trimmed = line.replace(/\s+$/, '')

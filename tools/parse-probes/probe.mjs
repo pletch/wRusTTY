@@ -78,10 +78,8 @@ function run(key, iters) {
 
   for (let i = 0; i < 3; i++) write() // warm up TurboFan
 
-  // Best of three, not a single pass. A single pass here once reported long
-  // SGR as ~10% slower on a new core and it was noise: the probes share one
-  // process, so whichever runs last inherits the heap the earlier ones grew.
-  // Repeating the same probe alone showed the two builds overlapping.
+  // Best of three: probes share a process, so a single pass inherits the heap
+  // earlier probes grew.
   let secs = Infinity
   for (let r = 0; r < 3; r++) {
     const t0 = process.hrtime.bigint()
@@ -106,7 +104,6 @@ function run(key, iters) {
 
 console.log(`wasm: ${WASM}`)
 console.log(`iters: ${ITERS} x 2 MB\n`)
-// Comma-separated, because probe *order* turned out to matter: a build can
-// measure identically in isolation and 7% slower when something else ran first.
+// Comma-separated, since probe order can shift results by several percent.
 for (const k of ONLY === 'all' ? Object.keys(PROBES) : ONLY.split(',')) run(k, ITERS)
 console.log(`\nlinear memory: ${(mem.buffer.byteLength / 1024 / 1024).toFixed(1)} MB`)

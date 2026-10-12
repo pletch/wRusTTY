@@ -1,33 +1,14 @@
 /**
- * The key-encoding half of ghostty `main`'s C API, as constants.
- *
- * Sibling to `abi.ts`, kept separate because it describes a different object:
- * `abi.ts` is the terminal and its screen, this is the encoder that turns key
- * events into the bytes a program expects. Both are transcribed from the
- * headers at the pin in `../vendorPin.ts` — here,
- * `include/ghostty/vt/key/{event,encoder}.h`.
- *
- * The encoder is the reason this app does not own a keyboard table at all.
- * Legacy xterm encoding, xterm's `modifyOtherKeys`, and the Kitty keyboard
- * protocol are three overlapping specs whose differences are exactly the
- * cases nobody thinks to test — Ctrl+Shift+letter, Alt on a key that has no
- * unmodified byte, what a function key does once an application has pushed
- * flags. Ghostty implements all three, against its own test suite, and
- * `setopt_from_terminal` keeps the choice in step with the modes the far end
- * has actually set. See `../KeyEncoder.ts` for the wrapper.
+ * The key-encoding half of ghostty `main`'s C API, as constants. Separate
+ * from `abi.ts` (the terminal and screen); transcribed from
+ * `include/ghostty/vt/key/{event,encoder}.h` at the pin in `../vendorPin.ts`.
+ * See `../KeyEncoder.ts` for the wrapper.
  */
 
 /**
- * Physical keys, in header order — the index *is* the `GhosttyKey` value.
- *
- * These are W3C UI Events `code` values, which is the same vocabulary the DOM
- * hands us on `KeyboardEvent.code`, so the mapping is a lookup rather than a
- * translation. They are layout-*independent*: `KeyQ` is the physical key in
- * that position whatever it prints, and the character it produces travels
- * separately as UTF-8 text.
- *
- * `Unidentified` at index 0 is upstream's own name for "no key", and is the
- * value a `code` we don't recognize maps to.
+ * Physical keys in header order; the index is the `GhosttyKey` value. These
+ * are W3C `code` values, the same vocabulary as `KeyboardEvent.code`, and
+ * layout-independent. `Unidentified` (0) is what an unknown `code` maps to.
  */
 export const KEY_CODES: readonly string[] = [
   'Unidentified', 'Backquote', 'Backslash', 'BracketLeft', 'BracketRight', 'Comma', 'Digit0',
@@ -62,18 +43,10 @@ export const KEY_UNIDENTIFIED = 0
 const KEY_BY_CODE = new Map(KEY_CODES.map((code, value) => [code, value]))
 
 /**
- * The numeric keypad with Num Lock **off**, where `code` alone is not enough.
- *
- * Upstream has a distinct key for each of these — `NumpadEnd` is not `End` and
- * not `Numpad1` — because a terminal encodes them differently under
- * application keypad mode. Every other platform Ghostty runs on reports which
- * one it is. The DOM does not: `code` stays `Numpad1` whatever Num Lock is
- * doing, and the only thing that changes is `key`, which becomes the
- * navigation name. So the pair is what identifies the key here.
- *
- * Getting this wrong is silent and total: without it the encoder is handed
- * `Numpad1`, decides that is a digit key that produced no digit, and returns
- * nothing — a numpad that does nothing at all with Num Lock off.
+ * The numeric keypad with Num Lock off. Upstream has a distinct key for each
+ * (`NumpadEnd` is neither `End` nor `Numpad1`), but the DOM keeps `code` at
+ * `Numpad1` and changes only `key`, so the pair identifies it. Without this,
+ * the keypad does nothing with Num Lock off.
  */
 const NUMPAD_NAV: Readonly<Record<string, string>> = {
   Insert: 'NumpadInsert',
@@ -90,22 +63,14 @@ const NUMPAD_NAV: Readonly<Record<string, string>> = {
 }
 
 /**
- * The `code` a `key` name implies, for events that carry no `code` at all.
+ * The `code` a `key` name implies, for events with `code: ""`. Chromium
+ * derives `code` from the scan code, so injected keys (`SendInput` without
+ * `KEYEVENTF_SCANCODE`, on-screen keyboards, some remote-desktop and KVM
+ * stacks) have none.
  *
- * Chromium derives `code` from the hardware scan code, so an event with no
- * scan code behind it arrives with `code: ""`. That is not hypothetical and it
- * is not only automation (`SendInput` without `KEYEVENTF_SCANCODE`, which is
- * what caught this): on-screen and virtual keyboards, and some remote-desktop
- * and KVM stacks, inject virtual keys the same way. The table this file
- * replaced keyed off `key`, so those sources used to work — without a fallback
- * the swap would have made every control key on them dead, silently.
- *
- * Deliberately narrow. For every non-printable key the W3C `code` and `key`
- * names are the same string (`ArrowUp`, `Enter`, `F5`), so the main table
- * already answers those; this only has to cover letters and digits, where
- * `key` is the character and `code` is `KeyA`/`Digit1`. Punctuation is left
- * out on purpose — `/` is `Slash` only on a US layout, and guessing wrong
- * sends a different key rather than none.
+ * Only letters and digits: for non-printable keys `code` and `key` already
+ * match (`ArrowUp`, `F5`). Punctuation is layout-dependent, and guessing wrong
+ * sends a different key.
  */
 function codeFromKeyName(keyName: string): string | null {
   if (keyName.length !== 1) return null
@@ -116,11 +81,8 @@ function codeFromKeyName(keyName: string): string | null {
 }
 
 /**
- * The `GhosttyKey` for a DOM key event, or `KEY_UNIDENTIFIED`.
- *
- * A `code` we don't know is not an error worth reporting: the table covers
- * every key upstream has a name for, and what is left is a vendor key on a
- * gaming keyboard. Encoding it as "unidentified" is how it produces nothing.
+ * The `GhosttyKey` for a DOM key event, or `KEY_UNIDENTIFIED` (a vendor key
+ * upstream has no name for), which produces nothing.
  */
 export function keyFor(code: string, keyName: string): number {
   if (code.startsWith('Numpad')) {
@@ -129,15 +91,14 @@ export function keyFor(code: string, keyName: string): number {
   }
   const byCode = KEY_BY_CODE.get(code)
   if (byCode !== undefined) return byCode
-  // Only once `code` has failed, so a keyboard that reports one is never
-  // second-guessed by a layout assumption.
+  // Only after `code` fails, so a reported code is never second-guessed.
   const implied = codeFromKeyName(keyName)
   if (implied !== null) return KEY_BY_CODE.get(implied) ?? KEY_UNIDENTIFIED
   return KEY_BY_CODE.get(keyName) ?? KEY_UNIDENTIFIED
 }
 
-/** `GhosttyMods`, a `uint16_t`. The side bits above bit 5 are deliberately
- *  unused here — see `../KeyEncoder.ts`. */
+/** `GhosttyMods`, a `uint16_t`. The side bits above bit 5 are unused (see
+ *  `../KeyEncoder.ts`). */
 export const MODS_SHIFT = 1 << 0
 export const MODS_CTRL = 1 << 1
 export const MODS_ALT = 1 << 2
@@ -151,9 +112,8 @@ export const KEY_ACTION_PRESS = 1
 export const KEY_ACTION_REPEAT = 2
 
 /**
- * `GhosttyKeyEncoderOption`. Every one of these is set for us by
- * `ghostty_key_encoder_setopt_from_terminal` except `MACOS_OPTION_AS_ALT`,
- * which has no terminal state behind it and no meaning on Windows.
+ * `GhosttyKeyEncoderOption`. `setopt_from_terminal` sets all of these except
+ * `MACOS_OPTION_AS_ALT`, which has no meaning on Windows.
  */
 export const KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION = 0
 export const KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION = 1
@@ -165,10 +125,8 @@ export const KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT = 6
 export const KEY_ENCODER_OPT_BACKARROW_KEY_MODE = 7
 
 /**
- * `GhosttyKittyKeyFlags`, the progressive-enhancement bits an application
- * pushes with `CSI > flags u`. Read from the terminal rather than chosen here;
- * they are named because the status of a pane's keyboard is worth being able
- * to inspect and test against.
+ * `GhosttyKittyKeyFlags`, the bits an application pushes with `CSI > flags u`.
+ * Read from the terminal; named for inspection and tests.
  */
 export const KITTY_KEY_DISABLED = 0
 export const KITTY_KEY_DISAMBIGUATE = 1 << 0

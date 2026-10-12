@@ -40,13 +40,9 @@ import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 
 /**
- * A request to show a particular place: a directory, and optionally one entry
- * in it to pick out. Made by Ctrl+clicking a path in the terminal, already
- * resolved and looked up, so the panel only has to go there.
- *
- * `nonce` is what makes a second click on the same path a second request: the
- * user may have browsed away in between, and clicking it again should bring
- * them back.
+ * A request to show a directory, and optionally pick out one entry in it, from
+ * a Ctrl+clicked path (already resolved). `nonce` makes a repeat click a new
+ * request.
  */
 export interface FilesReveal {
   dir: string
@@ -57,27 +53,16 @@ export interface FilesReveal {
 interface Props {
   sessionId: string
   /**
-   * Where to open, if the host has reported a working directory.
-   *
-   * The same directory a file dropped on this pane would land in, and for the
-   * same reason: it is where the user believes they are. Opening at the remote
-   * home instead meant the panel and the drop disagreed about "here" — you
-   * could drop a file onto a pane sitting in `/etc/nginx`, open the panel to
-   * check it arrived, and be looking at `/home/tim`.
-   *
-   * May be `~`-relative — it can come from a window title, and bash prompts
-   * render the home directory that way. Resolved on open, since SFTP will not.
-   *
-   * Null when there is nothing to go on at all, which falls back to the remote
-   * home. See `startDirFor` for where it comes from.
+   * Where to open: the host's reported working directory, the same place a
+   * dropped file would land. May be `~`-relative (it can come from a window
+   * title) and is expanded on open. Null falls back to the remote home. See
+   * `startDirFor`.
    */
   startDir: string | null
-  /** Where a clicked path asked the panel to go, or null. Wins over `startDir`
-   *  when the panel opens because of it, and moves an open panel when it
-   *  changes. */
+  /** Where a clicked path asked the panel to go, or null. Wins over `startDir`,
+   *  and moves an open panel when it changes. */
   reveal: FilesReveal | null
-  /** The `externalEditor` setting, passed through to every edit this panel
-   *  opens. Empty means the OS handler, which cannot report a close. */
+  /** The `externalEditor` setting; empty means the OS handler. */
   editorCommand: string
   onClose: () => void
 }
@@ -94,25 +79,19 @@ function join(dir: string, name: string): string {
   return `${dir}/${name}`
 }
 
-/** The last path segment, whichever separator the OS used. A picked local path
- *  is the only place this panel sees a Windows-shaped path. */
+/** The last path segment, with either separator (picked local paths may be
+ *  Windows-shaped). */
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path
 }
 
-/** A transfer this panel started, in either direction.
- *
- * `id` is null only for the moment between asking for a transfer and being told
- * its id — short, but long enough to click the cancel button in, which is why
- * the row renders before the id exists rather than after. */
+/** A transfer this panel started, in either direction. The row renders before
+ * the backend assigns its id so it can be canceled immediately; canceling
+ * before the id arrives is a no-op. */
 interface Transfer {
   /**
-   * This row's own identity, assigned when it is created.
-   *
-   * Separate from `id` because a row exists before the backend has given it
-   * one, and "the pending row" stops being a unique description the moment two
-   * transfers are started in quick succession — both would answer to it, and a
-   * single `transferStarted` would stamp its id onto both.
+   * The row's own identity. Separate from `id` because two rows can both be
+   * waiting for an id at once.
    */
   key: string
   /** The backend's transfer id, once it has one. */
@@ -121,70 +100,45 @@ interface Transfer {
   direction: 'up' | 'down'
   transferred: number
   total: number
-  /** Which file a folder transfer is on. Absent for a single file, which is
-   *  already named by the row itself. */
+  /** Which file a folder transfer is on; absent for a single file. */
   file?: { name: string; index: number; count: number }
   /**
-   * Runs this same transfer again with resume on.
-   *
-   * Held from the moment the transfer starts, because by the time it fails the
-   * arguments that built it are long out of scope. A failed transfer used to
-   * vanish into a toast, which for a folder meant the only offer after dying on
-   * file 400 of 500 was to set the whole thing up again from the context menu.
+   * Runs this transfer again with resume on. Captured at start, since the
+   * arguments are gone by the time it fails.
    */
   restart: () => void
-  /** The error, once there is one. The row stays on screen holding it. */
+  /** The error, once there is one; the row stays to offer Retry. */
   failed?: string
   /**
-   * The connection went away and this transfer is waiting for it.
-   *
-   * Deliberately separate from `failed`, because the two ask the user for
-   * opposite things. A failure wants them to do something — free some disk,
-   * fix a permission, press Retry. This wants them to do nothing at all: the
-   * reconnect is already running and the transfer picks up on its own. Showing
-   * it as failed would send someone to fix what is about to fix itself, and a
-   * Retry pressed during the outage only fails again.
+   * The connection dropped and the transfer is waiting to resume. Separate from
+   * `failed`: nothing is needed from the user.
    */
   interrupted?: boolean
 }
 
-// A row is created with `id: null` and gets its real one a round trip later.
-// The cancel button has to exist inside that gap — otherwise the first thing a
-// user does with a transfer started by mistake is discover they cannot stop it
-// yet — so the row renders throughout, and canceling before the id lands is a
-// no-op rather than an error.
-
 export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose }: Props) {
-  // Rendered only while open, so it is always dismissable while mounted.
+  // Rendered only while open.
   useDismissable(true, onClose, { within: '[data-files-panel], [data-files-toggle]' })
   const confirm = useConfirm()
-  // The channel's handler is built once and would otherwise hold the first
-  // render's `confirm` forever — the same reason Terminal.tsx keeps one.
+  // The channel's handler is built once; read `confirm` through a ref.
   const confirmRef = useRef(confirm)
   confirmRef.current = confirm
   const [cwd, setCwd] = useState<string | null>(null)
   const [entries, setEntries] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // The entry a clicked path pointed at, picked out until the listing changes.
+  // The entry a clicked path pointed at, until the listing changes.
   const [selected, setSelected] = useState<string | null>(null)
-  // The reveal already acted on, so a re-render with the same one does not
-  // yank the listing back after the user has browsed away from it.
+  // The reveal already acted on, so re-renders don't yank the listing back.
   const seenReveal = useRef<number | null>(reveal?.nonce ?? null)
   const selectedRef = useRef<HTMLLIElement | null>(null)
-  // remotePath -> editId. Seeded from the backend on mount (see below) rather
-  // than only from what this panel instance happened to open, because watches
-  // outlive the panel: without that, closing and reopening the panel loses
-  // every marker while the watches keep running and keep uploading on save.
+  // remotePath -> editId. Seeded from the backend on mount, since watches
+  // outlive the panel.
   const [activeEdits, setActiveEdits] = useState<Record<string, string>>({})
-  // Which of those edits has a root helper running behind it, by remote path.
-  // Separate from `activeEdits` rather than folded into it so every existing
-  // read of "is this watched" keeps working unchanged — elevation is an extra
-  // fact about a watch, not a different kind of one.
+  // Which watched files have a root helper, by remote path.
   const [elevatedEdits, setElevatedEdits] = useState<Record<string, boolean>>({})
-  // Who the host says we are, asked once per session. Null until it answers,
-  // and null forever on a host that will not — which the prediction reads as
-  // "do not guess" rather than as "denied".
+  // Who the host says we are, asked once per session. Null means "don't
+  // guess".
   const [identity, setIdentity] = useState<RemoteIdentity | null>(null)
   const [sudoPrompt, setSudoPrompt] = useState<{
     requestId: string
@@ -192,45 +146,29 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     retry: boolean
   } | null>(null)
   const [menu, setMenu] = useState<{ entry: RemoteEntry; x: number; y: number } | null>(null)
-  // A list, not one: the backend always allowed concurrent transfers — the map
-  // was there from the start — and only this row's singularity stopped the panel
-  // offering them. A folder copy can run for minutes, and refusing to let
-  // anything else happen meanwhile was the wrong trade.
+  // Concurrent transfers; a folder copy can run for minutes.
   const [transfers, setTransfers] = useState<Transfer[]>([])
-  // The one inline text field the panel ever shows: renaming an existing entry,
-  // or naming a new directory. One at a time, because it is one field — and
-  // because two open at once would leave the user unsure which Enter they were
-  // pressing.
+  // The panel's one inline text field: rename, chmod or a new directory.
   const [naming, setNaming] = useState<
     | { kind: 'rename'; original: string; draft: string }
     | { kind: 'chmod'; original: string; draft: string }
     | { kind: 'mkdir'; draft: string }
     | null
   >(null)
-  // Read by `commitNaming` instead of the state it mirrors. The field commits
-  // on blur, and a successful Enter clears it — so the blur that follows the
-  // field being torn down would otherwise submit a second time against the
-  // render's stale `naming`, and the user would see "already exists" for the
-  // rename that had just worked.
+  // Read by `commitNaming`: the blur after a successful Enter would otherwise
+  // submit again against stale state.
   const namingRef = useRef<typeof naming>(null)
   namingRef.current = naming
   const channelRef = useRef<Channel<SftpEvent> | null>(null)
-  // Read inside the channel callback, which is created once and would otherwise
-  // close over the first render's `cwd` forever — a download finishing would
-  // then refresh whichever directory the panel opened on.
+  // Read inside the once-built channel callback.
   const cwdRef = useRef<string | null>(null)
   cwdRef.current = cwd
-  // Same reason as `cwdRef`: the channel callback is built once and would
-  // otherwise ask the first render whether a file is elevated — and answer
-  // "no" forever, offering to elevate a file that already is.
   const elevatedRef = useRef<Record<string, boolean>>({})
   elevatedRef.current = elevatedEdits
-  // Row identities. A counter rather than a random id: it only has to be
-  // unique within this panel's lifetime, and a counter is reproducible in a
-  // test where a random one is not.
+  // Row keys; a counter is unique enough and reproducible in tests.
   const nextKey = useRef(0)
 
-  /** ` — root:root`, ` — 0:0`, or nothing at all. */
+  /** ` — root:root`, ` — 0:0`, or nothing. */
   function describeOwner(entry: RemoteEntry): string {
     const owner = entry.owner ?? (entry.uid !== null ? String(entry.uid) : null)
     const group = entry.group ?? (entry.gid !== null ? String(entry.gid) : null)
@@ -243,17 +181,13 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     const channel = new Channel<SftpEvent>()
     channel.onmessage = (event) => {
       switch (event.type) {
-        // An edit being saved: no progress, nothing to cancel.
+        // Saving an edit: no progress, nothing to cancel.
         case 'uploaded':
           toast.success(`Saved ${basename(event.remotePath)}`)
           break
         case 'uploadFailed': {
-          // The ordinary shape of this problem, and the reason the offer lives
-          // here rather than only on open: a file under `/etc` is usually
-          // readable by anyone and writable only by root, so opening it worked
-          // and it is the save — minutes and several edits later — that is
-          // refused. Nothing local has been touched, so accepting costs the
-          // user nothing they have typed.
+          // Typical for `/etc`: readable to all, writable only by root, so the
+          // save is what's refused. Offer to elevate; local edits are untouched.
           if (isPermissionDenied(event.error) && !elevatedRef.current[event.remotePath]) {
             void confirmRef
               .current({
@@ -273,10 +207,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 try {
                   await sftp.elevateEdit(event.editId, getChannel())
                   setElevatedEdits((prev) => ({ ...prev, [event.remotePath]: true }))
-                  // A separate call on purpose: the save that follows runs the
-                  // same conflict check as any other, so elevating cannot
-                  // become a way past a warning that someone else changed the
-                  // file underneath this edit.
+                  // Save separately so the conflict check still runs.
                   await sftp.saveEdit(event.editId, false, getChannel())
                 } catch (err) {
                   toast.error(String(err))
@@ -289,11 +220,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         }
         case 'editorExited':
           if (event.stillWatching) {
-            // The command returned before the user could plausibly have
-            // finished, which means it handed the file off rather than waiting.
-            // Said plainly and with the fix in it, because the symptom
-            // otherwise is "the chip never goes away" and nothing points at the
-            // setting.
+            // The command returned too fast, handing the file off instead of
+            // waiting. Point at the fix.
             toast.info(
               `${basename(event.remotePath)} is still being watched — your editor command ` +
                 `returned immediately. Add its wait flag (for example "code --wait").`,
@@ -305,10 +233,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
             delete next[event.remotePath]
             return next
           })
-          // The watch ending is the helper ending: the backend drops the edit,
-          // which closes the channel it was running on. Clearing the marker
-          // here keeps the panel from claiming a privilege that is already
-          // gone.
+          // The watch ending also ends the helper.
           setElevatedEdits((prev) => {
             const next = { ...prev }
             delete next[event.remotePath]
@@ -317,9 +242,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
           toast.info(`Finished editing ${basename(event.remotePath)}`)
           break
         case 'uploadConflict': {
-          // Nothing has been written at this point — the save stopped. So the
-          // dialog is offering to *make* the change, not to undo one, and the
-          // safe answer is the one you get by dismissing it.
+          // Nothing was written; dismissing is the safe answer.
           const when = event.remoteModified
             ? new Date(event.remoteModified * 1000).toLocaleString()
             : null
@@ -349,14 +272,11 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
             retry: event.retry,
           })
           break
-        // An explicit transfer. Only the backend knows the total for these — a
-        // download's from `stat` or the tree walk, an upload's from the file
-        // or tree itself — and `transferStarted` is also where a row stops
-        // being `PENDING` and takes its real id.
+        // An explicit transfer. `transferStarted` carries the total and assigns
+        // the row its id.
         case 'transferStarted': {
-          // Claims the *first* row still waiting for an id, in start order. The
-          // command sends this before it returns, so the row it belongs to
-          // normally has no id yet and cannot be found by one.
+          // Claims the first row still waiting for an id; this arrives before the
+          // command returns.
           let claimed = false
           setTransfers((list) =>
             list.map((t) => {
@@ -399,9 +319,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
             )
             return list.filter((t) => t.id !== event.transferId)
           })
-          // An upload changed the directory being shown; a download didn't, but
-          // reloading costs one listing and keeps the size column honest if the
-          // file was being written while it was read.
+          // Refresh the listing (also keeps sizes current after a download).
           if (cwdRef.current) void load(cwdRef.current)
           break
         case 'transferCancelled':
@@ -410,14 +328,11 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
             toast.info(`${stopped?.direction === 'down' ? 'Download' : 'Upload'} canceled`)
             return list.filter((t) => t.id !== event.transferId)
           })
-          // A canceled folder transfer leaves what it already copied, so the
-          // listing is stale in exactly the case the user most wants to check.
+          // A canceled folder transfer leaves what it copied.
           if (cwdRef.current) void load(cwdRef.current)
           break
         case 'transferFailed':
-          // Kept on screen rather than removed. The error names the file it got
-          // to, which for a folder is the whole difference between "it failed"
-          // and "it failed on this one" — and the row is where Retry lives.
+          // Kept on screen with the error (which names the file) and Retry.
           setTransfers((list) =>
             list.map((t) =>
               t.id === event.transferId ? { ...t, failed: event.error, interrupted: false } : t,
@@ -430,10 +345,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
           setTransfers((list) =>
             list.map((t) => (t.id === event.transferId ? { ...t, interrupted: true } : t)),
           )
-          // No toast. The pane behind this is already saying the connection
-          // dropped and counting down to the next attempt; a second notice
-          // about the same event, for something that needs nothing from the
-          // user, is noise on top of the news they already have.
+          // No toast: the pane already shows the dropped connection.
           break
         case 'transferResumed':
           setTransfers((list) =>
@@ -449,12 +361,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
   }
 
   /**
-   * Lists `path` and shows it, reporting whether it worked.
-   *
-   * `quiet` suppresses the error banner for an attempt the caller intends to
-   * recover from — opening at a reported directory that may be stale. Showing
-   * "no such directory" and *then* silently succeeding somewhere else would be
-   * the worst of both.
+   * Lists `path` and shows it, returning whether it worked. `quiet` suppresses
+   * the error banner for attempts the caller will recover from.
    */
   async function load(
     path: string,
@@ -482,30 +390,20 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
 
   useEffect(() => {
     let cancelled = false
-    // `startDir` is read once, at mount. Following it afterward would yank the
-    // listing out from under someone who had navigated elsewhere in the panel,
-    // every time they ran `cd` in the terminal behind it — the panel is a place
-    // you browse, not a mirror of the prompt.
+    // `startDir` is read once, at mount; the panel doesn't follow `cd`.
     const openAt = async () => {
       let home: string | null = null
-      // A clicked path is already absolute and already known to exist; it only
-      // falls through to the ordinary start if it vanished in between.
+      // A clicked path is known to exist; fall through only if it vanished.
       if (reveal && (await load(reveal.dir, { quiet: true, select: reveal.select }))) return
       if (cancelled) return
       let target = startDir
-      // A `~` has to be resolved before it is sent: SFTP has no tilde
-      // expansion, so `~/src` would ask for a directory literally called `~`.
-      // Bash prompts render the home directory that way, so this is the common
-      // case for exactly the hosts the title guess exists to serve.
+      // SFTP has no tilde expansion, so resolve `~` first.
       if (target?.startsWith('~')) {
         home = await sftp.canonicalize(sessionId, '.')
         if (cancelled) return
         target = expandHome(target, home)
       }
-      // Aimed, but not guaranteed: the host may have moved on, the directory
-      // may be gone, and a title-derived guess may never have been a directory
-      // at all. Falling back beats opening on an error — the panel still works,
-      // just not where it was pointed.
+      // The directory may be stale or not a directory; fall back to home.
       if (target && (await load(target, { quiet: true }))) return
       if (cancelled) return
       home ??= await sftp.canonicalize(sessionId, '.')
@@ -515,10 +413,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     openAt().catch((err) => {
       if (!cancelled) setError(String(err))
     })
-    // Adopt any watches already running for this session — ones this panel
-    // started before it was last closed, which are still live and still
-    // uploading. Best-effort: a failure here costs the markers, not the
-    // directory listing, so it shouldn't surface an error over the panel.
+    // Adopt watches already running for this session. Best-effort.
     sftp
       .listEdits(sessionId)
       .then((edits) => {
@@ -529,8 +424,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         )
       })
       .catch(() => {})
-    // Best-effort, like the watch adoption above: a host that will not run
-    // `id` costs the prediction, not the panel.
+    // Best-effort: without `id` we just don't predict.
     sftp
       .remoteIdentity(sessionId)
       .then((who) => {
@@ -543,7 +437,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
-  // A path clicked while the panel is already open moves it.
+  // A path clicked while the panel is open moves it.
   useEffect(() => {
     if (!reveal || reveal.nonce === seenReveal.current) return
     seenReveal.current = reveal.nonce
@@ -551,24 +445,20 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal])
 
-  // Brought into view once it is in the listing; a directory of a few hundred
-  // entries would otherwise pick out a row nobody can see.
+  // Scroll the selected entry into view.
   useEffect(() => {
     if (selected) selectedRef.current?.scrollIntoView({ block: 'nearest' })
   }, [selected, entries])
 
-  /** Starting a transfer takes three steps, and every caller does all three:
-   *  show the row before the id exists, give it the id when it arrives, and take
-   *  it away again if the call never got that far. Keyed by the row's own key,
-   *  so two transfers started together cannot be confused for each other. */
+  /** Transfer row helpers: add before the id exists, claim it when it arrives,
+   *  drop it if the call failed. Keyed by row key. */
   function addTransfer(t: Omit<Transfer, 'key'>): string {
     const key = `t${nextKey.current++}`
     setTransfers((list) => [...list, { ...t, key }])
     return key
   }
   function claimTransfer(key: string, id: string) {
-    // `transferStarted` usually wins the race and has already set this; the
-    // guard is for a transfer that fails before ever sending one.
+    // `transferStarted` usually sets this first.
     setTransfers((list) => list.map((t) => (t.key === key ? { ...t, id: t.id ?? id } : t)))
   }
   function dropTransfer(key: string) {
@@ -582,15 +472,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       load(path)
       return
     }
-    // Asked before the attempt, not after it. When the host has already told us
-    // who we are and the mode says this edit would be refused, making the user
-    // watch it fail first teaches nobody anything — the sudo dialog is what
-    // they need, and it should come up on the click.
-    //
-    // Only ever a *definite* refusal routes this way; see `needsRootToEdit`.
-    // Everything uncertain still tries the ordinary way, and the offers on the
-    // failure paths below are what catch an ACL or a read-only mount that the
-    // mode bits could not have predicted.
+    // When the mode bits say the edit would definitely be refused, go straight
+    // to sudo (see `needsRootToEdit`). Uncertain cases try normally, and the
+    // failure paths below offer root for ACLs or read-only mounts.
     if (needsRootToEdit(entry, identity)) {
       await openElevated(path)
       return
@@ -600,11 +484,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel())
       setActiveEdits((prev) => ({ ...prev, [path]: editId }))
     } catch (err) {
-      // Asked only once the host has actually refused, never predicted from the
-      // mode bits. The panel knows the connected user's name but not their
-      // groups, so a prediction is wrong often enough to be noise — and an
-      // offer of root that turns out to have been unnecessary is worse than
-      // noise.
+      // Offer root only once the host actually refused.
       if (!isPermissionDenied(err)) {
         toast.error(String(err))
         return
@@ -627,37 +507,20 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
   }
 
   /**
-   * Opens a file as root without trying the ordinary way first.
-   *
-   * The context menu's route, and the answer to "why did it make me fail
-   * before it would offer": when the user has *said* they want root, the
-   * refused attempt teaches nobody anything and the sudo dialog should come up
-   * on the click. The failure paths still offer it too, because most people
-   * find out a file needs root by being told so.
-   *
-   * No confirmation in front of it. Choosing "Open as root…" from a menu is
-   * already the deliberate act a confirmation exists to obtain, and the sudo
-   * dialog itself says what is about to happen before any password is typed.
+   * Opens a file as root without trying the ordinary way first (the context
+   * menu's "Open as root…", and predicted refusals). No confirmation: the choice
+   * is already deliberate, and the sudo dialog explains itself.
    */
   async function openElevated(path: string) {
     try {
-      // Said before anything blocks, and deliberately distinct from the
-      // ordinary "Opening x" — this is the one line that tells the user the
-      // elevated path was taken at all, before sudo is asked anything and
-      // before any dialog can appear.
+      // Distinct from "Opening x", so it's clear the elevated path was taken.
       toast.info(`Opening ${basename(path)} as root`)
       const editId = await sftp.editFile(sessionId, path, editorCommand, getChannel(), true)
       setActiveEdits((prev) => ({ ...prev, [path]: editId }))
       setElevatedEdits((prev) => ({ ...prev, [path]: true }))
     } catch (err) {
-      // Routing a file to sudo must not cost the user the ordinary open they
-      // would have had. Before the panel could predict anything, a file like
-      // this opened fine and failed on save — worse in most ways, but not in
-      // this one: the file was at least on screen. So when elevation fails,
-      // offer exactly that.
-      //
-      // Not automatic. An edit that cannot be saved is a trap, and walking
-      // into it should be a decision — the confirmation says so plainly.
+      // If elevation fails, offer the ordinary read-only-in-practice open, with
+      // a confirmation since saving will be refused.
       const ok = await confirmRef.current({
         title: `Could not open ${basename(path)} as root`,
         body:
@@ -679,19 +542,14 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     }
   }
 
-  /** Save a remote file somewhere the user picks.
-   *
-   * The dialog is what makes this route better than dragging a file out of the
-   * panel would be: it hands over a real local path, so the bytes never cross
-   * IPC — the backend reads the SFTP stream and writes straight to disk. */
+  /** Save a remote file to a path the user picks; the backend streams straight
+   * to disk. */
   async function download(entry: RemoteEntry) {
     if (!cwd) return
     const remotePath = join(cwd, entry.name)
     let localPath: string | null
     try {
-      // A folder needs somewhere to go, not a name to be saved as — so the
-      // dialog asks for the *parent* and the folder keeps its own name inside
-      // it, which is what every other copy of a directory does.
+      // A folder: pick the parent, and the folder keeps its own name.
       localPath = entry.isDir
         ? await openDialog({ directory: true, title: `Copy ${entry.name} into…` }).then((dir) =>
             typeof dir === 'string' ? `${dir}/${safeSuggestedName(entry.name)}` : null,
@@ -701,18 +559,15 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       toast.error(`Could not open the dialog: ${String(err)}`)
       return
     }
-    // Dismissed. Not an error and not worth a toast — the user changed their
-    // mind, and they know it.
+    // Dismissed.
     if (!localPath) return
 
-    // `entry.size` is the listing's and is 0 for a directory; the backend stats
-    // or walks and sends the real total as `transferStarted`.
+    // The backend sends the real total (a directory lists as 0).
     void startDownload(remotePath, localPath, entry.isDir ? 0 : entry.size, false)
   }
 
-  /** Starts (or restarts) one download. `resume` is false the first time and
-   *  true from the Retry button — a fresh copy should copy everything, a retry
-   *  should not redo what already landed. */
+  /** Starts (or restarts) one download. `resume` is true from the Retry button,
+   *  so a retry skips what already landed. */
   async function startDownload(
     remotePath: string,
     localPath: string,
@@ -736,12 +591,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     }
   }
 
-  /** Upload into the directory being shown, from a picker.
-   *
-   * The route for anyone who would rather not drag — and the cheaper one, since
-   * a picked path never puts its bytes through the webview. It is also the only
-   * route that can send a *folder*: a drop hands over a `File` with no path, so
-   * there is nothing to walk. */
+  /** Upload into the current directory from a picker. Picked paths never cross
+   * the webview, and only this route can send a folder (a drop has no path). */
   async function uploadHere(directory: boolean) {
     if (!cwd) return
     let picked: string | string[] | null
@@ -760,10 +611,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       if (await sftp.exists(sessionId, remotePath)) {
         const replace = await confirm({
           title: directory ? `Merge into ${name}?` : `Replace ${name}?`,
-          // A folder is not replaced, it is merged into — files with the same
-          // name are overwritten and everything else is left where it is. That
-          // is a materially different promise from the single-file one, and the
-          // dialog has to make it rather than imply the other.
+          // A folder is merged into, not replaced; say so.
           body: directory
             ? `${remotePath} already exists. Files with the same names are replaced; anything else already in it is left alone.`
             : `${remotePath} already exists. The existing file is left alone unless the whole upload succeeds.`,
@@ -812,8 +660,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     }
   }
 
-  /** Rename or mkdir, whichever field is open. Both end the same way: reload
-   *  the directory, which is the only thing that proves it worked. */
+  /** Rename, chmod or mkdir, whichever field is open; reloads on success. */
   async function commitNaming() {
     const current = namingRef.current
     if (!current || !cwd) return
@@ -821,9 +668,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     if (current.kind === 'chmod') {
       const mode = parseOctal(current.draft)
       if (mode === null) {
-        // Left open, and deliberately not "corrected". A field that read `8` as
-        // something would set a permission the user did not ask for, and
-        // `chmod 000` on the wrong remote file is a bad afternoon.
+        // Left open rather than "corrected"; a wrong mode is dangerous.
         toast.error('Permissions must be octal — 755, 644, 1777.')
         return
       }
@@ -850,9 +695,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       toast.error(problem)
       return
     }
-    // Cleared before the await, not after: this is what makes the trailing
-    // blur a no-op, and it is also what stops a slow server turning one Enter
-    // into two renames.
+    // Cleared before the await, so the trailing blur (or a slow server) can't
+    // submit twice.
     namingRef.current = null
     try {
       if (current.kind === 'rename') {
@@ -865,11 +709,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       setNaming(null)
       load(cwd)
     } catch (err) {
-      // Left open on failure — the name is still in the field, and the usual
-      // reason is that something is already called that, which the user fixes
-      // by typing rather than by starting over. The ref has to come back with
-      // it: nothing re-renders on this path, so without this the field would
-      // still be on screen and no longer able to submit.
+      // Left open (usually the name is taken); restore the ref so the field can
+      // submit again.
       namingRef.current = current
       toast.error(String(err))
     }
@@ -883,9 +724,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       toast.error(verdict.reason)
       return
     }
-    // Counted before asking, so the question is specific. "Are you sure" is
-    // worth almost nothing; "this removes 341 files in 27 directories" is worth
-    // a great deal — and only if it is said *before* the answer.
+    // Count first so the confirmation is specific.
     let count: sftp.TreeCount | null = null
     if (entry.isDir) {
       try {
@@ -898,9 +737,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
 
     const ok = await confirm({
       title: `Delete ${entry.name}?`,
-      // Named plainly rather than softened. This is a remote host the user may
-      // not easily get back to, there is no undo, and there is no recycle bin
-      // on the far side.
+      // Plain wording: no undo, no recycle bin.
       body: count
         ? count.files + count.dirs + count.links === 0
           ? `${path} is empty and will be deleted. This cannot be undone.`
@@ -919,8 +756,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       load(cwd)
     } catch (err) {
       toast.error(String(err))
-      // Partial deletes are possible — the walk removes files before
-      // directories — so what is on screen may no longer be what is there.
+      // A partial delete is possible; reload.
       load(cwd)
     }
   }
@@ -950,9 +786,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       delete next[path]
       return next
     })
-    // Said out loud when there was one, because ending the privilege is the
-    // part worth confirming: the root helper on the host is gone, and the
-    // sentence is the user's evidence of it.
+    // Confirm that the root helper ended.
     toast.info(
       wasElevated
         ? `Stopped watching ${basename(path)} — the root helper on the host has ended`
@@ -963,13 +797,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
   const menuItem =
     'flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10 disabled:opacity-30 disabled:hover:bg-transparent'
 
-  /** The inline name field, shared by rename and mkdir.
-   *
-   * `autoFocus` because both are opened by a click somewhere else entirely (a
-   * menu item, a toolbar button) and the user's next act is unambiguously to
-   * type. Blur commits rather than cancels: clicking away from a field you have
-   * just typed a name into reads as "done", and the alternative silently throws
-   * the name away. */
+  /** The inline name field for rename and mkdir. Auto-focused; blur commits
+   * rather than cancels. */
   const nameField = (value: string, onChange: (v: string) => void) => (
     <input
       autoFocus
@@ -977,8 +806,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       onChange={(e) => onChange(e.target.value)}
       onBlur={() => void commitNaming()}
       onKeyDown={(e) => {
-        // Stopped from propagating so Escape reaches this field and not the
-        // panel's own dismiss handler, which would close the whole panel.
+        // Keep Escape from reaching the panel's dismiss handler.
         e.stopPropagation()
         if (e.key === 'Enter') void commitNaming()
         if (e.key === 'Escape') setNaming(null)
@@ -993,10 +821,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100"
       onClick={(e) => {
         e.stopPropagation()
-        // The panel stops the click reaching window, so the menu cannot rely on
-        // an outside-click listener the way the tab strip's does — anywhere
-        // else in the panel has to close it explicitly. Menu items run first
-        // (React dispatches target-first), so their work is already done.
+        // The panel stops clicks reaching window, so close the menu explicitly.
+        // Menu items run first.
         setMenu(null)
       }}
     >
@@ -1063,8 +889,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
           <li className="px-2 py-1.5 text-chrome/40">Empty directory</li>
         )}
         {naming?.kind === 'mkdir' && (
-          // At the top, where the sort would put it anyway — directories sort
-          // first — so the row does not jump when it becomes real.
+          // At the top, where directories sort anyway.
           <li className="flex items-center gap-1.5 rounded px-2 py-1.5">
             <Folder size={12} className="shrink-0 text-sky-400/80" />
             {nameField(naming.draft, (draft) => setNaming({ kind: 'mkdir', draft }))}
@@ -1103,18 +928,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
               </span>
               <span className="flex shrink-0 items-center gap-2 text-chrome/30">
                 {editId && (
-                  // "watching", not "editing", and dismissable by hand —
-                  // because on the default route nothing can tell when the
-                  // editor is closed. The OS hands the file off and returns at
-                  // once, usually to an instance already running, so ending the
-                  // watch on that would mean the second save of a session
-                  // silently not uploading. Shaped as a subscription so it
-                  // reads as "still live, click to end" rather than a status
-                  // stuck on.
-                  //
-                  // With `externalEditor` set the chip clears itself on
-                  // `editorExited`, and this is then a manual override rather
-                  // than the only way out.
+                  // "watching", dismissable by hand: with the OS opener nothing can tell
+                  // when the editor closes. With `externalEditor` set it clears itself on
+                  // `editorExited`.
                   <button
                     onClick={() => stopEditing(path)}
                     title={
@@ -1122,11 +938,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                         ? 'Watching for saves and writing each one as root. A privileged helper is running on the host until you click to stop — which also deletes the local temp copy, so save in your editor first.'
                         : 'Watching for saves and uploading each one. Click to stop — this also deletes the local temp copy, so save in your editor first.'
                     }
-                    // Amber and a shield when the watch is elevated, because
-                    // this chip is the only place a standing privilege on the
-                    // host is visible — and it is also the control that ends
-                    // it. A root watch that looked like every other watch would
-                    // be one nobody thinks to close.
+                    // Amber with a shield when elevated: the only visible sign (and the
+                    // off switch) of a standing root helper.
                     className={`flex items-center gap-1 rounded px-1 py-0.5 transition-colors duration-fast ease-swift hover:bg-chrome/10 ${
                       elevatedEdits[path]
                         ? 'text-amber-400/90 hover:text-amber-300'
@@ -1146,8 +959,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                   </button>
                 )}
                 {naming?.kind === 'chmod' && naming.original === entry.name ? (
-                  // The field takes the place of the column it edits, so the
-                  // before and after are in the same spot.
+                  // Edited in place of the column it changes.
                   <input
                     autoFocus
                     value={naming.draft}
@@ -1167,14 +979,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                   entry.mode !== null && (
                     <span
                       className="font-mono text-chrome/25"
-                      // The octal is what you type into the field and what
-                      // every chmod example is written in; the letters are what
-                      // you can scan a column of. Both, rather than a choice.
-                      // Owner falls back to the numeric id, because the name
-                      // is never there: SFTP v3 carries no owner names, so this
-                      // half of the tooltip has always been blank. `0:0` says
-                      // considerably more than nothing when the question is
-                      // why a file needs root.
+                      // Octal in the tooltip (what you type), letters in the column (what
+                      // you scan). Owner falls back to numeric ids, since SFTP v3 carries no
+                      // names.
                       title={`${formatOctal(entry.mode)}${describeOwner(entry)}`}
                     >
                       {formatMode(entry.mode)}
@@ -1202,8 +1009,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 {t.failed && (
                   <button
                     onClick={() => {
-                      // The failed row goes as the retry's own row arrives, so
-                      // one transfer is never on screen twice.
+                      // Replaced by the retry's own row.
                       dropTransfer(t.key)
                       t.restart()
                     }}
@@ -1215,14 +1021,10 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 )}
                 <button
                   onClick={() => {
-                    // Two jobs, one button, and which one it is depends on
-                    // whether the transfer is still running: cancel it, or
-                    // dismiss the record of one that already stopped.
+                    // Cancel a running transfer, or dismiss a stopped one.
                     if (t.failed) dropTransfer(t.key)
-                    // An interrupted transfer has no live task to cancel — it
-                    // is waiting in the backend — so giving up on it is
-                    // dismissing the row, which also drops it from the queue
-                    // the reconnect would otherwise resume.
+                    // An interrupted transfer is waiting in the backend; canceling drops
+                    // it from the resume queue.
                     else if (t.interrupted && t.id) {
                       void sftp.cancelTransfer(t.id).catch(() => {})
                       dropTransfer(t.key)
@@ -1249,9 +1051,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
               {t.failed ? (
                 <span className="text-red-300/90">{t.failed}</span>
               ) : t.interrupted ? (
-                // Says the byte count is standing still on purpose. Without
-                // this the row is a stalled progress bar, which is the one
-                // thing a progress bar must never be without explanation.
+                // Explains why the progress bar isn't moving.
                 <span className="text-amber-300/80">
                   connection lost — resuming when it comes back (
                   {formatBytes(t.transferred)} so far)
@@ -1263,10 +1063,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                     {t.total > 0 && ` of ${formatBytes(t.total)}`}
                   </span>
                   {t.file && (
-                    // The file *and* the count. Either alone leaves a question:
-                    // the name without "3 of 57" gives no sense of how far along
-                    // it is, and the count without the name gives no sense of
-                    // whether it is stuck.
+                    // Both the count and the name.
                     <span className="min-w-0 truncate text-chrome/25">
                       {t.file.index} of {t.file.count} — {t.file.name}
                     </span>
@@ -1279,10 +1076,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       )}
 
       {menu && (
-        // Fixed to the pointer, like the tab strip's own menu — but rendered
-        // inside the panel's subtree so the panel's own click-away rule (which
-        // matches on `[data-files-panel]`) doesn't read using the menu as
-        // clicking away from the panel.
+        // Fixed to the pointer, but inside the panel's subtree so its
+        // click-away rule doesn't treat the menu as outside.
         <div
           className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
@@ -1292,14 +1087,8 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
             {menu.entry.isDir ? 'Open' : 'Edit'}
           </button>
           {!menu.entry.isDir && needsRootToEdit(menu.entry, identity) && (
-            // Shown only when the mode bits and the host's own answer to `id`
-            // agree that this edit would be refused. On a file the user can
-            // write it would be an offer of privilege they do not need, which
-            // is how an offer of privilege stops being read at all.
-            //
-            // Double-clicking such a file already routes here on its own, so
-            // this is mostly a signpost — it names what is about to happen
-            // before anything happens.
+            // Only when the mode bits and `id` agree the edit would be refused.
+            // Double-click already routes there; this names it up front.
             <button
               className={menuItem}
               onClick={() => cwd && void openElevated(join(cwd, menu.entry.name))}
@@ -1330,8 +1119,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
 
           <div className="my-1 border-t border-chrome/10" />
 
-          {/* The two that change the host, kept below a divider and with the
-              destructive one last and colored. Everything above is a read. */}
+          {/* The host-changing actions below a divider, the destructive one last. */}
           <button
             className={menuItem}
             onClick={() =>
@@ -1352,9 +1140,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
               setNaming({
                 kind: 'chmod',
                 original: menu.entry.name,
-                // Prefilled with what it is now, so the common edit is one
-                // digit rather than four. A server that reported nothing leaves
-                // an empty field rather than a guess at a default.
+                // Prefilled with the current mode; empty if the server reported none.
                 draft: menu.entry.mode !== null ? formatOctal(menu.entry.mode) : '',
               })
             }
@@ -1382,8 +1168,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         </div>
       )}
       {sudoPrompt && (
-        // Keyed by request, so a rejected password gets a fresh, empty dialog
-        // rather than the previous attempt still sitting in the field.
+        // Keyed per request so a retry starts with an empty field.
         <SudoPrompt
           key={sudoPrompt.requestId}
           remotePath={sudoPrompt.remotePath}

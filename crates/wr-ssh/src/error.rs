@@ -6,9 +6,8 @@ pub enum SshError {
     #[error("authentication to {host}:{port} timed out")]
     AuthTimeout { host: String, port: u16 },
 
-    /// A command run on its own `exec` channel produced nothing within its
-    /// budget. Distinct from a short read: a host that accepts the channel and
-    /// then says nothing must not be mistaken for one that answered briefly.
+    /// A command on its own `exec` channel produced nothing within its budget,
+    /// as opposed to answering briefly.
     #[error("the remote command did not finish in time")]
     ExecTimeout,
 
@@ -20,9 +19,8 @@ pub enum SshError {
         source: russh::Error,
     },
 
-    /// The outbound proxy would not, or could not, open the tunnel. Its own
-    /// variant because the fix is on a different machine: nothing about the
-    /// SSH server has been tried yet.
+    /// The outbound proxy wouldn't open the tunnel; the SSH server hasn't been
+    /// tried yet.
     #[error("proxy {proxy} {source}")]
     Proxy {
         proxy: String,
@@ -36,46 +34,34 @@ pub enum SshError {
     #[error("authentication failed")]
     AuthFailed,
 
-    /// The user dismissed an interactive authentication prompt. Distinct from
-    /// `AuthFailed` because nothing was rejected — reporting "authentication
-    /// failed" for a canceled dialog sends people hunting for a wrong
-    /// password that was never sent.
+    /// The user dismissed an interactive prompt. Not `AuthFailed`: nothing was
+    /// rejected.
     #[error("authentication was canceled")]
     AuthCancelled,
 
-    /// The server accepted the interactive exchange but wants another method
-    /// on top of it (SSH's `partial success`). Only keyboard-interactive is
-    /// driven here, so there is nothing further to offer — but this is a
-    /// server policy question, not a bad credential, and says so.
+    /// The server wants another method on top of keyboard-interactive (partial
+    /// success). A server policy question, not a bad credential.
     #[error(
         "the server accepted this credential but requires additional authentication ({remaining})"
     )]
     AuthPartial { remaining: String },
 
-    /// The server refused interactive authentication outright and offers
-    /// nothing this can drive instead. Says what it *will* take, because the
-    /// answer is almost always "switch this session to a key or the agent" and
-    /// a bare "authentication failed" hides that completely.
+    /// The server refused interactive auth and offers nothing drivable; says what
+    /// it will accept (usually a key or the agent).
     #[error("the server refused interactive authentication; it will accept: {remaining}")]
     AuthMethodUnavailable { remaining: String },
 
-    /// The server kept asking without ever accepting or rejecting. Bounded
-    /// rather than trusted: a round trip that always returns another prompt
-    /// would otherwise park the handshake forever, and the per-round timeout
-    /// can't catch it because the server is answering promptly every time.
+    /// The server kept prompting without accepting or rejecting. Bounded, since
+    /// prompt replies keep the per-round timeout from firing.
     #[error("authentication did not finish after {rounds} rounds of prompts")]
     AuthTooManyRounds { rounds: usize },
 
-    /// Distinct from `AuthFailed` because the fix is completely different:
-    /// the server never rejected anything, we couldn't reach an agent or it
-    /// had nothing to offer.
+    /// Not `AuthFailed`: the agent was unreachable or had nothing to offer.
     #[error("{0}")]
     AgentUnavailable(String),
 
-    /// Every key the agent holds was refused. Reports the count because the
-    /// usual cause is not "wrong key" but too many keys — servers cap
-    /// authentication attempts (OpenSSH `MaxAuthTries`, default 6), so a
-    /// well-stocked agent can be cut off before it reaches the right one.
+    /// Every agent key was refused. Reports the count, since the usual cause is
+    /// too many keys for the server's cap (OpenSSH `MaxAuthTries`, default 6).
     #[error(
         "the server rejected all {offered} key(s) offered by the SSH agent — if the agent holds \
          more than a handful, the server may have cut off authentication before reaching the \

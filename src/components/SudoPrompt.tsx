@@ -5,8 +5,8 @@ import { useDismissable } from '../hooks/useDismissable'
 import { WindowDragStrip } from './WindowDragStrip'
 
 interface Props {
-  /** The file this is being asked for. Named, because "enter your password" with
-   *  no object is exactly the prompt people type any password into. */
+  /** The file this is for. Named, since an objectless "enter your password"
+   *  gets any password typed into it. */
   remotePath: string
   /** A password was already tried and rejected. */
   retry: boolean
@@ -15,47 +15,33 @@ interface Props {
 }
 
 /**
- * Asks for the *remote host's* sudo password, to open a file as root.
+ * Asks for the remote host's sudo password, to open a file as root.
  *
- * Deliberately unlike `AuthPrompt` in every respect a glance would pick up on —
- * amber rather than sky, a shield rather than a server, "sudo password" in the
- * heading. The two dialogs ask for different secrets: by the time this one
- * appears the SSH session is long since authenticated, and on a great many
- * hosts the sudo password is a different credential from the one that got the
- * user in. A dialog that looked like the login one would collect the login one.
+ * Visibly unlike `AuthPrompt` (amber, a shield, "sudo password"): the sudo
+ * password often differs from the login credential, and a look-alike dialog
+ * would collect the wrong one. It states that answering starts a privileged
+ * helper that runs while the file is open.
  *
- * It also says what it is about to do, because that is the part the user is
- * actually consenting to. Answering this starts a privileged helper on the host
- * that stays up for as long as the file is open — a fact worth stating in the
- * dialog rather than in a release note.
- *
- * **Rendered through a portal, not in place.** Its only caller is the Files
- * panel, which is a 24rem box floating in the corner of a pane — an
- * `absolute inset-0` overlay inside that is confined to it, sits under the
- * panel's own stacking context, and is subject to the transform its entrance
- * animation applies. A dialog asking for a root password is app-modal or it is
- * nothing.
+ * Rendered through a portal: its caller, the Files panel, is a small
+ * transformed box, and a root password dialog must be app-modal.
  */
 export function SudoPrompt({ remotePath, retry, onAnswer }: Props) {
   const [password, setPassword] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Escape cancels, through the shared stack rather than a local handler, so
-  // that it reaches *this* and not the panel underneath — which is registered
-  // too, and would otherwise close itself while its own dialog was on screen.
+  // Escape via the shared stack, so it reaches this rather than the panel
+  // underneath.
   useDismissable(true, () => onAnswer(null))
 
-  // The panel behind this had focus, so the field has to claim it or the
-  // password is typed into whatever the Files panel does with keystrokes.
+  // Claim focus from the panel behind.
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
 
   return createPortal(
     <div
-      // Not a click away from the Files panel that raised it — see
-      // `useDismissable`. Without this, the first click into this dialog
-      // closes the panel that is waiting for its answer.
+      // Not a click away from the Files panel waiting on it (see
+      // `useDismissable`).
       data-modal
       className="animate-in fade-in fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 duration-150"
     >
@@ -92,9 +78,8 @@ export function SudoPrompt({ remotePath, retry, onAnswer }: Props) {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            // Never offered to a password manager: this is not the credential
-            // for anything the browser has a concept of, and a saved entry here
-            // would be filled into the SSH dialog later.
+            // Never offered to a password manager, which would later fill it into the
+            // SSH dialog.
             autoComplete="off"
             spellCheck={false}
             className="w-full rounded border border-chrome/10 bg-black/30 px-2 py-1.5 font-mono text-xs text-chrome outline-none focus:border-amber-500/60"

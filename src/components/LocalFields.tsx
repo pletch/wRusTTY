@@ -12,21 +12,12 @@ interface Props {
 }
 
 /**
- * The connect form for a local shell.
- *
- * A picker over the shells this machine actually has, with the path as an
- * escape hatch rather than the only route. The list comes from
- * `local_list_shells` — see src-tauri/src/local_shells.rs — and choosing an
- * entry fills in both the command *and* its arguments, which is the point:
- * `-d Ubuntu --cd ~` for a WSL distro and `-i -l` for Git Bash are not things
- * a user should have to know, and a Git Bash without `-l` cannot find git.
- *
- * The arguments field splits on whitespace. That is wrong for an argument
- * containing a space and right for everything a person types by hand; it is
- * also why detection supplies argv directly instead of a string for the cases
- * that matter, and why the backend takes argv rather than a command line. A
- * distro called "Ubuntu 22.04 LTS" survives being picked and would not survive
- * being typed.
+ * The connect form for a local shell: a picker over detected shells
+ * (`local_list_shells`, src-tauri/src/local_shells.rs), with the path as an
+ * escape hatch. Picking fills both command and arguments (`-d Ubuntu --cd ~`,
+ * Git Bash's `-i -l`). The arguments field splits on whitespace, fine for
+ * hand-typed input; detection supplies argv directly, so a distro named
+ * "Ubuntu 22.04 LTS" survives being picked.
  */
 export function LocalFields({ config, onChange, inputClass, elevated, onElevatedChange }: Props) {
   const [shells, setShells] = useState<ShellInfo[] | null>(null)
@@ -86,9 +77,7 @@ export function LocalFields({ config, onChange, inputClass, elevated, onElevated
               {s.label}
             </option>
           ))}
-          {/* Selected whenever the fields below no longer match any detected
-              shell, so a hand-edited path does not look like it is still the
-              entry it started from. */}
+          {/* Shown when the fields no longer match a detected shell. */}
           {!selected && <option value="">Custom</option>}
         </select>
       )}

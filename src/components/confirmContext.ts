@@ -10,9 +10,8 @@ export interface ConfirmRequest {
 
 export type Ask = (request: ConfirmRequest) => Promise<boolean>
 
-// Split from `ConfirmProvider.tsx` rather than living beside it so that file
-// exports only a component — a module mixing a component with other exports
-// opts out of fast refresh for everything that imports it.
+// Separate from `ConfirmProvider.tsx` so that file exports only a component
+// (for fast refresh).
 export const ConfirmContext = createContext<Ask | null>(null)
 
 /** `const confirm = useConfirm()`, then `if (!(await confirm({...}))) return`. */

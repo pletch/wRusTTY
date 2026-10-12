@@ -2,18 +2,10 @@ import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
 import { IDLE } from '../lib/shellIntegration'
 
-/** Everything about a pane that isn't its position in the tree (that's
- * `PaneNode`/`Tab` in types.ts) or its saved connection details (that's
- * `PaneLeaf.source`/`initial`) — the live, ephemeral state a connected
- * Terminal reports back up as it runs.
- *
- * Replaces eight parallel `Record<paneId, T>` state hooks that used to live
- * directly in App.tsx (statusByPane, connectedAtByPane, loggingByPane,
- * forwardsOpenByPane, filesOpenByPane, sessionIdByPane, activityByPane,
- * attentionPanes). Those were written from separate handlers and had to be
- * kept in step by hand — closing a pane meant remembering to delete its
- * entry from all eight, and nothing did. One record per pane, deleted in one
- * place (`paneClosed`), makes that leak unrepresentable instead of fixed. */
+/** Everything about a pane beyond its tree position (`PaneNode`/`Tab`) and
+ * saved connection details (`PaneLeaf.source`/`initial`): the live state a
+ * connected Terminal reports. One record per pane, deleted in one place
+ * (`paneClosed`), so nothing leaks when a pane closes. */
 export interface PaneRuntime {
   status: string
   /** Epoch ms the pane last reached 'connected'; null while disconnected —
@@ -24,27 +16,20 @@ export interface PaneRuntime {
   forwardsOpen: boolean
   filesOpen: boolean
   activity: CommandActivity
-  /** What a program on the far end says it is doing, via OSC 9;4 — null when
-   * nothing has reported any.
-   *
-   * Separate from `activity` rather than folded into it because the two have
-   * different informants and disagree by design: `activity` comes from the
-   * shell and deliberately goes quiet while a full-screen program owns the
-   * screen, which is exactly when this one speaks up. See lib/appProgress.ts. */
+  /** What a far-end program reports via OSC 9;4, or null. Separate from
+   * `activity` (from the shell, quiet while a full-screen program runs, which
+   * is exactly when this speaks). See lib/appProgress.ts. */
   progress: AppProgress | null
-  /** What the far end calls itself, via OSC 0/2 — null until it says.
-   *
-   * Never the tab's label: that is the connection's, chosen by the user, and
-   * many shells rewrite their title on every prompt. See lib/remoteIdentity.ts. */
+  /** What the far end calls itself via OSC 0/2, or null. Never the tab's label
+   * (see lib/remoteIdentity.ts). */
   title: string | null
   /** The far end's working directory, via OSC 7 — null until it reports one. */
   cwd: string | null
   /** Something you haven't seen: a bell rang, or a long command finished,
    * while this pane wasn't in view. */
   attention: boolean
-  /** The pane's grid in cells, as the engine last fitted it — the same
-   * numbers sent to the remote PTY, so this is what the far end believes the
-   * terminal is. Null until the engine has fitted once. */
+  /** The grid in cells as last fitted, the size sent to the remote PTY. Null
+   * until the first fit. */
   dimensions: PaneDimensions | null
   /** Bytes of scrollback *this pane's engine* was built with. Not derivable
    * from the current setting: the core fixes its limit at construction, so a
@@ -104,13 +89,8 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
 
     case 'statusChanged': {
       const current = state[action.paneId] ?? DEFAULT_RUNTIME
-      // Transitioning to 'connected' sets the clock, but only if it isn't
-      // already set — a reconnect that goes connecting -> connected ->
-      // connecting -> connected shouldn't restart the uptime clock on the
-      // second 'connected', only on the first. Any other status clears it,
-      // so a genuine reconnect (through a disconnected/failed/connecting
-      // stretch) does restart the clock rather than counting through the
-      // outage.
+      // The clock starts on the first 'connected' and is cleared by any other
+      // status, so a real reconnect restarts it.
       const connectedAt =
         action.status === 'connected' ? (current.connectedAt ?? action.now) : null
       return { ...state, [action.paneId]: { ...current, status: action.status, connectedAt } }
@@ -206,13 +186,9 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
     case 'dimensionsChanged': {
       const current = state[action.paneId] ?? DEFAULT_RUNTIME
       const dims = current.dimensions
-      // The no-op case is the whole point of this action, not a nicety. It is
-      // driven by a ResizeObserver, so it fires continuously while a window is
-      // dragged — but the *cell* grid changes only when a drag crosses a whole
-      // cell, which is a small fraction of those ticks. Returning the same
-      // object lets React bail out of the render entirely; without it a drag
-      // would re-render App, and with it every pane, at pointer rate. Terminal
-      // gates on this too, so an unchanged grid never even dispatches.
+      // The no-op matters: a ResizeObserver fires at pointer rate during a drag,
+      // but cells change rarely. Returning the same object lets React skip
+      // re-rendering App and every pane.
       if (dims && dims.cols === action.cols && dims.rows === action.rows) return state
       return {
         ...state,
@@ -233,12 +209,8 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
 
 // --- Derived views -----------------------------------------------------
 //
-// App.tsx's child components (TabBar, Pane, StatusBar) still take the old
-// per-field `Record<paneId, T>` shapes; these rebuild those views from the
-// consolidated state each render rather than changing every prop signature
-// downstream. Each mirrors the exact fallback the corresponding read site
-// used before consolidation (some default to false, some to null, some
-// leave the pane out of the map entirely) — see App.tsx's call sites.
+// Per-field `Record<paneId, T>` views for TabBar, Pane and StatusBar, each
+// with the fallback its read site expects (false, null, or absent).
 
 export function statusByPaneOf(state: PaneRuntimeState): Record<string, string> {
   const out: Record<string, string> = {}
@@ -294,9 +266,8 @@ export function progressByPaneOf(state: PaneRuntimeState): Record<string, AppPro
   return out
 }
 
-/** Absent rather than null for a pane that has reported no title, matching
- *  the other maps that leave a pane out entirely — the read sites treat a
- *  missing entry as "nothing to show". */
+/** Absent rather than null for a pane with no title, as the read sites
+ *  expect. */
 export function titleByPaneOf(state: PaneRuntimeState): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [id, pane] of Object.entries(state)) {

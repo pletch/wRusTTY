@@ -3,12 +3,8 @@ import { PromptInputTracker, sliceColumns, tooShortToInfer, type GridReader } fr
 import type { RowText } from './ghostty/rowText'
 
 /**
- * A grid of plain rows, in the shape `readRowText` returns.
- *
- * Rows are given as strings and padded to the grid width, which is what a real
- * terminal row is — every column exists, and the ones nothing was written to
- * hold a space. Tests that forget the padding pass against a fake and fail
- * against the engine, so the fake does it rather than each test.
+ * A grid of plain rows in `readRowText`'s shape, padded to the grid width as
+ * real rows are.
  */
 function makeGrid(cols: number) {
   const rows: string[] = []
@@ -203,11 +199,9 @@ describe('PromptInputTracker', () => {
     })
 
     /**
-     * The guess is "output stopped, then you typed, so the cursor is at a
-     * fresh prompt". A key pressed before the quiet period gets no origin —
-     * and if the far end answers it by drawing a recalled command, the next
-     * key's quiet period is measured against a line that is no longer empty.
-     * Believing it there puts the origin at the end of the command.
+     * A key pressed before the quiet period gets no origin; if the far end
+     * answers by drawing a recalled command, the next quiet period mustn't put
+     * the origin at the end of it.
      */
     it('declines to guess at a line a blind keystroke has already changed', () => {
       const grid = makeGrid(40)
@@ -302,12 +296,8 @@ describe('PromptInputTracker', () => {
 
   describe('after a resize', () => {
     /**
-     * An absolute row survives output scrolling underneath it, which is the
-     * whole reason the origin is one. It does not survive a reflow: the core
-     * rewraps the buffer at the new width, so the row noted before the resize
-     * names different cells after it — and a command that used to wrap onto a
-     * second row leaves the origin *below* the cursor, which reads as nothing
-     * being there at all.
+     * An absolute origin survives scrolling but not a reflow, which can move it
+     * below the cursor; it's dropped.
      */
     it('lets go of an origin the reflow may have moved', () => {
       const grid = makeGrid(40)
@@ -426,11 +416,8 @@ describe('PromptInputTracker', () => {
 
 describe('sliceColumns', () => {
   /**
-   * A column is not a character. A wide character occupies two columns and one
-   * code unit, and its trailing column holds none — so slicing the row string
-   * by column index drifts by one for every CJK character or emoji earlier in
-   * the line. This decides what bytes get sent, so drifting by one means
-   * sending a command the user never typed.
+   * Slices by column, not character: a wide character spans two columns, so
+   * a character index drifts and would send a command never typed.
    */
   it('slices by column, not by character, across a wide character', () => {
     // Columns:  0='a' 1='世' 2=(spacer) 3='b'

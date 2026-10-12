@@ -23,12 +23,9 @@ export function HostKeyPrompt({
 }: Props) {
   const isChanged = status === 'changed'
   const isNewKeyType = status === 'newKeyType'
-  // A new key type on a known host gets the alarm treatment too, not the
-  // first-connection one. It is what a man in the middle without the host's key
-  // produces — offer a type nothing is pinned for, and hope for the routine
-  // prompt. And it is rare from an honest server: negotiation asks for the
-  // pinned types first, so arriving here means the server no longer offers any
-  // of them.
+  // A new key type on a known host gets the alarm too: it's what a MITM without
+  // the host's key produces, and rare from an honest server (negotiation asks
+  // for pinned types first).
   const isAlarm = isChanged || isNewKeyType
 
   return (
@@ -123,18 +120,11 @@ export function HostKeyPrompt({
           </p>
         )}
 
-        {/* On the alarm states, the emphasis is inverted against every other
-            dialog in the app: Reject takes the filled primary slot, and
-            accepting becomes the ghost. A red-filled Accept reads as "this is
-            the important button" at least as much as it reads "danger", and
-            this is the one dialog where the button muscle memory lands on has
-            to be the safe one. Danger still gets said — in red text on the
-            action that carries it — it just stops being said with emphasis.
-
-            `unknown` deliberately keeps the ordinary arrangement. A
-            first-connect TOFU prompt is routine and accepting is the expected
-            answer; adding friction there is how people get trained to click
-            straight through the one above. */}
+        {/* On alarm states the emphasis is inverted: Reject takes the filled
+            primary slot and Accept becomes the ghost, so muscle memory lands on
+            the safe button; the danger is still said in red text. `unknown`
+            keeps the ordinary arrangement, since accepting a first-connect TOFU
+            prompt is routine and friction there trains click-through. */}
         <div className="flex justify-end gap-2 pt-1">
           {isAlarm ? (
             <>

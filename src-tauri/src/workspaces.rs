@@ -1,21 +1,11 @@
-//! Saved workspaces: a named set of tabs and their pane arrangement.
+//! Saved workspaces: a named set of tabs and their pane arrangement (which
+//! endpoints are open together, and how panes split), as opposed to a
+//! profile's single endpoint.
 //!
-//! Distinct from a session profile, which describes *one* endpoint. A
-//! workspace describes which endpoints are open together and how the panes
-//! are split — the part that is tedious to rebuild by hand and that folders
-//! can't express.
-//!
-//! The pane tree itself is stored opaquely as JSON rather than mirrored into
-//! Rust types. Its shape is a frontend concern (split directions, sizes, pane
-//! ids) that this layer never inspects, and duplicating it here would mean
-//! every layout tweak needing a matching Rust change for no gain. The same
-//! reasoning as `vault::ExportBundle` holding the vault file as a nested
-//! `Value`.
-//!
-//! Nothing sensitive reaches this file: the frontend strips any pane whose
-//! connection carries a plaintext secret before saving (see
-//! `sessionSnapshot.ts`), so a workspace only ever references saved profiles
-//! or credential-free endpoints.
+//! The pane tree is stored as opaque JSON, since its shape is the frontend's
+//! concern (like `vault::ExportBundle`'s nested `Value`). Nothing sensitive
+//! reaches it: the frontend strips panes carrying plaintext secrets (see
+//! `sessionSnapshot.ts`).
 
 use std::path::PathBuf;
 
@@ -69,12 +59,9 @@ fn name_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// Insert or replace by id, rejecting a name another workspace already holds.
-/// Split out from the command so the rule is testable without an AppHandle.
-///
-/// Only enforced on write: a file that already contains duplicates (written
-/// before this existed) still loads, and stays loadable until one of them is
-/// saved over.
+/// Insert or replace by id, rejecting a name another workspace holds. Split
+/// out for testing without an AppHandle. Enforced only on write, so a file
+/// with existing duplicates still loads.
 fn upsert(mut workspaces: Vec<Workspace>, workspace: Workspace) -> Result<Vec<Workspace>, String> {
     let name = workspace.name.trim().to_string();
     if name.is_empty() {

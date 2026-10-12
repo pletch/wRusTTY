@@ -1,22 +1,12 @@
 //! A detected shell's own icon, read from its executable on this machine.
 //!
-//! This is how the tab strip shows the real PowerShell and Command Prompt
-//! icons without the app distributing either. Microsoft's trademark terms
-//! prohibit using its logos without permission — which is why Simple Icons
-//! removed every Microsoft brand in 2024 (simple-icons#10019) — so bundling a
-//! copy is not an option. Reading the icon that `pwsh.exe` already carries, on
-//! the machine it is installed on, redistributes nothing: the pixels come from
-//! the user's own installation, exactly as Explorer and the taskbar show them.
-//! It is also the only way to be sure the colors match what Windows shows.
+//! Microsoft's trademark terms rule out bundling its logos (see
+//! `ShellIcons.tsx`); reading the icon `pwsh.exe` already carries
+//! redistributes nothing and matches what Windows shows.
 //!
-//! # Why this takes a shell id rather than a path
-//!
-//! The webview asks for `pwsh`, and the path is resolved here through
-//! detection. Accepting a path would let whatever runs in the webview name any
-//! file on any machine, and reading an icon from a UNC path makes Windows open
-//! an SMB connection to that host — which authenticates as the user. There is
-//! no reason for that door to exist when the only paths worth reading are the
-//! ones detection already found.
+//! Takes a shell id, resolved here through detection, not a path: a path
+//! would let the webview name any file, and reading an icon from a UNC path
+//! opens an authenticated SMB connection to that host.
 
 use base64::Engine as _;
 
@@ -64,15 +54,10 @@ fn encode_png(rgba: &[u8], size: u32) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// GDI's 32-bit DIB is BGRA; the PNG wants RGBA.
-///
-/// `mask` covers icons that predate alpha channels: every alpha byte in the
-/// color bitmap is then zero, and transparency lives in a separate AND mask
-/// instead, where a white pixel is see-through and a black one is opaque.
-/// Without this fallback such an icon would encode as fully transparent and
-/// simply not appear.
-// Called only by the Windows extractor, but kept ungated so its tests run on
-// every platform.
+/// GDI's 32-bit DIB is BGRA; the PNG wants RGBA. `mask` handles pre-alpha
+/// icons, whose alpha bytes are all zero with transparency in a separate AND
+/// mask (white transparent, black opaque); otherwise they'd encode invisible.
+// Only the Windows extractor calls it; ungated so its tests run everywhere.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn bgra_to_rgba(bgra: &[u8], mask: Option<&[u8]>) -> Vec<u8> {
     let has_alpha = bgra.chunks_exact(4).any(|px| px[3] != 0);

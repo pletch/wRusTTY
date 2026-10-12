@@ -1,9 +1,7 @@
-//! Tauri command layer for the credential vault. The decrypted `Vault`
-//! (and every secret inside it) lives only in this process's memory for as
-//! long as it's unlocked — locking drops it, triggering `wr_vault`'s
-//! zeroize-on-drop. Credentials themselves never round-trip back into the
-//! webview after being saved; `ssh_connect_profile` (in `ssh.rs`) resolves
-//! them entirely on the Rust side.
+//! Tauri command layer for the credential vault. The decrypted `Vault` lives
+//! only in this process's memory while unlocked; locking drops it (and
+//! `wr_vault` zeroizes on drop). Saved credentials never return to the
+//! webview; `ssh_connect_profile` (in `ssh.rs`) resolves them on the Rust side.
 
 use std::path::PathBuf;
 
@@ -18,20 +16,17 @@ use wr_vault::{
 };
 use zeroize::Zeroize;
 
-// A single fixed entry, not one per vault file — this app only ever manages
-// one vault at a time (at `vault_path`), so there's nothing to key it by.
+// One fixed entry: the app manages a single vault.
 const KEYRING_SERVICE: &str = "sh.wrustty.app";
 const KEYRING_USER: &str = "vault-key";
-// Previous bundle identifier's keyring service name, from before the
-// wRusTTY rebrand — see `migrate_os_unlock_key`.
+// The pre-rebrand keyring service name; see `migrate_os_unlock_key`.
 const PREVIOUS_KEYRING_SERVICE: &str = "sh.wrshell.app";
 
 fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())
 }
 
-/// Drops the OS-keyring KEK. Idempotent — a missing entry is the desired
-/// end state, not an error.
+/// Drops the OS-keyring KEK. Idempotent.
 fn forget_os_unlock_kek() -> Result<(), String> {
     match keyring_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -39,16 +34,10 @@ fn forget_os_unlock_kek() -> Result<(), String> {
     }
 }
 
-/// One-time migration for the `sh.wrshell.app` → `sh.wrustty.app` rebrand:
-/// an OS-unlock key stored under the old service name is invisible to
-/// `keyring_entry()` now that it looks under the new one — without this,
-/// "Unlock with Windows sign-in" would silently stop working for anyone who
-/// already had it enabled. Safe to call on every launch: a no-op once the
-/// old entry is gone (or was never set).
-///
-/// Moves the bytes without caring what they mean — for a vault that hasn't
-/// been through the v2 upgrade yet they're still the old data key, and
-/// `vault_unlock` disposes of them once that upgrade happens.
+/// Moves an OS-unlock key stored under the pre-rebrand service name
+/// (`sh.wrshell.app`) to the current one, so Windows sign-in unlock keeps
+/// working. Safe on every launch. For a pre-v2 vault the bytes are still the
+/// old data key; `vault_unlock` disposes of them after upgrading.
 pub(crate) fn migrate_os_unlock_key() {
     let Ok(old_entry) = keyring::Entry::new(PREVIOUS_KEYRING_SERVICE, KEYRING_USER) else {
         return;
@@ -67,15 +56,9 @@ pub(crate) fn migrate_os_unlock_key() {
     }
 }
 
-/// Why a consent check failed, kept apart from a plain string because the
-/// caller reacts differently to each: a dismissed prompt is not worth
-/// surfacing at all, whereas "no Hello configured on this machine" means the
-/// unlock method should be hidden rather than retried.
-///
-/// Only ever constructed by the Windows implementation of
-/// `verify_windows_hello`; the non-Windows stub still names it so both
-/// versions share one signature, which is enough to make every variant read
-/// as dead code off Windows.
+/// Why a consent check failed: a dismissed prompt is silent, while
+/// `Unavailable` means the unlock method should be hidden. Only constructed on
+/// Windows.
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 enum ConsentError {
@@ -94,19 +77,11 @@ impl From<ConsentError> for ProviderError {
     }
 }
 
-/// Gates OS-unlock on a fresh, per-use Windows Hello (or PIN/password,
-/// whatever's configured) challenge — without this, DPAPI alone would
-/// silently hand back the stored key to *any* process running under the
-/// same already-authenticated Windows session, with no fresh check at all.
-///
-/// Uses `IUserConsentVerifierInterop::RequestVerificationForWindowAsync`
-/// (via `RoGetActivationFactory`, the WinRT activation path — not
-/// `CoCreateInstance`, which is classic-COM activation and doesn't apply
-/// to a WinRT interop factory; that mismatch is exactly what produced a
-/// "Class not registered" error in another non-UWP app's attempt at this)
-/// so the prompt is parented to our window and opens in the foreground,
-/// rather than the window-less `RequestVerificationAsync`, whose prompt
-/// can open behind the app with no indication it's even there.
+/// Gates OS unlock on a fresh Windows Hello (or PIN/password) challenge;
+/// without it DPAPI would hand the key to any process in the same session. Uses
+/// `IUserConsentVerifierInterop::RequestVerificationForWindowAsync` (activated
+/// via `RoGetActivationFactory`, not `CoCreateInstance`) so the prompt is
+/// parented to our window and appears in front.
 #[cfg(target_os = "windows")]
 fn verify_windows_hello_blocking(
     window: &tauri::WebviewWindow,
@@ -121,10 +96,8 @@ fn verify_windows_hello_blocking(
     use windows::Win32::System::WinRT::{IUserConsentVerifierInterop, RoGetActivationFactory};
     use windows_future::IAsyncOperation;
 
-    // This runs on a fresh tokio blocking-pool thread with no COM apartment
-    // of its own — WinRT activation needs one. Safe to call unconditionally:
-    // it no-ops (S_FALSE) if something already initialized this thread, and
-    // this thread never touches COM again after returning it to the pool.
+    // A blocking-pool thread has no COM apartment, and WinRT activation needs
+    // one. Harmless if already initialized.
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
@@ -141,14 +114,8 @@ fn verify_windows_hello_blocking(
     let class_id = HSTRING::from("Windows.Security.Credentials.UI.UserConsentVerifier");
     let interop: IUserConsentVerifierInterop = unsafe { RoGetActivationFactory(&class_id) }
         .map_err(|e| ConsentError::Failed(e.to_string()))?;
-    // RequestVerificationForWindowAsync is generic over its *return*
-    // interface type (bounded by `windows_core::Interface`), not over the
-    // result value — so the turbofish target is
-    // IAsyncOperation<UserConsentVerificationResult>, not
-    // UserConsentVerificationResult itself. Confirmed directly from the
-    // windows-rs source (generated fn signature in
-    // Win32/System/WinRT/mod.rs): `fn RequestVerificationForWindowAsync<T:
-    // Interface>(...) -> Result<T>`.
+    // Generic over the returned interface type, so the turbofish names
+    // `IAsyncOperation<...>`, not the result value.
     let result = unsafe {
         interop.RequestVerificationForWindowAsync::<IAsyncOperation<UserConsentVerificationResult>>(
             hwnd,
@@ -160,17 +127,15 @@ fn verify_windows_hello_blocking(
     crate::win_focus::restore_after_broker_prompt(window, hwnd);
     match result {
         UserConsentVerificationResult::Verified => Ok(()),
-        // The user dismissed the prompt. Not a failure worth reporting — the
-        // caller turns this into a silent no-op rather than an error toast.
+        // Dismissed: silent, not an error.
         UserConsentVerificationResult::Canceled => Err(ConsentError::Cancelled),
-        // Structural: nothing about retrying will help until the machine's
-        // Hello configuration changes.
+        // Structural: retrying won't help until Hello is configured.
         r @ (UserConsentVerificationResult::DeviceNotPresent
         | UserConsentVerificationResult::NotConfiguredForUser
         | UserConsentVerificationResult::DisabledByPolicy) => Err(ConsentError::Unavailable(
             format!("Windows Hello isn't usable on this machine ({r:?})"),
         )),
-        // Transient: a busy sensor or too many bad attempts. Worth retrying.
+        // Transient (busy sensor, too many attempts): retryable.
         other => Err(ConsentError::Failed(format!(
             "Windows Hello verification didn't succeed ({other:?})"
         ))),
@@ -185,17 +150,10 @@ async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), Cons
     let hwnd = window
         .hwnd()
         .map_err(|e| ConsentError::Failed(e.to_string()))?;
-    // HWND isn't necessarily Send, and this needs to run on a different
-    // thread (spawn_blocking, below) — round-trip through a plain isize
-    // instead of moving the HWND value itself across that boundary.
-    // `WebviewWindow` itself is Send (it's just handles/ids under the
-    // hood), so it moves into the closure directly.
+    // HWND may not be Send; pass it as an isize. `WebviewWindow` is Send.
     let hwnd_value = hwnd.0 as isize;
     let message = message.to_string();
-    // RequestVerificationForWindowAsync's `.join()` blocks the calling
-    // thread until the prompt is answered — spawn_blocking keeps that off
-    // the async runtime's worker threads instead of stalling them for
-    // however long the user takes to respond.
+    // `.join()` blocks until the prompt is answered; keep it off the runtime.
     tokio::task::spawn_blocking(move || {
         let hwnd = windows::Win32::Foundation::HWND(hwnd_value as _);
         verify_windows_hello_blocking(&window, hwnd, message)
@@ -206,36 +164,23 @@ async fn verify_windows_hello(app: &AppHandle, message: &str) -> Result<(), Cons
 
 #[cfg(not(target_os = "windows"))]
 async fn verify_windows_hello(_app: &AppHandle, _message: &str) -> Result<(), ConsentError> {
-    // No equivalent local challenge exists on other platforms — the
-    // OS-unlock feature this gates is Windows-only to begin with (see
-    // vault_enable_os_unlock).
+    // OS unlock is Windows-only (see vault_enable_os_unlock).
     Ok(())
 }
 
-/// Unlock method backed by the OS credential store, with a Windows Hello
-/// consent prompt in front of it.
+/// Unlock method backed by the OS credential store, behind a Windows Hello
+/// consent prompt.
 ///
-/// **This is the weak one, and it is deliberately structured so it can be
-/// replaced without touching anything else.** What it stores is a random KEK,
-/// not the vault's data key — but that KEK still sits in DPAPI-protected
-/// Credential Manager, which means any process running as this user can read
-/// it back with a plain `CredRead` and no prompt whatsoever. The Hello check
-/// below is a *consent* gate on this application's own code path; an attacker
-/// simply doesn't call it. It is exactly as strong as the arrangement it
-/// replaces, and no stronger.
-///
-/// The point of routing it through `KeyProvider` is that closing that gap is
-/// now a matter of writing a sibling provider — one that derives its KEK from
-/// `KeyCredential::RequestSignAsync` over the challenge in
-/// `WrapperParams::Hello`, so that nothing recoverable at rest exists at all —
-/// and enrolling it as `WrapperKind::Hello`. The vault, the file format, and
-/// the UI all already accommodate that; only this struct is missing.
+/// **The weak option.** It stores a random KEK (not the data key) in
+/// DPAPI-protected Credential Manager, readable by any process running as this
+/// user with no prompt; the Hello check only gates this app's own code path.
+/// The stronger `WrapperKind::Hello` provider (see hello.rs) derives its KEK
+/// from a TPM-held key instead.
 struct OsKeyringProvider {
     app: AppHandle,
 }
 
-/// Reads the stored KEK, zeroizing both the base64 text and the decoded
-/// bytes on the way out — `Kek` owns the only copy that survives this call.
+/// Reads the stored KEK, zeroizing the intermediate text and bytes.
 fn read_os_unlock_kek() -> Result<Kek, ProviderError> {
     let entry = keyring_entry().map_err(ProviderError::Failed)?;
     let mut encoded = match entry.get_password() {
@@ -277,9 +222,8 @@ impl KeyProvider for OsKeyringProvider {
     }
 
     async fn enroll(&self) -> Result<(WrapperParams, Kek), ProviderError> {
-        // A fresh random KEK, not the vault's data key: enabling and later
-        // disabling this method leaves nothing behind that could open the
-        // vault, and the DEK never enters the credential store at all.
+        // A fresh random KEK, so the data key never enters the credential store and
+        // disabling the method leaves nothing that opens the vault.
         let bytes: [u8; 32] = wr_vault::random_bytes();
         let mut encoded = BASE64.encode(bytes);
         let stored = keyring_entry()
@@ -337,15 +281,10 @@ pub async fn vault_create(
     Ok(())
 }
 
-/// Also the upgrade path: unlocking a pre-v2 file here migrates it in place
-/// and re-keys the credentials onto a fresh data key.
-///
-/// That last part is why the cleanup below matters. A pre-v2 vault with
-/// "unlock with Windows sign-in" enabled had a plaintext copy of its *data
-/// key* sitting in Credential Manager — the weakness this format change
-/// exists to close. After migration that copy opens nothing, but it is still
-/// key material on disk with no owner, so it goes. The user re-enables the
-/// setting once, and gets a wrapper holding a random KEK instead.
+/// Also the upgrade path: unlocking a pre-v2 file migrates it and re-keys onto
+/// a fresh data key. A pre-v2 vault with Windows sign-in enabled had its data
+/// key in Credential Manager; after migration it opens nothing, so it's
+/// deleted and the user re-enables the setting.
 #[tauri::command]
 pub async fn vault_unlock(
     app: AppHandle,
@@ -363,36 +302,24 @@ pub async fn vault_unlock(
     Ok(())
 }
 
-/// Removes credentials whose session profile no longer exists.
+/// Removes credentials whose session profile no longer exists. Deleting a
+/// profile can't remove its credential while the vault is locked, so unlock
+/// cleans up.
 ///
-/// Deleting a profile can't take its credential with it when the vault is
-/// locked — nothing can open the vault to do it — so the entry outlives the
-/// only thing that referenced it. Unlock is the moment that becomes fixable,
-/// and doing it here rather than at delete time means profile deletion never
-/// has to demand an unlock for something that isn't a credential operation.
-///
-/// Bails out rather than pruning on anything it isn't sure about:
-///
-/// - **No `sessions.json` on disk.** [`crate::profiles::read_profiles`]
-///   reports a missing file as an empty list, which is right for listing and
-///   very wrong here: a profile store that failed to appear would take every
-///   credential with it, irreversibly. Absent means unknown, not empty.
-/// - **An unreadable or malformed one.** Same reasoning.
-///
-/// Failure to persist is logged and swallowed. An unlock that worked must not
-/// be reported as failed over housekeeping the next one will retry.
+/// Skips pruning when unsure: a missing `sessions.json` reads as an empty list
+/// (which would destroy every credential), and an unreadable one likewise.
+/// Persistence failures are logged, not reported; the next unlock retries.
 async fn prune_orphaned_credentials(
     app: &AppHandle,
     profile_state: &crate::profiles::ProfileState,
     vault: &mut Vault,
 ) {
-    // Under the profile lock like every other reader of this file. A read of a
-    // list that is mid-rewrite decides which credentials to destroy, and that
-    // decision is not recoverable.
+    // Under the profile lock: a read mid-rewrite would decide irreversibly what
+    // to delete.
     let read = profile_state
         .with_profiles(app, |path| {
             if !path.exists() {
-                // Absent means unknown, not empty — see above.
+                // Absent means unknown, not empty.
                 return Err("no session profile store yet".to_string());
             }
             crate::profiles::read_profiles(path)
@@ -415,12 +342,9 @@ pub async fn vault_lock(state: State<'_, VaultState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Permanently deletes the vault file — every stored credential goes with
-/// it. Also clears the OS-unlock keyring entry (it wrapped this vault's
-/// key specifically) and every session profile's `hasCredential` flag,
-/// since none of them point at anything real anymore once the file is
-/// gone — left set, the sidebar would keep offering to "unlock the vault"
-/// for credentials that no longer exist.
+/// Permanently deletes the vault file and every credential. Also clears the
+/// OS-unlock keys and every profile's `hasCredential` flag, so the UI doesn't
+/// offer to unlock credentials that no longer exist.
 #[tauri::command]
 pub async fn vault_delete(
     app: AppHandle,
@@ -428,9 +352,8 @@ pub async fn vault_delete(
     profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<(), String> {
     *state.vault.lock().await = None;
-    // The vault these protected is about to cease to exist, so both become
-    // orphans — the TPM credential especially, which nothing else would ever
-    // clean up.
+    // Both unlock keys become orphans (nothing else would clean up the TPM
+    // credential).
     #[cfg(target_os = "windows")]
     crate::hello::forget_credential().await;
     forget_os_unlock_kek()?;
@@ -440,9 +363,7 @@ pub async fn vault_delete(
         Err(e) => return Err(e.to_string()),
     }
 
-    // Read-modify-write, so it goes through the profile lock — a rename saved
-    // from the session browser in between would otherwise be written over by
-    // the copy this read before it.
+    // Read-modify-write under the profile lock.
     profile_state
         .with_profiles(&app, |path| {
             let mut profiles = crate::profiles::read_profiles(path)?;
@@ -456,23 +377,15 @@ pub async fn vault_delete(
     Ok(())
 }
 
-/// The passwordless unlock methods, strongest first. A vault can only ever
-/// have one of them enrolled at a time (see `vault_enable_os_unlock`), but
-/// the order matters when deciding which to *use*: a vault carried from a
-/// machine where only the keyring method was available should still open
-/// here, and a vault upgraded to Hello should never fall back.
+/// The passwordless unlock methods, strongest first. Only one is enrolled at a
+/// time, but a vault from a machine with only the keyring method still opens,
+/// and one upgraded to Hello never falls back.
 const PASSWORDLESS_METHODS: [WrapperKind; 2] = [WrapperKind::Hello, WrapperKind::OsKeyring];
 
-/// Whether *this build* can drive a method, as distinct from whether the
-/// vault has it enrolled. A vault created on Windows and then opened on a
-/// Linux build carries a Hello wrapper that nothing here can open; treating
-/// it as available would put a button on screen that always fails, when the
-/// honest answer is to fall back to the master password.
-// Clippy sees `Hello => <bool literal>, _ => true` once `cfg!` has expanded
-// and offers `!matches!(kind, WrapperKind::Hello)` — which is the right
-// answer only on the platform it happened to expand for, and hard-codes
-// "Hello never works" into a function whose entire job is to say that it
-// depends. Kept as a match so both arms stay visible.
+/// Whether this build can drive a method (a Hello wrapper can't be opened on a
+/// non-Windows build).
+// A match rather than `matches!`, which clippy suggests only for the
+// platform it expanded on.
 #[allow(clippy::match_like_matches_macro)]
 fn usable_on_this_platform(kind: WrapperKind) -> bool {
     match kind {
@@ -492,24 +405,15 @@ fn enrolled_passwordless_method(app: &AppHandle) -> Result<Option<WrapperKind>, 
         .find(|kind| enrolled.contains(kind) && usable_on_this_platform(*kind)))
 }
 
-/// Whether this vault has a passwordless unlock method enrolled — lets the
-/// UI offer it instead of the master password, and shows the current on/off
-/// state of the setting once unlocked.
-///
-/// Answers from the vault file rather than from the credential store, which
-/// matters for a vault that hasn't been migrated yet: a pre-v2 file has no
-/// unlock methods besides the master password, however many stale keys are
-/// left lying around under our service name.
+/// Whether the vault has a usable passwordless unlock method enrolled, read
+/// from the vault file (not the credential store, which may hold stale keys).
 #[tauri::command]
 pub async fn vault_os_unlock_available(app: AppHandle) -> Result<bool, String> {
     let Some(kind) = enrolled_passwordless_method(&app)? else {
         return Ok(false);
     };
-    // A Hello wrapper travels with the vault file but its key credential does
-    // not — it lives in one machine's TPM. On any other machine the wrapper is
-    // present and permanently unopenable, so offering the button would only
-    // produce a confident click and a failure. Checking costs nothing:
-    // `OpenAsync` doesn't prompt (pinned by a test in `hello.rs`).
+    // A Hello wrapper travels with the file but its key lives in one machine's
+    // TPM. Checking doesn't prompt (`OpenAsync`; pinned by a test in hello.rs).
     #[cfg(target_os = "windows")]
     if kind == WrapperKind::Hello && !crate::hello::credential_exists().await {
         return Ok(false);
@@ -518,26 +422,20 @@ pub async fn vault_os_unlock_available(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-/// How the enrolled passwordless method is protected.
-///
-/// Three states, not two, because "is it Windows Hello" and "did the TPM
-/// attest it" are independent questions and conflating them produces an
-/// actively false claim. A Hello credential that failed attestation still
-/// lives in the Hello container, is still non-exportable, and still needs a
-/// gesture — it is nothing like a key sitting in Credential Manager, and
-/// telling a user otherwise would push them away from the stronger option.
+/// How the enrolled passwordless method is protected. Three states because a
+/// Hello credential without attestation is still non-exportable and needs a
+/// gesture; calling it weak would steer users away from the stronger option.
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum OsUnlockProtection {
     /// Key credential in the TPM, attestation confirmed.
     TpmAttested,
     /// Key credential held by Windows Hello, attestation unavailable.
-    /// Usually means Windows hasn't provisioned an attestation identity key
-    /// yet, not that the key is unprotected — attestation is lazily set up
-    /// and frequently reports `TemporarilyUnavailable` on healthy hardware.
+    /// Key credential held by Windows Hello, attestation unavailable (often not
+    /// yet provisioned, or `TemporarilyUnavailable` on healthy hardware).
     HelloUnattested,
-    /// A random KEK in DPAPI-backed Credential Manager, readable by any
-    /// process running as this user. The genuinely weak option.
+    /// A random KEK in DPAPI-backed Credential Manager, readable by any process
+    /// running as this user.
     CredentialManager,
 }
 
@@ -555,9 +453,7 @@ pub async fn vault_os_unlock_method(app: AppHandle) -> Result<Option<OsUnlockMet
         return Ok(None);
     };
     let wrappers = wr_vault::wrappers_at(&vault_path(&app)?).map_err(|e| e.to_string())?;
-    // Match the wrapper actually being used, not merely any Hello wrapper
-    // present — with both methods enrolled the previous version could report
-    // one method's protection while unlocking with the other's.
+    // The wrapper actually in use, not merely any Hello wrapper.
     let protection = match wrappers
         .iter()
         .find(|w| w.kind() == kind)
@@ -573,28 +469,18 @@ pub async fn vault_os_unlock_method(app: AppHandle) -> Result<Option<OsUnlockMet
     }))
 }
 
-/// Enrolls the strongest passwordless unlock method this machine supports, so
-/// future launches can skip the master password. Adds a wrapper holding its
-/// own encrypted copy of the vault's data key — the data key itself never
-/// leaves this process.
-///
-/// Prefers the TPM-backed Windows Hello method and falls back to the OS
-/// keyring only where `KeyCredentialManager` is unavailable. Enrolling Hello
-/// also tears down any previously enrolled keyring wrapper: leaving it in
-/// place would keep a DPAPI-readable path into the vault open, silently
-/// capping the vault's security at the weaker method no matter what the UI
-/// says is enabled.
+/// Enrolls the strongest passwordless unlock method available (TPM-backed
+/// Windows Hello, else the OS keyring), wrapping its own copy of the data key.
+/// Enrolling Hello removes any keyring wrapper, which would otherwise keep a
+/// DPAPI-readable path into the vault.
 #[tauri::command]
 pub async fn vault_enable_os_unlock(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    // Enrollment runs with no lock held. It can block for as long as the user
-    // takes to answer a Hello prompt, and holding the vault mutex across that
-    // wedges every other vault command — including the ones the UI polls to
-    // show progress. It also turned a slow prompt into a prompt *storm*:
-    // impatient clicks piled up on the mutex and each fired its own dialog as
-    // its predecessor finished. Fail fast instead.
+    // Enroll with no lock held: a Hello prompt can take a while, and holding
+    // the vault mutex would block every other vault command (and queue up a
+    // prompt per impatient click).
     #[cfg(target_os = "windows")]
     if crate::hello::is_supported().await {
         use wr_vault::KeyProvider as _;
@@ -609,8 +495,7 @@ pub async fn vault_enable_os_unlock(
         vault
             .add_enrolled_unlock_method(params, &kek)
             .map_err(|e| e.to_string())?;
-        // Only after the Hello wrapper is safely on disk — dropping the old
-        // method first would leave the user with neither if enrollment failed.
+        // Only after the Hello wrapper is on disk.
         match vault.remove_unlock_method(WrapperKind::OsKeyring) {
             Ok(()) | Err(VaultError::NoSuchUnlockMethod(_)) => {}
             Err(e) => return Err(e.to_string()),
@@ -630,10 +515,8 @@ pub async fn vault_enable_os_unlock(
         .map_err(|e| e.to_string())
 }
 
-/// Requires an unlocked vault, because removing the wrapper is a change to
-/// the vault file. The stored KEK is dropped as well — either half alone is
-/// useless, but leaving key material behind for a feature the user just
-/// turned off would be careless.
+/// Removes the passwordless methods (needs an unlocked vault) and the stored
+/// key material.
 #[tauri::command]
 pub async fn vault_disable_os_unlock(state: State<'_, VaultState>) -> Result<(), String> {
     let mut guard = state.vault.lock().await;
@@ -644,13 +527,10 @@ pub async fn vault_disable_os_unlock(state: State<'_, VaultState>) -> Result<(),
             Err(e) => return Err(e.to_string()),
         }
     }
-    // Release the vault before the credential teardown below, which talks to
-    // Windows and has no business holding this lock.
+    // Release the vault before talking to Windows.
     drop(guard);
 
-    // The wrapper is gone, so these are now unreferenced key material. Both
-    // are best-effort: failing to tidy up shouldn't fail the operation the
-    // user actually asked for, which has already succeeded on disk.
+    // Best-effort cleanup; the user's request already succeeded.
     #[cfg(target_os = "windows")]
     crate::hello::forget_credential().await;
     forget_os_unlock_kek()
@@ -678,10 +558,8 @@ pub async fn vault_unlock_with_os(
 
         let mut vault = match Vault::unlock_with(path, &provider).await {
             Ok(vault) => vault,
-            // The wrapped key's AEAD tag rejected the KEK we derived. That
-            // says the signature was wrong but not why, and the two causes
-            // call for opposite advice — so pay for a diagnosis here, where
-            // the user is already stuck, rather than taxing every enrollment.
+            // The derived KEK was rejected. Diagnose why here (the advice differs
+            // by cause), rather than on every enrollment.
             Err(VaultError::UnlockFailed(_)) => {
                 return Err(provider.explain_unlock_failure(&meta).await)
             }
@@ -713,10 +591,8 @@ pub async fn vault_set_credential(
     vault.set(session_id, secret).map_err(|e| e.to_string())
 }
 
-/// Reads a key file from disk, validates it parses (and, if it's encrypted,
-/// that the passphrase actually decrypts it) before storing anything, and
-/// vaults the whole key — never round-tripping the plaintext key material
-/// back into the webview process.
+/// Reads a key file, checks it parses (and that the passphrase decrypts it),
+/// then vaults the whole key without it ever reaching the webview.
 #[tauri::command]
 pub async fn vault_import_key(
     profile_id: String,
@@ -768,41 +644,25 @@ pub async fn vault_has_credential(
     Ok(guard.as_ref().is_some_and(|v| v.has(&session_id)))
 }
 
-/// The three files are meaningless apart: session profiles reference vault
-/// entries by id via `hasCredential`, workspaces reference session profiles
-/// by id, and a vault full of credentials with no profiles naming the hosts
-/// they're for isn't useful either. Exporting just the vault (the old
-/// behavior) left you stranded on a new machine — so the export bundles all
-/// three, encoding the already-encrypted vault file's contents as a nested
-/// JSON value (it's already a small JSON document, nesting it avoids a
-/// redundant base64 layer).
+/// The export bundle: vault, session profiles and workspaces, which reference
+/// each other and are useless apart. The already-encrypted vault file is
+/// nested as JSON.
 #[derive(Serialize, serde::Deserialize)]
 struct ExportBundle {
     format: String,
     vault: serde_json::Value,
     sessions: Vec<crate::profiles::SessionProfile>,
-    /// Added after the format was already in the wild. Defaulted rather than
-    /// version-bumped so bundles written before workspaces existed still
-    /// import (as "no workspaces") instead of being rejected outright.
+    /// Defaulted so bundles from before workspaces existed still import.
     #[serde(default)]
     workspaces: Vec<crate::workspaces::Workspace>,
 }
 
 const EXPORT_FORMAT: &str = "wr-shell-export-v1";
 
-/// Runs the file dialog here rather than taking a path from the webview.
-///
-/// These two commands used to accept a `dest_path`/`src_path` `String`. The
-/// frontend did source them from the dialog plugin, but the Rust side is the
-/// enforcement point and wasn't checking: anything that could reach `invoke`
-/// could write the bundle to an arbitrary location, or point the import at a
-/// planted file — and import *replaces* the live vault and clears the
-/// OS-unlock KEK, so a hostile one is a denial-of-credentials at minimum.
-/// A path that only ever exists on this side can't be forged into one.
-///
-/// The callback form rather than `blocking_pick_file`: these are async
-/// commands, and the blocking variants are documented as unsafe to call from
-/// a thread that may be the one running the event loop.
+/// Runs the file dialog here rather than accepting a path from the webview,
+/// since import replaces the live vault and a forged path could plant one.
+/// Uses the callback form: the blocking variants are unsafe on the event-loop
+/// thread.
 async fn pick_bundle_path(app: &AppHandle, saving: bool) -> Option<std::path::PathBuf> {
     use tauri_plugin_dialog::DialogExt;
 
@@ -823,24 +683,14 @@ async fn pick_bundle_path(app: &AppHandle, saving: bool) -> Option<std::path::Pa
         });
     }
 
-    // A dropped sender means the dialog went away without reporting — treated
-    // the same as a cancel, which is the only safe reading of "no path".
+    // A dropped sender is a cancel.
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
-/// Doesn't require the vault to be unlocked in this process — the vault
-/// half of the bundle is copied across still encrypted.
-///
-/// Note that only that half is. `sessions` and `workspaces` ride in the
-/// bundle as plaintext JSON: hostnames, usernames, ports, key paths and jump
-/// topology are all readable in a text editor. That's deliberate — encrypting
-/// them under the DEK would require the vault to be unlocked to export at
-/// all, and being able to take a backup of a locked vault is worth more than
-/// hiding a hostname — but it is not what a file called a "vault export"
-/// implies, so the UI says so at the point of export rather than leaving the
-/// user to assume.
-///
-/// Returns `false` if the user dismissed the file dialog.
+/// Exports the bundle; the vault doesn't need to be unlocked. Only the vault is
+/// encrypted: sessions and workspaces (hosts, usernames, key paths, jump
+/// topology) are plaintext JSON, so a locked vault can still be backed up. The
+/// UI says so at export. Returns `false` if the dialog was dismissed.
 #[tauri::command]
 pub async fn vault_export(
     app: AppHandle,
@@ -852,8 +702,7 @@ pub async fn vault_export(
     let vault_contents = std::fs::read_to_string(vault_path(&app)?).map_err(|e| e.to_string())?;
     let vault: serde_json::Value =
         serde_json::from_str(&vault_contents).map_err(|e| e.to_string())?;
-    // A read, but still under the lock: a backup taken halfway through a write
-    // to `sessions.json` is a backup of a file nobody ever had.
+    // Under the lock, so the backup isn't of a half-written file.
     let sessions = profile_state
         .with_profiles(&app, crate::profiles::read_profiles)
         .await?;
@@ -865,29 +714,15 @@ pub async fn vault_export(
         sessions,
         workspaces,
     };
-    // Atomic like every other store here: the destination is often an
-    // existing bundle being refreshed, and a crash part-way through must not
-    // consume the previous backup to produce a truncated replacement.
+    // Atomic, so a crash can't destroy the previous backup.
     crate::atomic_file::write_json_atomic(&dest_path, &bundle)?;
     Ok(true)
 }
 
-/// What can be checked about the bundle's plaintext `sessions` half before it
-/// replaces the live one.
-///
-/// Most of a `SessionProfile` can't be: a hostname or a `key_path` is not
-/// wrong in any way this side can see, which is why the import UI's job is to
-/// make the replacement obvious. What *can* be checked is anything the
-/// application will later act on by itself, and `wake_on_lan` is the first
-/// such field — a MAC and a destination that a connect turns into outbound
-/// UDP with nobody asked. Refusing the bundle is right rather than dropping
-/// the field: this runs before anything is torn down, so the cost of being
-/// strict is an error message, and a bundle carrying a wake target that isn't
-/// one is a bundle to be suspicious of rather than to quietly repair.
-///
-/// The pattern generalizes deliberately. Every field `SessionProfile` grows
-/// that acts on its own belongs here, checked at the boundary, rather than
-/// discovered at use.
+/// Validates the parts of the bundle's plaintext sessions the app would act on
+/// by itself, currently `wake_on_lan` (outbound UDP on connect). The whole
+/// bundle is refused rather than repaired, before anything is torn down. New
+/// self-acting profile fields should be checked here too.
 fn validate_sessions(sessions: &[crate::profiles::SessionProfile]) -> Result<(), String> {
     for session in sessions {
         if let Some(wake) = &session.wake_on_lan {
@@ -902,36 +737,20 @@ fn validate_sessions(sessions: &[crate::profiles::SessionProfile]) -> Result<(),
     Ok(())
 }
 
-/// Importing replaces the vault file, the session profile list, and the
-/// saved workspaces outright, and forces a re-lock (the in-memory vault, if
-/// any, belonged to the old file and its key no longer applies) — the caller
-/// must unlock again with the imported file's password. Any stored OS-unlock
-/// key is cleared too, since it wrapped the *old* file's key and can't unlock
-/// the replacement.
+/// Imports a bundle, replacing the vault file, session profiles and workspaces,
+/// and re-locking (the caller unlocks with the imported password). The stored
+/// OS-unlock key is cleared, since it wrapped the old data key.
 ///
-/// The whole bundle is parsed *and* its vault half validated before anything
-/// is written or torn down, so a file that isn't a usable vault is rejected
-/// with the current unlock still intact. Each of the three writes is
-/// individually atomic. What's *not* covered is atomicity across all three: a
-/// crash between them leaves the new vault beside the old sessions. Closing
-/// that would mean staging all three and renaming them together, which isn't
-/// something a filesystem offers — and the recovery is to re-run the import,
-/// since the bundle is still sitting there.
+/// Everything is parsed and validated before anything is torn down, so a bad or
+/// abandoned import leaves the current unlock intact. Each write is atomic, but
+/// not all three together; after a crash, re-run the import.
 ///
-/// `sessions` gets what checking it admits of — see `validate_sessions` — but
-/// most of it is untrusted content that can't be judged from here. A planted
-/// bundle can name any `key_path` it likes against any
-/// host, and connecting to that host would hand it a signature from that key.
-/// Nothing here can distinguish that from a legitimate profile — the import
-/// UI's job is to make clear that the session list is being replaced, so the
-/// user recognizes entries they did not create. A signature over the bundle
-/// wouldn't help either: it's a backup that must open on a new machine with
-/// nothing but the master password, so there is no key to have signed it with.
+/// Sessions are untrusted: a planted bundle could point a `key_path` at any
+/// host. The import UI makes the replacement obvious so the user notices
+/// unfamiliar entries; signing can't help, since only the master password
+/// travels with a backup.
 ///
-/// Returns `false` if the user dismissed the file dialog. Nothing is torn
-/// down before a file is chosen *and* found to be good — an abandoned or
-/// rejected import must not have re-locked the vault the user was already
-/// using.
+/// Returns `false` if the dialog was dismissed.
 #[tauri::command]
 pub async fn vault_import(
     app: AppHandle,
@@ -948,25 +767,16 @@ pub async fn vault_import(
     if bundle.format != EXPORT_FORMAT {
         return Err(format!("unsupported export format: {}", bundle.format));
     }
-    // Before anything is torn down. The bundle's `vault` is a bare
-    // `serde_json::Value` that has only been checked to be *some* JSON, and
-    // installing one that is not a vault — or is one with no master-password
-    // wrapper — would leave the user locked out of a store they can no longer
-    // open, having already lost the session this import re-locked. Same
-    // principle as waiting for a file to be chosen: nothing is given up until
-    // the replacement is known good.
+    // Validate the vault before tearing anything down: an invalid one (or one
+    // without a master-password wrapper) would lock the user out.
     wr_vault::validate(&bundle.vault).map_err(|e| format!("not a valid vault file: {e}"))?;
     validate_sessions(&bundle.sessions)?;
 
-    // Only now does the current unlock go: the in-memory vault belonged to the
-    // old file and its key no longer applies, and any stored OS-unlock key
-    // wrapped the *old* file's DEK.
+    // Now drop the current unlock and the old OS-unlock key.
     *state.vault.lock().await = None;
     forget_os_unlock_kek()?;
 
-    // The vault is the one file here with no other copy — a truncated write
-    // loses every stored credential — so it goes through the same atomic
-    // replace as the other two rather than a plain overwrite.
+    // Atomic: the vault has no other copy.
     crate::atomic_file::write_json_atomic(&vault_path(&app)?, &bundle.vault)?;
 
     profile_state
@@ -984,9 +794,8 @@ pub async fn vault_import(
 mod tests {
     use super::*;
 
-    /// Built by deserializing, because that is how a bundle's sessions
-    /// arrive — a struct literal would skip the `serde(default)` handling the
-    /// real path goes through.
+    /// Built by deserializing, as a bundle's sessions are, so `serde(default)`
+    /// applies.
     fn session_with_wake(wake: &str) -> crate::profiles::SessionProfile {
         serde_json::from_str(&format!(
             r#"{{
@@ -1015,9 +824,7 @@ mod tests {
         assert!(validate_sessions(&sessions).is_ok());
     }
 
-    /// The whole bundle is refused, and the message names the session — this
-    /// runs before anything is torn down, so the user still has the vault
-    /// they were using and something to go on.
+    /// Refused with the session's name, before anything is torn down.
     #[test]
     fn a_bundle_pointing_a_wake_somewhere_it_doesnt_belong_is_refused() {
         let sessions = [session_with_wake(

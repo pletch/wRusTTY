@@ -1,16 +1,9 @@
 /**
  * Reporting half of the delivery recorder: backend correlation, formatting,
- * and the `__wrusttyDelivery` devtools handle.
- *
- * Split from `deliveryStats.ts` because the two halves have opposite
- * requirements. The recorder sits on the hot path of every byte the app
- * receives and has to ship; this half only ever runs when someone is actively
- * taking a measurement, and at ~200 lines of formatting it was the bulk of
- * what a release bundle was carrying for a tool nobody in a release build can
- * reach. `main.tsx` imports it dynamically, behind a build flag.
- *
- * The seam is exact: nothing here is called from the recording path, and
- * nothing in `deliveryStats.ts` imports this.
+ * and the `__wrusttyDelivery` devtools handle. Separate from
+ * `deliveryStats.ts` (the hot-path recorder) so release bundles don't carry
+ * it; `main.tsx` imports it dynamically behind a build flag. Nothing in
+ * `deliveryStats.ts` imports this.
  */
 import { invoke } from '@tauri-apps/api/core'
 import * as writePhases from './writePhases'
@@ -37,14 +30,9 @@ const mbs = (n: number) => `${(n / 1048576).toFixed(1)} MB/s`
 const kb = (n: number) => `${(n / 1024).toFixed(1)} KB`
 
 /**
- * Why the frontend was idle across its longest starved window.
- *
- * The threshold is a frame budget, not a tuned constant: if the worst frame
- * gap inside the window is under ~2 refreshes the thread was servicing frames
- * normally and simply had no bytes, so the stall is upstream of the webview's
- * event loop. If frames were absent for most of the window, the thread was
- * blocked and could not have taken delivery even had bytes been waiting —
- * which, when the backend is running ahead, they were.
+ * Why the frontend was idle across its longest starved window. With frame
+ * gaps under ~2 refreshes the thread was servicing frames and simply had no
+ * bytes (an upstream stall); with frames mostly absent, it was blocked.
  */
 function idleReading(idleMs: number, frames: number, maxFrameGapMs: number): string {
   if (frames === 0 && idleMs > 33) return 'MAIN THREAD BLOCKED (no frames at all)'
@@ -62,8 +50,7 @@ function shortReading(g: IdleGap): string {
 }
 
 /**
- * Both ends of the path as one report, with the verdict spelled out rather
- * than left to be inferred from six numbers.
+ * Both ends of the path as one report, with the verdict spelled out.
  */
 export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats | null): string {
   const lines: string[] = []
@@ -102,9 +89,8 @@ export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats
     `idle (no bytes in)     longest ${front.maxIdleMs.toFixed(1)} ms; total ${front.totalIdleMs.toFixed(0)} ms = ${(front.idleShare * 100).toFixed(1)}% of the active window`,
   )
   if (front.pacedMs > 0) {
-    // Split out rather than subtracted silently: the frontend choosing to wait
-    // and the producer having nothing to send are different findings that
-    // happen to look identical between two deliveries.
+    // Separate: the frontend choosing to wait and the producer having nothing
+    // look identical between deliveries.
     const pacedShare = front.activeSpanMs > 0 ? (front.pacedMs / front.activeSpanMs) * 100 : 0
     const starvedShare = front.activeSpanMs > 0 ? (front.starvedMs / front.activeSpanMs) * 100 : 0
     lines.push(
@@ -112,8 +98,8 @@ export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats
       `                       leaving ${front.starvedMs.toFixed(0)} ms (${starvedShare.toFixed(1)}%) genuinely waiting on the producer`,
     )
   }
-  // Located in both clock time and byte offset: a periodic pause and one
-  // tripped at a fixed point in the stream look identical in a total.
+  // By clock time and byte offset: a periodic pause and one at a fixed point in
+  // the stream look alike in a total.
   for (const g of front.topGaps) {
     lines.push(
       `                       ${g.ms.toFixed(1).padStart(8)} ms @ ${(g.atMs / 1000).toFixed(2)} s / ${mb(g.afterBytes)} in (${shortReading(g)})`,
@@ -130,19 +116,13 @@ export function formatReport(front: DeliverySnapshot, back: BackendDeliveryStats
     lines.push('main thread (rAF)      not sampled (no animation frames recorded)')
   }
 
-  // The reading, stated. These thresholds are deliberately coarse: this is a
-  // pointer at where to look next, not a measurement in its own right.
-  // Read from the active window, not the raw span. The backend's clock starts
-  // at the same command echo, so its span carries the same warm-up and has to
-  // have it removed before the two rates can be compared at all.
+  // Coarse thresholds: a pointer at where to look, not a measurement. The
+  // backend's clock starts at the same command echo, so its span has the same
+  // warm-up removed before comparing rates.
   const backActiveMs = back ? back.spanMs - front.warmupMs : 0
   const backRate = back && backActiveMs > 0 ? back.bytes / (backActiveMs / 1000) : 0
-  // Pacing is removed from the window before the shares are judged. Left in, it
-  // counts against the engine twice: it lowers the parse share below the
-  // ENGINE-BOUND threshold and lowers the delivery rate below the backend's,
-  // so a frontend deliberately yielding to render reads as one that could not
-  // keep up. That is exactly what the first run after the scheduler landed
-  // reported, and it was wrong.
+  // Pacing is removed first; left in, it would lower both the parse share and
+  // the delivery rate, so deliberate yielding would read as falling behind.
   const workingMs = Math.max(1, front.activeSpanMs - front.pacedMs)
   const workingParseShare = front.activeParseMs / workingMs
   const workingBytesPerSec = front.activeBytes / (workingMs / 1000)
@@ -173,25 +153,19 @@ export async function report(): Promise<string> {
   try {
     back = await backendStats()
   } catch {
-    // Browser/dev-server context with no Tauri backend — the frontend half is
-    // still worth having on its own.
+    // No Tauri backend (a plain browser); the frontend half still stands.
   }
-  // The phase breakdown is a strict subdivision of this report's `engine`
-  // line, so the two belong in one output rather than two calls that could be
-  // taken from different runs.
+  // The phase breakdown subdivides this report's `engine` line, so both come
+  // from one call.
   const text = `${formatReport(snapshot(), back)}\n${writePhases.formatReport()}`
   console.log(text)
   return text
 }
 
-/** Exposed so a live session can be measured from devtools without a UI. */
 /**
- * Arms both ends of the recorder together.
- *
- * Exported so the on-screen instrument and the devtools handle start recording
- * the same way. They must: a report assembled from a frontend that was
- * recording and a backend that was not is silently wrong about where the time
- * went, and there is no way to tell from the output.
+ * Arms both ends of the recorder together, as the on-screen instrument and
+ * the devtools handle both must: a report from a recording frontend and an
+ * idle backend is silently wrong.
  */
 export async function startRecording(): Promise<void> {
   start()
@@ -208,6 +182,7 @@ export function stopRecording(): void {
   writePhases.stop()
 }
 
+/** Exposes the recorder on `globalThis` for measuring from devtools. */
 export function install(): void {
   ;(globalThis as Record<string, unknown>).__wrusttyDelivery = {
     start: async () => {

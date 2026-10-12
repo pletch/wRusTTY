@@ -1,18 +1,11 @@
 //! Wake-on-LAN: the magic packet, and the TCP probe that says whether one is
-//! needed at all.
+//! needed. Lives here rather than in a crate (std UDP plus one tokio connect),
+//! at the layer that knows which host a session is for.
 //!
-//! A module here rather than a `crates/wr-*` of its own because there's no
-//! external surface to wrap — this is std UDP plus one tokio connect, in the
-//! same spirit as `atomic_file` and `coalesce`. The transports don't need it
-//! either: waking is a property of the host, not of SSH, so it belongs to the
-//! layer that already knows which host a session is for.
-//!
-//! `wake_and_wait` is the whole policy: probe first so an already-awake host
-//! is never sent anything, re-send while waiting because a NIC coming out of
-//! deep sleep can miss the first packet, and give up on a deadline rather than
-//! leaving the connect path open indefinitely. What it doesn't own is
-//! cancellation — a pane closed mid-wake is `session_registry`'s to notice,
-//! since the registry is what knows the session is gone.
+//! `wake_and_wait` is the policy: probe first so an awake host is never sent
+//! anything, re-send while waiting (a NIC leaving deep sleep can miss the first
+//! packet), and give up at a deadline. Cancellation when a pane closes is
+//! `session_registry`'s job.
 
 use std::net::{Ipv4Addr, UdpSocket};
 use std::time::Duration;
@@ -22,53 +15,34 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use wr_core::{ConnectionEvent, ConnectionStatus};
 
-/// The port a magic packet is conventionally sent to. Nothing listens on it —
-/// the NIC's firmware matches the payload anywhere in the frame, so the port
-/// is a convention rather than a requirement. 7 turns up on some gear, which
-/// is the whole reason this is overridable.
+/// The conventional magic-packet port (the NIC matches the payload anywhere,
+/// so it's only convention; some gear uses 7).
 pub const DEFAULT_PORT: u16 = 9;
 
-/// Where the packet goes when a profile doesn't name a target. The limited
-/// broadcast address never leaves the local segment, which is the common case
-/// (waking the desktop on your own LAN) and also the safe default: it can't
-/// escape to somewhere it wasn't meant for.
+/// Default target: the limited broadcast, which never leaves the local segment.
 pub const DEFAULT_BROADCAST: Ipv4Addr = Ipv4Addr::BROADCAST;
 
-/// How long to keep waiting for a woken host to answer, when a profile
-/// doesn't say. A Windows box coming out of S4 with a spinning disk is
-/// comfortably the slowest thing this has to cover; 60s clears it with room
-/// to spare, and the caller can raise it per-profile for anything slower.
+/// Default wait for a woken host to answer; covers a slow Windows box resuming
+/// from S4.
 pub const DEFAULT_WAIT_SECONDS: u64 = 60;
 
-/// The longest wait a stored profile can ask for. Ten minutes is already well
-/// past the S4-with-a-spinning-disk case `DEFAULT_WAIT_SECONDS` describes, so
-/// nothing legitimate is being refused.
-///
-/// The ceiling exists because the field is a number in a file: `sessions.json`
-/// is editable, and `vault_import`'s plaintext half deserializes straight into
-/// `SessionProfile`. Unbounded, it buys two things — a pane stuck "Waking" for
-/// a year while emitting a packet every `RETRY_INTERVAL`, and, at the top of
-/// the range, a panic: `Instant + Duration` is a `checked_add().expect(..)`,
-/// and a panic inside the connect task's prepare step leaves the session
-/// wedged in `Connecting`.
-///
-/// Clamped rather than rejected at use, so an imported profile stays usable;
-/// `validate` is the complement, so the person who typed it hears about it.
+/// The longest wait a stored profile may ask for. The value comes from
+/// editable or imported files, and unbounded it could loop for a year or panic
+/// in `Instant + Duration` (wedging the session in `Connecting`). Clamped at
+/// use so imported profiles still work; `validate` reports it to whoever typed
+/// it.
 pub const MAX_WAIT_SECONDS: u64 = 600;
 
-/// What to send, and where. `None` throughout means "use the default", so a
-/// profile that only fills in a MAC — which is nearly all of them — stores
-/// exactly that and nothing else.
+/// What to send, and where. `None` means the default, so a MAC-only profile
+/// stores just the MAC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WakeOnLan {
-    /// Accepted in any of the four ways people write one down; see
-    /// `parse_mac`.
+    /// In any common notation; see `parse_mac`.
     pub mac: String,
-    /// Where to broadcast. `None` is 255.255.255.255, which only reaches the
-    /// local segment; a directed broadcast (`192.168.1.255`) is what reaches
-    /// another one, and is also how you pin the packet to a specific
-    /// interface on a machine with several — see `send`.
+    /// Where to broadcast. `None` is 255.255.255.255 (local segment only); a
+    /// directed broadcast (`192.168.1.255`) reaches another segment and pins the
+    /// interface; see `send`.
     #[serde(default)]
     pub broadcast: Option<String>,
     #[serde(default)]
@@ -83,8 +57,7 @@ impl WakeOnLan {
         self.port.unwrap_or(DEFAULT_PORT)
     }
 
-    /// Clamped to `MAX_WAIT_SECONDS` — see there for why a stored number
-    /// needs a ceiling at all.
+    /// Clamped to `MAX_WAIT_SECONDS`.
     pub fn wait(&self) -> Duration {
         Duration::from_secs(
             self.wait_seconds
@@ -93,14 +66,9 @@ impl WakeOnLan {
         )
     }
 
-    /// The parsed broadcast target. An unparseable address is an error rather
-    /// than a silent fall back to 255.255.255.255: a typo'd directed
-    /// broadcast that quietly becomes a limited one would look like it worked
-    /// on the LAN and fail everywhere else, which is the worst way for this
-    /// to be wrong.
-    ///
-    /// An address that parses but isn't somewhere a magic packet belongs is
-    /// the same kind of error — see `is_wakeable`.
+    /// The parsed broadcast target. An unparseable address is an error rather than
+    /// a silent fallback to the limited broadcast (which would work on the LAN and
+    /// fail elsewhere), as is one `is_wakeable` refuses.
     pub fn broadcast_addr(&self) -> Result<Ipv4Addr, String> {
         let addr: Ipv4Addr = match self.broadcast.as_deref().map(str::trim) {
             None | Some("") => return Ok(DEFAULT_BROADCAST),
@@ -117,14 +85,9 @@ impl WakeOnLan {
         Ok(addr)
     }
 
-    /// Everything about this config that can be checked without a network:
-    /// the MAC parses, and the target is one a packet may be sent to.
-    ///
-    /// Separate from `send` so the same answer can be given at the two places
-    /// a person can still act on it — saving a profile, and importing a
-    /// bundle of them. Before this existed, both checks happened only at
-    /// connect time, so a garbage MAC saved cleanly and failed a minute later
-    /// in a pane.
+    /// Checks that need no network: the MAC parses and the target is allowed. Used
+    /// when saving a profile and importing a bundle, where the user can still fix
+    /// it.
     pub fn validate(&self) -> Result<(), String> {
         parse_mac(&self.mac)?;
         self.broadcast_addr()?;
@@ -137,43 +100,24 @@ impl WakeOnLan {
     }
 }
 
-/// Whether a magic packet may be sent to `addr`.
-///
-/// A wake target has to be somewhere a magic packet is meaningful: the
-/// limited broadcast, and the ranges a LAN or a routed internal segment
-/// actually uses — which covers every real use of this field, including
-/// waking a machine across a VPN into a private range.
-///
-/// Refused: public unicast, loopback, multicast. Not because a magic packet
-/// there would do damage, but because this field arrives from files —
-/// `sessions.json`, and `vault_import`'s plaintext half — and an
-/// unconstrained address plus an unconstrained port turns `send` into a UDP
-/// sender pointed wherever a planted bundle says. It is write-only and the
-/// payload is a fixed shape, so it's not much of a primitive; it is still the
-/// victim's network position offered to whoever wrote the file, every
-/// `RETRY_INTERVAL`, for the length of the wait.
-///
-/// The one legitimate case refused is a LAN on public address space — some
-/// universities and older allocations. If that ever comes up it wants an
-/// explicit setting, not a permissive default.
+/// Whether a magic packet may be sent to `addr`: the limited broadcast, private
+/// ranges, link-local and CGNAT. Public unicast, loopback and multicast are
+/// refused because the address comes from files (including imported bundles),
+/// and an unconstrained address and port would let a planted file aim UDP
+/// anywhere from the victim's network. A LAN on public address space would need
+/// an explicit setting.
 fn is_wakeable(addr: Ipv4Addr) -> bool {
     addr == Ipv4Addr::BROADCAST
         || addr.is_private()    // 10/8, 172.16/12, 192.168/16
         || addr.is_link_local() // 169.254/16
-        // Carrier-grade NAT, 100.64/10 — what Tailscale and similar hand out,
-        // so a wake across an overlay lands here rather than in RFC 1918.
+        // CGNAT (100.64/10), used by Tailscale and similar overlays.
         || matches!(addr.octets(), [100, b, _, _] if (64..128).contains(&b))
-        // Loopback is refused above, which the tests would fail on: they send
-        // to a socket on 127.0.0.1 precisely so nothing leaves the machine.
-        // The alternative is a test that broadcasts for real, which is worse.
+        // Tests send to loopback so nothing leaves the machine.
         || (cfg!(test) && addr.is_loopback())
 }
 
-/// A MAC as its six bytes, from any of the ways one gets written down:
-/// `aa:bb:cc:dd:ee:ff`, `aa-bb-cc-dd-ee-ff`, Cisco's `aabb.ccdd.eeff`, or
-/// bare `aabbccddeeff`. Separators are simply dropped rather than validated
-/// into one canonical form — a mixed-separator string is unambiguous, and
-/// rejecting it would only punish someone who pasted from two places.
+/// A MAC as six bytes, from `aa:bb:cc:dd:ee:ff`, `aa-bb-...`, Cisco's
+/// `aabb.ccdd.eeff` or bare hex. Separators are just dropped.
 pub fn parse_mac(text: &str) -> Result<[u8; 6], String> {
     let hex: String = text
         .chars()
@@ -192,8 +136,7 @@ pub fn parse_mac(text: &str) -> Result<[u8; 6], String> {
     Ok(mac)
 }
 
-/// The magic packet: six `0xFF` bytes, then the target's MAC sixteen times
-/// over. Fixed-size because it always is — 6 + 6×16 = 102.
+/// The magic packet: six `0xFF` bytes, then the MAC sixteen times (102 bytes).
 fn magic_packet(mac: [u8; 6]) -> [u8; 102] {
     let mut packet = [0xFFu8; 102];
     for chunk in packet[6..].chunks_exact_mut(6) {
@@ -202,15 +145,9 @@ fn magic_packet(mac: [u8; 6]) -> [u8; 102] {
     packet
 }
 
-/// Broadcasts one magic packet.
-///
-/// Binding to 0.0.0.0 leaves the interface choice to the routing table, which
-/// on a machine with Wi-Fi, Ethernet and a VM switch all up is a coin toss
-/// that a limited broadcast has no way to influence. That's what
-/// `WakeOnLan::broadcast` is for: a directed broadcast has a route, so naming
-/// one picks the interface by picking the subnet. Fanning out across every
-/// interface automatically would need interface enumeration — a dependency,
-/// and a later call than this one.
+/// Broadcasts one magic packet. Binding 0.0.0.0 leaves the interface to the
+/// routing table; on a multi-homed machine, a directed broadcast
+/// (`WakeOnLan::broadcast`) picks the interface via its subnet.
 pub fn send(wake: &WakeOnLan) -> Result<(), String> {
     let mac = parse_mac(&wake.mac)?;
     let target = wake.broadcast_addr()?;
@@ -227,13 +164,8 @@ pub fn send(wake: &WakeOnLan) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `host:port` accepts a connection within `timeout`.
-///
-/// This is the whole basis for not waking a machine that's already awake, and
-/// for knowing when a woken one is ready. Anything other than a completed
-/// handshake — refused, timed out, DNS failure — reads as "not up yet", since
-/// from here they're indistinguishable from a host that hasn't finished
-/// booting.
+/// Whether `host:port` accepts a connection within `timeout`. Any failure
+/// (refused, timeout, DNS) reads as "not up yet".
 pub async fn port_open(host: &str, port: u16, timeout: Duration) -> bool {
     matches!(
         tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await,
@@ -241,38 +173,25 @@ pub async fn port_open(host: &str, port: u16, timeout: Duration) -> bool {
     )
 }
 
-/// How long a single reachability probe is given. Short: this runs before
-/// every wake-enabled connection, including the overwhelmingly common case of
-/// a host that's already up, and two seconds is far past a LAN round trip
-/// while still being under what anyone would notice.
+/// Timeout for one reachability probe; runs before every wake-enabled connect,
+/// so it stays short.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Gap between magic packets while waiting. Each round re-sends rather than
-/// sending once and only polling: the first packet can land while the NIC is
-/// still in a state that ignores it, and a 102-byte broadcast every few
-/// seconds costs nothing worth economizing on.
+/// Gap between magic packets while waiting; each round re-sends in case the
+/// NIC ignored an earlier one.
 const RETRY_INTERVAL: Duration = Duration::from_secs(3);
 
-/// Wakes `host` if it needs waking, and doesn't return until it answers on
-/// `port` or the configured wait runs out.
-///
-/// The opening probe is the load-bearing part. Without it this would fire a
-/// magic packet at a machine that's already up on every single connection,
-/// which is both pointless traffic and — for anyone watching a switch — a
-/// puzzling thing to see. With it, leaving a MAC configured on a profile
-/// permanently costs one round trip and nothing else.
-///
-/// A wake that times out is an error, so the pane says "did not wake" rather
-/// than falling through to a TCP connect that will fail again a minute later
-/// with something far less informative.
+/// Wakes `host` if needed and returns once it answers on `port`, or errors when
+/// the wait runs out (so the pane says "did not wake" rather than failing the
+/// connect later). The opening probe means a MAC left on a profile costs one
+/// round trip when the host is already up.
 pub async fn wake_and_wait(
     host: &str,
     port: u16,
     wake: &WakeOnLan,
     events: &mpsc::Sender<ConnectionEvent>,
 ) -> Result<(), String> {
-    // Up front, before the probe: a malformed MAC is a configuration mistake,
-    // and making the user wait two seconds to be told so would be strange.
+    // Validate before the probe, so config mistakes are reported immediately.
     parse_mac(&wake.mac)?;
     wake.broadcast_addr()?;
 
@@ -280,8 +199,7 @@ pub async fn wake_and_wait(
         return Ok(());
     }
 
-    // Only announced once we know we're actually going to wake something —
-    // the pane shouldn't flicker through "Waking" for a host that was up.
+    // Announced only when actually waking.
     let _ = events
         .send(ConnectionEvent::Status(ConnectionStatus::Waking))
         .await;
@@ -290,10 +208,7 @@ pub async fn wake_and_wait(
     loop {
         send(wake)?;
 
-        // A zero wait means "send it and get on with it" — the connect
-        // attempt that follows is then the thing that decides whether the
-        // host is there, which is the same answer this loop would give, just
-        // without the wait the user asked not to have.
+        // A zero wait means send once and let the connect decide.
         if Instant::now() >= deadline {
             return Ok(());
         }
@@ -311,13 +226,8 @@ pub async fn wake_and_wait(
     }
 }
 
-/// Sends a saved session's magic packet and returns, without waiting for the
-/// host or connecting to it.
-///
-/// The deliberate half of the feature, for the times you want the machine up
-/// but aren't about to open a terminal on it. It doesn't probe first — asking
-/// for this is asking for a packet, and suppressing it because the host looked
-/// up would just be confusing.
+/// Sends a saved session's magic packet without waiting or connecting. No
+/// probe: the user asked for a packet.
 #[tauri::command]
 pub async fn wake_host(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
     let profile = crate::profiles::get_profile(&app, &profile_id)?;
@@ -333,8 +243,7 @@ mod tests {
 
     const EXPECTED: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
 
-    /// All four are how someone will have copied the address out of ipconfig,
-    /// a router's lease table, a switch, or a label on the case.
+    /// The notations people copy from ipconfig, router tables, switches and labels.
     #[test]
     fn a_mac_parses_however_it_was_written_down() {
         for text in [
@@ -348,9 +257,7 @@ mod tests {
         }
     }
 
-    /// Rejected rather than padded or truncated: a MAC that's wrong in any
-    /// way wakes nothing, and saying so at the form is the only place the
-    /// user can act on it.
+    /// A malformed MAC wakes nothing, so it's refused at the form.
     #[test]
     fn a_mac_that_isnt_six_bytes_of_hex_is_refused() {
         for text in [
@@ -374,8 +281,7 @@ mod tests {
         assert_eq!(packet[6..].len() / 6, 16);
     }
 
-    /// A profile that fills in nothing but a MAC — nearly all of them — has
-    /// to be the one that just works.
+    /// A MAC-only profile just works.
     #[test]
     fn a_mac_only_config_uses_the_conventional_defaults() {
         let wake = WakeOnLan {
@@ -389,7 +295,7 @@ mod tests {
         assert_eq!(wake.wait(), Duration::from_secs(60));
     }
 
-    /// Empty is what a cleared form field sends, and means the same as absent.
+    /// A cleared form field means the default.
     #[test]
     fn an_empty_broadcast_field_means_the_default() {
         let wake = WakeOnLan {
@@ -401,8 +307,7 @@ mod tests {
         assert_eq!(wake.broadcast_addr().unwrap(), Ipv4Addr::BROADCAST);
     }
 
-    /// See `broadcast_addr`: falling back to the limited broadcast here would
-    /// work on the LAN and fail silently everywhere else.
+    /// A malformed address is an error, not a fallback.
     #[test]
     fn a_broadcast_address_that_isnt_one_is_an_error_not_a_fallback() {
         let wake = WakeOnLan {
@@ -414,9 +319,7 @@ mod tests {
         assert!(wake.broadcast_addr().is_err());
     }
 
-    /// The addresses this field is actually for: the limited broadcast, a
-    /// directed broadcast on each of the private ranges, link-local, and the
-    /// CGNAT range an overlay network hands out.
+    /// The limited broadcast, private directed broadcasts, link-local and CGNAT.
     #[test]
     fn the_ranges_a_lan_uses_are_wakeable() {
         for text in [
@@ -440,8 +343,7 @@ mod tests {
         }
     }
 
-    /// See `is_wakeable`: the field arrives from an importable file, and
-    /// `send` is otherwise 102 bytes to any address and port the file names.
+    /// See `is_wakeable`.
     #[test]
     fn an_address_a_magic_packet_doesnt_belong_at_is_refused() {
         for text in [
@@ -462,8 +364,7 @@ mod tests {
         }
     }
 
-    /// The clamp is the thing that stops a stored number becoming either a
-    /// year-long send loop or a panic in `Instant::add`.
+    /// The clamp prevents a year-long send loop or a panic.
     #[test]
     fn an_absurd_wait_is_clamped_rather_than_honoured() {
         let mut wake = WakeOnLan {
@@ -473,8 +374,7 @@ mod tests {
             wait_seconds: Some(u64::MAX),
         };
         assert_eq!(wake.wait(), Duration::from_secs(MAX_WAIT_SECONDS));
-        // Still usable if it arrived from an import — but refused at the
-        // boundary, so whoever typed it is told rather than quietly overruled.
+        // Usable after import, but refused by `validate`.
         assert!(wake.validate().is_err());
 
         wake.wait_seconds = Some(120);
@@ -482,8 +382,7 @@ mod tests {
         assert!(wake.validate().is_ok());
     }
 
-    /// The clamped deadline has to be one `Instant` can hold, which is the
-    /// whole point — this panicked before the `min`.
+    /// The clamped deadline fits in an `Instant` (this used to panic).
     #[test]
     fn the_clamped_wait_makes_a_deadline_that_doesnt_panic() {
         let wake = WakeOnLan {
@@ -507,11 +406,8 @@ mod tests {
         .is_err());
     }
 
-    /// The bytes on the wire are the entire contract with the NIC's firmware,
-    /// so they're worth pinning through a real socket rather than only
-    /// through `magic_packet`. Sent to loopback on an ephemeral port: the
-    /// broadcast flag is set exactly as it is in the real path, but nothing
-    /// leaves the machine running the tests.
+    /// The bytes on the wire, through a real socket (on loopback, so nothing
+    /// leaves the machine).
     #[test]
     fn send_puts_the_magic_packet_on_the_wire() {
         let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -542,7 +438,7 @@ mod tests {
         .is_err());
     }
 
-    /// The "don't wake a machine that's already up" half of the feature.
+    /// "Don't wake a machine that's already up."
     #[tokio::test]
     async fn port_open_sees_something_listening() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -558,17 +454,14 @@ mod tests {
         assert!(!port_open("127.0.0.1", port, Duration::from_secs(2)).await);
     }
 
-    /// A host that will never answer must not hold the connect path open past
-    /// its own deadline.
+    /// A host that never answers doesn't hold the connect path past the timeout.
     #[tokio::test]
     async fn port_open_gives_up_after_the_timeout() {
-        // 203.0.113.0/24 is TEST-NET-3: reserved for documentation, routed
-        // nowhere, so this can only ever time out.
+        // TEST-NET-3 is routed nowhere, so this can only time out.
         assert!(!port_open("203.0.113.1", 22, Duration::from_millis(200)).await);
     }
 
-    /// A UDP socket on loopback standing in for the target's NIC, so the wake
-    /// tests can assert what was sent without anything reaching the network.
+    /// A loopback UDP socket standing in for the target's NIC.
     fn packet_sink() -> (UdpSocket, WakeOnLan) {
         let sink = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         sink.set_nonblocking(true).unwrap();
@@ -587,61 +480,16 @@ mod tests {
         std::iter::from_fn(|| sink.recv_from(&mut buf).ok()).count()
     }
 
-    /// Where [`closed_port`] looks. Chosen to sit **below the OS's ephemeral
-    /// range** — 49152–65535 on Windows, 32768–60999 on typical Linux — which
-    /// is the whole point of naming a band rather than asking for port 0.
-    ///
-    /// Also above 1024, so nothing here needs privileges to bind, and clear of
-    /// the handful of registered services that cluster on round numbers.
+    /// Where [`closed_port`] looks: below the OS ephemeral ranges (49152+ on
+    /// Windows, 32768+ on typical Linux), above 1024, and away from round-number
+    /// services.
     const CLOSED_PORT_BAND: std::ops::Range<u16> = 20480..20736;
 
-    /// A loopback TCP port that nothing is listening on.
-    ///
-    /// The obvious version of this — bind port 0, note what you were given,
-    /// drop it — is what `port_open_reports_a_closed_port_as_closed` used to
-    /// do, and it is the reason that test was intermittently failing. Its
-    /// comment claimed the freed port was "as close to 'definitely closed' as a
-    /// test can get", which is true of a test running alone and false here: the
-    /// number comes out of a pool the whole machine shares, so between the drop
-    /// and the probe *anything* — another test, a browser, the dev server —
-    /// may be handed it, and then something really is listening.
-    ///
-    /// The window is what makes it rare and what makes it worse under load.
-    /// Nothing bounds the gap between dropping the listener and the connect,
-    /// and with the whole suite running in parallel that gap is scheduler
-    /// latency rather than microseconds.
-    ///
-    /// It is rare because Windows hands out ephemeral ports *sequentially*:
-    /// twelve consecutive bind/close cycles measured 56816, 56817, ... 56827,
-    /// so a just-freed port is the last one to come back rather than the first.
-    /// Reuse needs the cursor to wrap the whole dynamic range — measured at
-    /// 15,732 allocations before a freed port was handed out again. A test run
-    /// on a quiet machine never gets near that, which is why this reproduces
-    /// under a browser and a dev server and not on demand. It also corrects the
-    /// note this fix came from, which blamed the neighboring `wake` tests
-    /// racing each other: there are six of them, four orders of magnitude short.
-    /// The pool is machine-wide, and so is whatever wraps it.
-    ///
-    /// So: take the port from outside the range any ephemeral allocation can be
-    /// handed, and the race has nothing left to be won by — none of those
-    /// 15,732 allocations landed in this band, and none can. Binding first is
-    /// what proves the port is free rather than assuming it; dropping reopens
-    /// the same window in principle, but now only a program deliberately
-    /// binding this exact number could fill it, which is not something the test
-    /// suite does to itself.
-    /// Hands each *call* its own slot in the band. The first version of this
-    /// offset by the process id alone, which separates two test binaries and
-    /// makes every caller inside one agree — the worst of both, and it
-    /// reproduced the very race being removed: three tests here call this, all
-    /// three picked the same port, and one test's bind-probe was still
-    /// listening when another's `wake_and_wait` probed the same number and
-    /// concluded the host was already awake. The stress loop caught it on the
-    /// 28th run.
-    ///
-    /// So the port has to be free *and* nobody else's. The counter is what
-    /// makes it nobody else's; the pid keeps two binaries from starting in the
-    /// same place. Three callers against 256 slots means the first try
-    /// effectively always lands.
+    /// A loopback TCP port nothing is listening on, taken from outside the
+    /// ephemeral range so a concurrent ephemeral allocation can't reuse it. Binding
+    /// first proves it's free. Each call gets its own slot (a counter plus the pid,
+    /// so separate test binaries start apart) so concurrent tests in this module
+    /// don't pick the same port.
     static NEXT_CLOSED_PORT: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
 
@@ -659,8 +507,7 @@ mod tests {
         panic!("nothing free in {CLOSED_PORT_BAND:?} — is something listening across the band?");
     }
 
-    /// The reason a MAC can be left on a profile permanently: connecting to a
-    /// host that's already up sends nothing and says nothing.
+    /// Connecting to a host that's already up sends nothing and says nothing.
     #[tokio::test]
     async fn an_already_awake_host_is_left_alone() {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
@@ -679,8 +526,7 @@ mod tests {
         );
     }
 
-    /// The pane has to be told what the pause is for, or a minute of silence
-    /// looks like a hung client.
+    /// The pane is told why it's pausing.
     #[tokio::test(start_paused = true)]
     async fn a_host_that_never_answers_is_announced_then_given_up_on() {
         let port = closed_port().await;
@@ -700,8 +546,7 @@ mod tests {
         ));
     }
 
-    /// See `wake_and_wait`: a zero wait is "send it and get on with it", not
-    /// an instant failure.
+    /// A zero wait sends the packet and carries on.
     #[tokio::test]
     async fn a_zero_wait_sends_the_packet_and_carries_on() {
         let port = closed_port().await;
@@ -714,8 +559,7 @@ mod tests {
         assert_eq!(packets_received(&sink), 1);
     }
 
-    /// Checked before the probe, so a typo'd MAC is reported at once rather
-    /// than after a wait the user then has to interpret.
+    /// A bad config fails before anything is probed.
     #[tokio::test]
     async fn a_config_that_cant_be_sent_fails_before_anything_is_probed() {
         let (tx, mut rx) = mpsc::channel(8);

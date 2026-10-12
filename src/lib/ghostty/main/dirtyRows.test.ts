@@ -1,16 +1,9 @@
 /**
  * The two layers of render-state dirty, and the shim's handling of both.
- *
- * `render.h` calls this "an extremely important detail": the global dirty flag
- * and the per-row dirty flags are independent, and clearing one does not clear
- * the other. `mark_clean` used to set only the global one, which left every row
- * of the viewport reading dirty forever after a frame was marked clean.
- *
- * Nothing in the app read per-row dirty, so nothing broke. That is precisely
- * why it needs a test rather than a comment: the failure is invisible until
- * someone adopts dirty-row rendering, at which point the first frame is correct
- * and every frame after it redraws everything while looking like it is being
- * selective.
+ * `render.h` notes that the global flag and per-row flags are independent:
+ * clearing one doesn't clear the other. The failure is invisible until
+ * dirty-row rendering is adopted, when every frame after the first would
+ * redraw everything.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -95,7 +88,7 @@ run('render-state dirty', () => {
     abi.expectOk(ex.ghostty_render_state_update(state, term), 'update')
     expect(dirtyRowCount()).toBe(ROWS)
 
-    // What `mark_clean` used to do: the global layer, and only that.
+    // The global layer only.
     new DataView(ex.memory.buffer).setUint32(out, abi.RS_DIRTY_FALSE, true)
     ex.ghostty_render_state_set(state, abi.RS_OPTION_DIRTY, out)
     expect(dirtyRowCount(), 'per-row flags survive a global clear').toBe(ROWS)
@@ -169,12 +162,8 @@ run('render-state dirty', () => {
 })
 
 /**
- * The same two behaviors, but asserted *through the shim*, which is what
- * actually ships.
- *
- * The block above pins what the engine does. It would pass just as happily with
- * the shim reverted to clearing only the global flag, because it never calls
- * the shim — so on its own it guards the wrong thing.
+ * The same behaviors through the shim, which ships; the block above never
+ * calls it.
  */
 run('the shim, over the dirty API', () => {
   function boot() {
@@ -197,15 +186,10 @@ run('the shim, over the dirty API', () => {
   }
 
   /**
-   * There is deliberately no "mark_clean leaves zero flags" test here.
-   *
-   * It cannot be written through the shim: the shim owns its render state
-   * privately, and asking `is_row_dirty` right after `mark_clean` answers
-   * "clean" either way, because `next_dirty` reports nothing while the global
-   * flag is false. A global-only clear hides behind that gate for exactly one
-   * frame. The engine-level block above proves `render_state_clean` clears both
-   * layers; the test below is what catches the shim failing to call it, because
-   * the stale flags resurface the moment anything dirties the frame again.
+   * No "mark_clean leaves zero flags" test is possible through the shim:
+   * `next_dirty` reports nothing while the global flag is false, hiding a
+   * global-only clear for one frame. This catches the stale flags resurfacing
+   * when the next frame dirties.
    */
   it('sees one dirty row on the frame after a mark_clean, not all of them', () => {
     const { wasm, term, write } = boot()

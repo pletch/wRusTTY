@@ -5,22 +5,10 @@ import { dirname, join } from 'node:path'
 import { parseWindowTitle, parseCwd } from '../remoteIdentity'
 
 /**
- * A host's title and working directory reaching the pane, through a real
- * engine and a real core.
- *
- * `remoteIdentity.test.ts` pins the grammar; this pins that the sequences
- * carrying it survive the trip. Two assumptions are worth the cost of a live
- * core to check:
- *
- *   - **Single-digit identifiers.** OSC 0, 2 and 7 are the shortest this app
- *     handles, and the scanner reads a digit run — `0` sitting next to a
- *     payload that itself starts with digits is exactly where an off-by-one
- *     would hide.
- *   - **Terminator.** Shells emit these with BEL far more often than with ST,
- *     and both appear in the wild from the same host in the same session.
- *
- * A title also arrives interleaved with ordinary screen output rather than on
- * a chunk boundary of its own, which is what the split-delivery case covers.
+ * A host's title and working directory reaching the pane through a real
+ * engine and core. `remoteIdentity.test.ts` pins the grammar; this checks
+ * single-digit idents (OSC 0, 2, 7) next to digit-leading payloads, both BEL
+ * and ST terminators, and a title split across deliveries amid output.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

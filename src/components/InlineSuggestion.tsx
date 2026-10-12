@@ -3,44 +3,16 @@ import { domBaselineShift } from '../lib/cellBaseline'
 import { fitToCells, toCellUnits } from '../lib/cellText'
 
 /**
- * The suggestion as dim text sitting after the cursor, on the line itself.
+ * The suggestion as dim text after the cursor, on the line itself. It only
+ * appears with the cursor at the end of the line, so it covers nothing,
+ * captures no keys and can't overflow, and it costs nothing to type through
+ * when it's wrong. The list is a Ctrl+Space away for ambiguous prefixes (as
+ * with PSReadLine's F2).
  *
- * The default view, and the reason is empirical rather than aesthetic: the
- * dropdown this replaced produced three separate faults in use — it covered
- * the line being typed, it captured the arrow keys someone was using to walk
- * their shell history, and it painted out over the app's own status bar. None
- * of those are possible here. This occupies cells that are already blank (the
- * offer is only made with the cursor at the end of the line), so it covers
- * nothing; it needs no navigation, so it captures nothing; and it is one line
- * tall, so there is nothing to overflow.
- *
- * It is also *ignorable*, which is the property that matters most. A
- * suggestion is often wrong, and dim text you can type straight through costs
- * nothing to be wrong — where a box that appears over your work taxes every
- * keystroke whether or not it was any use.
- *
- * The list is still there, one Ctrl+Space away, for a prefix that really is
- * ambiguous. Much the same division PSReadLine draws with F2.
- *
- * **Drawn one cell at a time**, rather than as a run of text. Handing the
- * whole string to the browser lays it out at the font's own advance per
- * character, which is close to the engine's cell width and not equal to it —
- * so the ghost text drifts a fraction of a pixel per character and ends
- * visibly short of the real text above it by the end of a long command.
- * Boxing each character to exactly one cell makes that impossible instead of
- * merely unlikely, and is what the terminal itself does. See lib/cellText.ts.
- *
- * Not italic, for the same reason. A monospace family usually has no true
- * italic face, so the browser synthesizes an oblique whose metrics differ
- * again — and once each character is boxed, a slanted glyph leans out of its
- * box and gets clipped. Dimming alone reads clearly enough as "not yet real".
- *
- * **And nudged onto the grid's baseline**, which is the vertical half of the
- * same argument. A line box centers the face's own ascent and descent; the
- * atlas centers a measured box and rounds it. Those agree for some faces and
- * not others — in Monaspace Neon and JetBrains Mono the ghost text sat a pixel
- * above the real text, in Fira Code and Consolas it did not. See
- * lib/cellBaseline.ts.
+ * Drawn one cell at a time, as the terminal does (see lib/cellText.ts): the
+ * font's advance differs slightly from the cell width, so a text run would
+ * drift. Not italic, since a synthesized oblique would lean out of its box.
+ * Nudged onto the grid's baseline (see lib/cellBaseline.ts).
  */
 export function InlineSuggestion({
   view,
@@ -58,8 +30,7 @@ export function InlineSuggestion({
   viewportY: number
   rows: number
   cols: number
-  /** The pane's own font, so the ghost text lines up with the real glyphs
-   * beside it rather than approximating them. */
+  /** The pane's own font, so the ghost text matches the real glyphs. */
   fontFamily: string
   fontSize: number
 }) {
@@ -67,23 +38,18 @@ export function InlineSuggestion({
   if (suffix === '') return null
 
   const screenRow = view.cursor.row - viewportY
-  // Scrolled out of view, which happens when someone scrolls back through
-  // history with an offer open.
+  // Scrolled out of view.
   if (screenRow < 0 || screenRow >= rows) return null
-  // Nothing to draw in: the cursor is already at the right edge, and anything
-  // written here would wrap onto a row holding something else.
+  // Cursor at the right edge: anything written would wrap onto another row.
   const columnsLeft = cols - view.cursor.col
   if (columnsLeft <= 0) return null
-  // Trimmed to the columns actually left on the row, so a long suggestion
-  // stops at the edge of the grid rather than running past it — and never
-  // with half a wide character in the last column.
+  // Trimmed to the columns left, never splitting a wide character.
   const units = fitToCells(toCellUnits(suffix), columnsLeft)
   if (units.length === 0) return null
 
   return (
     <div
-      // Never interactive. There is nothing to click, and taking a pointer
-      // event here would put the cursor somewhere the user did not ask for.
+      // Never interactive; a click here would move the cursor unasked.
       className="pointer-events-none absolute select-none text-chrome/30"
       style={{
         left: view.cursor.col * cell.width,
@@ -92,13 +58,9 @@ export function InlineSuggestion({
         fontFamily,
         fontSize,
         lineHeight: `${cell.height}px`,
-        // Onto the grid's baseline rather than the line box's. Zero for a
-        // face where the two already agree, and zero where it cannot be
-        // measured at all.
+        // Onto the grid's baseline; zero where they agree or it can't be measured.
         transform: `translateY(${domBaselineShift(fontFamily, fontSize, cell.height)}px)`,
-        // `pre` keeps a run of spaces inside a command from collapsing, which
-        // would put every character after it in the wrong column even with the
-        // per-cell boxes below.
+        // `pre` keeps runs of spaces, or later characters would shift columns.
         whiteSpace: 'pre',
       }}
       aria-hidden

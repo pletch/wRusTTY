@@ -1,23 +1,14 @@
 import { placeSuggestions, type SuggestionView } from '../lib/autocomplete'
 
 /**
- * The list of recent commands on offer, sitting under the line being typed.
+ * The list of recent commands on offer, under the line being typed. Opened
+ * with Ctrl+Space when a prefix is ambiguous; the inline suggestion is the
+ * default view and claims no keys.
  *
- * A dropdown rather than inline gray ghost-text, for the first version. Ghost
- * text is the prettier form and reads better once you know the feature is
- * there, but it needs either a second draw path in the WebGL renderer or an
- * absolutely-positioned span that stays pixel-aligned through font changes,
- * DPI changes and re-fits. A list is also the only form that can show more
- * than one candidate, which is what makes list navigation worth having.
- *
- * Anchored to the *origin* of the input rather than the cursor, so it stays
- * put as characters are typed instead of sliding right with every keystroke.
- *
- * Only ever shown because it was asked for, with Ctrl+Space — which is what
- * earns it the arrow keys. Up/Down move through it, Right or Enter
- * accepts (without running it — a second Enter does that), Escape dismisses
- * and hands the keys straight back to the shell. The
- * inline view, which appears on its own, claims none of them.
+ * Anchored to the input's origin, so it doesn't slide as characters are
+ * typed. Being asked for is what earns it the arrow keys: Up/Down move,
+ * Right or Enter accepts without running (a second Enter runs), and Escape
+ * hands the keys back to the shell.
  */
 export function SuggestionPopover({
   view,
@@ -41,24 +32,21 @@ export function SuggestionPopover({
     rows,
     cellHeight: cell.height,
   })
-  // The line is not on screen — the user scrolled back through history while a
-  // suggestion was open — so there is nothing to anchor to and nothing worth
-  // drawing.
+  // The line is scrolled off screen; nothing to anchor to.
   if (!place) return null
 
   return (
     <div
-      // Not focusable and not in the tab order: focus belongs to the terminal
-      // the whole time, and taking it would stop the next keystroke reaching
-      // the far end. The list is driven entirely from the pane's key handler.
+      // Not focusable: focus stays on the terminal, and the pane's key handler
+      // drives the list.
       className="pointer-events-auto absolute z-20 overflow-y-auto overscroll-contain rounded-md border border-chrome/10 bg-[#1b1d22]/95 shadow-lg shadow-black/40 backdrop-blur-sm"
       style={{
         left: Math.max(0, view.origin.col * cell.width),
         top: Math.max(0, place.top),
-        // See above: this is what makes the flipped case exact.
+        // Makes the flipped case exact.
         transform: place.below ? undefined : 'translateY(-100%)',
         maxHeight: place.maxHeight,
-        // Wide enough to read a real command, and never wider than the pane.
+        // Wide enough for a real command, never wider than the pane.
         maxWidth: '90%',
       }}
       role="listbox"
@@ -70,9 +58,7 @@ export function SuggestionPopover({
           type="button"
           role="option"
           aria-selected={i === view.index}
-          // Mouse is a convenience; the keyboard is the point. `onMouseDown`
-          // rather than `onClick` so the pane never loses focus to the button
-          // even for the instant between press and release.
+          // `onMouseDown`, so the pane never loses focus between press and release.
           onMouseDown={(e) => {
             e.preventDefault()
             onPick(i)
@@ -82,8 +68,7 @@ export function SuggestionPopover({
           }`}
           title={item}
         >
-          {/* What was typed is dimmed and the completion is not, so the eye
-              goes straight to the part that is new. */}
+          {/* The typed part is dimmed, so the eye goes to the completion. */}
           <span className="text-chrome/35">{item.slice(0, view.typed.length)}</span>
           {item.slice(view.typed.length)}
         </button>

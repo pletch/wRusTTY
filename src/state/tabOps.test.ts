@@ -191,12 +191,8 @@ describe('refreshTabs', () => {
   })
 })
 
-// Characterization tests for the tree-operation pattern duplicated across
-// closePaneNow, popPaneToNewTab, attachTabToPane and focusPane in App.tsx —
-// each recomputes a tab's title from whichever leaf becomes active using
-// exactly this composition of primitives. Phase 4 collapses the four
-// call sites into one helper; these tests are what prove that collapse
-// changed nothing.
+// The title-follows-active-leaf composition (closeLeaf + firstLeaf +
+// leafTitle) used when closing, popping out, attaching and focusing panes.
 describe('the title-follows-active-leaf pattern (closeLeaf + firstLeaf + leafTitle)', () => {
   it('retitles to the surviving leaf when the active pane is the one that closed', () => {
     const closing = { ...blankLeaf(), initial: { label: 'Closing' } as never }

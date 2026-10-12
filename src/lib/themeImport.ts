@@ -1,52 +1,35 @@
 import { PRESET_THEMES, THEME_COLOR_KEYS, type TerminalTheme, type ThemeColorKey } from './theme'
 
 /**
- * Reading a color scheme written for iTerm2 or VS Code.
+ * Reading a color scheme written for iTerm2 or VS Code. Pure text in, palette
+ * out, so it's testable against real files' shapes.
  *
- * Pure text in, palette out — no file dialog, no IPC. That is what lets the
- * awkward half of this be tested against real files' shapes rather than
- * driven through a window, and the awkward half is all of it: both formats
- * are things other programs write for their own purposes, and neither owes
- * this app a complete palette.
- *
- * The rule throughout is to take what is there and fill the rest from the
- * default theme, reporting which ones were filled. A scheme that names
- * fourteen of the nineteen colors is a scheme worth importing; refusing it
- * would be refusing most of what people actually have.
+ * Takes what the file names and fills the rest from the default theme,
+ * reporting which were filled; neither format owes this app a full palette.
  */
 
 /** The formats this understands, as named in messages to the user. */
 export type ThemeFormat = 'iTerm2' | 'VS Code'
 
 export interface ParsedTheme {
-  /** Complete and ready to use — see `missing` for what came from the file. */
+  /** Complete and ready to use; `missing` says what didn't come from the file. */
   theme: TerminalTheme
   /** Colors the file did not name, filled from the default theme. */
   missing: ThemeColorKey[]
   format: ThemeFormat
 }
 
-/** Which theme fills a gap. The default, for the same reason
- *  `sanitizeCustomThemes` uses it: it is the one palette known to be
- *  complete and known to work. */
+/** Fills gaps: the one palette known to be complete. */
 const FALLBACK = PRESET_THEMES[0]
 
 type PartialPalette = Partial<Record<ThemeColorKey, string>>
 
 /**
- * Reads `text` as whichever of the two formats it turns out to be.
+ * Reads `text` as whichever format it turns out to be, sniffed from content
+ * since the extension is the likeliest thing to be wrong.
  *
- * Sniffed from the content rather than taken from the extension, because a
- * file that has been renamed, downloaded as `.txt`, or saved out of a
- * browser is still perfectly readable and the extension is the thing most
- * likely to be wrong about it.
- *
- * `fallbackName` is used when the file carries no name of its own, which is
- * every `.itermcolors` and many VS Code themes — the file name is the only
- * name those have ever had.
- *
- * Throws with a message meant for a toast: this is driven by someone
- * choosing a file, so every failure is a thing they can act on.
+ * `fallbackName` is used when the file carries no name (every `.itermcolors`
+ * and many VS Code themes). Throws with a message meant for a toast.
  */
 export function parseThemeFile(text: string, fallbackName: string): ParsedTheme {
   const trimmed = text.trim()
@@ -57,10 +40,8 @@ export function parseThemeFile(text: string, fallbackName: string): ParsedTheme 
     : { ...parseVsCodeTheme(trimmed), format: 'VS Code' as const }
 
   const named = THEME_COLOR_KEYS.filter((key) => colors[key] !== undefined)
-  // A file can parse perfectly and still not be a color scheme -- any XML
-  // is a plist to the parser, and any object is a VS Code theme. Having
-  // named no color at all is what distinguishes the two, and it is worth a
-  // clearer message than nineteen silent fallbacks.
+  // Any XML parses as a plist and any object as a VS Code theme; naming no
+  // color at all means it isn't a color scheme.
   if (named.length === 0) {
     throw new Error(`that ${format} file doesn't contain any terminal colors`)
   }
@@ -75,13 +56,8 @@ export function parseThemeFile(text: string, fallbackName: string): ParsedTheme 
 }
 
 /**
- * A path's file name without its extension — the name an imported theme
- * takes when the file does not carry one of its own, which is every
- * `.itermcolors`.
- *
- * Split on both separators: the path comes back from the OS dialog, so on
- * Windows it arrives with backslashes, and a scheme dragged in from a WSL
- * or network path can carry forward ones in the same string.
+ * A path's file name without its extension. Splits on both separators, since
+ * a WSL or network path can mix them.
  */
 export function fileStem(path: string): string {
   const base = path.split(/[\\/]/).pop() ?? path
@@ -91,12 +67,9 @@ export function fileStem(path: string): string {
 // --- iTerm2 -----------------------------------------------------------------
 
 /**
- * Which plist key feeds which slot.
- *
- * `Ansi 0`–`15` are the palette in the order every terminal numbers it, so
- * the eight normal slots then the eight bright ones. iTerm files carry a
- * good deal more than this — selection, badge, bold and link colors, and
- * a second set for light mode — none of which this app has anywhere to put.
+ * Which plist key feeds which slot. `Ansi 0`-`15` are the palette in the usual
+ * order. iTerm's other colors (selection, badge, bold, link, light mode) have
+ * nowhere to go here.
  */
 const ITERM_KEYS: ReadonlyArray<readonly [plistKey: string, slot: ThemeColorKey]> = [
   ['Background Color', 'background'],
@@ -122,8 +95,7 @@ const ITERM_KEYS: ReadonlyArray<readonly [plistKey: string, slot: ThemeColorKey]
 
 function parseItermColors(text: string): { name?: string; colors: PartialPalette } {
   const doc = new DOMParser().parseFromString(text, 'application/xml')
-  // How every DOM XML parser reports a syntax error: no exception, a
-  // document containing this element instead.
+  // DOM XML parsers report a syntax error as this element, not an exception.
   if (doc.querySelector('parsererror')) {
     throw new Error("that file isn't valid XML, so it isn't an iTerm color scheme")
   }
@@ -137,17 +109,13 @@ function parseItermColors(text: string): { name?: string; colors: PartialPalette
     const rgb = value ? plistColor(value) : null
     if (rgb) colors[slot] = rgb
   }
-  // `.itermcolors` files carry no name of their own -- iTerm names a scheme
-  // by its file name, and so does this.
+  // `.itermcolors` files carry no name; iTerm uses the file name, as does this.
   return { colors }
 }
 
 /**
- * A plist `<dict>`'s children as a map.
- *
- * A plist dict is a *flat* run of alternating key and value elements rather
- * than anything nested, so the value for a key is simply the element after
- * it. Walking the pairs is the whole of reading one.
+ * A plist `<dict>`'s children as a map. A dict is a flat run of alternating
+ * key and value elements.
  */
 function plistEntries(dict: Element): Map<string, Element> {
   const out = new Map<string, Element>()
@@ -156,56 +124,41 @@ function plistEntries(dict: Element): Map<string, Element> {
     if (children[i].tagName !== 'key') continue
     const value = children[i + 1]
     const key = children[i].textContent?.trim()
-    // A trailing `<key>` with nothing after it is malformed rather than
-    // fatal: skip the pair and let the caller find the color missing.
+    // A trailing `<key>` with no value is skipped; the color reads as missing.
     if (key && value) out.set(key, value)
   }
   return out
 }
 
-/** One iTerm color dict as `#rrggbb`, or null if it is not one. */
+/** One iTerm color dict as `#rrggbb`, or null if it isn't one. */
 function plistColor(value: Element): string | null {
   const parts = plistEntries(value)
   const channels = ['Red Component', 'Green Component', 'Blue Component'].map((key) => {
     const el = parts.get(key)
-    // `<real>` in every file seen, but `<integer>` is legal plist for an
-    // exact 0 or 1 and costs nothing to accept.
+    // `<integer>` is legal plist for an exact 0 or 1.
     if (!el || (el.tagName !== 'real' && el.tagName !== 'integer')) return NaN
     return Number(el.textContent)
   })
   if (channels.some((c) => !Number.isFinite(c))) return null
 
-  // iTerm records the space each color was authored in. Display P3 numbers
-  // read as sRGB would come out visibly desaturated -- the same coordinates
-  // cover more color in the wider space -- so they are converted. Anything
-  // else, including the older "Calibrated" (Apple's generic RGB, gamma 1.8),
-  // is taken as sRGB: converting that properly needs a different transfer
-  // curve and the files that carry it are decades of terminal schemes
-  // authored as hex anyway, where sRGB is what the author meant.
+  // Display P3 read as sRGB would look desaturated, so it's converted. Anything
+  // else, including "Calibrated" (Apple generic RGB, gamma 1.8), is taken as
+  // sRGB, which is what hex-authored schemes meant.
   const space = parts.get('Color Space')?.textContent?.trim()
   const [r, g, b] = space === 'P3' ? p3ToSrgb(channels as [number, number, number]) : channels
   return rgbToHex(r, g, b)
 }
 
 /**
- * Display P3 to sRGB, both as 0–1 components with the sRGB transfer curve
- * (which P3 shares — only the primaries differ).
- *
- * Linearize, apply the standard matrix, re-encode. Out-of-gamut results are
- * clamped: P3 is the wider space, so its saturated corners have no sRGB
- * equivalent and the nearest edge is the only answer available.
- *
- * Each row of the matrix sums to 1, which is why a neutral gray stays
- * exactly itself — the two spaces share a white point. `themeImport.test.ts`
- * pins that, since it is the one result checkable without a colorimeter.
+ * Display P3 to sRGB, as 0-1 components with the shared sRGB transfer curve:
+ * linearize, apply the standard matrix, re-encode. Out-of-gamut results are
+ * clamped. Rows sum to 1 (shared white point), so grays stay exact
+ * (`themeImport.test.ts` pins this).
  */
 function p3ToSrgb([r, g, b]: [number, number, number]): [number, number, number] {
   const [lr, lg, lb] = [r, g, b].map(srgbToLinear)
-  // Nine significant figures, not the fifteen the matrix is usually quoted
-  // to: a double cannot hold those exactly, and the digits past here are
-  // several orders of magnitude below one step of an 8-bit channel. Rounding
-  // them also makes the first two rows sum to exactly 1, which is what keeps
-  // a gray a gray rather than a gray plus float dust.
+  // Nine significant figures: a double can't hold more exactly, and rounding
+  // makes the first two rows sum to exactly 1.
   return [
     1.22494018 * lr - 0.22494018 * lg,
     -0.04205695 * lr + 1.04205695 * lg,
@@ -221,7 +174,7 @@ function linearToSrgb(channel: number): number {
   return channel <= 0.0031308 ? channel * 12.92 : 1.055 * channel ** (1 / 2.4) - 0.055
 }
 
-/** 0–1 components as `#rrggbb`, clamped and rounded. */
+/** 0-1 components as `#rrggbb`, clamped and rounded. */
 function rgbToHex(r: number, g: number, b: number): string {
   const byte = (channel: number) =>
     Math.min(255, Math.max(0, Math.round(channel * 255)))
@@ -256,12 +209,9 @@ const VSCODE_KEYS: ReadonlyArray<readonly [colorKey: string, slot: ThemeColorKey
 ]
 
 /**
- * Where the terminal colors sit when the theme does not name them
- * directly. Most VS Code themes leave `terminal.background` out and let the
- * terminal take the editor's, which is what the editor itself does — so a
- * theme imported without this would come back with the default theme's
- * background rather than its own, and look nothing like the theme it says
- * it is.
+ * Where terminal colors come from when the theme doesn't name them. Most VS
+ * Code themes leave `terminal.background` out and use the editor's, as VS
+ * Code itself does.
  */
 const VSCODE_FALLBACKS: ReadonlyArray<readonly [colorKey: string, slot: ThemeColorKey]> = [
   ['editor.background', 'background'],
@@ -283,11 +233,9 @@ function parseVsCodeTheme(text: string): { name?: string; colors: PartialPalette
   }
   const root = parsed as Record<string, unknown>
 
-  // Three shapes reach this. A published theme puts them under `colors`; a
-  // user's settings.json puts them under `workbench.colorCustomizations`;
-  // and a snippet someone pasted into a file is just the map itself. Taking
-  // the first that actually holds a color, rather than the first that
-  // exists, is what makes a settings.json with an empty `colors` key work.
+  // A published theme uses `colors`, settings.json uses
+  // `workbench.colorCustomizations`, and a pasted snippet is the bare map. Take
+  // the first that holds a color, so an empty `colors` key doesn't win.
   const candidates = [root.colors, root['workbench.colorCustomizations'], root]
   const source =
     candidates.find(
@@ -312,13 +260,9 @@ function parseVsCodeTheme(text: string): { name?: string; colors: PartialPalette
 }
 
 /**
- * A VS Code color as `#rrggbb`.
- *
- * All four hex forms it allows, with any alpha dropped rather than blended:
- * these land in a palette slot that has no alpha, and a translucent ANSI red
- * is still red. The one place that loses something real is a translucent
- * `terminal.background`, where VS Code would be showing the editor through
- * it — there is nothing behind a terminal background here to show.
+ * A VS Code color as `#rrggbb`, from any of its four hex forms. Alpha is
+ * dropped rather than blended: palette slots have none, and there's nothing
+ * behind a terminal background here to show through.
  */
 function normalizeHex(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -332,15 +276,9 @@ function normalizeHex(value: unknown): string | null {
 }
 
 /**
- * JSON with comments and trailing commas taken out — the dialect VS Code
- * actually writes, and the one every theme downloaded from a repository is
- * in. `JSON.parse` rejects both outright.
- *
- * One pass, tracking whether it is inside a string, because both of the
- * shortcuts here are wrong: a regex for `//` deletes the middle of
- * `"https://..."`, and a regex for `,\s*}` mangles a string that contains
- * one. Trailing commas are dropped on the way out rather than in a second
- * pass for that same reason.
+ * Strips comments and trailing commas (VS Code's JSON dialect), which
+ * `JSON.parse` rejects. One pass that tracks strings, since a regex would
+ * break `"https://..."` and strings containing `,}`.
  */
 function stripJsonComments(text: string): string {
   const out: string[] = []
@@ -365,8 +303,7 @@ function stripJsonComments(text: string): string {
     }
     if (char === '/' && text[i + 1] === '/') {
       while (i < text.length && text[i] !== '\n') i++
-      // Keep the newline itself: it is what keeps reported error positions
-      // on the line the mistake is actually on.
+      // Keep the newline so error positions stay on the right line.
       out.push('\n')
       continue
     }
@@ -377,8 +314,8 @@ function stripJsonComments(text: string): string {
       continue
     }
     if (char === '}' || char === ']') {
-      // Walk back over whatever whitespace was emitted since the last real
-      // character; if it was a comma, it was a trailing one.
+      // Walk back over whitespace since the last real character; a comma there is
+      // trailing.
       let last = out.length - 1
       while (last >= 0 && /\s/.test(out[last])) last--
       if (last >= 0 && out[last] === ',') out.splice(last, 1)

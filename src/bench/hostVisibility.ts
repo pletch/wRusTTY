@@ -1,41 +1,19 @@
 /**
  * Guards a run against the engine hosts scrolling off screen.
  *
- * xterm.js stops rendering entirely when its screen element leaves the
- * viewport. `RenderService` observes intersection and latches a flag instead of
- * painting:
- *
- *   _isPaused = !entry.isIntersecting
- *   refreshRows(...) { if (this._isPaused) { this._needsFullRefresh = true; return } }
- *
- * `onRender` only fires from a real render, so a paused xterm reports zero
- * paints — which `measurePresent` returns and the latency loop counts as an
- * empty trial. The Ghostty engine drives its own rAF loop with no such check
- * and keeps painting throughout.
- *
- * That asymmetry silently gutted the TUI row: 18 usable samples out of 120,
- * the other 102 flagged `⚠️ empty`, because a two-minute workload is exactly
- * long enough for someone to scroll down and read the tables that already
- * landed. The surviving samples were not *wrong*, but they were the first 15%
- * of the run rather than a sample of it, and the flag was easy to read past.
- *
- * So visibility is treated as a precondition of the measurement rather than a
- * property of it: a run refuses to start unless both hosts are fully on screen,
- * and aborts if either leaves. Aborting rather than flagging is deliberate — a
- * partial latency distribution looks exactly like a complete one once it is in
- * a table.
- *
- * Only latency workloads read paints, but the guard covers every mode: a paused
- * renderer changes what the main thread is doing, which is the thing a
- * throughput or block round is measuring.
+ * xterm.js stops rendering when its screen element leaves the viewport
+ * (`RenderService` latches `_isPaused` from an IntersectionObserver), so it
+ * reports zero paints and the latency loop counts empty trials; Ghostty keeps
+ * painting. Visibility is therefore a precondition: a run won't start unless
+ * both hosts are fully on screen, and aborts (rather than flags) if either
+ * leaves. It covers every mode, since a paused renderer changes main-thread
+ * load too.
  */
 
 /**
- * Fraction of a host that must be on screen. Deliberately not 1.0: browsers
- * report intersection ratios a hair under it for elements that are wholly
- * visible but sit on a fractional device-pixel boundary, which a maximized
- * window at a non-integer DPR does routinely. xterm pauses only at ratio 0, so
- * anything in this band is rendering normally.
+ * Fraction of a host that must be on screen. Not 1.0: wholly visible elements
+ * on a fractional device-pixel boundary report slightly less. xterm pauses
+ * only at 0.
  */
 export const MIN_VISIBLE_RATIO = 0.98
 
@@ -43,10 +21,9 @@ export interface HostVisibility {
   /** Hosts currently below the threshold, by name. Empty when all are visible. */
   hidden(): string[]
   /**
-   * Hosts that dropped below the threshold at any point since the last
-   * `arm()`. Latched, because the observer fires asynchronously and a scroll
-   * that happens and reverses between two checks still paused the renderer for
-   * the trials in between.
+   * Hosts that dropped below the threshold since the last `arm()`. Latched,
+   * since the observer is asynchronous and a brief scroll still paused the
+   * renderer.
    */
   lost(): string[]
   /** Clears the latch at the start of a run. */
@@ -60,8 +37,7 @@ export interface NamedHost {
 }
 
 /**
- * The message a caller shows when the guard trips. Pure, so the wording is
- * testable without a DOM or an observer.
+ * The message shown when the guard trips. Pure, for testing.
  */
 export function visibilityMessage(names: string[], during: boolean, stillHidden: string[] = []): string {
   const who = names.join(' and ')
@@ -70,11 +46,8 @@ export function visibilityMessage(names: string[], during: boolean, stillHidden:
     return `${who} ${verb} not fully on screen. xterm does not render a host that has left the viewport, so a run ` +
       'now would report empty trials instead of latencies. Scroll both panes into view.'
   }
-  // Whether the host is still off screen is the one fact that separates "you
-  // scrolled" from "the harness perturbed its own layout". Reported, because
-  // the first version of this guard latched on the grid-pin resize and aborted
-  // every 200x60 run before a trial ran, with a message that blamed the user
-  // and gave them nothing to check.
+  // Whether the host is still off screen separates "you scrolled" from "the
+  // harness perturbed its own layout".
   const detail =
     stillHidden.length > 0
       ? `${stillHidden.join(' and ')} still off screen.`
@@ -85,10 +58,8 @@ export function visibilityMessage(names: string[], during: boolean, stillHidden:
 }
 
 /**
- * Starts observing. Returns a no-op watcher (never hidden, never lost) where
- * `IntersectionObserver` is unavailable, so a test environment or an old
- * WebView is not blocked from running — the guard is there to catch a real
- * scroll, not to gate on feature detection.
+ * Starts observing. Without `IntersectionObserver` (tests, old WebViews),
+ * returns a watcher that never trips.
  */
 export function observeHosts(hosts: NamedHost[]): HostVisibility {
   if (typeof IntersectionObserver === 'undefined') {
@@ -109,9 +80,8 @@ export function observeHosts(hosts: NamedHost[]): HostVisibility {
         if (!ok) lostNames.add(name)
       }
     },
-    // A range of thresholds rather than just the one: with a single threshold
-    // the callback fires only on the crossing, and a host that is already
-    // partly off screen when observation starts can report a stale ratio.
+    // Several thresholds, so a host already partly off screen when observation
+    // starts doesn't report a stale ratio.
     { threshold: [0, 0.5, MIN_VISIBLE_RATIO, 1] },
   )
   for (const h of hosts) observer.observe(h.el)

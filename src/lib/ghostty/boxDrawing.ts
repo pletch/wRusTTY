@@ -1,25 +1,12 @@
 /**
  * Box drawing, block elements and Powerline separators, drawn as geometry
- * against the cell rectangle instead of being asked of the font.
+ * against the cell rectangle instead of from the font.
  *
- * The reason is seams. A font's box-drawing glyphs are laid out against the
- * font's own em box, not against the cell the terminal actually reserves —
- * and the cell is `round(ceil(fontSize * 1.2) * dpr)` pixels tall, which
- * almost never matches. The vertical rules of a border then fall a fraction
- * of a pixel short of the row beneath, and the hairline gaps march up and
- * down the border as the pane resizes. Drawing to the cell rect makes the
- * arms land exactly on the cell edges, so consecutive rows and columns tile
- * with nothing between them.
- *
- * It also removes the font dependency for the glyphs that cover the most
- * screen on the sort of host this client is pointed at: htop, nmtui, dialog
- * installers and vendor menu UIs are made of these characters, and a
- * locked-down machine that cannot install a font still has to draw them.
- *
- * This is the pattern GLYPH_CURSOR_OUTLINE and its siblings already use — a
- * glyph synthesized into an atlas slot rather than rasterized from text —
- * applied to a range that happens to be assigned. Nothing about the cache,
- * the slot packing, or the one-quad-per-cell invariant changes.
+ * A font lays these out against its own em box, not the cell
+ * (`round(ceil(fontSize * 1.2) * dpr)` px tall), leaving hairline seams
+ * between rows. Drawing to the cell rect makes them tile exactly, and works on
+ * hosts where no suitable font can be installed. Synthesized into atlas slots
+ * like GLYPH_CURSOR_OUTLINE; nothing about the cache or packing changes.
  */
 
 /** Arm weights. The index into an `Arms` tuple is [up, right, down, left]. */
@@ -31,9 +18,8 @@ const D = 3
 type Arms = readonly [number, number, number, number]
 
 /**
- * Every line-drawing character fully described by the weight of its four
- * arms — which is all of U+2500-U+257F except the dashes, the arcs and the
- * diagonals, each of which has its own table below.
+ * Line-drawing characters described by their four arm weights: all of
+ * U+2500-U+257F except the dashes, arcs and diagonals.
  */
 const ARMS: Record<number, Arms> = {
   0x2500: [N, L, N, L], 0x2501: [N, H, N, H],
@@ -98,15 +84,10 @@ const ARCS: Record<number, readonly [boolean, boolean]> = {
 }
 
 /**
- * The sextants, U+1FB00-U+1FB3B: a 2x3 mosaic, one codepoint per non-trivial
- * combination of the six subcells.
- *
- * Derived rather than transcribed. The block enumerates masks in binary order
- * with position 1 as the low bit, skipping the four combinations Unicode
- * already had characters for — empty (space), full (U+2588), the left column
- * (U+258C) and the right column (U+2590) — which is exactly 60 codepoints, and
- * lands the last one on U+1FB3B. A hand-written table of sixty entries would
- * be sixty chances to transpose a bit.
+ * The sextants, U+1FB00-U+1FB3B: a 2x3 mosaic. Derived rather than
+ * transcribed: masks in binary order (position 1 the low bit), skipping the
+ * four combinations Unicode already had (empty, full, left and right column),
+ * which is exactly 60 codepoints.
  */
 const SEXTANTS = new Map<number, number>()
 {
@@ -128,12 +109,10 @@ export function isBoxGlyph(cp: number): boolean {
   )
 }
 
-// Deliberately *not* claimed from the Legacy Computing block: the smooth
-// mosaics (U+1FB3C-U+1FB6F), the shades and checkerboards (U+1FB8C-U+1FB9F),
-// the diagonals (U+1FBA0-U+1FBAF) and the segmented digits (U+1FBF0+). Some
-// are not geometry at all, and the rest would be transcribed from memory
-// rather than derived — a wrong shape drawn confidently is worse than falling
-// through to whatever the font has.
+// Not claimed from Legacy Computing: smooth mosaics (U+1FB3C-U+1FB6F), shades
+// and checkerboards (U+1FB8C-U+1FB9F), diagonals (U+1FBA0-U+1FBAF) and
+// segmented digits (U+1FBF0+). They'd be transcribed rather than derived, and
+// a wrong shape is worse than the font's.
 
 interface Rect {
   x: number
@@ -143,12 +122,9 @@ interface Rect {
 }
 
 /**
- * Draws one of these characters into `[x, y, w, h]`, in whatever `fillStyle`
- * the caller has set. `light` is the atlas's own rule thickness, so a box
- * border and an SGR underline in the same pane come out the same weight.
- *
- * Returns false for a codepoint it does not handle, so the caller can fall
- * through to the font.
+ * Draws one of these characters into `[x, y, w, h]` in the caller's
+ * `fillStyle`. `light` is the atlas's rule thickness, matching SGR underlines.
+ * Returns false for an unhandled codepoint, so the caller can use the font.
  */
 export function drawBoxGlyph(
   ctx: CanvasRenderingContext2D,
@@ -162,9 +138,8 @@ export function drawBoxGlyph(
   if (!isBoxGlyph(cp)) return false
 
   ctx.save()
-  // Everything below is derived from the cell rect and should land inside it,
-  // but a stroked arc or a scaled semicircle can round a fraction outside;
-  // the slot's neighbor is not this glyph's to touch.
+  // A stroked arc or scaled semicircle can round slightly outside the cell; the
+  // neighboring slot isn't ours.
   ctx.beginPath()
   ctx.rect(x, y, w, h)
   ctx.clip()
@@ -190,17 +165,12 @@ function weightPx(weight: number, light: number): number {
 }
 
 /**
- * The arm model. Each arm runs from its own cell edge to a stop near the
- * center; because all four overlap in the middle, junctions come out solid
- * without any per-character case analysis.
+ * The arm model. Each arm runs from its cell edge to near the center; they
+ * overlap there, so junctions come out solid without per-character cases.
  *
- * Double arms are the exception and are drawn as an *outline*: the union of
- * the arms as bars three rules wide, with the same union inset by one rule
- * erased back out of it. That single rule reproduces every double junction —
- * U+2554 is the outline of an L, U+256C the outline of a plus (four separate
- * corners), U+2560 the outline of a T (one continuous rule down the left, the
- * right one broken by the horizontals) — none of which needs describing
- * character by character.
+ * Double arms are drawn as an outline: the union of three-rule-wide bars,
+ * minus the same union inset by one rule. That reproduces every double
+ * junction (U+2554 an L, U+256C a plus, U+2560 a T).
  */
 function drawArms(
   ctx: CanvasRenderingContext2D,
@@ -216,14 +186,12 @@ function drawArms(
   const axY = y + h / 2
 
   if (up !== D && right !== D && down !== D && left !== D) {
-    // Widest perpendicular arm, so a light arm meeting a heavy one reaches
-    // all the way across it rather than stopping inside and leaving a nick.
+    // Widest perpendicular arm, so a light arm crosses a heavy one fully.
     const vThick = up || down ? Math.max(weightPx(up, light), weightPx(down, light)) : 0
     const hThick = left || right ? Math.max(weightPx(left, light), weightPx(right, light)) : 0
 
     if (left || right) {
-      // With no vertical arm the band is the arm's own width, which puts a
-      // stub like U+2574 at exactly the center rather than short of it.
+      // With no vertical arm, the band is the arm's own width, centering stubs.
       const m = vThick || hThick
       const a = Math.round(axX - m / 2)
       const b = a + m
@@ -262,9 +230,8 @@ function drawArms(
   const innerY0 = outerY0 + light
   const innerY1 = outerY1 - light
 
-  // Where a double bar stops when the arms across from it are single: at the
-  // near face of that single rule, so U+2564 keeps the gap above its stem
-  // empty while U+2558 still gets the short rule that caps its pair.
+  // A double bar opposite single arms stops at the near face of that rule, so
+  // U+2564 keeps the gap above its stem while U+2558 caps its pair.
   const isSingle = (a: number) => a === L || a === H
   const vSingle = isSingle(up) || isSingle(down)
   const hSingle = isSingle(left) || isSingle(right)
@@ -277,10 +244,8 @@ function drawArms(
     if (x1 > x0 && y1 > y0) into.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
   }
 
-  // A bar's inner end is inset by one rule only where the pair is *capped* —
-  // where it terminates in the open rather than running on into the double
-  // arm opposite. Insetting a merged end too would erode a rule's width out
-  // of the middle of the union and leave a stray bar standing in the gap.
+  // Inset a bar's inner end only where the pair is capped; insetting a merged
+  // end would leave a stray bar in the gap.
   if (right === D) {
     const stop = vSingle ? Math.round(axX - vSingleT / 2) : outerX0
     push(outer, stop, outerY0, x + w, outerY1)
@@ -303,17 +268,14 @@ function drawArms(
   }
 
   for (const r of outer) ctx.fillRect(r.x, r.y, r.w, r.h)
-  // Erasing rather than painting a background color: the atlas keeps only
-  // the alpha channel, so the hole has to be a hole.
+  // Erase: the atlas keeps only alpha, so the hole must be a hole.
   ctx.globalCompositeOperation = 'destination-out'
   for (const r of inner) ctx.fillRect(r.x, r.y, r.w, r.h)
   ctx.globalCompositeOperation = 'source-over'
 
-  // The single arms of a mixed character, drawn over the outline so they close
-  // the pair's cap where they meet it. An arm whose opposite number is also
-  // single crosses the whole pair; one on its own stops at the near rule,
-  // which is what leaves U+2564's stem hanging below its two rules rather
-  // than filling the gap between them.
+  // Single arms of a mixed character, drawn over the outline. One whose
+  // opposite is also single crosses the pair; alone, it stops at the near rule
+  // (U+2564's stem).
   const crossV = isSingle(up) && isSingle(down)
   const crossH = isSingle(left) && isSingle(right)
   if (isSingle(right)) {
@@ -339,9 +301,8 @@ function drawArms(
 }
 
 /**
- * Dashes and gaps of equal length, starting and ending with a dash, so a
- * column of U+2506 reads as evenly broken rather than clumping at the row
- * boundaries.
+ * Equal dashes and gaps, starting and ending with a dash, so a column of
+ * U+2506 doesn't clump at row boundaries.
  */
 function drawDashed(
   ctx: CanvasRenderingContext2D,
@@ -365,10 +326,8 @@ function drawDashed(
 }
 
 /**
- * The rounded corners. Stroked rather than filled: an arc is the one shape
- * here a rect decomposition would turn into a staircase, and it is short
- * enough that the stroke's own antialiasing is what makes it read as a curve
- * at all.
+ * The rounded corners. Stroked, since a rect decomposition would staircase
+ * and antialiasing is what makes the curve read.
  */
 function drawArc(
   ctx: CanvasRenderingContext2D,
@@ -380,8 +339,7 @@ function drawArc(
   light: number,
 ): void {
   const [down, right] = arc
-  // Centered on the same axis a straight rule would occupy, so U+256D and the
-  // U+2502 in the column beneath it line up.
+  // On the same axis as a straight rule, so U+256D lines up with U+2502 below.
   const cx = Math.round(x + w / 2 - light / 2) + light / 2
   const cy = Math.round(y + h / 2 - light / 2) + light / 2
   const r = Math.min(w, h) / 2
@@ -424,9 +382,8 @@ function drawDiagonal(
 }
 
 /**
- * U+2580-U+259F. The eighths and the quadrants are rounded against the cell
- * rect rather than accumulated, so a lower half block on one row meets an
- * upper half block on the next with nothing between them.
+ * U+2580-U+259F. Eighths and quadrants are rounded against the cell rect, not
+ * accumulated, so half blocks on adjacent rows meet exactly.
  */
 function drawBlock(
   ctx: CanvasRenderingContext2D,
@@ -457,9 +414,8 @@ function drawBlock(
     case 0x2590: // right half
       ctx.fillRect(midX, y, x + w - midX, h)
       return
-    // The three shades. Coverage the shader tints, so the shade is alpha
-    // rather than a dither pattern; a dither at these cell sizes beats
-    // against the pixel grid and crawls as the pane resizes.
+    // The shades as alpha, not dither: a dither crawls against the pixel grid on
+    // resize.
     case 0x2591:
     case 0x2592:
     case 0x2593:
@@ -494,10 +450,8 @@ const QUADRANTS: Record<number, number> = {
 }
 
 /**
- * One sextant. The subcell boundaries are rounded against the cell rect rather
- * than accumulated, so two sextants side by side or stacked meet exactly —
- * which is the entire reason these get drawn rather than fetched, since a
- * mosaic with seams in it is not a mosaic.
+ * One sextant, with subcell boundaries rounded against the cell rect so
+ * neighbors meet exactly.
  */
 function drawSextant(
   ctx: CanvasRenderingContext2D,
@@ -520,10 +474,9 @@ function drawSextant(
 }
 
 /**
- * U+1FB70-U+1FB8B: the eighth-block family that fills the gaps either side of
- * the ones U+2580-U+259F already had — a single interior eighth column or row,
- * the four corner Ls, and the upper/right fractions that the lower/left
- * versions in the older block have no counterpart for.
+ * U+1FB70-U+1FB8B: the eighth-block family filling the gaps around
+ * U+2580-U+259F (interior eighth columns and rows, corner Ls, and upper/right
+ * fractions).
  */
 function drawEighths(
   ctx: CanvasRenderingContext2D,
@@ -574,11 +527,9 @@ function drawEighths(
 }
 
 /**
- * U+E0B0-U+E0BF, the Powerline separators. Private-use, so no font is obliged
- * to carry them and the ones that do are the Nerd Font patches — which is
- * exactly what is missing on a machine where fonts cannot be installed.
- * Drawn to the cell rect they also meet the cell beside them exactly, which
- * is what a separator between two differently-colored segments has to do.
+ * U+E0B0-U+E0BF, the Powerline separators. Private-use, so only Nerd Font
+ * patches carry them; drawn to the cell rect they meet the neighboring
+ * segment exactly.
  */
 function drawPowerline(
   ctx: CanvasRenderingContext2D,
@@ -589,16 +540,14 @@ function drawPowerline(
   h: number,
   light: number,
 ): void {
-  // U+E0B8-U+E0BF are the angled pair: a triangle filling one corner half of
-  // the cell, and its "soft" partner, which is that triangle's hypotenuse on
-  // its own. Encoded as the corner the right angle sits in, so each filled
-  // shape and its diagonal are described once.
+  // U+E0B8-U+E0BF: a triangle filling one corner half of the cell, and its
+  // "soft" partner (the hypotenuse alone), keyed by the right-angle corner.
   if (cp >= 0xe0b8) {
     const i = cp - 0xe0b8
     // Even members are the filled triangle, odd ones the bare diagonal.
     const soft = (i & 1) === 1
     // The right-angle corner walks lower-left, lower-right, upper-left,
-    // upper-right, which is the order the block is laid out in.
+    // upper-right.
     const atBottom = i < 4
     const atLeft = (i & 2) === 0
     const cornerX = atLeft ? x : x + w
@@ -633,9 +582,7 @@ function drawPowerline(
 
   ctx.beginPath()
   if (rounded) {
-    // A half-ellipse rather than a half-circle: the cell is about twice as
-    // tall as it is wide, and a circle inscribed in it would leave the
-    // separator floating in the middle of its own cell.
+    // A half-ellipse: the cell is about twice as tall as wide.
     ctx.ellipse(pointsRight ? x : x + w, cy, w, h / 2, 0, -Math.PI / 2, Math.PI / 2, !pointsRight)
   } else {
     const back = pointsRight ? x : x + w

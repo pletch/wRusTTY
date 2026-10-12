@@ -1,59 +1,26 @@
 /**
- * Our 83-export ABI, implemented over ghostty `main`'s 202.
+ * Our original export ABI (`GhosttyExports`), implemented over ghostty
+ * `main`, so the app's call sites didn't have to move with the binary. The
+ * readers it composes are each tested byte-identical to the export they
+ * replace (`ViewportReader.test.ts`, `ScrollbackReader.test.ts`,
+ * `effects.test.ts`). The shim handles the bookkeeping our ABI hides:
  *
- * ## Why a shim rather than porting the call sites
+ * - **Render state is a separate object** on `main`, so each terminal maps to
+ *   its own.
+ * - **Update and read are ours to order**: `render_state_update` runs once a
+ *   frame, and `readRows` reads that snapshot without updating.
+ * - **Replies are a callback**, buffered by `MainEffects` and handed back through
+ *   `has_response`/`read_response`.
+ * - **Synchronized output is a callback** that must snapshot at the byte where
+ *   the hold begins; see `RenderHold`.
+ * - **Cursor styles are renumbered** (ours: block=0, bar=1; main: bar=0,
+ *   block=1).
  *
- * The port's status list ended at "select the reader in `GhosttyEngine` /
- * `WebGLRenderer`", which is two call sites for the viewport — but the viewport
- * was never the whole surface. `GhosttyEngine` alone reaches for twenty-odd
- * `ghostty_*` exports across the render loop, search, links, mark mode, mouse
- * reporting and resize, and every one of them would have to move at the same
- * time as the binary. That is a single unreviewable change, and if the screen
- * comes out wrong afterward there is nothing to bisect.
- *
- * So the boundary moves instead of the callers. This presents exactly the
- * `GhosttyExports` object the app already talks to, backed by `main`. Every
- * consumer above it — the renderer, `readRows`, `SearchController`,
- * `LinkController`, `MouseReporter` — is untouched, and the whole port becomes
- * one swappable object with the existing suite standing over it.
- *
- * The three readers this composes are each already asserted byte-identical to
- * the export they replace (`ViewportReader.test.ts`, `ScrollbackReader.test.ts`,
- * `effects.test.ts`). What is new here is the *bookkeeping* our ABI hides and
- * `main` does not:
- *
- * - **A render state is a separate object on `main`.** Ours is implicit in the
- *   terminal, so `render_state_get_cols(term)` has to find the state that
- *   belongs to that terminal. Hence the per-terminal map.
- * - **Update and read are ours to order.** `render_state_update` is called once
- *   a frame and the cells, dimensions and cursor are then read off that one
- *   snapshot; `readRows` reads the same snapshot mid-frame without updating. So
- *   the shim updates only where our ABI updates.
- * - **Replies are a callback, not a queue** — buffered by `MainEffects` and
- *   handed back through `has_response`/`read_response`.
- * - **Synchronized output is a callback too**, and the one that cannot be
- *   buffered: the snapshot has to be taken at the byte where the hold begins.
- *   See `RenderHold`.
- * - **The cursor style enum is renumbered.** Ours is block=0, bar=1; main's is
- *   bar=0, block=1. Nothing about a mis-mapping looks like an error: you get a
- *   cursor, just the wrong shape, so it is translated in one place here.
- *
- * ## What it does not carry
- *
- * `last_reset_seq` / `last_cursor_style_seq` are **gone from the ABI**, not
- * shimmed. They existed only so the host could tell whether a RIS had thrown
- * the configured cursor away and nothing had claimed it since; `main` holds
- * that preference across the reset itself, through the
- * `OPT_DEFAULT_CURSOR_STYLE` / `_BLINK` pair that `TerminalConfig.cursorStyle`
- * feeds. `cursorResetLive.test.ts` still passes unchanged, through an entirely
- * different mechanism, which is the evidence that this was a fair trade.
- *
- * The one thing that does not carry over is a preference *changed mid-session*:
- * the default is set when the terminal is made, so a RIS after a settings
- * change returns the cursor the pane opened with. The live cursor is still
- * correct — `setCursorStyle` writes DECSCUSR either way.
- *
- * `hyperlinkId` is 0 on every cell, as documented in `ViewportReader`.
+ * `last_reset_seq`/`last_cursor_style_seq` aren't carried: `main` keeps the
+ * default cursor across RIS (`OPT_DEFAULT_CURSOR_STYLE`/`_BLINK`, fed by
+ * `TerminalConfig.cursorStyle`). A preference changed mid-session doesn't
+ * update the reset default, though `setCursorStyle` still fixes the live
+ * cursor. `hyperlinkId` is always 0; see `ViewportReader`.
  */
 import * as abi from './abi'
 import { MainViewportReader } from './ViewportReader'
@@ -68,43 +35,36 @@ import {
   type GhosttyWasm,
 } from '../wasmBindings'
 
-/** `GhosttyTerminalConfig`, as `createTerminal` packs it: 4 u32s then 16 more. */
+/** `GhosttyTerminalConfig` as `createTerminal` packs it: 4 u32s then 16
+ *  palette entries. */
 const CONFIG_OFF_SCROLLBACK = 0
 const CONFIG_OFF_FG = 4
 const CONFIG_OFF_BG = 8
 const CONFIG_OFF_CURSOR = 12
 const CONFIG_OFF_PALETTE = 16
 const CONFIG_PALETTE_ENTRIES = 16
-/** Past the struct the vendored core reads; see `TerminalConfig`. Both are
- *  stored +1, so zero means "not specified". */
+/** Past the struct the vendored core reads; see `TerminalConfig`. Stored +1,
+ *  so zero means "not specified". */
 const CONFIG_OFF_CURSOR_STYLE = 80
 const CONFIG_OFF_CURSOR_BLINK = 84
 
 /**
- * What a terminal created without a config gets.
- *
- * `main`'s own default is **10,000 bytes** — measured, not read: it retains 370
- * rows at 200 columns, where our ABI's no-config path and every test that uses
- * it assume thousands. A budget rather than a row count because that is the
- * unit both ABIs settle on; see `TerminalConfig.scrollbackLimit`.
+ * Scrollback for a terminal created without a config. `main`'s own default is
+ * 10,000 bytes (about 370 rows at 200 columns); our ABI and tests assume
+ * thousands.
  */
 const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024
 
 /**
- * `scrollbackLimit: 0` means unlimited in our ABI. `main` has no such sentinel —
- * a max of 0 is a max of 0 — so it becomes the largest budget a wasm32 `size_t`
- * holds, which no session will reach.
+ * `scrollbackLimit: 0` means unlimited in our ABI; `main` has no sentinel, so
+ * use the largest wasm32 `size_t`.
  */
 const UNLIMITED_SCROLLBACK_BYTES = 0xffffffff
 
 /**
- * main's `GhosttyRenderStateCursorVisualStyle` onto our `CURSOR_STYLE_*`.
- *
- * A function rather than a lookup table built at module scope, and that is
- * load-bearing: `wasmBindings` imports this module to select the ABI, so the
- * two form an import cycle, and a table built while `wasmBindings` is still
- * initializing reads its constants in their temporal dead zone. Everything here
- * touches the other module only when called.
+ * main's `GhosttyRenderStateCursorVisualStyle` onto our `CURSOR_STYLE_*`. A
+ * function rather than a module-scope table: `wasmBindings` imports this
+ * module, and a table built during that cycle would hit the temporal dead zone.
  */
 function cursorStyleForMain(style: number): number {
   switch (style) {
@@ -120,11 +80,8 @@ function cursorStyleForMain(style: number): number {
 }
 
 /**
- * The same renumbering the other way, for `OPT_DEFAULT_CURSOR_STYLE`.
- *
- * `GhosttyTerminalCursorStyle` and `GhosttyRenderStateCursorVisualStyle` number
- * identically, so this is one mapping used in both directions rather than two
- * that could disagree.
+ * The reverse mapping, for `OPT_DEFAULT_CURSOR_STYLE` (which numbers the same
+ * as the visual style enum).
  */
 function mainCursorStyleFor(ours: number): number {
   switch (ours) {
@@ -148,12 +105,11 @@ interface TerminalState {
   effects: MainEffects
   /** Replies taken from the callback and not yet read by the host. */
   pending: Uint8Array[]
-  /** Lazily made: nothing in the app asks a row whether it is dirty. */
+  /** Created lazily; nothing in the app asks for row dirtiness. */
   dirtyIter: number
   /**
-   * Whether this frame's `RS_DATA_CURSOR` / `RS_DATA_COLORS` reads have been
-   * taken yet. Cleared by `render_state_update`, which is the only thing that
-   * can change either — see `snapshotCursor`.
+   * Whether this frame's `RS_DATA_CURSOR` / `RS_DATA_COLORS` have been read.
+   * Cleared by `render_state_update`; see `snapshotCursor`.
    */
   cursorRead: boolean
   colorsRead: boolean
@@ -163,33 +119,26 @@ interface TerminalState {
 }
 
 /**
- * Synchronized output, as the render snapshot sees it.
- *
- * A program redrawing in several steps sets mode 2026 first, so no frame is
- * drawn half-finished. The core calls back at that exact byte, and the snapshot
- * taken there is the last complete frame; it is then left alone until the
- * program resets the mode. Before this the core only set the mode bit and we
- * drew whatever the grid held at animation-frame time, which for a redraw
- * spanning two chunks was half of each.
+ * Synchronized output (mode 2026). The core calls back at the byte where a
+ * program starts a multi-step redraw; the snapshot taken there (the last
+ * complete frame) is kept until the program ends the hold, so a redraw split
+ * across chunks is never drawn half-finished.
  */
 interface RenderHold {
   active: boolean
   /** `performance.now()` when the hold began, for the timeout. */
   since: number
   /**
-   * The captured frame has not been drawn yet. A hold can begin partway
-   * through a write whose earlier bytes were never shown, so the first frame
-   * inside it still has to draw — just from the capture rather than live.
+   * The captured frame hasn't been drawn yet. A hold can start mid-write, so the
+   * first frame inside it still draws, from the capture.
    */
   fresh: boolean
 }
 
 /**
- * The longest a program may freeze the screen. The core has no clock and never
- * ends a hold itself, so a program that dies between setting 2026 and
- * resetting it would otherwise leave the pane frozen for good. One second is
- * upstream's suggestion and what other terminals use; a real frame is a few
- * milliseconds.
+ * The longest a program may freeze the screen. The core never ends a hold
+ * itself, so a program that dies mid-hold would freeze the pane. One second,
+ * as upstream suggests and other terminals use.
  */
 export const RENDER_HOLD_TIMEOUT_MS = 1000
 
@@ -209,14 +158,12 @@ class MainShim {
     this.scratch = ex.ghostty_wasm_alloc(16)
     this.slot = ex.ghostty_wasm_alloc_opaque()
     this.palette = ex.ghostty_wasm_alloc(abi.PALETTE_BYTES)
-    // Both are far larger than the 16-byte scratch — the colors struct carries
-    // the whole palette inline — so they get buffers of their own rather than
-    // growing the one every other read borrows.
+    // Separate buffers for the larger structs (colors carries the palette).
     this.cursorBuf = ex.ghostty_wasm_alloc(abi.RS_CURSOR_SIZE)
     this.colorsBuf = ex.ghostty_wasm_alloc(abi.RS_COLORS_SIZE)
   }
 
-  /** Re-made only when linear memory growth has detached the previous one. */
+  /** Re-created only when memory growth detached the previous one. */
   private dv(): DataView {
     if (this.view.buffer !== this.ex.memory.buffer) this.view = new DataView(this.ex.memory.buffer)
     return this.view
@@ -245,26 +192,16 @@ class MainShim {
   }
 
   /**
-   * Reads `RS_DATA_CURSOR` once per frame into `cursorBuf`.
-   *
-   * Our ABI asks for the cursor a field at a time — `get_cursor_x`,
-   * `_visible`, `_blinking`, `_style` — and the renderer calls all of them
-   * every frame. Answering each with its own `render_state_get` was six
-   * boundary crossings for one struct upstream now hands over in one, which is
-   * what `16c833c5f` added it for. So the struct is read on the first ask of a
-   * frame and the rest are served from the buffer.
-   *
-   * Caching is only safe because `render_state_update` is the sole thing that
-   * moves the cursor from a reader's point of view: it is the one call that
-   * rebuilds the snapshot, and it clears these flags. `readRows` deliberately
-   * reads mid-frame *without* updating, and has to see the same cursor the
-   * cells beside it came from — which this preserves and a re-read would break.
+   * Reads `RS_DATA_CURSOR` once per frame into `cursorBuf`, serving our ABI's
+   * per-field cursor getters from it. Safe because only `render_state_update`
+   * changes the snapshot (and clears the flag); `readRows` reads mid-frame and
+   * must see the same cursor as its cells.
    */
   private snapshotCursor(term: number): boolean {
     const st = this.state(term)
     if (!st) return false
     if (!st.cursorRead) {
-      // Sized struct: the callee has to be told how much of it we know about.
+      // Sized struct: write its size first.
       this.dv().setUint32(this.cursorBuf + abi.RS_CURSOR_OFF_SIZE, abi.RS_CURSOR_SIZE, true)
       if (
         this.ex.ghostty_render_state_get(st.reader.state, abi.RS_DATA_CURSOR, this.cursorBuf) !==
@@ -295,11 +232,8 @@ class MainShim {
   }
 
   /**
-   * Whether the snapshot's `viewport_x`/`_y` may be read at all.
-   *
-   * Upstream documents them as undefined when this is false, so this is a
-   * precondition rather than a nicety — it is what keeps a cursor scrolled out
-   * of the viewport from being drawn at whatever the struct happens to hold.
+   * Whether `viewport_x`/`_y` are defined (they aren't for a cursor scrolled out
+   * of view).
    */
   private cursorHasPosition(): boolean {
     return this.dv().getUint8(this.cursorBuf + abi.RS_CURSOR_OFF_VIEWPORT_HAS_VALUE) !== 0
@@ -342,9 +276,8 @@ class MainShim {
     this.terms.set(term, {
       reader: new MainViewportReader({ ex, term }),
       scrollback: new MainScrollbackReader({ ex, term }),
-      // Installed at creation, before a single byte is written: `vt_write`
-      // ignores anything needing a reply until it is, and a query missed during
-      // startup is one a program is already waiting on.
+      // Installed before any byte is written: `vt_write` ignores queries until
+      // then.
       effects: new MainEffects({ ex, term, onRenderHold: (held) => this.onRenderHold(term, held) }),
       pending: [],
       dirtyIter: 0,
@@ -357,8 +290,8 @@ class MainShim {
   }
 
   /**
-   * Applies the packed `GhosttyTerminalConfig` our ABI takes at construction.
-   * `main` has no constructor options at all, so each field becomes a `set`.
+   * Applies our packed `GhosttyTerminalConfig` as individual `set` calls (`main`
+   * has no constructor options).
    */
   private applyConfig(term: number, ptr: number): void {
     const d = this.dv()
@@ -376,16 +309,8 @@ class MainShim {
   }
 
   /**
-   * The cursor a reset returns to.
-   *
-   * This is what replaces `last_reset_seq` / `last_cursor_style_seq`: those
-   * exist only because RIS discarded the configured cursor and the host had to
-   * decide whether to put it back. Here the core holds it — verified, not
-   * assumed: with a default of bar+blink, `ESC c` comes back bar+blink, and so
-   * does `CSI 0 q`.
-   *
-   * Both fields are stored +1 so that "not specified" is distinguishable from
-   * block, which is 0 on our side and a perfectly ordinary request.
+   * The cursor a reset returns to; the core keeps it across `ESC c` and
+   * `CSI 0 q` (verified). Stored +1 so "unspecified" differs from block (0).
    */
   private applyCursor(term: number, ptr: number): void {
     const d = this.dv()
@@ -402,21 +327,10 @@ class MainShim {
   }
 
   /**
-   * Foreground, background and cursor — **always both of the first two**.
-   *
-   * Zero means "let the core pick" in our config, so the obvious shape is to
-   * skip the ones that are zero. That silently loses the other one: setting a
-   * foreground and no background leaves the *render state* reporting plain
-   * white, forever, while `terminal_get(COLOR_FOREGROUND)` cheerfully reports
-   * the color that was set. Setting both — in either order, and black counts —
-   * makes both stick. Measured against the pin, not read: the terminal and the
-   * render state disagree, so nothing about it looks like an error, and it only
-   * shows on a theme whose background is `#000000`, which packs as 0 and so
-   * reads as "unset".
-   *
-   * So a zero field becomes the core's *current* value rather than a skipped
-   * call, which keeps "0 means let the core pick" true while still setting
-   * both.
+   * Foreground, background and cursor. Foreground and background are always set
+   * together: setting only one leaves the render state reporting the other as
+   * plain white, while `terminal_get` reports correctly. A zero field (which is
+   * also how `#000000` packs) uses the core's current value.
    */
   private applyColors(term: number, ptr: number): void {
     const d = this.dv()
@@ -436,16 +350,9 @@ class MainShim {
   }
 
   /**
-   * The 16 ANSI colors our config carries, over the 256 `main` takes.
-   *
-   * Ours configures 16 and lets the core derive the color cube and grays from
-   * its own defaults; main's option is all 256 at once. So the current table is
-   * read back, the first 16 entries overwritten, and the whole thing set again —
-   * which leaves the derived 240 exactly as the core would have had them.
-   *
-   * An all-zero block means no palette was passed (`palette: []` packs as
-   * zeros), not sixteen shades of black: nobody configures that, and the
-   * alternative is overwriting the core's palette with it.
+   * Our 16 ANSI colors over `main`'s 256-entry palette: read the current table,
+   * overwrite the first 16, set it back, leaving the derived 240 as they were.
+   * An all-zero block means no palette was passed.
    */
   private applyPalette(term: number, ptr: number): void {
     const d = this.dv()
@@ -468,8 +375,7 @@ class MainShim {
       w.setUint8(at + 1, (rgb >> 8) & 0xff)
       w.setUint8(at + 2, rgb & 0xff)
     }
-    // The array pointer itself, not a pointer to it: the other form returns
-    // SUCCESS and leaves every color black.
+    // The array pointer itself; a pointer-to-pointer leaves every color black.
     this.ex.ghostty_terminal_set(term, abi.T_OPT_COLOR_PALETTE, this.palette)
   }
 
@@ -488,11 +394,8 @@ class MainShim {
   /* --------------------------------------------------------- snapshots */
 
   /**
-   * Rebuilds the render snapshot, and records the scrollback depth beside it.
-   *
-   * The frame boundary, and so the only place the cursor and color snapshots
-   * may be invalidated. Anything that re-read them elsewhere would hand the
-   * renderer a cursor from a newer grid than its cells.
+   * Rebuilds the render snapshot and records the scrollback depth. The only
+   * place the cursor and color caches are invalidated.
    */
   private snapshot(term: number, st: TerminalState): void {
     st.reader.update()
@@ -504,8 +407,8 @@ class MainShim {
   }
 
   /**
-   * Runs inside `vt_write`. Only snapshots and reads happen here — the core
-   * allows that mid-write, and forbids writing to the terminal.
+   * Runs inside `vt_write`, where the core allows snapshots and reads but not
+   * terminal writes.
    */
   private onRenderHold(term: number, held: boolean): void {
     const st = this.state(term)
@@ -519,10 +422,8 @@ class MainShim {
   }
 
   /**
-   * Ends a hold that has outlived the timeout. Through `T_OPT_MODE`, which
-   * does not fire the callback, so the bookkeeping is ours to do. A program
-   * that sets 2026 again during the hold changes nothing, so it cannot push
-   * the deadline back.
+   * Ends a hold that outlived the timeout, via `T_OPT_MODE` (which doesn't fire
+   * the callback). Re-setting 2026 during a hold doesn't extend the deadline.
    */
   private expireHold(term: number, st: TerminalState): void {
     if (!st.hold.active || performance.now() - st.hold.since < RENDER_HOLD_TIMEOUT_MS) return
@@ -546,23 +447,10 @@ class MainShim {
   /* -------------------------------------------------------------- dirty */
 
   /**
-   * Per-row dirty. `main` still has no "is row N dirty" call, but since
-   * `ad6e72ddc` it has one that jumps straight to the next dirty row, so this
-   * no longer walks every row up to `y`.
-   *
-   * It advances over dirty rows until it reaches or passes `y`: the rows come
-   * back in ascending viewport order, so the first one that is not less than
-   * `y` settles the question. That is O(dirty rows before y) rather than O(y),
-   * and on the case this exists for — a clean screen with one edited row — it
-   * is two calls instead of twenty-five.
-   *
-   * The `at > y` exit is an optimization only: without it the loop scans the
-   * remaining dirty rows and returns the same answer, just slower. No test
-   * pins it, because there is no behavior to pin.
-   *
-   * Nothing in the app calls this: the renderer redraws the whole viewport and
-   * uses `mark_clean` alone. It is implemented rather than stubbed because a
-   * stub answering "clean" is exactly the shape of bug that hides itself.
+   * Per-row dirty, using `next_dirty` to jump through dirty rows (ascending)
+   * until reaching or passing `y`. Unused by the app (the renderer redraws the
+   * whole viewport), but implemented because a stub answering "clean" would hide
+   * bugs.
    */
   private rowDirty(term: number, y: number): boolean {
     const { ex } = this
@@ -572,14 +460,13 @@ class MainShim {
       if (ex.ghostty_render_state_row_iterator_new(0, this.slot) !== abi.GHOSTTY_SUCCESS) return false
       st.dirtyIter = this.dv().getUint32(this.slot, true)
     }
-    // `get` wants the slot holding the handle, not the handle.
+    // `get` wants the slot holding the handle.
     this.dv().setUint32(this.slot, st.dirtyIter, true)
     if (ex.ghostty_render_state_get(st.reader.state, abi.RS_DATA_ROW_ITERATOR, this.slot) !== abi.GHOSTTY_SUCCESS) {
       return false
     }
     const iter = this.dv().getUint32(this.slot, true)
-    // A bool, not a result: truthy means it advanced. `outY` is only written
-    // when it does, so the previous value must never be read on a false.
+    // A bool, not a result; `outY` is only written when it advances.
     while (ex.ghostty_render_state_row_iterator_next_dirty(iter, this.scratch)) {
       const at = this.dv().getUint16(this.scratch, true)
       if (at === y) return true
@@ -590,7 +477,7 @@ class MainShim {
 
   /* ------------------------------------------------------------- facade */
 
-  /** The object the app talks to, shaped exactly like the vendored exports. */
+  /** The object the app talks to, shaped like the vendored exports. */
   exports(): GhosttyExports {
     const { ex } = this
 
@@ -604,23 +491,19 @@ class MainShim {
         ex.ghostty_terminal_resize(term, cols, rows)
       },
       ghostty_terminal_set_resize_pull_scrollback: (term, pull) => {
-        // `bool*`: one byte, pointed at like every other scalar option.
+        // `bool*`: one byte.
         this.dv().setUint8(this.scratch, pull !== 0 ? 1 : 0)
         ex.ghostty_terminal_set(term, abi.T_OPT_RESIZE_PULL_SCROLLBACK, this.scratch)
       },
-      // Returns void on both sides, but for different reasons: ours never
-      // reported failure, and main's reports it out-of-band through
-      // T_DATA_VT_PROCESSING_ERROR. Wrapping this in a result check compares
-      // `undefined` against 0 and throws on a write that worked.
+      // Void on both sides; main reports failure via T_DATA_VT_PROCESSING_ERROR.
+      // Don't wrap it in a result check.
       ghostty_terminal_write: (term, data, len) => ex.ghostty_terminal_vt_write(term, data, len),
 
       ghostty_render_state_update: (term) => {
         const st = this.state(term)
         if (!st) return 0
         this.expireHold(term, st)
-        // During a hold the snapshot *is* the frame to show — taken when the
-        // hold began — so rebuilding it here would draw the half-finished one
-        // the hold exists to hide.
+        // During a hold the captured snapshot is the frame to show.
         if (st.hold.active) st.hold.fresh = false
         else this.snapshot(term, st)
         return 0
@@ -634,9 +517,7 @@ class MainShim {
       ghostty_render_state_get_scrollback_length: (term) => this.state(term)?.snapshotScrollback ?? 0,
       ghostty_render_state_get_cols: (term) => this.rsU16(term, abi.RS_DATA_COLS),
       ghostty_render_state_get_rows: (term) => this.rsU16(term, abi.RS_DATA_ROWS),
-      // The five cursor getters below share one `RS_DATA_CURSOR` read per frame.
-      // `viewport_x`/`_y` are undefined unless `viewport_has_value`, so they are
-      // gated on it rather than read blind.
+      // The cursor getters share one `RS_DATA_CURSOR` read per frame.
       ghostty_render_state_get_cursor_x: (term) =>
         this.snapshotCursor(term) && this.cursorHasPosition()
           ? this.dv().getUint16(this.cursorBuf + abi.RS_CURSOR_OFF_VIEWPORT_X, true)
@@ -645,9 +526,7 @@ class MainShim {
         this.snapshotCursor(term) && this.cursorHasPosition()
           ? this.dv().getUint16(this.cursorBuf + abi.RS_CURSOR_OFF_VIEWPORT_Y, true)
           : 0,
-      // Two conditions on main, one on ours: a cursor scrolled out of the
-      // viewport is reported as *having no position*, and its x/y are then
-      // explicitly undefined. Drawing it anyway would put it at (0,0).
+      // Not visible without a viewport position (scrolled out of view).
       ghostty_render_state_get_cursor_visible: (term) =>
         this.snapshotCursor(term) &&
         this.dv().getUint8(this.cursorBuf + abi.RS_CURSOR_OFF_VISIBLE) !== 0 &&
@@ -662,8 +541,7 @@ class MainShim {
         this.snapshotCursor(term)
           ? cursorStyleForMain(this.dv().getUint32(this.cursorBuf + abi.RS_CURSOR_OFF_VISUAL_STYLE, true))
           : CURSOR_STYLE_BLOCK,
-      // Likewise one `RS_DATA_COLORS` read serves both, and would serve the
-      // cursor color and the palette too if anything asked for them.
+      // One `RS_DATA_COLORS` read serves both.
       ghostty_render_state_get_fg_color: (term) =>
         this.snapshotColors(term) ? this.rgbAt(this.colorsBuf, abi.RS_COLORS_OFF_FOREGROUND) : 0,
       ghostty_render_state_get_bg_color: (term) =>
@@ -672,12 +550,8 @@ class MainShim {
       ghostty_render_state_mark_clean: (term) => {
         const st = this.state(term)
         if (!st) return
-        // One call, and — more to the point — the *whole* thing. This used to
-        // set `RS_OPTION_DIRTY` to FALSE, which is only the global layer: the
-        // per-row flags are independent and survived it, so an 80x24 viewport
-        // stayed 24-rows-dirty forever after being marked clean. Nothing read
-        // them, so nothing broke; it would have broken the moment anything did,
-        // which is exactly what the dirty-row iterator is for.
+        // Clears both dirty layers; setting `RS_OPTION_DIRTY` alone leaves the
+        // per-row flags set.
         ex.ghostty_render_state_clean(st.reader.state)
       },
 
@@ -686,8 +560,7 @@ class MainShim {
         if (!st) return -1
         const cols = this.rsU16(term, abi.RS_DATA_COLS)
         if (cols <= 0) return 0
-        // Never write past what the caller sized: `cells` is their buffer, and
-        // a viewport taller than it must be truncated rather than trusted.
+        // Truncate to the caller's buffer.
         const rows = Math.min(this.rsU16(term, abi.RS_DATA_ROWS), Math.floor(cells / cols))
         return st.reader.read(out, cols, rows)
       },
@@ -701,16 +574,8 @@ class MainShim {
           : 0,
       ghostty_terminal_has_mouse_tracking: (term) =>
         this.tGet(term, abi.T_DATA_MOUSE_TRACKING) && this.dv().getUint8(this.scratch) !== 0 ? 1 : 0,
-      // Two shape differences from our API, not one:
-      //
-      // The `is_ansi` flag is not an argument on main — it is bit 15 of the
-      // mode. Passing it as one drops the out pointer off the end of the call.
-      //
-      // And there is no longer a dedicated mode getter: upstream `cfc19e805`
-      // removed `ghostty_terminal_mode_get`/`_mode_set` and folded them into
-      // the ordinary `ghostty_terminal_get`/`_set` under `T_DATA_MODE`. That
-      // key is *in/out* — the mode goes into the scratch before the call, and
-      // the core writes the answer back into the same struct.
+      // main folds `is_ansi` into bit 15 of the mode, and reads modes through
+      // the generic getter with the in/out `T_DATA_MODE` struct.
       ghostty_terminal_get_mode: (term, mode, isAnsi) => {
         this.dv().setUint16(
           this.scratch + abi.MODE_CONFIG_MODE_OFFSET,
@@ -723,8 +588,7 @@ class MainShim {
           ? 1
           : 0
       },
-      // Both wrap questions are one `grid_ref` lookup apart: ours splits the
-      // active screen from scrollback, main addresses them in one space.
+      // main addresses the active screen and scrollback in one space.
       ghostty_terminal_is_row_wrapped: (term, y) =>
         this.state(term)?.scrollback.isRowWrapped(y, SPACE_ACTIVE) ? 1 : 0,
       ghostty_terminal_is_scrollback_row_wrapped: (term, offset) =>
@@ -745,10 +609,8 @@ class MainShim {
         const queue = this.drain(term)
         const reply = queue.shift()
         if (!reply) return 0
-        // A reply longer than the caller's buffer is truncated rather than
-        // split: every reply this ABI carries (CPR, DA, DSR, XTVERSION) is
-        // tens of bytes against the 256 `readResponse` asks for, and half a
-        // reply followed by the other half is worse than a short one.
+        // Truncated rather than split; replies (CPR, DA, DSR, XTVERSION) are far
+        // shorter than the 256 bytes `readResponse` provides.
         const n = Math.min(reply.length, len)
         new Uint8Array(ex.memory.buffer, out, n).set(reply.subarray(0, n))
         return n
@@ -761,12 +623,9 @@ class MainShim {
 }
 
 /**
- * Whether an instance is a `main` build rather than the vendored v1.3.1 one.
- *
- * Keyed on `vt_write` because it is the rename at the heart of the move and
- * exists in exactly one of the two builds. Cheap enough to call at
- * instantiation, which is what makes selecting the ABI a property of the binary
- * rather than a build flag someone has to keep in step with it.
+ * Whether an instance is a `main` build rather than v1.3.1, keyed on
+ * `vt_write` (which only `main` has), so the ABI is chosen from the binary
+ * itself.
  */
 export function isMainBuild(instance: WebAssembly.Instance): boolean {
   return typeof (instance.exports as Record<string, unknown>).ghostty_terminal_vt_write === 'function'
@@ -778,7 +637,7 @@ export function shimMainWasm(instance: WebAssembly.Instance): GhosttyWasm {
   return { exports: shim.exports(), instance }
 }
 
-/** Compile-and-wrap, for callers holding bytes — the node-side test harnesses. */
+/** Compile and wrap, for node-side test harnesses holding bytes. */
 export async function instantiateMainGhosttyWasm(bytes: ArrayBuffer): Promise<GhosttyWasm> {
   const module = await WebAssembly.compile(bytes)
   const instance = await WebAssembly.instantiate(module, {

@@ -1,60 +1,36 @@
 /**
  * The symbol a program puts at the front of its own title (OSC 0/2).
  *
- * Not an icon protocol — there isn't one. A program that wants to mark itself
- * in a tab strip has exactly one channel that survives SSH, and that is the
- * title string, so it writes a character the terminal's font happens to draw
- * in color and the title carries it along. Claude Code leads with `✳`, which
- * Segoe UI Emoji renders as a white asterisk on a green square; that is the
- * whole of the "custom tab icon" Windows Terminal appears to show, sitting in
- * the title text beside the real profile icon rather than replacing it.
- *
- * So this is a *heuristic on a convention*, not a parser for a format, and it
- * is written to fail closed: an ordinary title must yield nothing at all.
- * `dev@build01: ~/src` and `vim README.md` are the common case, and a badge
- * for either would be noise on every tab in the strip.
- *
- * Pure — no state, no DOM. `TabBar.tsx` owns where the result is drawn.
+ * There's no icon protocol; the title is the one channel that survives SSH,
+ * so programs lead with a character fonts draw in color (Claude Code's `✳`).
+ * A heuristic on that convention, written to fail closed: ordinary titles
+ * (`dev@build01: ~/src`, `vim README.md`) yield nothing. Pure; `TabBar.tsx`
+ * draws the result.
  */
 
 /**
- * Character classes a leading symbol is accepted from. Deliberately narrow:
- * anything a title plausibly *starts a sentence* with is excluded, which is
- * why letters, digits, quotes, brackets and the path characters are absent.
+ * Character classes a leading symbol may come from. Excludes anything a title
+ * might start a sentence with (letters, digits, quotes, brackets, paths).
  *
- * - `Extended_Pictographic` is emoji proper, and covers `✳` U+2733 along with
- *   the hourglasses and check marks CLIs reach for.
- * - Geometric Shapes carries the spinner frames that are *not* emoji — the
- *   half-filled circles `◐◑◒◓` an animating program cycles through. Claude
- *   Code swaps its asterisk for these while it works, so leaving them out
- *   would make the badge vanish for exactly the seconds it means the most.
- * - Braille Patterns is the other spinner alphabet in wide use (`⠋⠙⠹`).
- * - Misc Symbols and Arrows rounds out the filled shapes that neither of the
- *   above claims.
+ * - `Extended_Pictographic`: emoji proper, including `✳` U+2733.
+ * - Geometric Shapes: non-emoji spinner frames (`◐◑◒◓`), which Claude Code
+ *   cycles while working.
+ * - Braille Patterns: the other common spinner alphabet (`⠋⠙⠹`).
+ * - Misc Symbols and Arrows: remaining filled shapes.
  */
 const BADGE_START =
   /^[\p{Extended_Pictographic}■-◿⠀-⣿⬀-⯿]/u
 
 /**
- * Carved back out of `Extended_Pictographic`, which is drawn wider than the
- * intent here: `©` and `®` are typographic marks that occur in ordinary text
- * — a title lifted from a page footer or a license banner can begin with one —
- * and neither is used anywhere as a status badge. They are the only two
- * characters in Latin-1 the accepted set reaches, so excluding them is what
- * makes "no badge from an ASCII title" true without qualification.
- *
- * The other pictographics that are technically punctuation stay in: `‼`, `⁉`
- * and `ℹ` are drawn as color emoji and are only ever put at the front of a
- * title on purpose, which is exactly the convention this reads.
+ * `©` and `®` carved back out: typographic marks that can start ordinary
+ * titles, and the only Latin-1 characters the accepted set reaches. `‼`, `⁉`
+ * and `ℹ` stay, since they're only ever leading on purpose.
  */
 const BADGE_EXCLUDE = /^[©®]/
 
 /**
- * The first grapheme cluster, so a multi-codepoint emoji survives intact — a
- * ZWJ sequence or a flag sliced at its first codepoint renders as a different
- * character, not a truncated one. `Intl.Segmenter` is present in WebView2 and
- * in the Node the tests run on; the spread is a floor for anything older, and
- * costs only the joiners.
+ * The first grapheme cluster, so ZWJ sequences and flags survive intact.
+ * `Intl.Segmenter` exists in WebView2 and Node; the spread is a fallback.
  */
 function firstGrapheme(s: string): string {
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
@@ -66,30 +42,15 @@ function firstGrapheme(s: string): string {
 }
 
 /**
- * Asks for the color form of a character that has one but does not default
- * to it.
- *
- * Most of the marks worth badging — `✳` U+2733 among them — are
- * `Extended_Pictographic` but `Emoji_Presentation: no`, meaning their default
- * form is a monochrome *text* glyph. Windows Terminal shows `✳` green anyway
- * because DirectWrite's fallback happens to reach Segoe UI Emoji; Blink
- * deliberately prefers a text font for these, so the same character in our own
- * tab strip would come out gray and look nothing like the thing the user
- * recognizes from every other terminal. U+FE0F is the standard way to say
- * "the color one", rather than betting on a fallback chain.
- *
- * Only for characters that actually have a color form. The spinner frames are
- * Geometric Shapes and Braille — not emoji at all, with no color form to ask
- * for — so they stay text glyphs and take the tab's own color, which is what
- * Windows Terminal shows for them too.
+ * Requests the color form of a character that has one but doesn't default to
+ * it (`✳` is `Emoji_Presentation: no`). Blink prefers a text font for these,
+ * so without U+FE0F it renders gray. Spinner frames have no color form and
+ * keep the tab's text color, as in Windows Terminal.
  */
 function withEmojiPresentation(grapheme: string): string {
   const cps = [...grapheme]
-  // A selector already present is the program's own statement about how it
-  // wants to be drawn — U+FE0F for color, U+FE0E for text. Neither is ours to
-  // overrule. Multi-codepoint clusters are left alone for the same reason a
-  // selector has to sit against its base: appending to the end of a ZWJ
-  // sequence would attach it to the wrong character.
+  // An existing selector is the program's choice. Multi-codepoint clusters are
+  // left alone; appending would attach to the wrong character.
   if (cps.length !== 1) return grapheme
   const base = cps[0]
   if (!/\p{Extended_Pictographic}/u.test(base)) return grapheme
@@ -98,11 +59,8 @@ function withEmojiPresentation(grapheme: string): string {
 }
 
 /**
- * The badge for a remote-set title, or null when the title is an ordinary one.
- *
- * Leading whitespace is skipped rather than disqualifying: a program that
- * writes `" ✳ Building"` means the same thing as one that writes `"✳ Building"`,
- * and which of the two you get is not a property worth surfacing.
+ * The badge for a remote-set title, or null for an ordinary one. Leading
+ * whitespace is skipped.
  */
 export function titleBadge(title: string | null | undefined): string | null {
   if (!title) return null

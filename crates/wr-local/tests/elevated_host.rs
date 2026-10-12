@@ -1,15 +1,10 @@
-//! The elevated host, run for real over a named pipe — unelevated.
+//! The elevated host, run for real over a named pipe, unelevated (the host
+//! asks for no elevation; only `runas` needs a person). These start the host
+//! in-process, connect as the tab will, and drive a real `cmd.exe`.
 //!
-//! The host asks for no elevation of its own; it runs as whatever launched it.
-//! That is what makes everything but the UAC step testable: these start the
-//! host in-process, connect to it the way the tab will, and drive a real
-//! `cmd.exe` through it. Only `ShellExecuteEx`'s `runas` needs a human.
-//!
-//! Two groups. The relay — output, input, resize, exit, a shell that won't
-//! start — mirrors `tests/spawn.rs`, through the pipe instead of directly.
-//! The refusals are decision 3 of `docs/ELEVATED_TABS_PLAN.md`: the pipe
-//! serves one client, that client must be the expected process, and a name
-//! someone else got to first means the host does not start at all.
+//! The relay tests mirror `tests/spawn.rs` through the pipe. The refusals are
+//! decision 3 of `docs/ELEVATED_TABS_PLAN.md`: one client, the expected
+//! process, and no start at all if someone claimed the name first.
 #![cfg(windows)]
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -156,9 +151,7 @@ fn text(seen: &Seen) -> String {
     String::from_utf8_lossy(&seen.output).into_owned()
 }
 
-/// The width `mode con` reported, read off its `Columns:` line rather than by
-/// looking for the number anywhere in the output, where it could turn up for
-/// some other reason.
+/// The width `mode con` reported, from its `Columns:` line specifically.
 fn columns(seen: &Seen) -> Option<u32> {
     let out = text(seen);
     let at = out.find("Columns:")? + "Columns:".len();
@@ -243,8 +236,7 @@ async fn a_later_resize_reaches_the_console() {
     finish(host).await.unwrap();
 }
 
-/// The host has no window of its own, so a shell that cannot start has to be
-/// reported to the tab, not merely logged.
+/// The windowless host must report a shell that can't start to the tab.
 #[tokio::test]
 async fn a_shell_that_cannot_start_is_reported_to_the_tab() {
     let name = pipe_name();
@@ -272,7 +264,7 @@ async fn closing_the_tab_ends_the_host_and_its_shell() {
     write_frame(&mut writer, &Frame::Resize { cols: 80, rows: 24 })
         .await
         .unwrap();
-    // Wait until the shell is actually running before walking away from it.
+    // Wait until the shell runs before walking away.
     loop {
         match read_frame(&mut reader).await.unwrap() {
             Some(Frame::Ready) => break,

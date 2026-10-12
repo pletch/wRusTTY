@@ -5,50 +5,39 @@ import type { PaneNode, Tab } from '../types'
 import { allLeaves } from './paneTree'
 
 const STORAGE_KEY = 'wrustty.session-snapshot'
-// Pre-rebrand key (was wr-shell) — read as a fallback so an existing
-// snapshot isn't silently dropped by the rename; the very next saveSnapshot
-// call naturally retires it by writing under the new key instead.
+// The pre-rebrand key (wr-shell), read as a fallback; the next save writes
+// under the new key.
 const PREVIOUS_STORAGE_KEY = 'wr-shell.session-snapshot'
 
 export interface SanitizeOptions {
-  /** Serial panes are kept in the launch snapshot — it describes what was
-   * open moments ago, when the port almost certainly still is what it was.
-   * They are dropped from saved workspaces, which are reopened days or weeks
-   * later, by which time a USB adapter moved to another socket has silently
-   * become a different COM number pointing at the wrong device. */
+  /** Keep serial panes. True for the launch snapshot (moments old); false for
+   * saved workspaces, reopened later when a moved USB adapter may have a
+   * different COM number. */
   allowSerial: boolean
 }
 
-/** Only these protocols can be reconnected without ever collecting a
- * plaintext secret outside the vault — a manually-typed SSH connection's
- * password/passphrase was never persisted anywhere and never will be, so
- * those leaves are dropped (reverted to a blank pane) rather than restored
- * as a broken shell of themselves with no credential to actually use. */
+/** The sources that can reconnect without a plaintext secret outside the
+ * vault. A manually typed SSH password was never persisted, so those leaves
+ * revert to blank panes. */
 function restorableSource(
   source: ConnectionSource | null,
   opts: SanitizeOptions,
 ): ConnectionSource | null {
   if (!source) return null
   if (source.protocol === 'sshProfile' || source.protocol === 'telnet') return source
-  // A saved local shell needs no credential and nothing is on the other end of
-  // a network, so restoring one can always succeed. It re-resolves its shell id
-  // on the way back, exactly as a fresh connect does.
+  // A saved local shell needs no credential; it re-resolves its shell id on
+  // the way back.
   if (source.protocol === 'localProfile') return source
-  // And so can an unsaved one, for the same reasons. It used to be dropped
-  // alongside an unsaved SSH session, but that rule exists for a password that
-  // was never stored, and a local shell has none — so a restart lost every
-  // ordinary shell tab while an administrator one came back as its form.
+  // An unsaved local shell has no password either.
   if (source.protocol === 'local') return source
   if (source.protocol === 'serial' && opts.allowSerial) return source
-  // An administrator shell is never restored connected (decision 4 of
-  // docs/ELEVATED_TABS_PLAN.md): that would be a UAC prompt nobody asked for.
-  // It comes back as its pane's pre-filled form instead — see `keepsBlank`.
+  // An administrator shell never restores connected (decision 4 of
+  // docs/ELEVATED_TABS_PLAN.md); it comes back as its form (see `keepsBlank`).
   return null
 }
 
-/** A pane restored without its connection but still worth its tab: an
- * administrator shell reopens as its reopen-or-close card (ElevatedRestore), one
- * deliberate click from where it was, rather than vanishing. */
+/** A pane restored without its connection but kept: an administrator shell
+ * reopens as its reopen-or-close card (ElevatedRestore). */
 function keepsBlank(source: ConnectionSource | null): boolean {
   return source?.protocol === 'elevated'
 }
@@ -63,9 +52,8 @@ function sanitizeNode(node: PaneNode, opts: SanitizeOptions): PaneNode {
   }
 }
 
-/** Strips unsaveable panes and then whole tabs left with nothing, shared by
- * the launch snapshot and saved workspaces so the two can't diverge on what
- * counts as safe to persist. */
+/** Strips unsaveable panes, then tabs left empty. Shared by the launch
+ * snapshot and saved workspaces. */
 export function sanitizeTabs(tabs: Tab[], opts: SanitizeOptions): Tab[] {
   return tabs
     .filter((t) =>
@@ -74,8 +62,7 @@ export function sanitizeTabs(tabs: Tab[], opts: SanitizeOptions): Tab[] {
     .map((t) => ({ ...t, root: sanitizeNode(t.root, opts) }))
 }
 
-/** How many panes `sanitizeTabs` would drop — lets the save flow say so up
- * front rather than silently losing them. */
+/** How many panes `sanitizeTabs` would drop, so the save flow can say so. */
 export function countUnsaveable(tabs: Tab[], opts: SanitizeOptions): number {
   return tabs.reduce(
     (n, t) =>
@@ -92,12 +79,9 @@ export interface SessionSnapshot {
   activeTabId: string | null
 }
 
-/** Persists which tabs/panes are currently open, dropping anything that
- * can't be safely reconnected (see restorableSource) and dropping whole
- * tabs left with nothing restorable at all. Called on every tabs/
- * activeTabId change rather than gated on a clean-exit hook, so a crash or
- * force-quit doesn't lose it — same reasoning as the vault/known_hosts
- * files being written on every edit instead of only on close. */
+/** Persists the open tabs and panes, dropping anything that can't be safely
+ * reconnected (see restorableSource) and tabs left empty. Called on every
+ * change rather than on exit, so a crash doesn't lose it. */
 export function saveSnapshot(tabs: Tab[], activeTabId: string | null) {
   const sanitized = sanitizeTabs(tabs, { allowSerial: true })
 
@@ -113,7 +97,7 @@ export function saveSnapshot(tabs: Tab[], activeTabId: string | null) {
       JSON.stringify({ tabs: sanitized, activeTabId: validActiveId }),
     )
   } catch {
-    // Best-effort; a snapshot-persistence failure shouldn't break the app.
+    // Best-effort.
   }
 }
 
@@ -138,10 +122,8 @@ export function countSessions(tabs: Tab[]): number {
   return tabs.reduce((n, t) => n + allLeaves(t.root).filter((l) => l.source).length, 0)
 }
 
-/** Administrator panes coming back as their reopen card: restored, but with no
- * connection until someone approves the UAC prompt (see `keepsBlank`). Counted
- * apart from `countSessions` so the restore prompt can name them as sessions
- * of their own that wait, rather than leave them out of the total. */
+/** Administrator panes coming back as their reopen card, counted apart from
+ * `countSessions` so the restore prompt can name them. */
 export function countAwaitingElevation(tabs: Tab[]): number {
   return tabs.reduce(
     (n, t) => n + allLeaves(t.root).filter((l) => !l.source && l.initial?.local?.elevated).length,
@@ -149,20 +131,15 @@ export function countAwaitingElevation(tabs: Tab[]): number {
   )
 }
 
-/** Whether connecting this saved profile has to go through the vault.
+/** Whether connecting this saved profile goes through the vault.
  *
- * Agent and keyboard-interactive auth don't — see `authNeedsVault`, which owns
- * that judgment. A jump host does count even when the target
- * itself is agent-authenticated, because `ssh_connect_profile` resolves the
- * jump profile's *own* auth, which may well be a vaulted password. Only one
- * hop is considered, matching that same function ignoring any jump the jump
- * host itself names.
+ * Agent and keyboard-interactive auth don't (see `authNeedsVault`), but a jump
+ * host counts, since `ssh_connect_profile` resolves the jump profile's own
+ * auth. Only one hop is considered, matching that function.
  *
- * A profile that isn't in the list is treated as vault-bound. That's the safe
- * direction — an unlock prompt that turns out to be unnecessary, rather than
- * a pane that mounts and immediately dies with "vault is locked" — and it's
- * also what happens on the first render at launch, before the profile list
- * has finished loading. */
+ * An unknown profile counts as vault-bound (as on first render, before the
+ * list loads): an unneeded unlock prompt beats a pane dying with "vault is
+ * locked". */
 function profileNeedsVault(profileId: string, sessions: SessionProfile[]): boolean {
   const profile = sessions.find((s) => s.id === profileId)
   if (!profile) return true
@@ -174,9 +151,8 @@ function profileNeedsVault(profileId: string, sessions: SessionProfile[]): boole
   return false
 }
 
-/** Whether reconnecting `source` needs an unlocked vault. Shared by the
- * "should we prompt?" check and the "which panes do we blank?" pass, so the
- * two can't disagree about which panes the prompt was actually for. */
+/** Whether reconnecting `source` needs an unlocked vault. Shared by the prompt
+ * check and the blanking pass so they agree. */
 export function isVaultBound(
   source: ConnectionSource | null,
   sessions: SessionProfile[],

@@ -1,34 +1,23 @@
 /**
- * OSC 52 — the escape sequence an application uses to put text on the
- * terminal's clipboard.
+ * OSC 52: an application putting text on the terminal's clipboard.
  *
  *   ESC ] 52 ; <targets> ; <base64> BEL
  *
- * This is the only clipboard path that works for a program running on the far
- * end of an SSH/telnet session: it has no access to the local clipboard, and
- * the mouse belongs to whatever full-screen UI it is drawing. Without it, an
- * app's own "copy" can do nothing but print an apology and tell the user to
- * shift-drag instead.
- *
- * The scanner (see ghostty/oscScanner) hands us everything after `52;`, so a
- * payload here looks like `c;SGVsbG8=`.
+ * The only clipboard path for a program on the far end of SSH or telnet. The
+ * scanner (ghostty/oscScanner) passes everything after `52;`, e.g.
+ * `c;SGVsbG8=`.
  */
 
-/** Targets we honor. `c` is the clipboard proper; `s` is the (X11) select
- *  buffer, which apps also use to mean "the clipboard" on platforms that have
- *  only one; an empty target list means the terminal's configured default.
- *  `p` (X11 primary) is deliberately not honored — on Windows there is no
- *  second buffer to put it in, and mapping it onto the clipboard would let a
- *  primary-selection sync overwrite what the user actually copied. */
+/** Targets we honor: `c` (clipboard) and `s` (X11 select buffer, often meant
+ *  as the clipboard); an empty list means the default. `p` (X11 primary) isn't
+ *  honored: Windows has no second buffer, and a primary-selection sync would
+ *  overwrite what the user copied. */
 const HONOURED = ['c', 's']
 
 /**
- * A copy longer than this is refused rather than written. OSC 52 has no length
- * limit of its own, and the payload arrives over a socket we do not control, so
- * something has to bound what a single sequence can push at the clipboard.
- * 768 KB of base64 is ~576 KB of text — far past any plausible copy out of a
- * terminal, and comfortably under `oscScanner.OSC_PENDING_MAX`, so a payload
- * this size is accepted whether it arrives whole or split across deliveries.
+ * A larger copy is refused. OSC 52 has no length limit and the payload comes
+ * from an untrusted socket. 768 KB of base64 is ~576 KB of text, and under
+ * `oscScanner.OSC_PENDING_MAX`, so it's accepted whole or split.
  */
 export const OSC52_MAX_BASE64 = 768 * 1024
 
@@ -36,15 +25,14 @@ export const OSC52_MAX_BASE64 = 768 * 1024
 export type Osc52Request =
   /** Put `text` on the clipboard. */
   | { kind: 'write'; text: string }
-  /** A read (`Pd` is `?`). Answering hands the remote end the contents of the
-   *  user's clipboard, so this is always reported and never answered. */
+  /** A read (`Pd` is `?`). Answering would hand the remote end the user's
+   *  clipboard, so it's never answered. */
   | { kind: 'read' }
   /** Malformed, or a target we don't honor. Ignore it. */
   | { kind: 'ignore' }
 
 /**
- * Parses an OSC 52 payload. Pure, so the grammar can be tested without a
- * clipboard or a terminal; the caller decides what to do with the result.
+ * Parses an OSC 52 payload. Pure; the caller decides what to do.
  */
 export function parseOsc52(payload: string): Osc52Request {
   const sep = payload.indexOf(';')
@@ -52,19 +40,17 @@ export function parseOsc52(payload: string): Osc52Request {
   const targets = payload.slice(0, sep)
   const data = payload.slice(sep + 1)
 
-  // An empty target list is the default, which we treat as the clipboard.
+  // An empty target list is the default: the clipboard.
   if (targets !== '' && !targets.split('').some((t) => HONOURED.includes(t))) {
     return { kind: 'ignore' }
   }
 
   if (data === '?') return { kind: 'read' }
 
-  // Senders that chunk a long payload wrap it, and the base64 alphabet has no
-  // whitespace in it, so stripping is unambiguous.
+  // Chunking senders wrap long payloads; base64 has no whitespace.
   const b64 = data.replace(/\s+/g, '')
   if (b64.length === 0) {
-    // Explicitly clearing the clipboard is a legitimate use of an empty
-    // payload, and writing '' is exactly that.
+    // An empty payload clears the clipboard.
     return { kind: 'write', text: '' }
   }
   if (b64.length > OSC52_MAX_BASE64) return { kind: 'ignore' }
@@ -75,42 +61,36 @@ export function parseOsc52(payload: string): Osc52Request {
     bytes = new Uint8Array(bin.length)
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
   } catch {
-    // Not valid base64 — nothing to put anywhere.
+    // Not valid base64.
     return { kind: 'ignore' }
   }
 
-  // The wire is UTF-8, and a copy that happens to hold an invalid byte should
-  // still land (with a replacement character) rather than being dropped whole.
+  // UTF-8; an invalid byte becomes a replacement character rather than
+  // dropping the copy.
   return { kind: 'write', text: new TextDecoder().decode(bytes) }
 }
 
-/** What [`applyOsc52`] needs from its surroundings, so the decision can be
- *  tested without a real clipboard. */
+/** What [`applyOsc52`] needs, so it's testable without a real clipboard. */
 export interface Osc52Sink {
   /** Whether the user allows the far end to set the clipboard at all. */
   allowWrite: boolean
   /** Performs the write. Rejection is reported through `onError`. */
   writeText: (text: string) => Promise<void>
-  /** A write landed — the caller surfaces this to the user. */
+  /** A write landed; the caller tells the user. */
   onWrote: () => void
   onError: (message: string) => void
 }
 
 /**
- * Decides and performs what a parsed payload asks for. Lives here rather than
- * inline in `Terminal.tsx` so the *shipped* decision is what tests exercise —
- * a gate re-implemented in a test file pins the copy, not the code.
- *
- * Always returns `true`: the sequence is consumed whether or not it was acted
- * on. Returning `false` for a refused write would let it fall through to the
- * terminal, which prints the base64 payload as garbage rather than dropping it.
+ * Decides and performs what a parsed payload asks, here rather than in
+ * `Terminal.tsx` so tests exercise the shipped decision. Always returns
+ * `true`: the sequence is consumed either way, or a refused write would print
+ * its base64 as garbage.
  */
 export function applyOsc52(payload: string, sink: Osc52Sink): boolean {
   const req = parseOsc52(payload)
-  // Note there is no `read` branch, and adding one would be a bug. A read is
-  // parsed so it can be recognized and dropped; answering it would hand the
-  // remote end whatever the user last copied. `allowWrite` gates writes only
-  // and must never be read as "allow OSC 52".
+  // No `read` branch, deliberately: answering would leak the clipboard.
+  // `allowWrite` gates writes only.
   if (req.kind === 'write' && sink.allowWrite) {
     sink
       .writeText(req.text)

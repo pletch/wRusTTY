@@ -1,8 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 
-// Note: no `write` here — log bytes are written Rust-side by the output
-// coalescer (src-tauri/src/coalesce.rs), never round-tripped through the
-// webview. These commands only toggle logging on/off per session.
+// No `write`: log bytes are written Rust-side by the coalescer
+// (src-tauri/src/coalesce.rs). These only toggle logging per session.
 /** `directory` is Settings → Logging's folder; '' for the default. */
 export function start(sessionId: string, label: string, plainText: boolean, directory: string) {
   return invoke<string>('session_log_start', {
@@ -18,18 +17,15 @@ export function stop(sessionId: string) {
 }
 
 /**
- * Writes a pane dump next to the session logs and returns its path.
- *
- * Unlike the transcript above, the contents come from this side: only the
- * webview holds the grid. See `GhosttyEngine.dumpState` for what is in one and
- * why it exists.
+ * Writes a pane dump beside the session logs and returns its path. Contents
+ * come from the webview, which holds the grid (see `GhosttyEngine.dumpState`).
  */
 export function writePaneDump(label: string, contents: string) {
   return invoke<string>('write_pane_dump', { label, contents })
 }
 
-/** Opens the session-logs folder in the OS file manager (creating it first if
- * nothing has been logged yet) — the chosen one, or the default for ''. */
+/** Opens the session-logs folder (creating it if needed); '' is the
+ * default. */
 export function revealLogs(directory: string) {
   return invoke<void>('reveal_session_logs', { directory: directory || null })
 }

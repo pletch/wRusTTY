@@ -1,20 +1,11 @@
 /**
- * The A/B/A/B trial runner.
+ * The A/B/A/B trial runner. Stops the clock at presentation (measurePresent),
+ * and interleaves the engines so slow drift (thermal throttling, background
+ * tasks) lands on both, flipping the order within each pair every step.
  *
- * Two rules from Phase 7 shape this:
- *   - Stop the clock at presentation (delegated to measurePresent).
- *   - Interleave the engines so slow drift — thermal throttling, a background
- *     task waking up, WebView2 housekeeping — lands on both roughly equally
- *     instead of biasing whichever ran in one contiguous block.
- *
- * Interleaving is per unit of work, and the order within each pair is flipped
- * every step so neither engine permanently owns the first-mover slot (the first
- * of a back-to-back pair tends to run against a slightly cooler cache).
- *
- * Throughput workloads interleave by round (one big write each, reset between).
- * Latency workloads interleave by event, both engines threaded through the same
- * event stream in lockstep, so a TUI stays in its alternate screen and a typed
- * line accumulates identically on both.
+ * Throughput workloads interleave by round (one big write each, reset
+ * between). Latency workloads interleave by event, both engines in lockstep
+ * through the same stream.
  */
 
 import { measurePresent, nextFrame, type Paintable } from './presentClock'
@@ -22,21 +13,10 @@ import { summarize, type Stats } from './stats'
 import { coalescedDeliveries, type Workload } from './workloads'
 
 /**
- * Hands control back to the event loop for one macrotask, without the delay
- * `setTimeout` would impose.
- *
- * `setTimeout(…, 0)` is the obvious way to do this and it silently wrecked the
- * measurement it was used for. Per the HTML spec a timer nested more than five
- * deep is clamped to a 4 ms minimum, and a feed loop that awaits a timer is
- * nested by definition from its sixth turn on. At 100 MB that was 400 yields —
- * 1.6 s of the reported drain spent asleep, against ~1.2 s of actual parsing,
- * which buried the difference between two engines under a constant both of
- * them paid equally.
- *
- * A `MessageChannel` message is also a macrotask (so the compositor still gets
- * its turn, which is the point of yielding at all) but carries no clamp. One
- * channel is shared and resolvers are queued, rather than building a channel
- * per yield — at hundreds of yields per round that would be its own cost.
+ * Yields one macrotask without `setTimeout`'s delay: nested timers are
+ * clamped to 4 ms after five levels, which buried engine differences under
+ * sleep. A `MessageChannel` message is a macrotask (the compositor still gets
+ * its turn) with no clamp. One shared channel, with queued resolvers.
  */
 let yieldPort: MessagePort | null = null
 const yieldWaiters: (() => void)[] = []
@@ -61,29 +41,25 @@ export interface RunnableEngine extends Paintable {
   parse(data: Uint8Array | string): Promise<void>
   readonly cols: number
   readonly rows: number
-  /** Total rows the engine is holding — viewport plus retained scrollback. Read
-   *  before and after a flood to prove the payload actually landed somewhere;
-   *  see `deadTrials`. Optional so a test double need not model a buffer. */
+  /** Total rows held, viewport plus scrollback; compared across a flood to prove
+   *  the payload landed (see `deadTrials`). Optional for test doubles. */
   readonly scrollbackLength?: number
 }
 
 export interface EngineResult {
   engine: string
   /** Latency: present latency (ms). Throughput: parse time (ms). Block: the
-   *  distribution of worst-stall-per-round (ms) — `stats.max` is the freeze. */
+   *  worst stall per round (ms); `stats.max` is the freeze. */
   stats: Stats
   /** MB/s for throughput and block workloads; undefined for latency ones. */
   throughputMBs?: number
-  /** Mean wall-clock to fully drain the payload (ms). Block workloads only.
-   *  Includes the yields between deliveries, so it is a property of the feed
-   *  as much as of the engine — compare `parseMeanMs` to isolate the engine. */
+  /** Mean wall-clock to drain the payload (ms), block only. Includes yields
+   *  between deliveries; see `parseMeanMs` for the engine alone. */
   drainMeanMs?: number
-  /** Mean time actually spent inside the engine during a drain (ms), summed
-   *  across deliveries. Block workloads only. This is the engine's share of
-   *  the drain, and the figure that can tell two engines apart. */
+  /** Mean time inside the engine during a drain (ms), block only: the figure
+   *  that tells engines apart. */
   parseMeanMs?: number
-  /** MB/s implied by `parseMeanMs` — throughput with the harness's own feed
-   *  overhead removed. Block workloads only. */
+  /** MB/s implied by `parseMeanMs`, block only. */
   parseMBs?: number
   /** How many deliveries the payload was fed as. Block workloads only. */
   deliveries?: number
@@ -91,9 +67,8 @@ export interface EngineResult {
   emptyTrials: number
   /** Trials that hit the wall-clock ceiling before settling. */
   failedTrials: number
-  /** Trials the engine accepted the payload for without parsing it. Excluded
-   *  from `stats` and every mean, because averaging them in understates the
-   *  cost by exactly the fraction of rounds that died. Block workloads only. */
+  /** Trials that accepted the payload without parsing it, block only. Excluded
+   *  from `stats` and means, which they'd understate. */
   deadTrials: number
 }
 
@@ -102,8 +77,8 @@ export interface WorkloadResult {
   label: string
   unit: string
   mode: Workload['mode']
-  /** Block workloads: true if fed in coalescer-sized chunks (the app-realistic
-   *  stall), false if fed as one monolithic write (the worst-case stall). */
+  /** Block: true if fed in coalescer-sized chunks (the realistic stall), false
+   *  for one monolithic write (the worst case). */
   chunkedFeed?: boolean
   results: EngineResult[]
 }
@@ -111,19 +86,13 @@ export interface WorkloadResult {
 export interface RunOptions {
   /** Rounds per engine for throughput workloads. */
   throughputRounds: number
-  /** Rounds per engine for block (flood-stress) workloads. Fewer, since each is
-   *  a full large-flood drain. Defaults to 3. */
+  /** Rounds per engine for block workloads (each a full drain). Defaults to 3. */
   blockRounds?: number
   onProgress?: (msg: string) => void
   /**
-   * Checked between trials. Returning a reason aborts the run by throwing
-   * `RunAborted` rather than returning what has been collected so far.
-   *
-   * Throwing is the point. A latency distribution that stopped early is
-   * indistinguishable from a complete one once it reaches a table — the same
-   * failure mode as the empty-trial flag this exists to replace (see
-   * hostVisibility.ts). A caller that wants the partial data can catch and keep
-   * it; a caller that forgets gets nothing, which is the safer default.
+   * Checked between trials. Returning a reason aborts by throwing `RunAborted`,
+   * since a truncated distribution looks complete in a table. A caller can
+   * catch it to keep partial data.
    */
   shouldAbort?: () => string | null
 }
@@ -141,21 +110,16 @@ function checkAbort(opts: RunOptions): void {
   if (reason != null) throw new RunAborted(reason)
 }
 
-/** Empty trials tolerated in one latency workload before the run is abandoned.
- *  Small: an engine that is not painting does not recover on its own, and the
- *  point is to stop while the fact is still legible rather than to survive it. */
+/** Empty trials tolerated in one latency workload before abandoning the run:
+ *  an engine that isn't painting won't recover. */
 const MAX_EMPTY_TRIALS = 3
 
 const RESET_SEQ = '\x1bc' // RIS — full terminal reset between trials
 
 /**
- * Times a pure parse of the whole payload — the "parser win" the flood is meant
- * to measure. Fair across the engines *only* because each is asked when its own
- * parser is done: Ghostty synchronously, xterm via its parse-complete callback.
- * An earlier version fed both a rate-limited stream and timed presentation,
- * which silently throttled the synchronous engine (its parse counted against
- * the per-frame budget) while the async one enqueued and escaped — inverting the
- * result. Feed pacing has no place in a parser measurement.
+ * Times a pure parse of the whole payload. Fair because each engine is asked
+ * when its own parser is done (Ghostty synchronously, xterm via its
+ * parse-complete callback). Feed pacing has no place in a parser measurement.
  */
 async function measureParse(
   engine: RunnableEngine,
@@ -173,8 +137,7 @@ async function measureParse(
   const outcome = await Promise.race([done, timeout])
   const ms = performance.now() - t0
   clearTimeout(timer!)
-  // Both engines are awaited to parser completion here, so the buffer is
-  // settled by now for either of them.
+  // Both engines are awaited to completion, so the buffer has settled.
   return { ms, timedOut: outcome === 'timeout', rowsAdded: (engine.scrollbackLength ?? 0) - rowsBefore }
 }
 
@@ -182,34 +145,15 @@ async function measureParse(
 const BLOCK_SETTLE_FRAMES = 3
 
 /**
- * Whether a round actually happened, judged by what the terminal gained rather
- * than by how long it claimed to take. Applied to throughput and flood-stress
- * rounds alike.
+ * Whether a round happened, judged by what the terminal gained rather than
+ * its timing. The engine can accept writes and parse none, finishing a round
+ * in milliseconds, which would pull every mean down. Timing can't catch it
+ * (xterm's async `write` legitimately reports impossible rates), but the
+ * buffer can: a megabyte or more must scroll at least a screenful.
  *
- * This exists because the harness published a Ghostty parse figure roughly 3x
- * too fast for weeks. The engine can enter a state where it accepts writes and
- * parses none of them: bytes go in, no error is raised, and the round completes
- * in milliseconds — so the round is averaged in as though it were the fastest
- * result ever recorded, and every mean it touches is pulled down by the share
- * of rounds that died. A run with two of three rounds dead reported ~82 MB/s
- * against a true ~31, which is the whole reason a live pane appeared to be 2.7x
- * slower than this harness. Both were always the same speed.
- *
- * Timing cannot catch it: a dead round's headline is "impossibly fast", but
- * xterm legitimately reports impossible rates here because its `write` is
- * asynchronous and returns before parsing, so a rate ceiling would flag every
- * honest xterm round instead. What cannot be faked is the buffer. Any payload
- * of a megabyte or more must push at least a screenful of lines off the top of
- * a grid this size, whatever its content — even a single unbroken line wraps.
- * So "gained fewer rows than it has" means the bytes went nowhere.
- *
- * The assumption that carries all of it: **the payload scrolls the main screen**.
- * Every workload judged today does, being a flood of ordinary output. A
- * workload that spends its bytes redrawing in place would break this — most
- * obviously one that switches to the alternate screen, which has no scrollback
- * at all and would read as dead however well it parsed. If such a workload is
- * ever added at a megabyte or more, give it a way to opt out rather than
- * loosening the threshold, which would let the real failure back through.
+ * This assumes the payload scrolls the main screen. A workload that redraws in
+ * place (or on the alternate screen) must opt out via `scrollsMainScreen`
+ * rather than loosen this threshold.
  */
 const MIN_FLOOD_BYTES = 1024 * 1024
 
@@ -220,22 +164,15 @@ export function roundIsDead(payloadBytes: number, rowsAdded: number, rows: numbe
 }
 
 /**
- * Times a flood drain while watching for the longest single main-thread stall —
- * the freeze Phase 8 (WASM in a Web Worker) would remove.
- *
- * A free-running rAF loop records the gap between consecutive frames. Whenever
- * the main thread is blocked, rAF stops firing, so the largest gap *is* the
- * perceived freeze. The trailing frames catch a render stall that lands last.
+ * Times a flood drain while recording the longest main-thread stall: a
+ * free-running rAF loop's largest frame gap is the perceived freeze, and
+ * trailing frames catch a final render stall.
  *
  * `chunkBytes` chooses the feed:
- *   - 0: one monolithic write. Both engines parse it uninterrupted, so the stall
- *     ≈ the whole parse — the raw-parser / absolute-worst-case number.
- *   - >0: the payload is written in chunkBytes pieces across event-loop turns,
- *     modeling the Rust coalescer, whose flush threshold is the *floor* on a
- *     real delivery rather than a cap (see COALESCE_THRESHOLD). This
- *     is the stall the app can actually produce. Writes are fire-and-forget
- *     (like `onData`), so the drain is considered done only once paints settle —
- *     xterm parses its queue off the write call.
+ *   - 0: one monolithic write, so the stall is the whole parse (worst case).
+ *   - >0: written across event-loop turns in modeled coalescer deliveries
+ *     (see COALESCE_THRESHOLD), the stall the app can produce. Writes are
+ *     fire-and-forget, so the drain ends once paints settle.
  */
 async function measureBlock(
   engine: RunnableEngine,
@@ -273,16 +210,13 @@ async function measureBlock(
   const t0 = performance.now()
   const overCeiling = () => performance.now() - t0 > timeoutMs
   let timedOut = false
-  // Time actually spent inside the engine, accumulated across deliveries and
-  // reported separately from the wall clock. Wall clock includes the yields
-  // between deliveries, which belong to the harness and not to the engine —
-  // conflating the two is what made the drain figure incomparable.
+  // Engine time, accumulated across deliveries and reported apart from the
+  // wall clock, which includes the harness's yields.
   let parseMs = 0
   let deliveries = 0
 
   if (chunkBytes > 0) {
-    // The sizes the coalescer would actually emit for this payload — at least
-    // the flush threshold, larger by however much a read overshot it.
+    // The sizes the coalescer would emit for this payload.
     const sizes = coalescedDeliveries(buf.length, chunkBytes)
     deliveries = sizes.length
     let offset = 0
@@ -292,10 +226,7 @@ async function measureBlock(
       engine.write(buf.subarray(offset, end))
       parseMs += performance.now() - w0
       offset = end
-      // Yield after every delivery, not every eighth. A delivery is exactly
-      // the unit the app hands over in one event-loop turn, so batching eight
-      // of them measured a stall the app cannot produce and hid the
-      // per-delivery one it can.
+      // Yield after every delivery: each is one event-loop turn in the app.
       await macrotaskYield()
       if (overCeiling()) {
         timedOut = true
@@ -335,14 +266,13 @@ async function measureBlock(
   await nextFrame()
   running = false
   sub.dispose()
-  // Sampled here rather than at `drainMs`, so an engine that parses off the
-  // write call (xterm) has finished its queue before it is asked.
+  // Sampled here so xterm, which parses off the write call, has finished.
   const rowsAdded = (engine.scrollbackLength ?? 0) - rowsBefore
   return { drainMs, parseMs, maxStallMs: maxStall, deliveries, timedOut, rowsAdded }
 }
 
-/** Median interval between animation frames — the display's real cadence, so
- *  latency (which is frame-quantized) can be reported refresh-independently. */
+/** Median interval between animation frames, so frame-quantized latency can
+ *  be reported independent of refresh rate. */
 export async function measureFrameInterval(samples = 60): Promise<number> {
   const deltas: number[] = []
   let last = await nextFrame()
@@ -395,7 +325,7 @@ async function runThroughput(
   const dead: Record<string, number> = { [a.name]: 0, [b.name]: 0 }
 
   for (let round = 0; round < opts.throughputRounds; round++) {
-    // Flip order each round so neither engine always runs first.
+    // Flip order each round.
     const order = round % 2 === 0 ? [a, b] : [b, a]
     for (const engine of order) {
       checkAbort(opts)
@@ -434,13 +364,10 @@ async function runThroughput(
 }
 
 /**
- * Runs a flood-stress workload: the same interleaved, order-flipped rounds as
- * throughput, but each round measures the worst main-thread stall the drain
- * caused (via `measureBlock`) rather than a settle. `stats` is the distribution
- * of those worst stalls across rounds — `stats.max` is the freeze to quote —
- * and `drainMeanMs` is the wall-clock to fully drain. No MB/s here: under a
- * chunked feed the wall-clock is dominated by inter-delivery yields, not parse,
- * so a "rate" would mislead; the pure-parse rate is the throughput workload's job.
+ * Runs a flood-stress workload: interleaved, order-flipped rounds, each
+ * measuring the worst stall of its drain (`measureBlock`). `stats.max` is the
+ * freeze to quote; `drainMeanMs` the wall-clock. No MB/s: under a chunked
+ * feed the wall-clock is mostly yields.
  */
 async function runBlock(
   a: RunnableEngine,
@@ -537,21 +464,15 @@ async function runLatency(
         ? [[a, builtA.events[i]], [b, builtB.events[i]]]
         : [[b, builtB.events[i]], [a, builtA.events[i]]]
     for (const [engine, ev] of pair) {
-      // Before the trial, not after: a host that has already scrolled away
-      // would otherwise contribute one more empty sample on the way out.
+      // Before the trial, so a host that scrolled away adds no extra empty sample.
       checkAbort(opts)
       const r = await measurePresent(engine, () => engine.write(ev), { timeoutMs: 2000 })
       if (r.timedOut) failed[engine.name]++
       else if (r.paints === 0) {
         empty[engine.name]++
-        // Ground truth, and the backstop for the visibility guard in the
-        // harness. That guard infers a paused renderer from geometry, which has
-        // now been wrong in both directions — it fired on the harness's own
-        // resize, and it missed the results tables pushing the hosts down the
-        // page. An empty trial is not an inference: the engine was asked to
-        // paint and did not. A handful can be a genuine no-op frame, so this
-        // tolerates a few and then stops rather than filling a table with a
-        // distribution sampled from whichever trials happened to render.
+        // Ground truth behind the harness's visibility guard (which infers a paused
+        // renderer from geometry): the engine was asked to paint and didn't. A few
+        // are tolerated as genuine no-op frames.
         if (empty[engine.name] > MAX_EMPTY_TRIALS) {
           throw new RunAborted(
             `${engine.name} produced no paint on ${empty[engine.name]} trials of ${workload.label}. ` +
@@ -615,9 +536,8 @@ export function fmtDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`
 }
 
-/** Renders a completed run as a Markdown block for pasting into Phase 7 notes.
- *  `frameMs` is the measured display cadence, so latency can be shown in frames
- *  — the refresh-independent form, since presentation is frame-quantized. */
+/** Renders a completed run as Markdown. `frameMs` is the measured display
+ *  cadence, so latency can also be shown in frames. */
 export function resultsToMarkdown(
   results: WorkloadResult[],
   gpuLine: string,
@@ -628,10 +548,7 @@ export function resultsToMarkdown(
   lines.push('# wRusTTY Phase 7 — engine A/B', '')
   lines.push(meta, '', gpuLine, '')
 
-  // A per-row flag is too easy to miss in an exported table that someone reads
-  // weeks later, and quoting a figure from a run with dead rounds is precisely
-  // the mistake this is here to prevent. Say it once, at the top, in the way a
-  // reader cannot skip.
+  // Dead rounds are stated once at the top, where a reader can't miss them.
   const deadTotal = results.reduce((n, w) => n + w.results.reduce((m, r) => m + (r.deadTrials ?? 0), 0), 0)
   if (deadTotal > 0) {
     lines.push(
@@ -682,20 +599,12 @@ export function resultsToMarkdown(
 }
 
 /**
- * The written conclusions the numbers above support — folded into the export so
- * the notes stand on their own.
+ * The written conclusions the numbers support, included in the export.
  *
- * The first paragraph is a measurement protocol rather than a result, and it
- * belongs there. Every figure in this file was wrong by ~2.75x for a while
- * because the only way to reach the recorders was to type into the console,
- * which attaches an inspector, which puts V8's WebAssembly into a debuggable
- * tier. Days went into chasing the resulting discrepancy through the workload,
- * the grid, the scrollback, the transport, the backend and the page state. A
- * reader who takes one thing from this section should take that.
- *
- * Corrections are kept in the text rather than quietly deleted. Two claims
- * published here were retracted and then un-retracted, and anyone holding a
- * stale copy needs to be able to tell which version they have.
+ * The first paragraph is a measurement protocol: attaching an inspector puts
+ * V8's WebAssembly in a debuggable tier, which skewed every figure here.
+ * Corrections stay in the text so holders of a stale copy can tell versions
+ * apart.
  */
 const FINDINGS: string[] = [
   '## Findings',

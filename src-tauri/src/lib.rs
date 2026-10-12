@@ -185,21 +185,11 @@ pub fn run() {
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());
             vault::migrate_os_unlock_key();
-            // Registered in release builds too, not just debug. A release-only
-            // fault has nowhere else to surface: the webview's console is not
-            // watchable on a user's machine, so anything the frontend catches
-            // and logs — a terminal engine that fails to start, say — simply
-            // vanished, and the app just looked broken. The frontend routes
-            // those through this plugin (see reportEngineFailure in
-            // components/Terminal.tsx), which lands them in
-            // %LOCALAPPDATA%/sh.wrustty.app/logs alongside our own.
-            //
-            // Levels differ by profile rather than the whole plugin: in debug
-            // the dependency chatter is worth having, but in release it is
-            // both noise and a disclosure risk (russh and wry narrate
-            // connection-shaped detail at info/debug into a file we would then
-            // be writing to disk unprompted), so third-party crates are capped
-            // at warn there and only our own targets stay at info.
+            // Registered in release builds too: the webview console isn't visible on a
+            // user's machine, so frontend faults (reportEngineFailure in
+            // components/Terminal.tsx) land in %LOCALAPPDATA%/sh.wrustty.app/logs. In
+            // release, third-party crates are capped at warn, since russh and wry
+            // narrate connection detail at info/debug.
             let log_builder = if cfg!(debug_assertions) {
                 tauri_plugin_log::Builder::default().level(log::LevelFilter::Info)
             } else {
@@ -219,14 +209,10 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// One-time migration for the `sh.wrshell.app` → `sh.wrustty.app` rebrand:
-/// `app_data_dir`/`app_config_dir` are `${base}/${identifier}` (see Tauri's
-/// `PathResolver`), so changing the identifier alone would silently orphan
-/// every existing saved session, vault file, known_hosts store, and
-/// window-state file at the old path. Relocates them in place if they're
-/// still there and nothing's already at the new path; a no-op on every
-/// later launch once that's done. Best-effort — a failure here (e.g. no
-/// prior install) shouldn't block startup.
+/// One-time migration for the `sh.wrshell.app` to `sh.wrustty.app` rename:
+/// app data and config dirs are `${base}/${identifier}`, so existing sessions,
+/// vault, known_hosts and window state are moved if still at the old path and
+/// nothing is at the new one. Best-effort; never blocks startup.
 fn migrate_from_previous_identifier(app: &tauri::AppHandle) {
     const PREVIOUS_IDENTIFIER: &str = "sh.wrshell.app";
 

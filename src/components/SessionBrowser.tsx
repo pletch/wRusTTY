@@ -257,28 +257,15 @@ export function SessionBrowser({
     // See the pendingUnlock branch above for why this is overflow-auto +
     // m-auto on the card rather than items-center/justify-center here.
     <div className="flex h-full w-full overflow-auto p-4">
-      {/* shrink-0: this card's own `overflow-hidden` (just for clipping the
-          sidebar/form's rounded corners) resets its flex automatic min-width
-          to 0 per spec, so without shrink-0 a too-narrow pane would shrink
-          the card itself down to fit — clipping whatever doesn't fit via
-          that same overflow-hidden — instead of the parent's overflow-auto
-          ever seeing an overflow to scroll to. */}
-      {/* Capped against the space actually available rather than a fixed
-          height: the dialog takes whatever room it needs up to the pane, and
-          only scrolls when the pane genuinely can't show it. A fixed cap
-          forces a scrollbar on a window with plenty of room the moment the
-          form grows past it. The 2rem subtracted is the wrapper's p-4, which
-          `max-h-full` alone wouldn't account for. */}
+      {/* shrink-0: the card's `overflow-hidden` zeroes its flex min-width, so
+          without it a narrow pane would shrink and clip the card rather than
+          let the parent scroll. The height is capped by the pane (minus the
+          wrapper's p-4), so it scrolls only when it must. */}
       <div className="animate-in fade-in zoom-in-95 m-auto flex max-h-[calc(100%-2rem)] shrink-0 overflow-hidden rounded-xl border border-chrome/10 bg-chrome/[0.04] shadow-2xl duration-150">
         {sessions && sessions.length > 0 && (
-          // Fixed width, scrolls independently of the form — so having a
-          // handful of saved sessions or a hundred never pushes the connect
-          // form (which is what you actually came here to use) out of view.
-          //
-          // Left to the flex row's default stretch, so this is a uniform
-          // full-height column that the folder list expands *into* as folders
-          // are opened, rather than a panel whose own framing grows and
-          // shrinks and leaves an edge partway down the dialog.
+          // Fixed width, scrolling independently, so any number of sessions never
+          // pushes the connect form out of view. Stretches full height, so opening
+          // folders fills the column rather than resizing it.
           <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2 text-xs">
             {/* Above the session folders, because a workspace is the larger
                 unit — "open all of this" rather than "open one of these" —
@@ -353,14 +340,9 @@ export function SessionBrowser({
                         } ${dropTargetId === s.id && draggedId !== s.id ? 'bg-sky-400/10' : ''}`}
                         title={`${s.username}@${s.host}:${s.port}`}
                       >
-                        {/* Protocol shows as a per-item icon, not as its own
-                            grouping level. Folders are what the user chose to
-                            mean something ("Datacenter A", a customer); the
-                            transport is an attribute of one entry. Grouping by
-                            the attribute would override the organization they
-                            actually built — and would split the same device
-                            reachable both ways into separate sections, which
-                            is precisely when you want them adjacent. */}
+                        {/* Protocol is a per-item icon, not a grouping level: folders are the
+                            user's organization, and the same device reachable both ways
+                            belongs together. */}
                         {s.protocol === 'telnet' ? (
                           <Network size={11} className="mt-0.5 shrink-0 text-amber-400/40" />
                         ) : (
@@ -378,26 +360,14 @@ export function SessionBrowser({
             })}
           </div>
         )}
-        {/* Importing from PuTTY or an SSH config lives in Settings → Import
-            and nowhere else. It used to be offered here too, on the screen you
-            see most, about a decision made once in the app's lifetime — see
-            `lib/sessionImport.ts`. */}
+        {/* Importing lives only in Settings > Import (see
+            `lib/sessionImport.ts`). */}
         <div className="flex min-w-0 flex-col">{children}</div>
       </div>
 
-      {/* Swallows the click that dismisses the menu.
-       *
-       * A window-level listener cannot do this job, and having one was a real
-       * bug: it closed the menu, but the same click went on to reach whatever
-       * was underneath, and what is underneath a menu here is the session list.
-       * The menu opens *at the cursor* and is taller than a row, so it covers
-       * the entries just below the one that was right-clicked — clicking away
-       * to dismiss it therefore picked one of those. With the vault unlocked
-       * that connects to the wrong host; with it locked the whole browser is
-       * replaced by that host's unlock prompt, which reads as the app deciding
-       * to open a session nobody asked for.
-       *
-       * Dismissing a menu must not also be a click on the thing behind it. */}
+      {/* Swallows the click that dismisses the menu, so dismissing never also
+          clicks the session behind it (which would connect, or replace the
+          browser with an unlock prompt). */}
       {menu && (
         <div
           data-session-menu-backdrop

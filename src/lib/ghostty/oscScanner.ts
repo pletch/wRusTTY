@@ -1,33 +1,24 @@
 /**
  * Byte-level OSC/BEL scanner for the Ghostty engine.
  *
- * The core doesn't surface OSC dispatch or the bell yet, so they're recovered by
- * scanning the stream. Kept as a pure function — bytes in, events out — so the
- * grammar and the cross-chunk bookkeeping can be tested without a WASM core or a
- * DOM. `GhosttyEngine.parseAndDispatch` is the only caller; it uses `segEnd` to
- * feed the parser in segments so each handler runs with everything before it
- * already parsed.
+ * The core doesn't surface OSC dispatch or the bell, so they're recovered by
+ * scanning the stream. A pure function (bytes in, events out) so it tests
+ * without WASM or a DOM. `GhosttyEngine.parseAndDispatch` is the only caller;
+ * it uses `segEnd` to feed the parser in segments, so each handler runs with
+ * everything before it already parsed.
  *
- * This is not deletable by adding an export, which is the obvious assumption and
- * the wrong one: Ghostty v1.3.1's OSC parser has no ident for **633**, which this
- * app registers alongside 133, and dropping it would half-break shell integration
- * for VS-Code-configured shells only. Scanning for 633 alone costs the same as
- * scanning for everything, so this earns its keep until Ghostty's own parser
- * learns the ident. See the OSC-scan findings in `bench/runner.ts`.
+ * Still needed because Ghostty v1.3.1's OSC parser has no ident for 633, which
+ * this app registers alongside 133 (see upstream discussion #14645).
  *
- * Grammar recognized (7-bit forms only, which is what shells emit in practice):
+ * Grammar (7-bit forms only):
  *
  *   OSC   ESC ] <digits> ; <payload> (BEL | ESC \)
  *   bell  BEL
- *   RIS   ESC c        (only when the caller asks for it — see `wantRis`)
+ *   RIS   ESC c        (only with `wantRis`)
  *
- * The payload deliberately cannot span BEL or ESC: that is what bounds it, and
- * what an unterminated sequence would otherwise run past.
- *
- * CAN (0x18) and SUB (0x1A) cancel it: the sequence ends, nothing is
- * dispatched, and scanning resumes after the canceling byte — as the DEC
- * parser, xterm and the core all do. Without that, a canceled OSC stayed open
- * until the next BEL and was dispatched with the output after it as payload.
+ * The payload can't span BEL or ESC. CAN (0x18) and SUB (0x1A) cancel it:
+ * nothing is dispatched and scanning resumes after the canceling byte, as in
+ * the DEC parser, xterm and the core.
  */
 
 const ESC = 0x1b
@@ -42,24 +33,10 @@ const ZERO = 0x30
 const NINE = 0x39
 
 /**
- * An unterminated sequence this long is not going to terminate. Dropped rather
- * than allowed to grow without bound.
- *
- * Sized for OSC 52, which is the one sequence here whose payload is user data
- * rather than a label: a clipboard write carries base64 of everything being
- * copied, and arrives split across as many deliveries as the socket and the
- * coalescer choose. At the old 4 KB this silently dropped any copy past ~3 KB of
- * text that happened to straddle a chunk boundary — which is most of them, since
- * a payload that large always does. It leaves headroom over
- * `osc52.OSC52_MAX_BASE64` for the sequence's own framing and any wrapping a
- * chunked sender adds, so a payload that size bound accepts survives being split
- * as well as it does arriving whole.
- *
- * Not larger, because a carried-over buffer is prepended to every subsequent
- * chunk until the sequence terminates: cost is (pending size × chunks it spans),
- * so the cap is what stops a never-terminated sequence from turning each
- * delivery into a multi-megabyte copy. A megabyte keeps that in the tens of
- * milliseconds across a whole copy, even against 4 KB deliveries.
+ * An unterminated sequence this long won't terminate, so it's dropped. Sized
+ * for OSC 52, whose base64 payload is user data split across many deliveries,
+ * with headroom over `osc52.OSC52_MAX_BASE64` for framing. Not larger, since
+ * pending bytes are prepended to every chunk until the sequence ends.
  */
 export const OSC_PENDING_MAX = 1024 * 1024
 
@@ -70,9 +47,9 @@ export interface OscScanEvent {
   /** Decoded OSC payload; empty for a bell or a RIS. */
   payload: string
   /**
-   * Offset into the *current* chunk that the parser must reach before this event
-   * is dispatched — the end of the sequence itself. Always > 0: a sequence can
-   * only complete in the current chunk, never inside carried-over pending bytes.
+   * Offset into the current chunk the parser must reach before this event is
+   * dispatched (the end of the sequence). Always > 0: a sequence can only
+   * complete in the current chunk.
    */
   segEnd: number
 }
@@ -87,17 +64,12 @@ const NO_EVENTS: OscScanEvent[] = []
 
 /**
  * @param bytes   the chunk about to be parsed
- * @param pending unterminated bytes carried from the previous chunk. They have
- *                already been parsed — they are retained only so a sequence
- *                split across the boundary still matches — so offsets returned
- *                are relative to `bytes` alone.
- * @param wantRis also report `ESC c` (RIS). Off by default because it is not
- *                free: 'c' is an ordinary letter, so hunting it costs an
- *                `indexOf` call per occurrence, where ']' costs one scan that
- *                finds nothing. Measured on color-wrapped prose — the shape
- *                real SSH traffic has — this scan goes from 0.43 to 1.92 ms/MB,
- *                4.4x, which is why it is asked for only while something is
- *                listening. See `GhosttyEngine.registerResetHandler`.
+ * @param pending unterminated bytes from the previous chunk, already parsed and
+ *                kept only so a split sequence still matches; offsets are
+ *                relative to `bytes` alone.
+ * @param wantRis also report `ESC c` (RIS). Off by default: 'c' is an ordinary
+ *                letter, so hunting it costs about 4x on typical traffic. Asked
+ *                for only while a reset handler is registered.
  */
 export function scanOsc(
   bytes: Uint8Array,
@@ -119,29 +91,12 @@ export function scanOsc(
   let i = 0
   let unterminatedAt = -1
 
-  // Jump between the bytes that can start something, rather than stepping
-  // through every byte in JS.
-  //
-  // The byte hunted for is ']', not ESC. An OSC can only open at `ESC ]`, so
-  // both find the same sequences — but they cost wildly different amounts on
-  // the traffic this app actually carries. Escape-dense output recurs an ESC
-  // every few bytes while never containing a ']' at all, so hunting the ESC
-  // meant an indexOf call per escape to reject it, and hunting the ']' means a
-  // single memchr that returns -1 for the whole buffer. That case is not a
-  // corner: a live pane measured 1.675 ms/MB against plain text's 0.431,
-  // because real SSH traffic is escape-dense.
-  //
-  // The trade is that ']'-dense content now costs a call per ']'. `anyEsc`
-  // bounds it — no ESC in the buffer means no OSC can open no matter how many
-  // brackets there are, so bracket-heavy plain text (JSON, source) skips the
-  // hunt outright and pays the same two passes it always did.
-  //
-  // The positions are cached rather than recomputed each step, which matters
-  // more than the jump itself: calling indexOf for both bytes at every hit
-  // would rescan to the end of the buffer for whichever one is absent, once per
-  // hit, turning dense output quadratic. Recomputing only when the cursor
-  // passes a cached hit keeps each byte value to a single forward pass, and a
-  // value that never appears costs exactly one scan that returns -1.
+  // Jump between bytes that can start something rather than stepping in JS.
+  // The hunted byte is ']', not ESC: escape-dense output rarely contains ']', so
+  // one memchr returns -1 for the buffer. `anyEsc` bounds the ']'-dense case
+  // (JSON, source): with no ESC, no OSC can open. Positions are cached and only
+  // recomputed once passed, keeping each byte value to one forward pass instead
+  // of going quadratic.
   const anyEsc = scan.indexOf(ESC) >= 0
   let oscAt = anyEsc ? scan.indexOf(OSC_INTRO) : -1
   let belAt = scan.indexOf(BEL)
@@ -153,21 +108,16 @@ export function scanOsc(
     if (risAt >= 0 && risAt < i) risAt = scan.indexOf(RIS_TAIL, i)
     if (oscAt < 0 && belAt < 0 && risAt < 0) break
 
-    // A bell only counts if it comes first. Ordering is checked against the
-    // ']' rather than the ESC before it, which is safe because that byte is an
-    // ESC by definition and so cannot itself be the BEL: the two can never tie.
+    // A bell counts only if it comes first. Comparing against the ']' is safe:
+    // the byte before it is an ESC, so it can't tie with a BEL.
     if (belAt >= 0 && (oscAt < 0 || belAt < oscAt) && (risAt < 0 || belAt < risAt)) {
       ;(events ??= []).push({ kind: 'bell', ident: 0, payload: '', segEnd: belAt + 1 - base })
       i = belAt + 1
       continue
     }
 
-    // Same shape as the ']' branch below: the hunted byte is the *second* of
-    // the pair, so a bare 'c' is only a reset if an ESC precedes it. Checked
-    // before the OSC branch when it comes first, so `ESC c` inside a chunk that
-    // also carries an OSC is still seen — and never checked *inside* an OSC
-    // string, because that branch consumes the whole sequence and the cached
-    // positions are recomputed from `i` on the next turn of the loop.
+    // As with ']', the hunted 'c' is a reset only after an ESC. Never checked
+    // inside an OSC string: that branch consumes the whole sequence.
     if (risAt >= 0 && (oscAt < 0 || risAt < oscAt)) {
       if (risAt > 0 && scan[risAt - 1] === ESC) {
         ;(events ??= []).push({ kind: 'ris', ident: 0, payload: '', segEnd: risAt + 1 - base })
@@ -176,18 +126,15 @@ export function scanOsc(
       continue
     }
 
-    // A ']' with no ESC in front of it is just a bracket. Step past it and
-    // resume; a ']' at offset 0 has nothing in front of it to check.
+    // A ']' without a preceding ESC is just a bracket.
     if (oscAt === 0 || scan[oscAt - 1] !== ESC) {
       i = oscAt + 1
       continue
     }
     const seqStart = oscAt - 1
 
-    // Inside an OSC string, run to its terminator before interpreting anything.
-    // A BEL in here is the terminator, never a bell — resuming the outer scan
-    // inside an OSC we failed to recognize is what used to ring the bell for
-    // every unrecognized OSC form.
+    // Inside an OSC string, run to its terminator first. A BEL here is the
+    // terminator, never a bell.
     const contentStart = seqStart + 2
     let k = contentStart
     let contentEnd = -1
@@ -200,8 +147,7 @@ export function scanOsc(
         termEnd = k + 1
         break
       }
-      // Canceled: resume *after* the CAN/SUB, which unlike an aborting ESC
-      // cannot open anything itself. A BEL further on is then a real bell.
+      // Canceled: resume after the CAN/SUB, which can't open anything itself.
       if (c === CAN || c === SUB) {
         abortedAt = k + 1
         break
@@ -221,9 +167,8 @@ export function scanOsc(
     }
 
     if (abortedAt >= 0) {
-      // An ESC that isn't ST ends this sequence without terminating it, and so
-      // does a CAN or SUB. Resume at that ESC, which may open the next one, or
-      // just past the CAN/SUB.
+      // An ESC that isn't ST, or a CAN/SUB, ends the sequence unterminated. Resume
+      // at that ESC (it may open the next one) or just past the CAN/SUB.
       i = abortedAt
       continue
     }
@@ -253,11 +198,9 @@ export function scanOsc(
     i = termEnd
   }
 
-  // A chunk ending on a bare ESC may be the first half of an `ESC ]` split
-  // across deliveries. The loop hunts ']' and so never sees that ESC; carrying
-  // it is what keeps a title sequence recognizable when the coalescer happens
-  // to cut between its two opening bytes. It cannot already have been consumed:
-  // every sequence the loop consumes ends on BEL or '\', never on ESC.
+  // A chunk ending on a bare ESC may be half of an `ESC ]` split across
+  // deliveries; the loop hunts ']' and never sees it, so carry it. It can't have
+  // been consumed: consumed sequences end on BEL or '\'.
   if (unterminatedAt < 0 && scan.length > 0 && scan[scan.length - 1] === ESC) {
     unterminatedAt = scan.length - 1
   }

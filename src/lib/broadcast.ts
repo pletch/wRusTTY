@@ -1,24 +1,15 @@
-/** Input fan-out: type once, send to every connected pane in a group.
+/** Input fan-out: type once, send to every connected pane in a group (like
+ * SuperPuTTY's "Send Commands to all sessions"). `usePanePortals` keeps every
+ * pane's `Terminal` mounted, so hidden panes still have live writers.
  *
- * This is SuperPuTTY's headline capability over plain PuTTY — *Send Commands
- * to all sessions* — and the reason people with a rack of switches stayed on
- * it. The architecture here already suits it: `usePanePortals` keeps every
- * pane's `Terminal` mounted whether or not it is visible, so a pane that isn't
- * on screen still has a live session and a live writer.
+ * A module-level registry rather than React state: the consumer is
+ * `Terminal`'s `onData` handler inside the connection effect, which mustn't
+ * re-run (tearing down the session) when another pane joins or leaves.
  *
- * A module-level registry rather than React state because the consumer is
- * `Terminal`'s `onData` handler, which lives inside the connection effect and
- * must not re-run when an unrelated pane joins or leaves — re-running it tears
- * down the session. Panes register themselves and read the group through refs;
- * nothing here re-renders anything.
- *
- * The group id is the tab id. A pane dragged to another tab re-registers under
- * the new one (see `Terminal`'s membership effect), so "all panes in this tab"
- * keeps meaning what it says as panes move.
- */
+ * The group id is the tab id; a pane dragged to another tab re-registers. */
 
-/** Sends bytes to one pane's session. Returns nothing: a failed write on one
- * pane must not stop the others, so errors are swallowed at the source. */
+/** Sends bytes to one pane's session. Errors are swallowed at the source, so
+ * one failed pane doesn't stop the others. */
 export type Send = (data: Uint8Array) => void
 
 interface Member {
@@ -28,16 +19,13 @@ interface Member {
 
 const members = new Map<string, Member>()
 
-/** Registers `paneId` as a broadcast target in `groupId`. Returns the
- * unregister function — call it when the pane disconnects or unmounts.
- *
- * Re-registering the same pane replaces its entry, which is how a pane moved
- * between tabs changes group. */
+/** Registers `paneId` in `groupId` and returns the unregister function.
+ * Re-registering replaces the entry, which is how a moved pane changes
+ * group. */
 export function join(paneId: string, groupId: string, write: Send): () => void {
   members.set(paneId, { groupId, send: write })
   return () => {
-    // Guarded so a stale teardown — the pane already re-registered under a new
-    // group — can't remove the live entry.
+    // Guarded so a stale teardown can't remove a re-registered entry.
     if (members.get(paneId)?.send === write) members.delete(paneId)
   }
 }
@@ -51,24 +39,17 @@ export function membersOf(groupId: string): string[] {
   return ids
 }
 
-/** How many panes would receive a broadcast to `groupId`. Drives the
- * indicator's "sending to N panes" — the affordance has to be loud, because
- * accidentally broadcasting a `reload` is a bad afternoon. */
+/** How many panes a broadcast to `groupId` reaches, for the loud "sending to
+ * N panes" indicator. */
 export function size(groupId: string): number {
   return membersOf(groupId).length
 }
 
-/** Sends `data` to every pane in `groupId`, including the one it was typed
- * into. Returns how many panes received it.
+/** Sends `data` to every pane in `groupId`; returns how many received it.
  *
- * `exceptPaneId` omits one member — the caller writing to its own session
- * directly, which is how `Terminal` does it: the pane being typed into takes
- * the ordinary single-pane path for everything it produces, and broadcast
- * only ever *adds* recipients. Sending to the origin here as well would send
- * its input twice.
- *
- * Snapshotted before sending: a `send` that disconnects its own pane would
- * otherwise mutate the map mid-iteration. */
+ * `exceptPaneId` omits the origin, which `Terminal` writes to directly, so
+ * broadcast only adds recipients. Members are snapshotted first, in case a
+ * send disconnects its own pane. */
 export function send(groupId: string, data: Uint8Array, exceptPaneId?: string): number {
   const targets: Send[] = []
   for (const [paneId, member] of members) {
@@ -78,8 +59,7 @@ export function send(groupId: string, data: Uint8Array, exceptPaneId?: string): 
   return targets.length
 }
 
-/** Test seam only — the registry is module state, so a test that registers
- * panes has to be able to clear them again. */
+/** Test seam: clears the module-level registry. */
 export function reset(): void {
   members.clear()
 }

@@ -1,26 +1,15 @@
 /**
- * Costs out `ghostty_terminal_compress` for our build, which exports it and
- * has never called it.
- *
- * The question is not whether compression works upstream but whether it does
- * anything *here*. Reclaiming a page's physical memory needs
- * `terminal_mem.canReclaim`, which upstream documents as 64-bit Linux, Darwin
- * and (since 60b43068) Windows -- freestanding wasm is on the "other targets"
- * list, and the C API has a result code, UNSUPPORTED, for exactly that. So the
- * first thing measured is the result code; everything after it only matters if
- * that comes back PENDING or COMPLETE.
+ * Costs out `ghostty_terminal_compress`, which our build exports but never
+ * calls. Reclaiming memory needs `terminal_mem.canReclaim` (64-bit Linux,
+ * Darwin and, since 60b43068, Windows), and freestanding wasm may get
+ * UNSUPPORTED, so the result code is measured first.
  *
  * Two arms, identical writes:
  *   A. what we ship -- write, never compress.
- *   B. compress incrementally on an idle cadence, the way an idle callback in
- *      the render loop would.
+ *   B. compress incrementally on an idle cadence.
  *
- * Compared on the three things that would justify the work: rows surviving the
- * byte budget (the whole point -- more history per MB), the wasm heap (which
- * only grows, so a smaller peak is the only saving available), and the cost of
- * the calls themselves. Then correctness: a needle written at the very start
- * has to still be findable afterward, because "accessing compressed history
- * restores it transparently" is a claim worth testing rather than trusting.
+ * Compared on rows surviving the byte budget, peak wasm heap (it only
+ * grows), and call cost; then a needle written first must still be findable.
  *
  * usage: node tools/parse-probes/compress.mjs [main.wasm]
  */

@@ -1,23 +1,15 @@
 /**
- * Configurable keyboard shortcuts: which app actions exist, what they are
- * bound to by default, and how a keydown is matched against them.
+ * Configurable keyboard shortcuts: the actions, their defaults, and matching
+ * a keydown against them.
  *
- * A chord is stored as a canonical string — `Ctrl+Shift+T`, `Ctrl+=`,
- * `Shift+Insert` — with modifiers always in the order Ctrl, Alt, Shift, Win.
- * One spelling per chord is what lets conflicts be found by string equality,
- * and what makes a hand-edited settings blob either mean something exact or be
- * dropped.
+ * A chord is a canonical string (`Ctrl+Shift+T`, `Ctrl+=`, `Shift+Insert`)
+ * with modifiers ordered Ctrl, Alt, Shift, Win, so conflicts are string
+ * equality. Shift counts only on letters and named keys; a printable symbol
+ * already spells it (`+` is Shift+= or a numpad key), so symbol chords never
+ * carry Shift.
  *
- * **Shift is only part of a chord when it changes nothing else.** On a letter
- * or a named key (Tab, Insert, F5) Shift is a real modifier. On a printable
- * symbol it is already spelled by the character: `+` is Shift+= on a US
- * keyboard and a key of its own on the numpad, so counting Shift as well would
- * make the same gesture two different chords depending on which key produced
- * it. Symbol chords therefore never carry Shift, recorded or typed.
- *
- * Every binding is consumed (`preventDefault`) by the handler that acts on it.
- * Under the engine's key encoder even Ctrl+Shift+letter encodes to something,
- * so a chord that is claimed must not also reach the far end.
+ * Every binding is consumed (`preventDefault`): the key encoder gives even
+ * Ctrl+Shift+letter a sequence.
  */
 
 export type ActionId =
@@ -48,9 +40,7 @@ export interface ShortcutAction {
   defaults: readonly string[]
 }
 
-/** In the order Settings lists them. The defaults are the bindings the app
- *  shipped with before any of this was configurable, so an install with no
- *  overrides behaves exactly as it did. */
+/** In Settings order. Defaults match the pre-configurable bindings. */
 export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = [
   { id: 'newTab', label: 'New tab', scope: 'window', defaults: ['Ctrl+Shift+T'] },
   { id: 'closeTab', label: 'Close tab', scope: 'window', defaults: ['Ctrl+Shift+W'] },

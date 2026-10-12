@@ -1,21 +1,11 @@
-//! The part of a transport's command layer that isn't about the transport.
+//! The transport-independent part of the session command layer: the session
+//! map, id counter, lookup, write/resize/disconnect, and the connect and
+//! reconnect supervisor, generic over `wr_core`'s `Connector`/`Session`.
 //!
-//! `ssh.rs`, `telnet.rs` and `serial.rs` each independently defined the same
-//! session map, the same id counter, the same `lookup`, the same
-//! write/resize/disconnect bodies, and the same ~35-line spawn-connect block —
-//! roughly 150 of the ~790 lines across the three, differing only in which
-//! concrete session type and which `XxxEvent` constructor they named.
-//!
-//! `wr_core`'s `Connector`/`Session` pair already abstracts exactly that
-//! difference, so this is generic over it. The `#[tauri::command]` functions
-//! have to stay where they are — `generate_handler!` needs them by name and
-//! can't take a generic — but each shrinks to one delegating line.
-//!
-//! What deliberately stays outside: SSH's `pending_host_key` and `forwards`
-//! maps live alongside a registry rather than inside one (they're SSH's, not
-//! every transport's), and serial's `set_dtr`/`set_rts`/`send_break` go
-//! straight to the session, since nothing generic could say anything about
-//! them.
+//! The `#[tauri::command]` functions stay in `ssh.rs`, `telnet.rs` and
+//! `serial.rs` (`generate_handler!` can't take generics) and delegate here.
+//! Transport-specific state, such as SSH's host-key prompts and forwards or
+//! serial's line controls, lives with the transport.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,61 +18,29 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc, Mutex as TokioMutex};
 use wr_core::{ConnectionEvent, ConnectionStatus, Connector, Session};
 
-/// A session id's occupant.
-///
-/// The handshake used to run with the session's own mutex held, because
-/// `connect` took `&mut self` on the same type `write` and `resize` did. For
-/// SSH that mutex was held across TCP connect, KEX, auth *and* the host-key
-/// prompt — which blocks on a human reading a fingerprint — so any input or
-/// resize arriving in that window queued behind it, and anything else that
-/// later wanted the same lock would have deadlocked against it.
-///
-/// Splitting `Connector` from `Session` moved the handshake off the shared
-/// value entirely. This enum is what fills the gap it left: the id exists from
-/// the moment the frontend gets it, and until the session does, whatever
-/// arrives is held here.
-///
-/// Holding rather than rejecting is deliberate — it is what the mutex used to
-/// do by accident. Keystrokes typed at a connecting pane were delivered once
-/// the handshake finished, and a resize during the handshake was applied to
-/// the new PTY. Failing those fast would have been a visible regression: the
-/// resize one especially, since a pane resized while its host-key prompt was
-/// on screen would have kept the size it had when the connection started.
-/// How much pre-connect input is held before the rest is refused.
-///
-/// The queue exists for keystrokes typed at a pane that is still handshaking,
-/// which is a human typing for at most a few seconds — 64 KB is orders of
-/// magnitude past any plausible amount of that. What it guards against is a
-/// paste into a pane whose host-key prompt has been sitting unanswered for ten
-/// minutes: without a cap that accumulates without limit and is then replayed
-/// into the shell all at once.
+/// Pre-connect input held before further input is refused. Far more than
+/// anyone types during a handshake; it bounds a paste into a pane whose
+/// host-key prompt sits unanswered.
 const MAX_PENDING_INPUT: usize = 64 * 1024;
 
+/// A session id's occupant. The id exists from the moment the frontend gets
+/// it; until the handshake finishes, input and resizes are queued here and
+/// replayed into the new session.
 pub enum Slot<S> {
     Connecting {
         /// Keystrokes typed before the session existed, in order.
         input: Vec<u8>,
-        /// Last size only — an intermediate size during a drag is not worth
-        /// replaying, and the PTY only cares where it ended up.
+        /// Last size only; the PTY only cares where a drag ended.
         size: Option<(u16, u16)>,
     },
     Ready {
         session: S,
-        /// The size this session was last told about.
-        ///
-        /// Carried on a *live* slot only for the sake of reconnects. A
-        /// transport opens its PTY at the size the connector was built with,
-        /// which on a reconnect is the size the pane had when it first opened
-        /// — so without this, a pane resized at any point in its life comes
-        /// back at the wrong size and every full-screen program on it is drawn
-        /// into the wrong box. [`begin_reconnect`] seeds the new
-        /// `Connecting` window with it, and the existing replay does the rest.
+        /// The size this session was last told about, kept so a reconnect opens
+        /// its PTY at the current size (see [`begin_reconnect`]).
         size: Option<(u16, u16)>,
     },
-    /// Disconnected while still handshaking. The id is already out of the map;
-    /// this marks the slot itself so a handshake that finishes *after* the
-    /// `disconnect` learns it is unwanted without the two having to be
-    /// serialized on the map lock — see [`publish_if_wanted`].
+    /// Disconnected while still handshaking. Marks the slot so a handshake that
+    /// finishes afterward knows it's unwanted; see [`publish_if_wanted`].
     Cancelled,
 }
 
@@ -92,12 +50,9 @@ impl<S> Slot<S> {
     pub fn ready(&self) -> Result<&S, String> {
         match self {
             Slot::Ready { session, .. } => Ok(session),
-            // Also what a caller sees mid-reconnect, and the right answer
-            // there too: there is no session to serve an SFTP listing from
-            // until the new one lands.
+            // Also the answer mid-reconnect.
             Slot::Connecting { .. } => Err("session is still connecting".to_string()),
-            // Only reachable through a slot handle cloned out of the map
-            // before the disconnect removed it.
+            // Only via a slot handle cloned before the disconnect removed it.
             Slot::Cancelled => Err("session was disconnected".to_string()),
         }
     }
@@ -111,34 +66,18 @@ impl<S> Slot<S> {
     }
 }
 
-/// Publishes a freshly connected session into its slot, unless the id has been
-/// disconnected while the handshake was running — in which case the session is
-/// closed cleanly and whatever was queued for it is discarded.
+/// Publishes a freshly connected session into its slot, unless the id was
+/// disconnected during the handshake, in which case the session is closed
+/// cleanly and its queued input discarded.
 ///
-/// The map lock covers the membership check *only*. It used to be held across
-/// the replay as well, on the reasoning that bytes typed during the replay
-/// belong after the bytes being replayed — but that ordering is the *slot*
-/// lock's doing, and `publish` takes it anyway, as does every `write`. What
-/// the wider scope actually bought was serializing every other session of this
-/// transport behind this one's replay: `lookup`, `write`, `resize`,
-/// `disconnect`, `spawn_connect` and SFTP all take the map lock, and an SSH
-/// `write` against a full channel window blocks until the remote reads. One
-/// pane finishing its handshake into a wedged host could therefore stall input
-/// to every other SSH pane, the file browser, and the ability to close any of
-/// them — the precise property the `Connector`/`Session` split exists to
-/// prevent.
+/// The map lock covers only the membership check, so one session's replay
+/// (which may block on a full SSH window) can't stall every other session of
+/// the transport. A `disconnect` landing between the check and the replay is
+/// handled under the slot lock: `disconnect` marks the slot
+/// [`Slot::Cancelled`] and `publish` refuses to replay into a marked one.
 ///
-/// Narrowing it reopens the gap the wide lock closed: a `disconnect` landing
-/// between the check and the replay. Queued input reaching a host the user
-/// already canceled is not a cosmetic bug — if what was typed was a password
-/// meant for the next prompt, it goes to a host they just declined to trust.
-/// [`Slot::Canceled`] closes it under the slot lock instead: `disconnect`
-/// marks the slot, `publish` refuses to replay into a marked one, and each
-/// waits for the other because both need that one lock.
-///
-/// Returns whether the session was published, which is also the supervisor's
-/// signal to keep watching this id: `false` means the pane is gone and there is
-/// nothing left to reconnect.
+/// Returns whether the session was published; `false` tells the supervisor
+/// the pane is gone.
 async fn publish_if_wanted<S: Session>(
     sessions: &SlotMap<S>,
     session_id: &str,
@@ -151,10 +90,8 @@ async fn publish_if_wanted<S: Session>(
     } else {
         Some(session)
     };
-    // Canceled — either before we looked, or between the look and the slot
-    // lock. Close it properly rather than letting `Drop` do it: for SSH that
-    // is the difference between an `SSH_MSG_DISCONNECT` and the server seeing
-    // the connection evaporate.
+    // Canceled before we looked, or between the look and the slot lock. Close
+    // it properly (for SSH, an `SSH_MSG_DISCONNECT`) rather than dropping it.
     if let Some(mut session) = unwanted {
         let _ = session.disconnect().await;
         return false;
@@ -163,27 +100,19 @@ async fn publish_if_wanted<S: Session>(
 }
 
 /// Drains whatever arrived during the handshake into the new session, then
-/// publishes it. Returns the session *unpublished* if the slot was canceled
-/// while the handshake ran, leaving the caller to close it.
-///
-/// Its own function so the queue-and-replay behavior can be tested without an
-/// `AppHandle`, a `Channel` or a real transport — it is the part of this
-/// module most worth pinning, since getting it wrong silently drops the first
-/// thing a user typed.
+/// publishes it. Returns the session unpublished if the slot was canceled.
+/// Separate so the replay can be tested without a real transport.
 async fn publish<S: Session>(slot: &SharedSlot<S>, mut session: S) -> Option<S> {
-    // Taken across the check and the replay both, so nothing can be enqueued
-    // between draining and publishing and no `disconnect` can slip in
-    // mid-replay: it would have to take this same lock to mark the slot.
+    // Held across the check and the replay, so nothing is enqueued or canceled
+    // in between.
     let mut slot = slot.lock().await;
     let (pending_input, pending_size) = match &mut *slot {
         Slot::Cancelled => return Some(session),
         Slot::Connecting { input, size } => (std::mem::take(input), size.take()),
-        // Not reachable: one handshake fills one slot, once — and a reconnect
-        // takes the slot back to `Connecting` before its handshake starts.
+        // Unreachable: a reconnect resets the slot to `Connecting` first.
         Slot::Ready { .. } => (Vec::new(), None),
     };
-    // Size first: a resize applied after the bytes have gone out would
-    // reflow what the program already printed in response to them.
+    // Size first, so the program's response isn't reflowed afterward.
     if let Some((cols, rows)) = pending_size {
         let _ = session.resize(cols, rows).await;
     }
@@ -197,21 +126,13 @@ async fn publish<S: Session>(slot: &SharedSlot<S>, mut session: S) -> Option<S> 
     None
 }
 
-/// Takes a live slot back to `Connecting` so a reconnect's handshake window
-/// queues input exactly the way the first one did.
-///
-/// This is the whole mechanism, and the reason the session id stays the same:
-/// everything keyed off that id — the frontend's engine and scrollback, the
-/// logging sink, the SFTP edit watchers, the coalescer's credit window —
-/// survives without knowing a reconnect happened, and keystrokes typed at the
-/// pane mid-reconnect are held and replayed for free.
-///
-/// Returns the dead session for the caller to close outside this lock.
+/// Takes a live slot back to `Connecting` so a reconnect queues input like
+/// the first handshake did. The session id stays the same, so everything keyed
+/// on it (engine, scrollback, logging, SFTP watches, coalescer credit)
+/// survives the reconnect. Returns the dead session for the caller to close.
 async fn begin_reconnect<S>(slot: &SharedSlot<S>) -> Reclaimed<S> {
     let mut guard = slot.lock().await;
-    // The pane closed between the transport dying and us noticing. The mark is
-    // what stops queued input from reaching the session a reconnect would
-    // otherwise go on to produce, so leave it exactly where it is.
+    // The pane closed in the meantime; leave the mark in place.
     if matches!(&*guard, Slot::Cancelled) {
         return Reclaimed::Cancelled;
     }
@@ -225,8 +146,7 @@ async fn begin_reconnect<S>(slot: &SharedSlot<S>) -> Reclaimed<S> {
     );
     match previous {
         Slot::Ready { session, .. } => Reclaimed::Displaced(session),
-        // Only reachable if the transport reported a drop before its session
-        // was ever published, which no transport does.
+        // No transport reports a drop before publishing.
         _ => Reclaimed::Nothing,
     }
 }
@@ -241,13 +161,10 @@ enum Reclaimed<S> {
     Nothing,
 }
 
-/// Marks a slot that will never receive a session, so anything still holding a
-/// handle to it is told the session is gone rather than that it is "still
-/// connecting" — which, for a slot nothing is connecting into, would be a lie
-/// that never resolves and would let `write` queue bytes into a void.
-///
-/// Only ever replaces a `Connecting` slot: a `Ready` one has a live session in
-/// it that would be dropped without a clean close.
+/// Marks a slot that will never receive a session, so handles to it report
+/// "disconnected" rather than "still connecting" forever. Only replaces a
+/// `Connecting` slot; a `Ready` one would lose its session without a clean
+/// close.
 async fn abandon<S>(slot: &SharedSlot<S>) {
     let mut guard = slot.lock().await;
     if matches!(&*guard, Slot::Connecting { .. }) {
@@ -255,16 +172,11 @@ async fn abandon<S>(slot: &SharedSlot<S>) {
     }
 }
 
-/// How often the pre-connect step is checked for having been canceled.
-///
-/// Polled rather than signaled because a per-slot notifier would be a channel
-/// on every session for the benefit of the one step slow enough to need it,
-/// and half a second of latency on an abort whose pane is already closed is
-/// not something anyone is waiting on.
+/// How often the pre-connect step checks for cancellation. Polled, since half
+/// a second of latency on a closed pane doesn't matter.
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Resolves once `session_id` is gone from the map — which is what closing a
-/// pane during the pre-connect step looks like from in here.
+/// Resolves once `session_id` is gone from the map (the pane was closed).
 async fn removed<S>(sessions: &SlotMap<S>, session_id: &str) {
     loop {
         tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
@@ -274,105 +186,67 @@ async fn removed<S>(sessions: &SlotMap<S>, session_id: &str) {
     }
 }
 
-/// The type `None` needs when there is no pre-connect step. Written out
-/// because `spawn_connect` has to name one, and the closure type a real caller
-/// passes can't be named at all.
+/// The type `None` needs when there is no pre-connect step (a closure type
+/// can't be named).
 pub type NoPrepare = fn(mpsc::Sender<ConnectionEvent>) -> std::future::Ready<Result<(), String>>;
 
-/// What has happened to the connection under a session id that is staying put.
-///
-/// Both halves matter to anything bound to the *connection* rather than to the
-/// id. Reporting only [`TransportPhase::Restored`] was the original mistake:
-/// between a drop and the reconnect landing — up to the whole backoff budget,
-/// so minutes — such a thing is already dead, and a caller with no way to hear
-/// about it goes on describing it as healthy for exactly as long.
+/// What has happened to the connection under a session id that stays put,
+/// for things bound to the connection rather than the id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportPhase {
-    /// The transport died. Whatever was attached to it is dead now, whether or
-    /// not a reconnect is coming — this fires even for a session that cannot
-    /// reconnect unattended, because the thing being reported is the loss, not
-    /// the retry.
+    /// The transport died. Fires even for sessions that won't reconnect.
     Lost,
-    /// A reconnect published a new session. Whatever was attached to the old
-    /// connection can be re-established against this one.
+    /// A reconnect published a new session.
     Restored,
 }
 
-/// The type `None` needs when a transport has nothing attached to a connection,
-/// for the same reason [`NoPrepare`] exists. Telnet and serial pass it: neither
-/// has anything hanging off a connection but the session itself.
+/// The type `None` needs when nothing is attached to a connection (telnet,
+/// serial).
 pub type NoRestore = fn(TransportPhase) -> std::future::Ready<()>;
 
 /// The type `None` needs for a transport that must never be rebuilt
-/// unattended, for the same reason [`NoPrepare`] exists. Elevated tabs pass
-/// it: every rebuild would be a UAC prompt nobody asked for.
-// Only elevated tabs use it, and they exist only on Windows.
+/// unattended (elevated tabs: each rebuild is a UAC prompt). Windows only.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub type NoReconnect<C> = fn() -> std::future::Ready<Result<C, String>>;
 
-/// The pause before the first retry, doubling from there.
-///
-/// A second, because the overwhelming majority of real drops are a few seconds
-/// of wifi and the host is still sitting there — waiting longer than the outage
-/// is the failure mode worth avoiding. It is not zero because an immediate
-/// retry lands while the interface is still down and only burns an attempt.
+/// The pause before the first retry, doubling from there. Most drops are a
+/// few seconds of wifi; an immediate retry would land while the interface is
+/// still down.
 const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
 
-/// The ceiling the doubling stops at. Past half a minute the retry stops being
-/// something a person is waiting through and the pane may as well be idle.
+/// The ceiling the doubling stops at.
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
-/// How many consecutive attempts a run gets by default. With the schedule
-/// above, twelve spans roughly four minutes.
+/// Default attempts per run; about four minutes with the schedule above.
 const RECONNECT_MAX_ATTEMPTS: u32 = 12;
 
-/// ...and the default wall-clock bound on the same run, which is the one that
-/// actually binds once the delay saturates. Both are needed: the attempt count
-/// alone would let a saturated schedule run for six minutes, and the clock
-/// alone would allow an unbounded number of fast early attempts.
+/// Default wall-clock bound per run. Both bounds are needed: the count alone
+/// lets a saturated schedule run long, the clock alone allows unlimited fast
+/// early attempts.
 const RECONNECT_MAX_ELAPSED_SECONDS: u64 = 300;
 
-/// The range a caller-supplied attempt bound is held to.
-///
-/// One at the bottom rather than zero, because zero is not a shorter leash —
-/// it is "off", and off is [`ReconnectPolicy::enabled`]. A policy of zero
-/// attempts would end the run at the first `schedule_retry` and report "could
-/// not reconnect after 1 attempts", which describes something that never
-/// happened. The top is generous: it is there to keep a corrupt settings blob
-/// from producing an unbounded loop, not to second-guess someone who wants a
-/// long leash.
+/// The range a caller-supplied attempt bound is clamped to. At least one,
+/// since zero would mean "off" (that's [`ReconnectPolicy::enabled`]); the cap
+/// guards against a corrupt settings blob.
 const ATTEMPTS_RANGE: std::ops::RangeInclusive<u32> = 1..=100;
 
-/// ...and the range for the wall-clock bound, in seconds. The floor is five
-/// seconds because the first delay is one, so anything less would spend the
-/// budget before the first retry landed and turn every drop into an immediate
-/// failure. The ceiling is an hour.
+/// The range for the wall-clock bound, in seconds; below five the budget would
+/// be spent before the first retry.
 const ELAPSED_SECONDS_RANGE: std::ops::RangeInclusive<u64> = 5..=3600;
 
-/// What a reconnect run is allowed to spend, and whether it may run at all.
-///
-/// Deserialized straight off the IPC boundary, which is why [`Self::sanitized`]
-/// exists: these are loop bounds, and the webview is not a trusted source of
-/// one. Every field is optional on the wire and every absent field falls back
-/// to the default, so a caller that sends nothing gets exactly the behavior
-/// that shipped before this type existed.
-///
-/// The *policy* is only ever subtractive. `enabled: false` is the user saying
-/// no; it can never make a session reconnect that the backend has already
-/// decided cannot — a credential that must be typed is refused in `ssh.rs`
-/// regardless of what arrives here, and that check stays there precisely
-/// because it is not the webview's to make.
+/// What a reconnect run may spend, and whether it may run at all. Comes from
+/// the webview, so it's clamped by [`Self::sanitized`]; absent fields take the
+/// defaults. The policy can only disable reconnects, never enable one the
+/// backend refused (e.g. a typed credential; see `ssh.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ReconnectPolicy {
-    /// Whether an unattended reconnect may be attempted at all. False is the
-    /// user's own off switch — global, or a single profile opting out — and is
-    /// indistinguishable here from a session that has no factory to rebuild a
-    /// connector with. Both mean "this pane keeps its manual Reconnect button".
+    /// Whether an unattended reconnect may be attempted at all (globally or per
+    /// profile).
     pub enabled: bool,
     /// Consecutive attempts one run gets before it gives up.
     pub max_attempts: u32,
-    /// ...and the wall clock the same run may spend, whichever binds first.
+    /// The wall clock the same run may spend, whichever binds first.
     pub max_elapsed_seconds: u64,
 }
 
@@ -387,10 +261,8 @@ impl Default for ReconnectPolicy {
 }
 
 impl ReconnectPolicy {
-    /// The same policy with both bounds clamped into a range a supervisor can
-    /// be handed safely. Clamped rather than rejected: a settings blob that has
-    /// been hand-edited or written by a later version should cost the user a
-    /// leash of a different length, not a session that refuses to open.
+    /// The policy with both bounds clamped to safe ranges. Clamped rather than
+    /// rejected so a bad settings value doesn't stop the session opening.
     pub fn sanitized(self) -> Self {
         Self {
             enabled: self.enabled,
@@ -417,21 +289,14 @@ impl ReconnectPolicy {
     }
 }
 
-/// How far either side of the nominal delay a retry may land, as a fraction.
-///
-/// Jitter matters here more than in a typical client because the failure is
-/// usually shared: a switch reboots and every pane pointed at it drops in the
-/// same second. Without this they would knock in lockstep for the whole run,
-/// which is the load a host coming back up least wants.
+/// How far either side of the nominal delay a retry may land. Matters because
+/// failures are often shared (a switch reboots), and panes shouldn't retry in
+/// lockstep.
 const RECONNECT_JITTER: f64 = 0.2;
 
 /// The nominal pause before `attempt` (counting from 1), before jitter.
-///
-/// Pure, and separate from the jitter, so the schedule can be asserted exactly
-/// rather than within a tolerance.
 fn backoff_delay(attempt: u32) -> Duration {
-    // Saturating rather than wrapping: the shift overflows at attempt 33 and
-    // the cap makes anything past attempt 6 identical anyway.
+    // Saturating: the shift overflows at attempt 33.
     let factor = 1u32
         .checked_shl(attempt.saturating_sub(1))
         .unwrap_or(u32::MAX);
@@ -440,20 +305,15 @@ fn backoff_delay(attempt: u32) -> Duration {
         .min(RECONNECT_MAX_DELAY)
 }
 
-/// `delay` moved by up to [`RECONNECT_JITTER`] of itself. `spread` is in
-/// `[-1.0, 1.0]`; a caller passing anything else gets it clamped rather than a
-/// negative duration.
+/// `delay` moved by up to [`RECONNECT_JITTER`] of itself; `spread` is clamped
+/// to `[-1.0, 1.0]`.
 fn jittered(delay: Duration, spread: f64) -> Duration {
     let scale = 1.0 + RECONNECT_JITTER * spread.clamp(-1.0, 1.0);
     delay.mul_f64(scale)
 }
 
-/// A spread in `[-1.0, 1.0]` from the clock.
-///
-/// Deliberately not a `rand` dependency. What this needs is that two panes
-/// dropping in the same second do not retry in the same millisecond, and the
-/// nanosecond field of the wall clock at the moment each one is scheduled
-/// already gives that. Nothing here is a security decision.
+/// A spread in `[-1.0, 1.0]` from the clock's nanoseconds. Enough to keep
+/// panes from retrying in the same millisecond; not a security decision.
 fn clock_spread() -> f64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -462,8 +322,7 @@ fn clock_spread() -> f64 {
     (nanos % 2001) as f64 / 1000.0 - 1.0
 }
 
-/// The delay as the status line should say it: whole seconds, never zero,
-/// since "reconnecting in 0s" reads as a bug rather than as "imminently".
+/// The delay in whole seconds for the status line, never zero.
 fn countdown_seconds(delay: Duration) -> u64 {
     (delay.as_secs_f64().round() as u64).max(1)
 }
@@ -475,20 +334,13 @@ type SharedSlot<S> = Arc<TokioMutex<Slot<S>>>;
 /// Every live slot of one transport, by id.
 type SlotMap<S> = Arc<TokioMutex<HashMap<String, SharedSlot<S>>>>;
 
-/// Live sessions of one transport, keyed by the id handed back to the
-/// frontend.
-///
-/// The map is behind an `Arc` rather than owned outright so the connect task
-/// can hold onto it directly. The three copies this replaces each reached back
-/// through `app.state::<XxxState>()` to clean up after a failed handshake,
-/// which worked but meant the cleanup path depended on the registry having
-/// been `.manage()`d under exactly the type it expected — a coupling that
-/// doesn't survive being made generic, and wasn't worth keeping anyway.
+/// Live sessions of one transport, keyed by the id handed to the frontend.
+/// The map is behind an `Arc` so the connect task can hold it directly.
 pub struct SessionRegistry<C: Connector> {
     sessions: SlotMap<C::Session>,
     next_id: AtomicU64,
-    /// `"ssh"`, `"telnet"`, `"serial"` — the id prefix, which is also what
-    /// keeps ids from colliding across transports.
+    /// The id prefix (`"ssh"`, `"telnet"`, `"serial"`), which also keeps ids
+    /// unique across transports.
     prefix: &'static str,
 }
 
@@ -509,12 +361,8 @@ impl<C: Connector> SessionRegistry<C> {
         )
     }
 
-    /// The slot for `session_id`, or the error the frontend sees when it asks
-    /// about one that has already gone away.
-    ///
-    /// Returns the slot rather than the session because a caller may
-    /// legitimately arrive mid-handshake; `Slot::ready` is where that becomes
-    /// an error, at the point where a session is actually required.
+    /// The slot for `session_id`. Returns the slot rather than the session since a
+    /// caller may arrive mid-handshake; `Slot::ready` checks for a session.
     pub async fn lookup(&self, session_id: &str) -> Result<SharedSlot<C::Session>, String> {
         self.sessions
             .lock()
@@ -530,9 +378,7 @@ impl<C: Connector> SessionRegistry<C> {
         let mut slot = slot.lock().await;
         match &mut *slot {
             Slot::Connecting { input, .. } => {
-                // Refused rather than truncated: replaying the first 64 KB of
-                // a paste and dropping the tail would send the remote a
-                // half-finished command, which is worse than sending nothing.
+                // Refused rather than truncated: half a paste is worse than none.
                 if input.len() + data.len() > MAX_PENDING_INPUT {
                     return Err(
                         "too much input queued while connecting — wait for the connection \
@@ -558,9 +404,7 @@ impl<C: Connector> SessionRegistry<C> {
                 *size = Some((cols, rows));
                 Ok(())
             }
-            // Recorded as well as applied: a reconnect opens its PTY at
-            // whatever size the connector was built with, so this is the only
-            // record of what the pane has actually become since.
+            // Recorded so a reconnect knows the current size.
             Slot::Ready { session, size } => {
                 *size = Some((cols, rows));
                 session.resize(cols, rows).await.map_err(|e| e.to_string())
@@ -569,18 +413,10 @@ impl<C: Connector> SessionRegistry<C> {
         }
     }
 
-    /// Removes the session first, then disconnects it. A session that failed
-    /// to shut down cleanly is still gone as far as the registry is concerned,
-    /// which is what the three copies did and is the behavior worth keeping:
-    /// leaving a half-dead session in the map would let the frontend keep
-    /// writing to it.
-    ///
-    /// Disconnecting one that never finished connecting removes the id *and*
-    /// marks the slot [`Slot::Canceled`]. Removing the id alone is enough
-    /// only for a handshake that hasn't checked yet; the mark is what stops
-    /// one that already passed the check from replaying queued input into a
-    /// host the user just canceled — see [`publish_if_wanted`]. Whichever of
-    /// the two gets the slot lock first, the other sees its result.
+    /// Removes the session from the map, then disconnects it; it's gone even if
+    /// the close fails. A session still handshaking is marked
+    /// [`Slot::Cancelled`] so queued input is never replayed into it; see
+    /// [`publish_if_wanted`].
     pub async fn disconnect(&self, session_id: &str) -> Result<(), String> {
         let slot = self.sessions.lock().await.remove(session_id);
         if let Some(slot) = slot {
@@ -589,8 +425,7 @@ impl<C: Connector> SessionRegistry<C> {
                 Slot::Ready { session, .. } => {
                     session.disconnect().await.map_err(|e| e.to_string())?
                 }
-                // Queued input goes with it: it was typed at a pane the user
-                // has since closed.
+                // Queued input is discarded with it.
                 Slot::Connecting { .. } => *slot = Slot::Cancelled,
                 Slot::Cancelled => {}
             }
@@ -598,53 +433,23 @@ impl<C: Connector> SessionRegistry<C> {
         Ok(())
     }
 
-    /// Registers `session_id` as connecting, then drives the handshake — and,
-    /// for as long as the pane is there, every reconnect after it — on a
-    /// spawned task while forwarding events to the frontend. Returns
-    /// immediately; the connection is still being established.
+    /// Registers `session_id` as connecting, then drives the handshake (and any
+    /// reconnects) on a spawned task while forwarding events to the frontend.
+    /// Returns immediately.
     ///
-    /// `make_status` is the only thing that differed between the three copies
-    /// of this: each transport has its own `XxxEvent` enum, because each is
-    /// its own `Channel<E>` on the frontend side.
-    ///
-    /// `prepare` is a step that runs before the handshake and can refuse it.
-    /// It exists for Wake-on-LAN, and the reason it sits *here* rather than in
-    /// the caller is the event channel: waking takes up to a minute, and doing
-    /// it in the `#[tauri::command]` before this is called would block the IPC
-    /// reply for that whole time with the pane showing nothing. By this point
-    /// the forwarder is already running, so the step gets the same `Sender` the
-    /// handshake uses and its progress reaches the UI the same way. It also
-    /// gets cancellation for free, which is the other half of why it belongs
-    /// here: only the registry knows the pane was closed. It runs once, for the
-    /// first connect — a reconnect means the host was up a moment ago.
-    ///
-    /// `reconnect` builds a connector for each retry, and `None` opts a session
-    /// out of auto-reconnect entirely — which is the right answer for a session
-    /// whose credential cannot be re-resolved without asking a human (see
-    /// `ssh.rs`). It is a factory rather than a clone of `connector` for two
-    /// reasons. `Connector::connect` consumes `self`, so a retry needs
-    /// *something* that produces a fresh one; and rebuilding re-resolves from
-    /// the profile, so editing a host, a port or a serial adapter's identity
-    /// takes effect on the next attempt rather than replaying whatever was
-    /// baked in when the pane first opened. It is also where a credential is
-    /// fetched and dropped again per attempt, rather than being held live for
-    /// the session's whole lifetime.
-    ///
-    /// `on_transport` reports the connection dying and a reconnect replacing
-    /// it — see [`TransportPhase`]. It is for whatever was attached to the
-    /// *connection* rather than to the session id. SSH passes one, to mark its
-    /// port forwards dead and then re-establish them against the handle that
-    /// came back; telnet and serial pass `None` because nothing of theirs
-    /// outlives a transport. It never fires for the first connect, which has
-    /// nothing attached to it yet.
-    ///
-    /// `policy` is the user's half of the same decision — see
-    /// [`ReconnectPolicy`]. It only ever subtracts: a disabled policy cancels a
-    /// factory, and no policy can supply one.
-    // Eleven arguments, four past clippy's threshold, and the last four are the
-    // ones that earn it: all are optional capabilities of the connection
-    // rather than parts of it. Grouping them would mean a struct built once at
-    // each of four call sites and destructured immediately here.
+    /// - `make_status` builds the transport's own event type.
+    /// - `prepare` runs before the first handshake and can refuse it. It's for
+    ///   Wake-on-LAN, which can take a minute: here it reports progress through the
+    ///   same event channel and is canceled if the pane closes.
+    /// - `reconnect` builds a fresh connector per retry, re-resolving from the
+    ///   profile so edits take effect and credentials aren't held for the session's
+    ///   lifetime. `None` opts out of auto-reconnect (e.g. a credential that must be
+    ///   typed; see `ssh.rs`).
+    /// - `on_transport` reports connection loss and restoration for things bound to
+    ///   the connection (SSH's port forwards). Never fires for the first connect.
+    /// - `policy` can only disable reconnects; see [`ReconnectPolicy`].
+    // The last four arguments are optional capabilities; a struct would just be
+    // built and destructured.
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_connect<E, F, P, Fut, MakeC, MakeFut, R, RFut>(
         &self,
@@ -663,9 +468,7 @@ impl<C: Connector> SessionRegistry<C> {
         F: Fn(&ConnectionStatus) -> E + Send + 'static,
         P: FnOnce(mpsc::Sender<ConnectionEvent>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), String>> + Send,
-        // `Sync` because the supervisor holds a reference to the factory
-        // across its awaits, and the whole task is what `tokio::spawn` needs
-        // to be `Send`.
+        // `Sync` because the supervisor holds the factory across awaits.
         MakeC: Fn() -> MakeFut + Send + Sync + 'static,
         MakeFut: std::future::Future<Output = Result<C, String>> + Send,
         R: Fn(TransportPhase) -> RFut + Send + Sync + 'static,
@@ -687,13 +490,8 @@ impl<C: Connector> SessionRegistry<C> {
                 crate::coalesce::CONNECTION_EVENT_CHANNEL_BOUND,
             );
 
-            // How the supervisor below learns that the transport died.
-            //
-            // The event says so, but it says so on its way to the webview, and
-            // the forwarder is the only thing in the process that sees it.
-            // Unbounded because the observer it is sent from is synchronous and
-            // sits on the path every byte of output takes — it must never
-            // block, and in practice a session reports its own death once.
+            // How the supervisor learns the transport died. Unbounded because it is
+            // sent from a synchronous observer on the output path that must not block.
             let (down_tx, down_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
             let log_app = app.clone();
@@ -712,9 +510,8 @@ impl<C: Connector> SessionRegistry<C> {
                     )
                 },
                 move |status| {
-                    // Only `Lost`. A shell that exited is finished, and
-                    // reconnecting it would fight the user — see
-                    // `DisconnectKind`.
+                    // Only `Lost`; an exited shell shouldn't be reconnected (see
+                    // `DisconnectKind`).
                     if matches!(
                         status,
                         ConnectionStatus::Disconnected(wr_core::DisconnectKind::Lost)
@@ -727,18 +524,14 @@ impl<C: Connector> SessionRegistry<C> {
             if let Some(prepare) = prepare {
                 let outcome = tokio::select! {
                     outcome = prepare(tx.clone()) => outcome,
-                    // Closing the pane drops the step wherever it had got to.
-                    // The id is already out of the map by then — `disconnect`
-                    // removed it — so there is nothing here left to clean up.
+                    // The pane closed; `disconnect` already removed the id.
                     _ = removed(&sessions, &session_id) => {
                         drop(forward);
                         return;
                     }
                 };
                 if let Err(message) = outcome {
-                    // Unlike a failed handshake, nothing has reported this
-                    // yet: the step never reached the transport, so the
-                    // transport never had a chance to say why.
+                    // The transport never ran, so nothing has reported this yet.
                     let _ = tx
                         .send(ConnectionEvent::Status(ConnectionStatus::Failed(message)))
                         .await;
@@ -762,33 +555,21 @@ impl<C: Connector> SessionRegistry<C> {
             )
             .await;
 
-            // Each connect() leaves the session's own output-pump task running
-            // independently (spawned inside the transport crate); this task's
-            // job was driving the handshakes and forwarding events, so let the
-            // forwarder finish draining whatever's left in the channel.
+            // Each session's output pump runs on its own; let the forwarder drain.
             drop(forward);
         });
     }
 }
 
-/// One session id's whole life: the first handshake, and — while the pane is
-/// still open and the drop was one nobody asked for — every reconnect after it.
+/// One session id's whole life: the first handshake and, while the pane is
+/// open, every reconnect after an unrequested drop.
 ///
-/// # What must not regress
-///
-/// Auto-reconnect adds a *second* way a slot can leave `Ready`, and the
-/// invariants [`publish_if_wanted`] documents all have to hold against it too.
-/// The one that matters is the same one layer along: a pane closed while a
-/// reconnect is in flight must not have queued input replayed into the session
-/// that arrives afterward. It cannot, and for exactly the original reason —
-/// [`SessionRegistry::disconnect`] marks the slot `Canceled` under the slot
-/// lock, [`begin_reconnect`] refuses to leave a marked slot, and `publish`
-/// refuses to fill one. Every loss of the map entry is also re-checked here
-/// rather than assumed, because the pane can close during any of the three
-/// waits below: the handshake, the live session, and the backoff.
-// Owned rather than borrowed so it can be driven as a task of its own — which
-// is how its tests reach it, since a reconnect run is only observable by
-// watching one from the outside while the map and the slot are poked.
+/// A pane closed while a reconnect is in flight must not have queued input
+/// replayed into the new session: [`SessionRegistry::disconnect`] marks the
+/// slot under its lock, [`begin_reconnect`] won't leave a marked slot, and
+/// `publish` won't fill one. Map membership is re-checked at every wait
+/// (handshake, live session, backoff).
+// Owned so it can run as its own task, which is how the tests drive it.
 #[allow(clippy::too_many_arguments)]
 async fn supervise<C, MakeC, MakeFut, R, RFut>(
     sessions: SlotMap<C::Session>,
@@ -811,31 +592,21 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
     let session_id = session_id.as_str();
     let slot = &slot;
     let tx = &tx;
-    // The user's off switch lands here, in the one place that already means
-    // "this session does not reconnect unattended" — rather than as a second
-    // condition beside every use of the factory, where the two could disagree.
-    // It can only take the factory away: an opted-out session and one whose
-    // credential has to be typed are the same thing from here on.
+    // The user's off switch removes the factory, so an opted-out session is the
+    // same as one that can't reconnect unattended.
     let reconnect = policy.enabled.then_some(reconnect).flatten();
     let reconnect = reconnect.as_ref();
     let on_transport = on_transport.as_ref();
-    // Attempt zero is the connector the caller already built; every one after
-    // it comes from the factory.
+    // Attempt zero uses the caller's connector; later ones use the factory.
     let mut pending = Some(connector);
-    // Whether this id has ever had a live session. Auto-reconnect restores a
-    // session that *was* up; a first handshake that fails has failed, and
-    // silently retrying it for four minutes behind a "failed" message is not
-    // what the user asked for when they pressed connect.
+    // Only a session that was up gets reconnected; a failed first handshake
+    // just fails.
     let mut ever_connected = false;
-    // Consecutive failures since the session was last up, and when that run
-    // began. Both reset on every success, so a link that flaps once an hour all
-    // day never works its way through the budget.
+    // Consecutive failures and when the run began; both reset on success.
     let mut attempt: u32 = 0;
     let mut run_started = std::time::Instant::now();
-    // Why the most recent attempt failed to get as far as a connector, kept for
-    // the message the run ends on. Not reported per attempt: the frontend
-    // raises a toast for every `Failed`, and a run of twelve would bury the
-    // reconnecting state under its own progress reports.
+    // Why the last attempt couldn't build a connector, for the final message
+    // (not reported per attempt, which would toast each one).
     let mut build_error: Option<String> = None;
 
     loop {
@@ -847,20 +618,11 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                         build_error = None;
                         connector
                     }
-                    // Not fatal, and deliberately so. The obvious reading —
-                    // that a profile which will not resolve is a configuration
-                    // fault no amount of waiting fixes — is wrong for the case
-                    // this feature serves best: a serial profile resolves its
-                    // COM port from the adapter's USB identity per attempt, so
-                    // "does not resolve" is precisely what an adapter that has
-                    // not been plugged back in yet looks like. A locked vault
-                    // reads the same way, and retrying it means a user who
-                    // unlocks within the window gets their session back rather
-                    // than a pane that gave up while they were typing.
+                    // Not fatal: a serial adapter not yet plugged back in, or a locked
+                    // vault, both look like this and may resolve within the window.
                     Err(message) => {
                         build_error = Some(message);
-                        // Straight to the backoff: there is nothing to hand a
-                        // handshake, but this still spends an attempt.
+                        // Straight to the backoff; this still spends an attempt.
                         if let Some(delay) =
                             schedule_retry(tx, &mut attempt, run_started.elapsed(), &policy).await
                         {
@@ -877,13 +639,11 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
             },
         };
 
-        // No lock held here. This is the whole point of the Connector/Session
-        // split: the handshake can take as long as a human takes to read a
-        // fingerprint without blocking a keystroke or a resize.
+        // No lock held: the handshake can wait on a human without blocking input.
         match connector.connect(tx.clone()).await {
             Ok(session) => {
                 if !publish_if_wanted(sessions, session_id, slot, session).await {
-                    // The pane went away mid-handshake. Nothing to supervise.
+                    // The pane went away mid-handshake.
                     return;
                 }
                 let reconnected = ever_connected;
@@ -891,18 +651,9 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                 attempt = 0;
                 run_started = std::time::Instant::now();
 
-                // Only after a reconnect: on a first connect there is nothing
-                // yet attached to the connection, and running it there would
-                // mean every transport's step had to recognize and ignore its
-                // own opening move.
-                //
-                // Awaited rather than spawned, so a second drop during the
-                // restore is seen *after* it rather than raced with it —
-                // otherwise a forward could be re-established onto a handle
-                // that has itself already died, and be recorded as live. The
-                // cost is that `down_rx` is not being read meanwhile; it is
-                // unbounded and a session reports its death once, so nothing
-                // is lost by arriving at it a moment later.
+                // Only after a reconnect. Awaited rather than spawned, so a second drop
+                // during the restore is seen after it rather than raced (a forward could
+                // otherwise be re-established on a dead handle).
                 if reconnected {
                     if let Some(on_transport) = on_transport {
                         on_transport(TransportPhase::Restored).await;
@@ -911,22 +662,14 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
 
                 // Wait for this session to end, or for the pane to close.
                 tokio::select! {
-                    // `None` means the forwarder is gone, which means the
-                    // webview is: nothing would see a reconnect.
+                    // `None`: the forwarder (and so the webview) is gone.
                     down = down_rx.recv() => if down.is_none() { return },
                     _ = removed(sessions, session_id) => return,
                 }
 
-                // Only a `Lost` disconnect reaches `down_rx`, so the transport
-                // went away without being asked to.
-                //
-                // Reported before the retry is even considered, and reported
-                // for a session that will never retry too. What died is the
-                // connection, and anything bound to it died with it whether or
-                // not something is coming to replace it — a caller told only
-                // about the replacement describes a dead thing as healthy for
-                // the whole outage, which for a port forward means a local
-                // listener that still accepts and carries nothing.
+                // Only `Lost` reaches `down_rx`. Report the loss even if no retry follows:
+                // e.g. a port forward's listener would otherwise look healthy while
+                // carrying nothing.
                 if let Some(on_transport) = on_transport {
                     on_transport(TransportPhase::Lost).await;
                 }
@@ -935,11 +678,8 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                 }
                 match begin_reconnect(slot).await {
                     Reclaimed::Displaced(mut dead) => {
-                        // Closed rather than dropped, for the same reason
-                        // `publish_if_wanted` closes an unwanted session — and
-                        // here it also resets the SFTP cells, without which the
-                        // reconnected session would hand out channels belonging
-                        // to the connection that just died.
+                        // Closed rather than dropped; this also resets the SFTP cells so the
+                        // new session doesn't hand out dead channels.
                         let _ = dead.disconnect().await;
                     }
                     Reclaimed::Cancelled => return,
@@ -947,17 +687,13 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                 }
             }
             Err(error) => {
-                // The status event carrying the reason has already gone to the
-                // frontend from inside `connect`.
+                // `connect` already reported the reason.
                 if !ever_connected || reconnect.is_none() || !C::retryable(&error) {
                     sessions.lock().await.remove(session_id);
                     abandon(slot).await;
                     return;
                 }
-                // The slot is still `Connecting` — a failed attempt never
-                // published — so the queue-and-replay window simply stays open
-                // across the retry, which is what should happen to anything
-                // typed at the pane meanwhile.
+                // The slot is still `Connecting`, so input keeps queueing across the retry.
             }
         }
 
@@ -974,8 +710,8 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
     }
 }
 
-/// Counts one more attempt, announces the wait, and reports how long it is —
-/// or `None` when the run has spent its budget.
+/// Counts an attempt, announces the wait, and returns it, or `None` when the
+/// budget is spent.
 async fn schedule_retry(
     tx: &mpsc::Sender<ConnectionEvent>,
     attempt: &mut u32,
@@ -993,8 +729,7 @@ async fn schedule_retry(
     Some(delay)
 }
 
-/// Ends a reconnect run for good: says so, drops the id, and marks the slot so
-/// nothing keeps queueing input for a session that is never coming.
+/// Ends a reconnect run: reports it, drops the id, and marks the slot.
 async fn give_up<S: Session>(
     sessions: &SlotMap<S>,
     session_id: &str,
@@ -1003,9 +738,7 @@ async fn give_up<S: Session>(
     attempts: u32,
     last_error: Option<String>,
 ) {
-    // The last error is carried here rather than reported when it happened, so
-    // the run produces one message instead of one per attempt — and this is the
-    // most useful one to show, since it describes why it is still failing now.
+    // One message for the run, with the most recent error.
     let reason = match last_error {
         Some(error) => format!("could not reconnect after {attempts} attempts: {error}"),
         None => format!("could not reconnect after {attempts} attempts"),
@@ -1022,20 +755,16 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
 
-    /// Records what reached the transport, in order, so a test can assert the
-    /// handshake window replayed correctly rather than merely not panicking.
+    /// Records what reached the transport, in order.
     #[derive(Default)]
     struct FakeSession {
         writes: Vec<Vec<u8>>,
         sizes: Vec<(u16, u16)>,
-        /// Set by `disconnect`, so a test can tell a clean close from a `Drop`.
+        /// Set by `disconnect`, to tell a clean close from a `Drop`.
         disconnected: Arc<std::sync::atomic::AtomicBool>,
     }
 
-    /// Carries its own retryability, because [`Connector::retryable`] is an
-    /// associated function — the distinction it draws belongs to the error, and
-    /// putting it there is what lets one fake connector cover both a drop worth
-    /// retrying and an auth failure that must stop the loop.
+    /// Carries its own retryability so one fake connector can produce both kinds.
     #[derive(Debug)]
     struct FakeError {
         retryable: bool,
@@ -1046,8 +775,7 @@ mod tests {
             Self { retryable: true }
         }
 
-        /// Stands in for a rejected credential: retrying spends one of the
-        /// server's `MaxAuthTries`, so the loop must not.
+        /// A rejected credential: retrying spends the server's `MaxAuthTries`.
         fn fatal() -> Self {
             Self { retryable: false }
         }
@@ -1081,8 +809,7 @@ mod tests {
         }
     }
 
-    /// A slot's state, for a panic message that says what it actually found
-    /// rather than only what it wanted.
+    /// A slot's state, for panic messages.
     fn describe(slot: &Slot<FakeSession>) -> &'static str {
         match slot {
             Slot::Connecting { .. } => "connecting",
@@ -1125,8 +852,7 @@ mod tests {
         }
     }
 
-    /// The behavior the old design got for free by holding a mutex across the
-    /// handshake: typing at a pane that is still connecting is not lost.
+    /// Typing at a pane that's still connecting isn't lost.
     #[tokio::test]
     async fn keystrokes_typed_during_the_handshake_are_delivered() {
         let slot = connecting();
@@ -1138,8 +864,7 @@ mod tests {
         assert_eq!(published(&slot).await.writes, vec![b"whoami\n".to_vec()]);
     }
 
-    /// A pane resized while its host-key prompt was on screen must not keep
-    /// the size it had when the connection started.
+    /// A resize during the handshake is applied.
     #[tokio::test]
     async fn a_resize_during_the_handshake_is_applied() {
         let slot = connecting();
@@ -1150,8 +875,7 @@ mod tests {
         assert_eq!(published(&slot).await.sizes, vec![(120, 40)]);
     }
 
-    /// Only the last size is replayed — an intermediate size from a drag has
-    /// nothing to say once the drag has ended.
+    /// Only the last size is replayed.
     #[tokio::test]
     async fn only_the_final_size_is_replayed() {
         let slot = connecting();
@@ -1164,8 +888,7 @@ mod tests {
         assert_eq!(published(&slot).await.sizes, vec![(120, 40)]);
     }
 
-    /// Resize before write: bytes sent first would be answered by the program
-    /// at the old size, and the reflow would land on output already printed.
+    /// Resize before write, so the program answers at the new size.
     #[tokio::test]
     async fn the_size_is_applied_before_the_queued_input() {
         let slot = connecting();
@@ -1179,8 +902,7 @@ mod tests {
         assert_eq!(session.writes, vec![b"ls\n".to_vec()]);
     }
 
-    /// Nothing queued means nothing sent — a fresh session must not receive a
-    /// spurious empty write or a resize to whatever it already is.
+    /// Nothing queued means nothing sent.
     #[tokio::test]
     async fn an_idle_handshake_replays_nothing() {
         let slot = connecting();
@@ -1191,20 +913,13 @@ mod tests {
         assert!(session.sizes.is_empty());
     }
 
-    /// A connector that fails a set number of times before succeeding.
-    ///
-    /// Two jobs. The registry's own methods are generic over `Connector` rather
-    /// than `Session`, so something has to name one — most tests here register
-    /// slots directly and never call `connect`. And the reconnect loop is only
-    /// observable against a handshake that fails on demand, which is what
-    /// `script` drives: backoff, attempt bounds, cancellation mid-retry and the
-    /// replay ordering can all be pinned without a transport.
+    /// A connector that fails a scripted number of times before succeeding, for
+    /// driving the reconnect loop without a transport.
     struct FakeConnector {
         script: Arc<Script>,
     }
 
-    /// Shared between every connector one factory builds, so the run's attempts
-    /// are counted across them rather than per instance.
+    /// Shared by every connector a factory builds, so attempts count across them.
     #[derive(Default)]
     struct Script {
         /// How many attempts to fail before the next one succeeds.
@@ -1213,8 +928,7 @@ mod tests {
         fatal: std::sync::atomic::AtomicBool,
         /// Every `connect` call, successful or not.
         attempts: AtomicU64,
-        /// Set by the session's `disconnect`, so a test can tell a clean close
-        /// from a bare `Drop`.
+        /// Set by the session's `disconnect`.
         disconnected: Arc<std::sync::atomic::AtomicBool>,
     }
 
@@ -1233,8 +947,7 @@ mod tests {
             self.attempts.load(Ordering::Relaxed)
         }
 
-        /// A factory of the shape `spawn_connect` takes, closing over this
-        /// script so each rebuild draws from the same plan.
+        /// A factory of the shape `spawn_connect` takes, drawing from this script.
         fn factory(
             self: &Arc<Self>,
         ) -> impl Fn() -> std::future::Ready<Result<FakeConnector, String>> {
@@ -1263,8 +976,7 @@ mod tests {
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_ok()
             {
-                // Real connectors report their own failure from inside
-                // `connect`; the supervisor relies on that having happened.
+                // Real connectors report their own failure from inside `connect`.
                 let _ = events
                     .send(ConnectionEvent::Status(ConnectionStatus::Failed(
                         "scripted".to_string(),
@@ -1301,22 +1013,18 @@ mod tests {
         registry
     }
 
-    /// A paste into a pane whose host-key prompt has been sitting unanswered
-    /// must not accumulate without limit.
+    /// A paste into a pane stuck at its host-key prompt must not grow unbounded.
     #[tokio::test]
     async fn the_pre_connect_queue_is_capped() {
         let registry = registry_with_connecting_slot("fake-0").await;
 
-        // Well under the cap: held, as the whole queue-and-replay design
-        // intends.
         assert!(registry.write("fake-0", &vec![b'x'; 1024]).await.is_ok());
 
-        // Past it: refused, and refused whole — a truncated paste would send
-        // the remote half a command.
+        // Past the cap: refused whole.
         let huge = vec![b'x'; MAX_PENDING_INPUT];
         assert!(registry.write("fake-0", &huge).await.is_err());
 
-        // The refusal doesn't discard what was legitimately queued before it.
+        // Earlier input stays queued.
         let slot = registry.lookup("fake-0").await.unwrap();
         let queued = match &*slot.lock().await {
             Slot::Connecting { input, .. } => input.len(),
@@ -1325,9 +1033,7 @@ mod tests {
         assert_eq!(queued, 1024);
     }
 
-    /// The cap is on the queue, not on the session: once connected, a large
-    /// paste goes straight to the transport and is none of the registry's
-    /// business.
+    /// Once connected, large writes go straight to the transport.
     #[tokio::test]
     async fn the_cap_does_not_apply_once_connected() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1346,10 +1052,8 @@ mod tests {
         Arc::new(TokioMutex::new(map))
     }
 
-    /// The point of the whole membership check: a pane closed while its
-    /// host-key prompt was up must not have what was typed into it sent to the
-    /// host once the handshake finishes. If those bytes were a password meant
-    /// for the *next* prompt, they would land on a host the user just declined.
+    /// A pane closed during the handshake must not have its queued input (maybe a
+    /// password) sent to the host.
     #[tokio::test]
     async fn a_cancelled_connection_never_receives_its_queued_input() {
         let slot = connecting();
@@ -1367,20 +1071,17 @@ mod tests {
         };
         publish_if_wanted(&sessions, "ssh-0", &slot, session).await;
 
-        // Nothing was published into the orphaned slot...
         assert!(
             slot.lock().await.ready().is_err(),
             "a canceled slot must not receive the session"
         );
-        // ...and the session was closed cleanly rather than dropped.
         assert!(
             disconnected.load(Ordering::Relaxed),
             "expected a clean disconnect, not a bare Drop"
         );
     }
 
-    /// The ordinary path still has to work: an id that is still registered gets
-    /// its session, and its queued input.
+    /// An id that's still registered gets its session and queued input.
     #[tokio::test]
     async fn a_live_connection_still_publishes_and_replays() {
         let slot = connecting();
@@ -1394,20 +1095,18 @@ mod tests {
         assert!(!session.disconnected.load(Ordering::Relaxed));
     }
 
-    /// The race the map lock used to cover by being held across the replay:
-    /// `disconnect` lands *after* the membership check has already passed.
-    /// The mark it leaves on the slot is what the publish then sees.
+    /// `disconnect` landing after the membership check passed still wins via the
+    /// slot mark.
     #[tokio::test]
     async fn a_disconnect_after_the_membership_check_still_wins() {
         let registry = registry_with_connecting_slot("fake-0").await;
         let slot = registry.lookup("fake-0").await.unwrap();
         registry.write("fake-0", b"hunter2\n").await.unwrap();
 
-        // The check that `publish_if_wanted` does first — passing, because the
-        // user has not closed the pane yet.
+        // The membership check passes...
         assert!(registry.sessions.lock().await.contains_key("fake-0"));
 
-        // And now they do, in the window before the handshake publishes.
+        // ...then the pane closes before the publish.
         registry.disconnect("fake-0").await.unwrap();
 
         let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1425,8 +1124,7 @@ mod tests {
         assert!(slot.lock().await.ready().is_err());
     }
 
-    /// The same race through the front door, so the two halves are pinned
-    /// together rather than only in the piece each one touches.
+    /// The same race through `publish_if_wanted`.
     #[tokio::test]
     async fn a_session_cancelled_mid_publish_is_closed_cleanly() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1446,10 +1144,8 @@ mod tests {
         );
     }
 
-    /// Disconnecting a still-connecting id leaves the slot marked rather than
-    /// merely dropping it from the map — the mark is the whole mechanism, and
-    /// a slot handle cloned out before the removal is how anything still
-    /// reaches it (`Slot::ready`, which `sftp_list_dir` and friends call).
+    /// Disconnecting a connecting id marks its slot, which is what handles cloned
+    /// before the removal (e.g. via `Slot::ready`) see.
     #[tokio::test]
     async fn disconnecting_a_connecting_id_marks_its_slot() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1463,14 +1159,12 @@ mod tests {
             other => panic!("expected a canceled slot, was {}", describe(other)),
         }
         assert!(slot.lock().await.ready().is_err());
-        // The id is gone from the map too, so the ordinary path reports it as
-        // no such session rather than as a canceled one.
+        // The id is gone from the map too.
         assert!(registry.write("fake-0", b"x").await.is_err());
         assert!(registry.resize("fake-0", 80, 24).await.is_err());
     }
 
-    /// Asking a still-connecting slot for its session is an error, not a
-    /// panic and not a wait — `sftp_list_dir` and friends reach one this way.
+    /// A connecting slot reports an error rather than blocking.
     #[tokio::test]
     async fn ready_reports_a_connecting_slot_rather_than_blocking() {
         let slot = connecting();
@@ -1482,32 +1176,27 @@ mod tests {
 
     // ---- auto-reconnect ----------------------------------------------------
 
-    /// The schedule, exactly, since it is the thing a user actually experiences
-    /// and the thing most likely to be "improved" into uselessness. Doubling
-    /// from one second, capped at thirty.
+    /// The exact schedule: doubling from one second, capped at thirty.
     #[test]
     fn the_backoff_doubles_and_then_stops_doubling() {
         let seconds: Vec<u64> = (1..=8).map(|n| backoff_delay(n).as_secs()).collect();
         assert_eq!(seconds, vec![1, 2, 4, 8, 16, 30, 30, 30]);
     }
 
-    /// The shift overflows at attempt 33. The cap makes everything past attempt
-    /// six identical anyway, so the only requirement is that it not panic.
+    /// The shift overflows at attempt 33; it must not panic.
     #[test]
     fn an_absurd_attempt_number_still_yields_the_cap() {
         assert_eq!(backoff_delay(u32::MAX), RECONNECT_MAX_DELAY);
     }
 
-    /// Jitter has to stay inside its stated band in both directions — a bug
-    /// here is invisible until it produces a negative or a wildly long wait.
+    /// Jitter stays inside its band in both directions.
     #[test]
     fn jitter_stays_within_its_band() {
         let base = Duration::from_secs(10);
         assert_eq!(jittered(base, 0.0), base);
         assert_eq!(jittered(base, 1.0), Duration::from_secs(12));
         assert_eq!(jittered(base, -1.0), Duration::from_secs(8));
-        // A caller out of range is clamped rather than producing a wait that
-        // is negative (which would panic) or minutes long.
+        // Out-of-range input is clamped.
         assert_eq!(jittered(base, 40.0), Duration::from_secs(12));
         assert_eq!(jittered(base, -40.0), Duration::from_secs(8));
     }
@@ -1520,9 +1209,7 @@ mod tests {
         }
     }
 
-    /// Both bounds are load-bearing: the attempt count alone would let a
-    /// saturated schedule run for six minutes, and the clock alone would allow
-    /// an unbounded number of fast early attempts.
+    /// Each bound ends the run on its own.
     #[test]
     fn a_run_is_bounded_by_attempts_and_by_the_clock_separately() {
         let policy = ReconnectPolicy::default();
@@ -1535,10 +1222,7 @@ mod tests {
         assert!(policy.next_delay(1, policy.max_elapsed()).is_none());
     }
 
-    /// The bounds are the caller's to shorten, and shortening either one
-    /// alone must end the run — otherwise a user who asks for a shorter leash
-    /// gets the default one whenever the *other* bound is the looser of the
-    /// two.
+    /// Shortening either bound alone must end the run sooner.
     #[test]
     fn a_shortened_bound_is_the_one_that_binds() {
         let fewer = ReconnectPolicy {
@@ -1556,8 +1240,7 @@ mod tests {
         assert!(briefer.next_delay(1, Duration::from_secs(30)).is_none());
     }
 
-    /// These are loop bounds arriving from the webview, so the range they are
-    /// held to is the thing being asserted — not that some clamp exists.
+    /// Loop bounds from the webview are clamped to their ranges.
     #[test]
     fn a_policy_off_the_wire_is_clamped_rather_than_refused() {
         let absurd = ReconnectPolicy {
@@ -1569,10 +1252,7 @@ mod tests {
         assert_eq!(absurd.max_attempts, *ATTEMPTS_RANGE.end());
         assert_eq!(absurd.max_elapsed_seconds, *ELAPSED_SECONDS_RANGE.end());
 
-        // Zero is not a shorter leash — it is `enabled: false`, and reading it
-        // as a bound would end every run at the first retry with "could not
-        // reconnect after 1 attempts", describing something that never
-        // happened.
+        // Zero means disabled, not a shorter bound, so it clamps up.
         let zeroed = ReconnectPolicy {
             enabled: true,
             max_attempts: 0,
@@ -1587,9 +1267,7 @@ mod tests {
         );
     }
 
-    /// A field the frontend does not send falls back to the default, so a
-    /// caller that sends nothing gets exactly the behavior that shipped
-    /// before the policy existed.
+    /// Absent fields keep their defaults.
     #[test]
     fn an_absent_field_keeps_the_default() {
         let partial: ReconnectPolicy = serde_json::from_str(r#"{"maxAttempts": 4}"#).unwrap();
@@ -1604,9 +1282,7 @@ mod tests {
         assert_eq!(empty, ReconnectPolicy::default());
     }
 
-    /// "reconnecting in 0s" reads as a bug rather than as "imminently", and
-    /// jitter on the one-second step lands under half a second often enough to
-    /// matter.
+    /// Jitter often puts the first step under half a second; never show "0s".
     #[test]
     fn the_countdown_never_reads_zero() {
         assert_eq!(countdown_seconds(Duration::from_millis(1)), 1);
@@ -1614,44 +1290,38 @@ mod tests {
         assert_eq!(countdown_seconds(Duration::from_millis(1600)), 2);
     }
 
-    /// The size a pane has *now*, not the size it had when it first opened,
-    /// which is what the connector would otherwise reopen the PTY at.
+    /// A reconnect reopens at the pane's current size, not its original one.
     #[tokio::test]
     async fn a_reconnect_carries_the_panes_current_size_forward() {
         let registry = registry_with_connecting_slot("fake-0").await;
         let slot = registry.lookup("fake-0").await.unwrap();
         assert!(publish(&slot, FakeSession::default()).await.is_none());
 
-        // The pane is resized at some point during its life.
         registry.resize("fake-0", 200, 60).await.unwrap();
 
         let Reclaimed::Displaced(_) = begin_reconnect(&slot).await else {
             panic!("expected the live session to be displaced");
         };
 
-        // The new handshake window opens already knowing the size, so `publish`
-        // applies it to the session that arrives.
+        // The new window already knows the size.
         assert!(publish(&slot, FakeSession::default()).await.is_none());
         assert_eq!(published(&slot).await.sizes, vec![(200, 60)]);
     }
 
-    /// The hazard the plan calls out one layer along from `publish_if_wanted`:
-    /// a pane closed while a reconnect is in flight must not have queued input
-    /// replayed into the session that arrives afterward.
+    /// A pane closed mid-reconnect must not have queued input replayed into the
+    /// new session.
     #[tokio::test]
     async fn a_pane_closed_mid_reconnect_never_receives_its_queued_input() {
         let registry = registry_with_connecting_slot("fake-0").await;
         let slot = registry.lookup("fake-0").await.unwrap();
         assert!(publish(&slot, FakeSession::default()).await.is_none());
 
-        // The transport dies and the reconnect opens its queueing window.
         let Reclaimed::Displaced(_) = begin_reconnect(&slot).await else {
             panic!("expected the live session to be displaced");
         };
-        // The user types into the reconnecting pane — a password meant for the
-        // prompt they expect to come back to.
+        // Typed into the reconnecting pane...
         registry.write("fake-0", b"hunter2\n").await.unwrap();
-        // ...and then closes it before the handshake lands.
+        // ...then closed before the handshake lands.
         registry.disconnect("fake-0").await.unwrap();
 
         let disconnected = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1671,8 +1341,7 @@ mod tests {
         );
     }
 
-    /// ...and the mark survives the reconnect trying to reopen the window,
-    /// which is the ordering the two have to agree on.
+    /// The cancel mark survives an attempt to reopen the window.
     #[tokio::test]
     async fn a_cancelled_slot_refuses_to_start_another_reconnect() {
         let slot = connecting();
@@ -1685,8 +1354,7 @@ mod tests {
         );
     }
 
-    /// `abandon` must never drop a live session on the floor — it exists for
-    /// slots nothing will ever publish into.
+    /// `abandon` never drops a live session.
     #[tokio::test]
     async fn abandoning_leaves_a_live_slot_alone() {
         let slot = connecting();
@@ -1698,8 +1366,7 @@ mod tests {
         );
     }
 
-    /// Everything the supervisor emitted, in order, so a test can assert what
-    /// the pane was actually told rather than only where it ended up.
+    /// Every status the supervisor emitted, in order.
     async fn drain(rx: &mut mpsc::Receiver<ConnectionEvent>) -> Vec<ConnectionStatus> {
         let mut seen = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -1710,8 +1377,7 @@ mod tests {
         seen
     }
 
-    /// The whole point of the feature: a transport that dies comes back under
-    /// the *same session id*, into the same slot, without the pane knowing.
+    /// A dropped transport comes back under the same id, in the same slot.
     #[tokio::test(start_paused = true)]
     async fn a_lost_transport_reconnects_into_the_same_slot() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1734,11 +1400,9 @@ mod tests {
             ReconnectPolicy::default(),
         ));
 
-        // The first handshake lands.
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(slot.lock().await.ready().is_ok());
 
-        // The transport goes away without being asked to.
         down_tx.send(()).unwrap();
         tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -1747,8 +1411,7 @@ mod tests {
             slot.lock().await.ready().is_ok(),
             "the same slot should now hold the new session"
         );
-        // The id never moved, which is what keeps the frontend's engine,
-        // scrollback, logging sink and SFTP watchers attached across the drop.
+        // The id never moved.
         assert!(registry.lookup("fake-0").await.is_ok());
 
         let statuses = drain(&mut rx).await;
@@ -1763,7 +1426,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
     }
 
-    /// Records every phase the transport hook was told about, in order.
+    /// Every phase the transport hook was told about, in order.
     type PhaseLog = Arc<std::sync::Mutex<Vec<TransportPhase>>>;
 
     fn phase_recorder(log: PhaseLog) -> impl Fn(TransportPhase) -> std::future::Ready<()> {
@@ -1773,15 +1436,9 @@ mod tests {
         }
     }
 
-    /// The transport hook reports the loss *and* the replacement, in that
-    /// order, and neither on the first connect.
-    ///
-    /// The order is the whole point, and getting it wrong was the bug. SSH
-    /// marks its port forwards dead on `Lost` and re-establishes them on
-    /// `Restored`; a hook that reported only the second leaves them described
-    /// as healthy for the entire outage — which, for a forward, means a local
-    /// listener still accepting connections it cannot carry. Asserting only
-    /// that the restore eventually ran is what let that through.
+    /// The hook reports `Lost` then `Restored`, and nothing on the first connect.
+    /// SSH marks forwards dead on `Lost`; reporting only `Restored` left them
+    /// looking healthy for the whole outage.
     #[tokio::test(start_paused = true)]
     async fn the_transport_hook_reports_the_loss_before_the_replacement() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1806,7 +1463,7 @@ mod tests {
             ReconnectPolicy::default(),
         ));
 
-        // The first handshake lands — and reports nothing.
+        // The first connect reports nothing.
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(slot.lock().await.ready().is_ok());
         assert!(
@@ -1831,11 +1488,8 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
     }
 
-    /// A session that cannot reconnect still loses its connection, and whatever
-    /// was bound to it still has to be told. Reporting `Lost` only on the path
-    /// that leads to a retry would leave a keyboard-interactive session's
-    /// forwards looking live forever, since nothing is ever coming to correct
-    /// the record.
+    /// A session that can't reconnect still reports `Lost`, or its forwards would
+    /// look live forever.
     #[tokio::test(start_paused = true)]
     async fn a_session_that_cannot_reconnect_still_reports_the_loss() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1880,14 +1534,11 @@ mod tests {
         );
     }
 
-    /// Keystrokes typed at a pane mid-reconnect are the same case as
-    /// keystrokes typed at one mid-handshake, and get the same treatment for
-    /// free — which is the reason `Connecting` was the right state to reuse.
+    /// Input typed mid-reconnect reaches the new session, as mid-handshake does.
     #[tokio::test(start_paused = true)]
     async fn keystrokes_typed_mid_reconnect_reach_the_new_session() {
         let registry = registry_with_connecting_slot("fake-0").await;
         let slot = registry.lookup("fake-0").await.unwrap();
-        // One failure, so there is a window to type into.
         let script = Script::failing(0);
         let (tx, _rx) = mpsc::channel(64);
         let (down_tx, down_rx) = mpsc::unbounded_channel();
@@ -1908,7 +1559,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         down_tx.send(()).unwrap();
-        // Mid-backoff: the slot is Connecting again and the queue is open.
+        // Mid-backoff: the queue is open.
         tokio::time::sleep(Duration::from_millis(200)).await;
         registry.write("fake-0", b"whoami\n").await.unwrap();
 
@@ -1923,9 +1574,8 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
     }
 
-    /// An authentication failure is never retried. Each attempt spends one of
-    /// the server's `MaxAuthTries`, so a background loop would lock the account
-    /// out on the user's behalf.
+    /// Auth failures aren't retried: each attempt spends the server's
+    /// `MaxAuthTries`.
     #[tokio::test(start_paused = true)]
     async fn a_fatal_failure_stops_the_run_rather_than_burning_attempts() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1949,7 +1599,7 @@ mod tests {
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        // Every attempt from here on is refused, as a credential would be.
+        // From here on every attempt is refused, as a credential would be.
         script.fail_first.store(u64::MAX, Ordering::Relaxed);
         script.fatal.store(true, Ordering::Relaxed);
         down_tx.send(()).unwrap();
@@ -1963,9 +1613,7 @@ mod tests {
         assert!(registry.lookup("fake-0").await.is_err());
     }
 
-    /// A first handshake that fails has failed. Auto-reconnect restores a
-    /// session that *was* up; silently retrying a connect the user just pressed
-    /// for four minutes behind a "failed" message is not what they asked for.
+    /// A failed first handshake is not retried.
     #[tokio::test(start_paused = true)]
     async fn a_session_that_never_connected_is_not_retried() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -1997,8 +1645,7 @@ mod tests {
         );
     }
 
-    /// The run is bounded. A host that never comes back must leave the pane
-    /// with a verdict rather than retrying until the process exits.
+    /// A host that never comes back ends the run with a reported failure.
     #[tokio::test(start_paused = true)]
     async fn a_run_that_never_succeeds_gives_up_and_says_so() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -2047,8 +1694,7 @@ mod tests {
         );
     }
 
-    /// Closing a pane mid-backoff stops the run then and there, rather than
-    /// letting it wake up and connect to a host nobody is watching.
+    /// Closing the pane mid-backoff stops the run immediately.
     #[tokio::test(start_paused = true)]
     async fn closing_a_pane_during_the_backoff_ends_the_run() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -2072,7 +1718,6 @@ mod tests {
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        // Long enough that the pane can close well inside the wait.
         script.fail_first.store(6, Ordering::Relaxed);
         down_tx.send(()).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2091,9 +1736,8 @@ mod tests {
         );
     }
 
-    /// A session with no factory — an SSH profile whose credential has to be
-    /// asked for each time — reports the drop and stops, rather than sprouting
-    /// a password dialog at 3am because a link flapped.
+    /// No factory (e.g. a credential asked for each time): report the drop and
+    /// stop, rather than prompting unattended.
     #[tokio::test(start_paused = true)]
     async fn a_session_that_cannot_reconnect_unattended_simply_stops() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -2132,14 +1776,8 @@ mod tests {
         assert_eq!(script.attempts(), 1, "no unattended retry may be made");
     }
 
-    /// The user's off switch reaches the same end as having no factory — a
-    /// session that *could* reconnect and has been told not to.
-    ///
-    /// The `Lost` phase is the half worth pinning. Turning auto-reconnect off
-    /// says nothing about port forwards, and a hook that stopped firing with
-    /// the switch would leave a forward on an opted-out session described as
-    /// live for the rest of the pane's life, since nothing else is ever coming
-    /// to correct the record. Off means "do not dial", not "do not report".
+    /// Disabling reconnect stops the run but still reports `Lost`; off means
+    /// "don't dial", not "don't report".
     #[tokio::test(start_paused = true)]
     async fn a_disabled_policy_stops_the_run_but_still_reports_the_loss() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -2150,8 +1788,7 @@ mod tests {
 
         let log: PhaseLog = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        // A perfectly good factory, which is the point: nothing but the policy
-        // stops this session coming back.
+        // A working factory; only the policy stops the reconnect.
         let run = tokio::spawn(supervise(
             registry.sessions.clone(),
             "fake-0".to_string(),
@@ -2189,10 +1826,7 @@ mod tests {
         );
     }
 
-    /// A shortened attempt bound is honored end to end, not merely by
-    /// `next_delay` in isolation — the supervisor has two paths into the
-    /// backoff (a failed handshake and a factory that will not build) and only
-    /// one of them is exercised by asserting on the pure function.
+    /// A shortened attempt bound holds end to end.
     #[tokio::test(start_paused = true)]
     async fn a_shortened_policy_gives_up_sooner_than_the_default_would() {
         let registry = registry_with_connecting_slot("fake-0").await;
@@ -2227,7 +1861,7 @@ mod tests {
             .expect("the run must end on its own")
             .unwrap();
 
-        // The first connect, plus the two retries the policy allows.
+        // The first connect plus two retries.
         assert_eq!(
             script.attempts(),
             3,

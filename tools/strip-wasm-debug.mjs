@@ -1,26 +1,18 @@
 #!/usr/bin/env node
 // Removes the DWARF custom sections from a .wasm, keeping the `name` section.
 //
-// The vendored `ghostty-vt.wasm` is built with full debug info, and 77.5% of it
-// is `.debug_*` — 2.56 MB of the 3.30 MB file, against 538 kB of actual code.
-// None of it is read by anything in this repo: `tools/parse-probes/names.mjs`
-// walks the section table until it finds `name`, parses subsection 1, and never
-// touches a `.debug_*` section. V8's tick attribution for WASM reads the name
-// section too, so the profiling workflow the debug build exists for survives
-// this intact. DWARF only buys source-level stepping through DevTools' C/C++
-// debugging extension, which is a dev-machine concern and not worth 2.5 MB in
-// every installer.
+// The vendored `ghostty-vt.wasm` is built with debug info, about three
+// quarters of it `.debug_*`. Nothing here reads DWARF: `parse-probes/names.mjs`
+// and V8's WASM tick attribution use the `name` section, which is kept.
 //
-// This is a script rather than `llvm-objcopy --remove-section='.debug_*'`
-// because the repo has no LLVM or wabt dependency and this needs to be
-// repeatable by whoever next bumps the vendored binary. A WASM section table is
-// a flat list of (id, size, payload) — custom sections are id 0 with a leading
-// name — so dropping some of them is a copy with holes, not a rewrite.
+// A script rather than `llvm-objcopy`, since the repo has no LLVM or wabt
+// dependency; a WASM section table is a flat list of (id, size, payload), so
+// dropping custom sections is a copy with holes.
 //
 //   node tools/strip-wasm-debug.mjs in.wasm out.wasm
 //
-// Run it as part of the vendoring step in `patches/README.md`, not at build
-// time: the checked-in binary is the stripped one.
+// Run it while vendoring (`patches/README.md`); the checked-in binary is the
+// stripped one.
 
 import fs from 'node:fs'
 
@@ -60,8 +52,7 @@ export function stripDebugSections(buf) {
       name = buf.toString('utf8', afterNameLen, afterNameLen + nameLen)
     }
 
-    // Only `.debug_*` goes. `name`, `producers` and `target_features` are all
-    // custom sections too, and all three are either used or harmless.
+    // Only `.debug_*` goes; `name`, `producers` and `target_features` stay.
     if (name !== null && name.startsWith('.debug_')) {
       removed.push({ name, bytes: sectionEnd - sectionStart })
     } else {

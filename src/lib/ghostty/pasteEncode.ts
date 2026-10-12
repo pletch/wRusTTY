@@ -1,32 +1,13 @@
 /**
- * Paste, encoded by the engine rather than by us.
+ * Paste, encoded by the engine.
  *
- * ## Why this exists
+ * The encoder replaces every ESC with a space, so an embedded `ESC [ 201 ~`
+ * can't end a bracketed paste early and turn the rest into typed commands,
+ * and converts newlines to carriage returns when bracketing is off.
  *
- * `GhosttyEngine.paste` used to be four lines: read DEC 2004, and if it was
- * set, concatenate `ESC [ 200 ~` and `ESC [ 201 ~` around the text. Both
- * halves of that were wrong.
- *
- * - **It pasted the terminator.** Text containing `ESC [ 201 ~` ends the
- *   bracketed paste early, and everything after it arrives as *typing* — at a
- *   shell prompt, as a command line the user never ran. That is the standard
- *   bracketed-paste breakout, and copying from a web page is exactly how the
- *   bytes get into a clipboard. The encoder replaces every ESC with a space,
- *   so the sequence arrives inert as `[201~`.
- * - **It sent newlines raw when bracketing was off.** A PTY wants a carriage
- *   return for Enter; a bare `\n` is not what a terminal sends and not what
- *   the line discipline is waiting for. The encoder converts.
- *
- * Neither is a formatting nicety, which is why this went the way of the key
- * and mouse encoders rather than being patched in place.
- *
- * ## Not an encoder object
- *
- * Unlike its two siblings these are free functions upstream: no handle, no
- * terminal, no state to keep in step. Bracketing is a mode the *caller* reads
- * and passes in, because it is the only piece of terminal state involved. So
- * this is a module of functions rather than a class, and the allocations
- * happen per paste — which is a human-scale event, not a keystroke.
+ * Upstream exposes free functions, not an encoder object: bracketing is the
+ * only terminal state involved, and the caller reads and passes it.
+ * Allocations happen per paste, a human-scale event.
  */
 
 import * as abi from './main/abi'
@@ -38,21 +19,11 @@ const BRACKET_OVERHEAD = 12
 const utf8 = new TextEncoder()
 
 /**
- * CRLF collapsed to LF, because a Windows clipboard is the one the encoder
- * never sees on the platforms upstream ships for.
- *
- * `CF_UNICODETEXT` is CRLF-delimited and arboard hands it over verbatim, so a
- * multi-line paste arrives here with both bytes on every line. Neither branch
- * below wants that: unbracketed, each of CR and LF becomes its own carriage
- * return, so every line is submitted twice; bracketed, bash's own
- * `bracketed-paste-begin` maps the CR to a newline and gets the same doubling.
- * Either way the shell sees a blank line between every pasted line — which is
- * merely ugly until one of them follows a `\` continuation, and then the
- * command is a different command.
- *
- * A lone CR is deliberately left alone: it is a line ending no clipboard on
- * this machine produces, and upstream has a considered position on it that
- * `pasteIsSafe` pins.
+ * CRLF collapsed to LF. `CF_UNICODETEXT` is CRLF-delimited and arboard passes
+ * it through, and the encoder doesn't expect it: unbracketed, CR and LF each
+ * become a carriage return; bracketed, bash maps the CR to a newline. Either
+ * way every line is doubled, which changes a command after a `\`
+ * continuation. A lone CR is left alone (see `pasteIsSafe`).
  */
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, '\n')
@@ -62,19 +33,15 @@ function exportsOf(wasm: GhosttyWasm): abi.GhosttyMainExports {
   return wasm.instance.exports as unknown as abi.GhosttyMainExports
 }
 
-/** Whether the binary carries the paste API — false only on the v1.3.1 oracle
- *  build, which the app never loads. Same contract as the other two encoders. */
+/** Whether the binary has the paste API (false only on the v1.3.1 oracle). */
 export function hasPasteEncoder(wasm: GhosttyWasm): boolean {
   return typeof exportsOf(wasm).ghostty_paste_encode === 'function'
 }
 
 /**
- * Whether this text can be pasted without asking first.
- *
- * Upstream's rule, and deliberately conservative: false for any newline, and
- * false for an embedded bracketed-paste terminator. The second is the one a
- * line count cannot see — a single-line paste carrying `ESC [ 201 ~` looks
- * completely ordinary and is the dangerous case.
+ * Whether this text can be pasted without asking. Upstream's rule: false for
+ * any newline or an embedded bracketed-paste terminator (a single-line paste
+ * carrying `ESC [ 201 ~` looks ordinary).
  */
 export function pasteIsSafe(wasm: GhosttyWasm, text: string): boolean {
   const ex = exportsOf(wasm)
@@ -91,24 +58,19 @@ export function pasteIsSafe(wasm: GhosttyWasm, text: string): boolean {
 }
 
 /**
- * The bytes a paste should put on the wire: unsafe control bytes replaced by
- * spaces, wrapped in the bracketed-paste sequences when `bracketed`, and with
- * newlines turned into carriage returns when it is not.
- *
- * `bracketed` is the caller's to read — see the note above.
+ * The bytes a paste should send: unsafe controls replaced by spaces, wrapped
+ * in bracketed-paste sequences when `bracketed`, otherwise with newlines as
+ * carriage returns.
  */
 export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean): Uint8Array {
   const ex = exportsOf(wasm)
   const bytes = utf8.encode(normalizeNewlines(text))
 
-  // The input is modified in place, so the buffer has to be writable and has
-  // to be refillable: a retry re-copies from `bytes` rather than reusing
-  // whatever the failed call left behind.
+  // Modified in place, so a retry re-copies from `bytes`.
   const dataLen = bytes.length
   const dataPtr = ex.ghostty_wasm_alloc(Math.max(1, dataLen))
   const lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
-  // Sized so the common case is a single call: stripping never grows the text
-  // and bracketing is the only thing that adds to it.
+  // Usually one call: stripping never grows the text; only bracketing adds.
   let outSize = dataLen + BRACKET_OVERHEAD
   let outPtr = ex.ghostty_wasm_alloc(outSize)
 
@@ -128,7 +90,7 @@ export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean)
       ex.ghostty_wasm_free(outPtr, outSize)
       outSize = written
       outPtr = ex.ghostty_wasm_alloc(Math.max(1, outSize))
-      // Refilled, because the call above consumed it in place.
+      // Refilled, since the call consumed it in place.
       if (dataLen > 0) new Uint8Array(ex.memory.buffer, dataPtr, dataLen).set(bytes)
       result = ex.ghostty_paste_encode(
         dataPtr,
@@ -142,8 +104,7 @@ export function encodePaste(wasm: GhosttyWasm, text: string, bracketed: boolean)
     }
 
     if (result !== abi.GHOSTTY_SUCCESS) return new Uint8Array(0)
-    // Copied out: the next paste writes over this buffer, and linear memory
-    // can move under a view that outlives the call.
+    // Copied out: the next paste reuses the buffer, and memory can move.
     return new Uint8Array(ex.memory.buffer, outPtr, written).slice()
   } finally {
     ex.ghostty_wasm_free(dataPtr, Math.max(1, dataLen))

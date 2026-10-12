@@ -1,76 +1,51 @@
 /**
- * Application-driven progress and notifications — OSC 9 and OSC 777.
+ * Application-driven progress and notifications (OSC 9 and OSC 777). Unlike OSC
+ * 133, these come from the program itself rather than the shell, so they work
+ * through SSH for a full-screen program the shell reports as one command.
  *
- * The counterpart to lib/shellIntegration.ts, and deliberately a separate
- * mechanism rather than an extension of it. OSC 133/633 is emitted by the
- * *shell*, around its prompt, which is why it goes quiet for exactly the case
- * this module exists to cover: a full-screen program is one command as far as
- * the shell is concerned, so nothing is reported for the minutes it runs, and
- * `CommandTracker.setAltScreen` suppresses the indicator on top of that.
- *
- * These sequences are emitted by the *program itself*, straight to its own
- * stdout. That needs no shell, no local PTY and no process inspection, so it
- * crosses SSH exactly like a title change does — which makes it the only
- * signal available for a full-screen TUI on a remote host.
- *
- *   OSC 9 ; 4 ; <state> ; <percent> ST   progress (ConEmu; Windows Terminal
- *                                        draws this in the tab, and it is what
- *                                        Claude Code emits while it works)
+ *   OSC 9 ; 4 ; <state> ; <percent> ST   progress (ConEmu; shown in Windows
+ *                                        Terminal's tab; emitted by Claude Code)
  *   OSC 9 ; <text> ST                    notification (iTerm2)
  *   OSC 777 ; notify ; <title> ; <body>  notification (urxvt, kitty)
  *
- * Pure parsing — no state, no DOM — so the grammar can be tested on its own.
- * `Terminal.tsx` owns what the results mean for a pane.
+ * Pure parsing; `Terminal.tsx` decides what results mean for a pane.
  */
 
-/** A program's own report of what it is doing. Percent is separate from state
- * because the two are independent in the wire format: an app can report a bare
- * "still working" with no number, and one that reports a number can be doing so
- * from an error or paused state. */
+/** A program's own report of what it's doing. State and percent are
+ * independent on the wire. */
 export interface AppProgress {
   state: 'active' | 'error' | 'paused'
-  /** 0–100, or null when the app reported indeterminate progress — which is
-   * the common case for a tool that knows it is busy but not how far along it
-   * is. Claude Code sends state 3 (indeterminate) throughout. */
+  /** 0-100, or null for indeterminate (Claude Code always sends state 3). */
   percent: number | null
 }
 
 export interface RemoteNotification {
-  /** Null under OSC 9, which has no title field — only OSC 777 carries one.
-   * The caller supplies something (the pane's name) in its place. */
+  /** Null under OSC 9, which has no title; the caller uses the pane name. */
   title: string | null
   body: string
 }
 
 export type Osc9Result =
-  /** `progress: null` is a real result, not "nothing to do": it is the app
-   * explicitly clearing its progress (ConEmu state 0). */
+  /** `progress: null` means the app cleared its progress (state 0). */
   | { kind: 'progress'; progress: AppProgress | null }
   | { kind: 'notify'; notification: RemoteNotification }
-  /** ConEmu's working-directory report, `9;9;<path>` — the one Windows
-   *  Terminal documents for PowerShell and oh-my-posh emits. Only ever a
-   *  drive-absolute Windows path. */
+  /** ConEmu's working-directory report, `9;9;<path>` (documented by Windows
+   *  Terminal for PowerShell, emitted by oh-my-posh); drive-absolute only. */
   | { kind: 'cwd'; cwd: string }
   | { kind: 'ignore' }
 
 /**
- * Text from the far end lands in a toast and in the OS notification center, so
- * it is bounded here rather than trusted. A host that wants to paper over the
- * screen has plenty of ways to do it inside the terminal grid; it does not get
- * one that escapes the grid.
+ * Remote text lands in toasts and OS notifications, so it's bounded.
  */
 const MAX_TEXT = 200
 
 function clampText(raw: string): string {
-  // Control characters would otherwise reach a native notification, where a
-  // newline or a lone CR is a formatting primitive rather than a character.
+  // Control characters are formatting in a native notification.
   const clean = raw.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim()
   return clean.length > MAX_TEXT ? `${clean.slice(0, MAX_TEXT - 1)}…` : clean
 }
 
-/** ConEmu's `9;4;st;pr`. Percent is optional in every state and meaningless in
- * the indeterminate one, so an absent or unparseable value is null rather than
- * an error — the state is the part that always matters. */
+/** Percent for `9;4;st;pr`: optional, so absent or unparseable is null. */
 function parsePercent(raw: string | undefined): number | null {
   if (raw === undefined || raw === '') return null
   const n = Number.parseInt(raw, 10)
@@ -85,13 +60,8 @@ export function parseOsc9(data: string): Osc9Result {
   const sep = data.indexOf(';')
   const head = sep === -1 ? data : data.slice(0, sep)
 
-  // OSC 9 is overloaded: ConEmu defined numbered subcommands under it, and
-  // iTerm2 later defined the whole payload as notification text. They are
-  // genuinely ambiguous for a message beginning with a digit and a semicolon,
-  // and no terminal resolves that — this takes the same line Windows Terminal
-  // does and recognizes only the two subcommands anyone emits, treating
-  // everything else as iTerm2 text. A notification that happens to start
-  // "4;" or "9;" is the cost, and nothing sends one.
+  // OSC 9 is overloaded (ConEmu subcommands vs iTerm2 text). Like Windows
+  // Terminal, recognize only `4;` and `9;` and treat everything else as text.
   if (sep !== -1) {
     if (head === '4') {
       const fields = data.slice(sep + 1).split(';')
@@ -104,28 +74,23 @@ export function parseOsc9(data: string): Osc9Result {
         case '2':
           return { kind: 'progress', progress: { state: 'error', percent } }
         case '3':
-          // Indeterminate. Any percent sent alongside is meaningless by
-          // definition, so it is dropped rather than shown.
+          // Indeterminate: any percent is meaningless.
           return { kind: 'progress', progress: { state: 'active', percent: null } }
         case '4':
           return { kind: 'progress', progress: { state: 'paused', percent } }
         default:
-          // An unknown state is not a clear. Falling through to `progress:
-          // null` here would let a future or malformed state silently stop an
-          // indicator that is legitimately running.
+          // Unknown state is not a clear; don't stop a running indicator.
           return { kind: 'ignore' }
       }
     }
-    // ConEmu's working-directory report, which must not be mistaken for
-    // notification text either way. Quoted in Windows Terminal's own snippet,
-    // bare in some prompts; anything but a drive-absolute path is dropped.
+    // ConEmu cwd (quoted or bare); only drive-absolute paths.
     if (head === '9') {
       const cwd = data.slice(sep + 1).trim().replace(/^"(.*)"$/, '$1')
       if (/^[A-Za-z]:[\\/]/.test(cwd) && !/\p{Cc}/u.test(cwd)) return { kind: 'cwd', cwd }
       return { kind: 'ignore' }
     }
   } else if (head === '4') {
-    // A bare `OSC 9 ; 4` carries no state at all.
+    // A bare `OSC 9 ; 4` has no state.
     return { kind: 'ignore' }
   }
 
@@ -136,45 +101,28 @@ export function parseOsc9(data: string): Osc9Result {
 
 interface ProgressHandlers {
   onChange: (progress: AppProgress | null) => void
-  /** Progress that had been up has ended, with how long it lasted. Never
-   * fired for a `reset()`. */
+  /** Progress that was up has ended, with its duration. Not fired by
+   * `reset()`. */
   onComplete: (durationMs: number) => void
   /**
-   * Start watching for a full terminal reset (`ESC c`), which abandons any
-   * report the tracker is holding — the program that set it has just had the
-   * screen pulled out from under it. Called when a report goes up, and the
-   * returned handle disposed when it comes down.
-   *
-   * A subscription rather than a plain flag because watching costs something:
-   * recognizing `ESC c` puts a hunt for the letter 'c' through every byte the
-   * remote sends, so the tracker holds it open only for as long as there is an
-   * indicator that a reset would have to take away. See
-   * `GhosttyEngine.registerResetHandler`.
-   *
-   * Optional: a caller with no engine to ask (a test, the bench) simply never
-   * hears about resets.
+   * Watch for a full reset (`ESC c`), which abandons any report. Subscribed only
+   * while a report is up, since watching makes the scanner check every 'c'; see
+   * `GhosttyEngine.registerResetHandler`. Optional (tests, the bench).
    */
   watchReset?: (cb: () => void) => { dispose: () => void }
 }
 
 /**
- * Turns a stream of OSC 9;4 reports into the two things a pane cares about:
- * what to show, and the moment a program stopped.
- *
- * Split out of the OSC handler rather than left inline because the transition
- * is the part with rules — dropping repeats, distinguishing "the work ended"
- * from "the session did", and timing the run rather than the last step.
- * Deliberately a plain class, driven from the output hot path, for the same
- * reason `CommandTracker` is.
+ * Turns OSC 9;4 reports into what a pane shows and the moment a program
+ * stopped: drops repeats, distinguishes "the work ended" from "the session
+ * did", and times the whole run. A plain class, on the output hot path.
  */
 export class ProgressTracker {
   private progress: AppProgress | null = null
-  /** When the current run *started*, not when it last changed — so a
-   * determinate reporter stepping through percentages still reports the whole
-   * run rather than the last step. */
+  /** When the current run started (not its last change). */
   private since = 0
   private readonly handlers: ProgressHandlers
-  /** Live only while `progress` is non-null — see `watchReset`. */
+  /** Live only while `progress` is non-null; see `watchReset`. */
   private resetWatch: { dispose: () => void } | null = null
 
   constructor(handlers: ProgressHandlers) {
@@ -183,10 +131,8 @@ export class ProgressTracker {
 
   set(next: AppProgress | null): void {
     const previous = this.progress
-    // Repeats are dropped here rather than downstream because this sits on the
-    // output hot path: a busy program re-sends the same indeterminate state
-    // for as long as it runs, at whatever rate it likes, and each one would
-    // otherwise re-render the tab strip to say nothing had changed.
+    // Drop repeats here: busy programs resend the same state constantly, on
+    // the hot path.
     if (previous === next) return
     if (previous && next && previous.state === next.state && previous.percent === next.percent) {
       return
@@ -199,13 +145,8 @@ export class ProgressTracker {
   }
 
   /**
-   * Drop any progress without reporting it as finished — for a disconnect or a
-   * teardown, where the program's fate is genuinely unknown.
-   *
-   * The distinction is the whole point: a program that finished wants you
-   * back, and a connection that dropped mid-run knows nothing about whether it
-   * did. Still emits `onChange(null)`, because the indicator must come down
-   * either way.
+   * Drop any progress without reporting completion (disconnect or teardown,
+   * where the program's fate is unknown). Still emits `onChange(null)`.
    */
   reset(): void {
     if (this.progress === null) return
@@ -214,19 +155,15 @@ export class ProgressTracker {
     this.handlers.onChange(null)
   }
 
-  /** Releases the reset watch. For a pane being torn down, where nothing more
-   *  is coming and the engine is about to go with it. */
+  /** Releases the reset watch, for teardown. */
   dispose(): void {
     this.resetWatch?.dispose()
     this.resetWatch = null
   }
 
   /**
-   * Watch exactly while there is something for a reset to invalidate.
-   *
-   * Called *before* `onChange`, so the watch is already down by the time a
-   * reset-driven clear reaches the pane — and safe to call from inside the
-   * watch's own callback, which is where a reset-driven `reset()` comes from.
+   * Watch exactly while there's something for a reset to clear. Runs before
+   * `onChange`, and is safe to call from the watch's own callback.
    */
   private syncResetWatch(): void {
     const want = this.progress !== null
@@ -244,20 +181,16 @@ export class ProgressTracker {
  * OSC 777's `notify;<title>;<body>`.
  *
  * @param data everything after `777;`.
- * @returns null for any other OSC 777 subcommand, of which this handles none.
+ * @returns null for other OSC 777 subcommands.
  */
 export function parseOsc777(data: string): RemoteNotification | null {
   const fields = data.split(';')
   if (fields[0] !== 'notify') return null
   const title = clampText(fields[1] ?? '')
-  // Rejoined rather than taken as one field: the format has no escaping, so a
-  // body containing a semicolon arrives split, and every sender assumes the
-  // last field runs to the end.
+  // Rejoined: there's no escaping, so the body may contain semicolons.
   const body = clampText(fields.slice(2).join(';'))
   if (!title && !body) return null
-  // A title-only notification is normal (`notify-send`-style one-liners), and
-  // reads better as a body under the pane's name than as a title with nothing
-  // under it.
+  // A title-only notification reads better as a body under the pane name.
   if (!body) return { title: null, body: title }
   return { title, body }
 }

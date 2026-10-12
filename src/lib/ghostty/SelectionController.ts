@@ -1,18 +1,10 @@
 import { columnText, isWordChar, type RowText } from './rowText'
 
 /**
- * Selecting text with the mouse, extracted from `GhosttyEngine`.
- *
- * Owns the seven fields that only ever talked to each other — `isSelecting`,
- * `selectionStart`, `selectionAnchor`, `selectionRectangular` and the three
- * `dragScroll*` — plus word/line selection, the drag-autoscroll timer, and
- * turning a selection into text.
- *
- * The DOM listeners stay on the engine, because each of them has to decide
- * between reporting the mouse to the program and selecting with it before it
- * can do either. `MouseReporter` owns the other side of that decision; the
- * `mousedown`/`mousemove` handlers read as that choice and nothing else once
- * both are out.
+ * Mouse text selection, extracted from `GhosttyEngine`: drag state,
+ * word/line selection, drag-autoscroll and turning a selection into text. The
+ * DOM listeners stay on the engine, since each must first choose between
+ * reporting the mouse to the program (`MouseReporter`) and selecting.
  */
 
 /** How far a drag past the edge can scroll per tick, and how often. */
@@ -38,34 +30,29 @@ export interface SelectionHost {
   readWrapFlags(from: number, to: number): boolean[]
   /** Cell under the pointer in absolute buffer coordinates. */
   coords(e: MouseEvent): Point
-  /** The canvas, for hit-testing a drag against its edges. `null` before
-   *  mount and after dispose. */
+  /** The canvas, for hit-testing a drag; `null` before mount and after
+   *  dispose. */
   canvas(): HTMLCanvasElement | null
   /** Whether there is anywhere to put a selection yet. */
   hasRenderer(): boolean
-  /** Hand the renderer a selection to draw, or `null` for none. Also marks
-   *  the view dirty. */
+  /** Sets the selection to draw (or `null`) and marks the view dirty. */
   setSelection(sel: Selection | null): void
   /** What the renderer is currently drawing. */
   getSelection(): Selection | null
-  /** Scroll by `amount` lines, in the direction the *content* moves. */
+  /** Scrolls by `amount` lines, in the direction the content moves. */
   scrollLines(amount: number): void
-  /** Tell listeners the selection changed. */
+  /** Notifies listeners the selection changed. */
   emitChange(): void
-  /** Live read, as a call: a value snapshotted at construction would be
-   *  wrong after the first resize. */
+  /** A call rather than a snapshot, since it changes on resize. */
   cols(): number
 }
 
 export class SelectionController {
-  /** A drag is in progress. Distinct from "a selection exists": a completed
-   *  selection is not being dragged. */
+  /** A drag is in progress (distinct from a selection existing). */
   private selecting = false
-  /** Where the current drag began. Null after a word/line selection, which is
-   *  a click rather than a drag. */
+  /** Where the current drag began; null after a word/line selection. */
   private start: Point | null = null
-  /** The end a shift-click extends *from*. Survives a completed selection,
-   *  which is what makes shift-click-to-extend work at all. */
+  /** The end a shift-click extends from. Survives a completed selection. */
   private anchor: Point | null = null
   private rectangular = false
 
@@ -87,17 +74,14 @@ export class SelectionController {
     return this.anchor !== null
   }
 
-  /**
-   * A drag released outside the window, or focus lost. Left set, a stuck
-   * "still selecting" leaves the pane in a selection that swallows clicks and
-   * typing until something else clears it.
-   */
+  /** A drag released outside the window, or focus lost. Left set, the pane
+   * would swallow clicks and typing. */
   cancel(): void {
     this.selecting = false
     this.stopDragScroll()
   }
 
-  /** Drops the selection entirely — used by `clear()` and on reset. */
+  /** Drops the selection entirely; used by `clear()` and on reset. */
   reset(): void {
     this.start = null
     this.anchor = null
@@ -111,11 +95,9 @@ export class SelectionController {
     if (!this.host.hasRenderer()) return
     const row = this.host.readRows(pos.y, pos.y)[0]
     if (!row) return
-    // Only the columns a word actually spans get materialized as strings —
-    // the scan stops at the first non-word character either side.
+    // Only the columns a word spans are materialized.
     const at2 = (c: number) => columnText(row, c)
-    // A wide character's spacer holds no text, so the head it belongs to is one
-    // column back.
+    // A wide character's spacer holds no text; its head is one column back.
     let at = pos.x
     if (at2(at) === '' && at > 0) at--
     if (!isWordChar(at2(at))) return
@@ -141,7 +123,7 @@ export class SelectionController {
   private apply(start: Point, end: Point): void {
     if (!this.host.hasRenderer()) return
     this.host.setSelection({ start, end })
-    // Left dangling, a later drag would extend from wherever the last one began.
+    // Otherwise a later drag would extend from where the last one began.
     this.start = null
     // A shift-click after picking a word extends from that word's start.
     this.anchor = start
@@ -151,23 +133,15 @@ export class SelectionController {
   }
 
   /**
-   * Shift extends the existing selection from its anchor rather than starting
-   * a new one — the same gesture every text surface uses. The caller decides
-   * whether shift is available for this (under mouse reporting it is not; see
-   * the engine's mousedown handler).
+   * Shift extends the selection from its anchor. The caller decides whether
+   * shift is available (not under mouse reporting).
    */
   extendFromAnchor(e: MouseEvent): void {
     if (!this.anchor) return
     this.selecting = true
-    // The drag handler tracks from `start`, so extending has to set it too —
-    // to the anchor, since that is the end this gesture holds fixed. Left null
-    // (which is what a double-click leaves behind) the extend was a click and
-    // nothing more: the pointer could be dragged anywhere and the selection
-    // would not follow, and drag-autoscroll never armed.
+    // The drag handler tracks from `start` and rebuilds from `rectangular`, so
+    // both must be set for the extend to follow the pointer.
     this.start = this.anchor
-    // Same reason: the drag handler rebuilds the selection from the field, not
-    // from what was set here, so a shift-alt extend would drop back to a
-    // linewise selection the moment the pointer moved.
     this.rectangular = e.altKey
     this.host.setSelection({
       start: this.anchor,
@@ -177,8 +151,7 @@ export class SelectionController {
     this.host.emitChange()
   }
 
-  /** A fresh drag. Alt is the usual modifier for a column selection — pulling
-   *  one field out of tabular output without the rest of each line. */
+  /** A fresh drag. Alt makes a column selection. */
   begin(e: MouseEvent): void {
     this.selecting = true
     this.start = this.host.coords(e)
@@ -196,10 +169,7 @@ export class SelectionController {
    */
   drag(e: MouseEvent): boolean {
     if (!this.selecting || !this.host.hasRenderer() || !this.start) return false
-    // A pointer that has not left the starting cell is a click, not a drag.
-    // Rendering start==end as a selection is what left a one-cell gray block
-    // behind after clicking — most visibly on the click that reactivates the
-    // window, where the pointer is still moving into the app as it lands.
+    // A pointer still in the starting cell is a click, not a drag.
     const end = this.host.coords(e)
     const moved = end.x !== this.start.x || end.y !== this.start.y
     if (!moved) {
@@ -212,15 +182,9 @@ export class SelectionController {
   }
 
   /**
-   * Drives scrolling while a selection is dragged past the top or bottom of the
-   * pane. Without it a selection can only ever cover what was already on
-   * screen, since there is no way to reach the rest — the drag has nowhere left
-   * to go once the pointer leaves the canvas.
-   *
-   * The pointer stops moving once it is outside, so the scrolling cannot be
-   * driven by mousemove; it runs on a timer for as long as the pointer stays
-   * out, and the selection end is recomputed from the last known position each
-   * tick so the highlight follows the rows coming into view.
+   * Scrolls while a selection is dragged past the top or bottom of the pane.
+   * The pointer stops generating mousemoves outside, so a timer drives it and
+   * the selection end is recomputed from the last position each tick.
    */
   private updateDragScroll(e: MouseEvent): void {
     const canvas = this.host.canvas()
@@ -233,8 +197,7 @@ export class SelectionController {
       this.stopDragScroll()
       return
     }
-    // Further out scrolls faster, which is what makes reaching for something a
-    // long way back feel like one gesture rather than a wait.
+    // Further out scrolls faster.
     this.dragScrollLines =
       Math.sign(out) * Math.min(DRAG_SCROLL_MAX_LINES, 1 + Math.floor(Math.abs(out) / 24))
     this.dragScrollAt = { clientX: e.clientX, clientY: e.clientY }
@@ -248,12 +211,8 @@ export class SelectionController {
       this.stopDragScroll()
       return
     }
-    // `out` is already signed the way `scrollLines` wants it — negative for a
-    // pointer above the pane, and negative is what scrolls back into history
-    // (it raises the viewport offset, the same as a wheel-up's negative
-    // deltaY). Negating it here sent a drag past the top forward instead, so
-    // the one gesture that has to reach into the scrollback was the one that
-    // ran away from it.
+    // `out` is already signed for `scrollLines`: negative (above the pane)
+    // scrolls back into history.
     this.host.scrollLines(this.dragScrollLines)
     this.host.setSelection({
       start: this.start,
@@ -277,21 +236,10 @@ export class SelectionController {
   /**
    * The selected text.
    *
-   * Trailing blanks are the grid padding a row out, not content. The one case
-   * worth keeping them is a line-wise selection whose last row ends part-way
-   * along: there the run of spaces was dragged over deliberately. A selection
-   * reaching the final column did not choose that padding — triple-click is
-   * exactly that, and keeping it pasted a command followed by a screenful of
-   * spaces. A column selection never keeps them either; every one of its rows
-   * ends at the same arbitrary column.
-   *
-   * Rows are joined by a newline only where the buffer actually has one. A line
-   * too long for the pane is stored as several rows joined by a wrap flag, and
-   * putting a `\n` at each of those wrap points is how a copied command came
-   * back as several broken ones when pasted into a narrower pane — the reader
-   * has no way to tell an inserted break from a typed one. A rectangular
-   * selection is the exception: its rows are separate by construction, and the
-   * wrap flags say nothing about the columns it kept.
+   * Trailing blanks are trimmed (they're grid padding) except on a linewise
+   * selection whose last row ends partway, where they were dragged over
+   * deliberately. Rows join with a newline only where the buffer has one, not at
+   * soft wraps; a rectangular selection's rows are always separate.
    */
   text(): string {
     const sel = this.host.getSelection()
@@ -312,25 +260,19 @@ export class SelectionController {
     const cols = this.host.cols()
 
     const rows = this.host.readRows(selStart.y, selEnd.y)
-    // One row past the end, because what matters for row `i` is whether the row
-    // *after* it continues it. Skipped for a column selection, which never
-    // joins.
+    // One row past the end: row `i` joins if the row after it continues it.
     const wrapped = rectangular ? [] : this.host.readWrapFlags(selStart.y, selEnd.y + 1)
     let out = ''
     for (let i = 0; i < rows.length; i++) {
       const abs = selStart.y + i
       const from = rectangular ? rectFrom : abs === selStart.y ? selStart.x : 0
       const to = rectangular ? rectTo : abs === selEnd.y ? selEnd.x : cols - 1
-      // One slice of the row's own text rather than a join of per-cell
-      // strings. `to + 1` is always a valid index into `colStart`, which has
-      // one entry more than there are columns.
+      // One slice of the row's text; `colStart` has one more entry than columns.
       const row = rows[i]
       const lo = Math.max(0, Math.min(from, cols))
       const hi = Math.max(lo, Math.min(to + 1, cols))
       const text = row.text.slice(row.colStart[lo], row.colStart[hi])
-      // A row the next one continues runs on: its tail is mid-line content, not
-      // the grid padding a short row out, so it is neither trimmed nor followed
-      // by a break.
+      // A continued row's tail is mid-line content: not trimmed, no break.
       const continues = wrapped[i + 1] === true && i + 1 < rows.length
       const endsMidRow = abs === selEnd.y && selEnd.x < cols - 1
       const keepTrailing = !rectangular && (endsMidRow || continues)

@@ -1,7 +1,6 @@
-//! Tauri command layer for SSH sessions: owns the in-memory session
-//! registry, pushes PTY output/status through a push `Channel` (same shape
-//! proved out by the Phase 0 echo demo this module replaces), and relays
-//! host-key accept/reject prompts to the frontend via a pending-request map.
+//! Tauri command layer for SSH sessions: connecting (one-off or from a saved
+//! profile), host-key and keyboard-interactive prompts relayed to the frontend
+//! through pending-request maps, and port forwards.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,9 +31,7 @@ use crate::wake::WakeOnLan;
     rename_all_fields = "camelCase"
 )]
 pub enum SshEvent {
-    // PTY output travels on its own raw-bytes Channel<InvokeResponseBody>
-    // instead (see coalesce.rs) — no base64/JSON overhead for what's
-    // already just bytes.
+    // PTY output travels on its own raw-bytes channel (see coalesce.rs).
     Status {
         status: String,
     },
@@ -43,32 +40,27 @@ pub enum SshEvent {
         host: String,
         port: u16,
         fingerprint: String,
-        /// "unknown" (first connection), "changed" (possible MITM or host
-        /// reprovision), or "newKeyType" (a known host offering a key of a
-        /// type we hold no pin for — see `HostKeyStatus::NewKeyType`). The
-        /// frontend must word these very differently.
+        /// "unknown" (first connection), "changed" (possible MITM or reprovision),
+        /// or "newKeyType" (a known host offering a key type we hold no pin for;
+        /// see `HostKeyStatus::NewKeyType`). Worded very differently in the UI.
         status: String,
-        /// For "changed" only: the fingerprint previously on record, so the
-        /// user can compare old vs. new instead of judging the new key blind.
+        /// For "changed": the fingerprint on record, for comparison.
         stored_fingerprint: Option<String>,
-        /// For "newKeyType" only: every key on record for this host, as
-        /// `algorithm fingerprint`. Empty otherwise.
+        /// For "newKeyType": every key on record for this host, as
+        /// `algorithm fingerprint`.
         known_keys: Vec<String>,
     },
-    /// One round of keyboard-interactive auth: the server's own questions,
-    /// relayed for a human to answer. Answered by `ssh_respond_auth_prompt`.
+    /// One round of keyboard-interactive auth, answered by
+    /// `ssh_respond_auth_prompt`.
     AuthPrompt {
         request_id: String,
-        /// The server's title for the exchange, and its free-text preamble.
-        /// Both are routinely empty, and the UI supplies its own heading then.
+        /// The server's title and preamble; often empty.
         name: String,
         instructions: String,
-        /// What to ask, in order. Responses must come back in the same order
-        /// and the same number.
+        /// What to ask, in order; responses come back in the same order.
         fields: Vec<AuthPromptFieldPayload>,
-        /// Which host is asking. A jumped connection authenticates twice, and
-        /// the prompts can look identical — without this the target's password
-        /// gets typed into the bastion.
+        /// Which host is asking. A jumped connection authenticates twice with
+        /// similar prompts, so the UI names the host.
         host: String,
         port: u16,
         is_jump: bool,
@@ -79,25 +71,18 @@ pub enum SshEvent {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthPromptFieldPayload {
-    /// The server's wording, shown verbatim — it's the only thing telling a
-    /// password apart from a one-time code.
+    /// The server's wording, shown verbatim.
     prompt: String,
-    /// False means the server called this a secret; the field is masked.
+    /// False means a secret; the field is masked.
     echo: bool,
 }
 
-/// Prompts waiting on an answer, keyed by request id. Each entry also
-/// remembers the session whose handshake is parked on it, so closing a pane
-/// can answer its own outstanding prompts — without that owner, an unanswered
-/// prompt leaks its entry and parks the connect task on `rx.await` for the
-/// life of the process, where it can't be canceled. `T` is what an answer
-/// looks like for that kind of prompt.
+/// Prompts waiting on an answer, by request id, with the owning session id so
+/// closing a pane can answer (and unpark) its own prompts.
 type PendingMap<T> = TokioMutex<HashMap<String, (String, oneshot::Sender<T>)>>;
 
-/// SSH keeps its two extra maps *alongside* the shared registry rather than
-/// inside it: a host-key prompt and a set of port forwards are SSH's, not
-/// every transport's, and pushing them down would have made the generic
-/// registry carry fields two of its three users don't have.
+/// SSH's prompt and forward maps live alongside the shared registry, since no
+/// other transport has them.
 pub struct SshState {
     sessions: SessionRegistry<SshConnector>,
     /// Outstanding host-key prompts. `false` rejects.
@@ -105,66 +90,39 @@ pub struct SshState {
     /// Outstanding keyboard-interactive prompts. `None` cancels; otherwise one
     /// response per field of the prompt, in order.
     pending_auth: PendingMap<Option<Zeroizing<Vec<String>>>>,
-    /// Keyed by forward id. See [`Forward`] for why the spec is kept beside
-    /// the handle rather than thrown away once the forward is running.
+    /// By forward id; see [`Forward`].
     forwards: TokioMutex<HashMap<String, Forward>>,
-    /// Request and forward ids only. Session ids come from the registry's own
-    /// counter now, so these three no longer share one — they never needed to,
-    /// since the prefix is what makes an id unique.
+    /// Counter for request and forward ids.
     next_id: AtomicU64,
 }
 
-/// One port forward, live or not.
-///
-/// The spec is kept for the life of the forward, not consumed by starting it.
-/// A `ForwardHandle` is bound to the `client::Handle` it was opened on, so
-/// every forward on a session is dead the moment that connection goes — and
-/// auto-reconnect made that a state the app can now sit in for hours rather
-/// than a moment before everything is torn down. Re-establishing one means
-/// asking for it again from scratch, which needs the spec.
-///
-/// Keeping it here also makes this map the single answer to "what is this
-/// session forwarding". The panel used to hold that list in component state,
-/// so closing it lost track of forwards that were still running in here, with
-/// no way left to stop them.
+/// One port forward, live or not. The spec is kept so the forward can be
+/// re-opened after a reconnect (a `ForwardHandle` dies with its connection),
+/// and this map is the single answer to "what is this session forwarding".
 struct Forward {
-    /// The session that opened it, so `ssh_disconnect` can stop every forward
-    /// belonging to a pane that is going away.
+    /// The session that opened it, so `ssh_disconnect` can stop it.
     session_id: String,
     spec: ForwardSpec,
-    /// The port actually bound, once one has been. Not always what `spec`
-    /// asked for: a `bind_port` of 0 means "any", and the frontend produces
-    /// exactly that from an empty port field (`Number(bindPort) || 0`), so this
-    /// is an ordinary input rather than an exotic one. Re-establishing from the
-    /// spec alone would land on a *different* ephemeral port and quietly break
-    /// every client pointed at the old one.
+    /// The port actually bound. Differs from `spec` when it asked for 0 ("any",
+    /// which an empty port field produces); re-opening must reuse this port.
     bound_port: Option<u16>,
-    /// The running forward — kept even while the connection behind it is dead.
-    /// Dropping it without stopping it would leak the local listener and leave
-    /// the port bound with nothing able to reach it again; stopping it would
-    /// free that port for something else to take before the reconnect can
-    /// rebind. Holding it is what makes a successful restore the normal case.
+    /// The running forward, kept even while its connection is dead: dropping it
+    /// leaks the listener, and stopping it would free the port for something
+    /// else before the reconnect can rebind.
     handle: Option<ForwardHandle>,
-    /// Whether the *connection* behind the forward is alive. Deliberately not
-    /// derived from `handle.is_some()`: for the whole of an outage the handle
-    /// is still held (see above) while the `client::Handle` inside it is dead,
-    /// and reading liveness off the handle reported those forwards as working
-    /// — a local listener that accepts and carries nothing, which is the exact
-    /// state this whole change exists to make impossible.
+    /// Whether the connection behind the forward is alive. Not derived from
+    /// `handle`, which is still held during an outage.
     live: bool,
-    /// Set while a re-establish is in flight, so a user-pressed retry and a
-    /// reconnect's restore cannot both work on one entry. Without it the loser
-    /// records its "address already in use" onto an entry the winner has just
-    /// brought up, producing a live forward wearing an error.
+    /// Set while a re-establish is in flight, so a retry and a restore can't
+    /// both work on one entry.
     reestablishing: bool,
-    /// Why it is down, verbatim from whatever refused it — in practice "the
-    /// local port is taken", which is the one failure a user can act on.
+    /// Why it's down, verbatim (usually "the local port is taken").
     error: Option<String>,
 }
 
 impl Forward {
-    /// What to ask for when opening this forward again: the spec, with the
-    /// port it actually got last time substituted in when it asked for "any".
+    /// The spec to re-open with: the bound port substituted when it asked for
+    /// "any".
     fn spec_to_open(&self) -> ForwardSpec {
         let Some(bound) = self.bound_port else {
             return self.spec.clone();
@@ -183,14 +141,8 @@ impl Forward {
     }
 }
 
-/// What the frontend sees of a [`Forward`]. The handle itself obviously can't
-/// cross the IPC boundary, and `active` is the only thing the panel needs from
-/// it: whether this row is carrying traffic or is a corpse with a reason.
-///
-/// `spec` carries the port actually bound rather than the one asked for, so a
-/// forward the user opened on "any port" names the port it is really listening
-/// on. The panel renders the spec verbatim; sending the literal `0` back would
-/// have it draw `:0`, which is not an address anything can connect to.
+/// The frontend's view of a [`Forward`]. `spec` carries the bound port, so a
+/// forward opened on "any" shows its real port rather than `:0`.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ForwardInfo {
@@ -200,15 +152,9 @@ pub struct ForwardInfo {
     error: Option<String>,
 }
 
-/// The event a panel refetches on.
-///
-/// Status events cannot carry this. `Connected` is emitted from inside
-/// `SshConnector::connect` (`wr-ssh/src/session.rs`), which is *before*
-/// `supervise` publishes the session and before the restore hook runs — so a
-/// panel refetching on the status change reads the forward list as it stood
-/// before the reconnect touched it, and nothing afterward tells it to look
-/// again. The same race runs the other way at `Lost`. This fires after each
-/// phase has finished writing, so what the panel reads is settled.
+/// Emitted after forwards change across a reconnect. Status events can't serve:
+/// `Connected` is emitted inside `SshConnector::connect`, before `supervise`
+/// publishes the session and the restore runs (and `Lost` races similarly).
 const FORWARDS_CHANGED_EVENT: &str = "ssh-forwards-changed";
 
 impl Default for SshState {
@@ -226,8 +172,7 @@ impl Default for SshState {
 struct TauriHostKeyVerifier {
     app: AppHandle,
     channel: Channel<SshEvent>,
-    /// The session this prompt belongs to. Known at `start_connection` time,
-    /// carried here so `ssh_disconnect` can find and answer the prompt.
+    /// The session this prompt belongs to, so `ssh_disconnect` can answer it.
     session_id: String,
 }
 
@@ -249,7 +194,7 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
                 ("changed", Some(stored_fingerprint), Vec::new())
             }
             HostKeyStatus::NewKeyType { known } => ("newKeyType", None, known),
-            // verify() is never called when already trusted
+            // verify() isn't called for a trusted key.
             HostKeyStatus::Trusted => ("unknown", None, Vec::new()),
         };
 
@@ -269,16 +214,13 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
             return false;
         }
 
-        // If the frontend/channel goes away without answering, fail closed.
+        // Fail closed if nothing answers.
         rx.await.unwrap_or(false)
     }
 }
 
-/// Relays the server's keyboard-interactive questions to the pane that is
-/// connecting. Same shape as `TauriHostKeyVerifier` above — pending map, one
-/// oneshot per outstanding question, fail closed if the webview goes away —
-/// because it has the same job: park a handshake on a human without blocking
-/// anything else in the app.
+/// Relays the server's keyboard-interactive questions to the connecting pane.
+/// Same shape as `TauriHostKeyVerifier`; fails closed if the webview goes away.
 struct TauriAuthPrompter {
     app: AppHandle,
     channel: Channel<SshEvent>,
@@ -317,14 +259,12 @@ impl AuthPrompter for TauriAuthPrompter {
             })
             .is_err()
         {
-            // Nothing can answer this now, so don't leave the entry behind for
-            // `ssh_disconnect` to trip over.
+            // Nothing can answer; don't leave the entry behind.
             state.pending_auth.lock().await.remove(&request_id);
             return None;
         }
 
-        // A dropped sender (pane closed, channel gone) reads as a cancel,
-        // which abandons the connection rather than sending a blank answer.
+        // A dropped sender is a cancel, which abandons the connection.
         rx.await.ok().flatten()
     }
 }
@@ -346,10 +286,7 @@ fn known_hosts_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-// The argument list is the IPC contract: `#[tauri::command]` deserializes
-// each parameter by name from the invoke payload, so grouping them into a
-// struct to satisfy the lint would change the shape the frontend has to send
-// rather than simplify anything. Allowed here specifically, not workspace-wide.
+// Command arguments are the IPC contract, deserialized by name.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_connect(
@@ -357,8 +294,7 @@ pub async fn ssh_connect(
     mut config: SshConfig,
     jump_profile_id: Option<String>,
     wake: Option<WakeOnLan>,
-    // The global proxy setting, already resolved against this form's own
-    // "use the proxy" box — a one-off connection has no profile to consult.
+    // The global proxy setting, already resolved against the form's checkbox.
     proxy: Option<wr_ssh::ProxyConfig>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
@@ -369,20 +305,16 @@ pub async fn ssh_connect(
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
     config.proxy = proxy;
-    // A manual/one-off connection can still jump through a saved profile —
-    // resolved here, same as ssh_connect_profile, so the jump host's
-    // vault-stored credential never has to cross into the webview.
+    // A one-off connection can still jump through a saved profile, resolved
+    // here so the jump credential never reaches the webview.
     if let Some(jump_id) = &jump_profile_id {
         let jump_profile = profiles::get_profile(&app, jump_id)?;
         let jump_config = build_ssh_config(&jump_profile, &vault_state).await?;
         config.jump = Some(Box::new(jump_config));
     }
 
-    // A one-off connection has no profile to re-resolve from, so the only way
-    // to reconnect it is to keep the config it was given — which for most auth
-    // types means keeping a live credential for the pane's whole lifetime, and
-    // that is exactly what decision 2 rules out. So it reconnects only when the
-    // config holds no secret to retain in the first place.
+    // With no profile to re-resolve from, reconnecting means keeping this
+    // config, so only allow it when the config holds no secret.
     let reconnect = keeps_no_secret(&config).then(|| {
         let config = config.clone();
         move || {
@@ -406,15 +338,8 @@ pub async fn ssh_connect(
     .await
 }
 
-/// Whether a config can be held for the life of a session without holding a
-/// secret with it — the condition for auto-reconnecting a connection that has
-/// no profile behind it.
-///
-/// The agent keeps its own key and signs on request, and a key path with no
-/// passphrase is a filename that is re-read per attempt. Everything else is
-/// either a live secret (`password`, a passphrase, key material) or a question
-/// for a human (`keyboard_interactive`), and a jump hop counts the same way:
-/// the weaker of the two hops decides.
+/// Whether a config can be kept for the session's life without holding a
+/// secret: agent auth, or a key path with no passphrase, on every hop.
 fn keeps_no_secret(config: &SshConfig) -> bool {
     fn hop(auth: &AuthMethod) -> bool {
         match auth {
@@ -425,26 +350,20 @@ fn keeps_no_secret(config: &SshConfig) -> bool {
             | AuthMethod::KeyboardInteractive => false,
         }
     }
-    // `map_or(true, ..)` rather than `is_none_or`, which is newer than the
-    // crate's MSRV.
+    // `is_none_or` postdates the MSRV.
     hop(&config.auth) && config.jump.as_ref().map_or(true, |jump| hop(&jump.auth))
 }
 
-/// Connects using a saved session profile's vault-stored credential,
-/// resolved entirely here — the frontend only ever sends a profile id, and
-/// the decrypted secret never crosses back into the webview.
-// The argument list is the IPC contract: `#[tauri::command]` deserializes
-// each parameter by name from the invoke payload, so grouping them into a
-// struct to satisfy the lint would change the shape the frontend has to send
-// rather than simplify anything. Allowed here specifically, not workspace-wide.
+/// Connects using a saved profile; the credential is resolved here from the
+/// vault and never crosses into the webview.
+// Command arguments are the IPC contract, deserialized by name.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_connect_profile(
     app: AppHandle,
     profile_id: String,
-    // The global proxy setting. Whether this profile opts out of it is decided
-    // in `resolve_profile_config`, where the profile is, rather than in the
-    // webview, which holds only an id for it.
+    // The global proxy setting; the profile's opt-out is applied in
+    // `resolve_profile_config`.
     proxy: Option<wr_ssh::ProxyConfig>,
     channel: Channel<SshEvent>,
     data_channel: Channel<tauri::ipc::InvokeResponseBody>,
@@ -457,8 +376,7 @@ pub async fn ssh_connect_profile(
     let profile = profiles::get_profile(&app, &profile_id)?;
     let config = resolve_profile_config(&app, &profile_id, &vault_state, proxy.clone()).await?;
 
-    // Both hops have to be answerable without a human, since a reconnect
-    // authenticates twice and either one can park on a prompt.
+    // A reconnect authenticates both hops, so both must be unattended.
     let jump_asks = match &profile.jump_profile_id {
         Some(jump_id) => !reconnects_unattended(&profiles::get_profile(&app, jump_id)?),
         None => false,
@@ -470,13 +388,9 @@ pub async fn ssh_connect_profile(
             let app = app.clone();
             let profile_id = profile_id.clone();
             let proxy = proxy.clone();
-            // Every attempt goes back through the vault rather than reusing
-            // what the first connect resolved, so the secret is fetched and
-            // dropped per attempt — and so that editing the profile's host or
-            // port takes effect on the next attempt rather than replaying what
-            // was baked in when the pane opened. The cost is that reconnect
-            // inherits the vault's state: locked means the attempt fails and
-            // the run keeps trying, so unlocking within the window is enough.
+            // Each attempt re-resolves from the vault, so secrets aren't held and
+            // profile edits take effect. A locked vault fails the attempt and the run
+            // keeps trying.
             async move {
                 let vault_state = app.state::<VaultState>();
                 resolve_profile_config(&app, &profile_id, &vault_state, proxy).await
@@ -499,9 +413,8 @@ pub async fn ssh_connect_profile(
     .await
 }
 
-/// A saved profile's full `SshConfig`, jump hop included, resolved from the
-/// vault as of right now. Its own function because auto-reconnect runs it again
-/// per attempt — see the factory in `ssh_connect_profile`.
+/// A saved profile's full `SshConfig` (jump hop included), resolved from the
+/// vault now. Re-run per reconnect attempt.
 async fn resolve_profile_config(
     app: &AppHandle,
     profile_id: &str,
@@ -510,8 +423,7 @@ async fn resolve_profile_config(
 ) -> Result<SshConfig, String> {
     let profile = profiles::get_profile(app, profile_id)?;
     let mut config = build_ssh_config(&profile, vault_state).await?;
-    // Opt-out only, like `auto_reconnect`: a profile can decline the global
-    // proxy (the box on the LAN), but has no proxy of its own to name.
+    // Opt-out only: a profile can decline the global proxy.
     config.proxy = if profile.use_proxy == Some(false) {
         None
     } else {
@@ -526,11 +438,8 @@ async fn resolve_profile_config(
     Ok(config)
 }
 
-/// Resolves `profile`'s own auth from the vault and builds a plain
-/// (non-jumping) `SshConfig` for it — used both for the profile being
-/// connected to and, if it names one, for its jump-host profile. A jump
-/// profile's own `jump_profile_id`, if any, is ignored: only a single hop
-/// is supported.
+/// Builds a single-hop `SshConfig` for `profile` from the vault. Used for the
+/// target and its jump host; a jump profile's own jump is ignored.
 async fn build_ssh_config(
     profile: &profiles::SessionProfile,
     vault_state: &VaultState,
@@ -544,22 +453,14 @@ async fn build_ssh_config(
         jump: None,
         term_type: profile.term_type.clone(),
         keepalive_seconds: profile.keepalive_seconds,
-        // Set by the caller: whether a proxy applies depends on which hop this
-        // becomes, and only the first hop's socket leaves this machine.
+        // Set by the caller: only the first hop goes through the proxy.
         proxy: None,
     })
 }
 
-/// Whether a profile's credential can be produced again with nobody watching.
-///
-/// The table this encodes, and why it is a feature rather than a limitation:
-/// `agent` reconnects because the agent holds the key and signs again, and a
-/// vault-stored password or key reconnects if the vault is still unlocked.
-/// `keyboard_interactive` — "ask each time" — cannot, by construction: there is
-/// nothing stored, and a session whose whole point is that its credential is
-/// never written down must not sprout a password dialog at 3am because a link
-/// flapped. Those panes keep the manual Reconnect button, which is what it is
-/// for.
+/// Whether a profile's credential can be produced again unattended. Everything
+/// but `keyboard_interactive`, which has nothing stored and must never prompt
+/// on its own after a link flaps; those panes keep the manual Reconnect button.
 fn reconnects_unattended(profile: &profiles::SessionProfile) -> bool {
     profile.auth_type != "keyboard_interactive"
 }
@@ -568,11 +469,8 @@ async fn resolve_auth(
     profile: &profiles::SessionProfile,
     vault_state: &VaultState,
 ) -> Result<AuthMethod, String> {
-    // Both handled before the vault is touched, for opposite reasons: the
-    // agent holds its key itself, and keyboard-interactive asks the user at
-    // connect time. Neither has a stored secret to resolve, so neither has any
-    // business being blocked by a locked vault. `authNeedsVault` in
-    // lib/profiles.ts is the frontend's copy of this same judgment.
+    // Agent and keyboard-interactive need no stored secret, so a locked vault
+    // mustn't block them. `authNeedsVault` in lib/profiles.ts mirrors this.
     if profile.auth_type == "agent" {
         return Ok(AuthMethod::Agent);
     }
@@ -604,7 +502,7 @@ async fn resolve_auth(
                     passphrase,
                 })
             }
-            // No path means the key itself lives in the vault instead.
+            // No path: the key itself is in the vault.
             None => match vault.get(&profile.id) {
                 Some(VaultSecret::PrivateKey {
                     key_material,
@@ -623,14 +521,9 @@ async fn resolve_auth(
     }
 }
 
-/// Builds a connector for one attempt, wiring in the prompts that belong to
-/// this session id.
-///
-/// Its own function because auto-reconnect needs to do this again per attempt
-/// (`Connector::connect` consumes the connector), and because the verifier and
-/// prompter must keep pointing at the *same* session id across a reconnect —
-/// that is what lets `ssh_disconnect` answer a prompt a retry is parked on when
-/// the pane closes.
+/// Builds a connector for one attempt. The verifier and prompter keep the same
+/// session id across reconnects so `ssh_disconnect` can answer a prompt a
+/// retry is parked on.
 fn build_connector(
     app: &AppHandle,
     session_id: &str,
@@ -654,9 +547,7 @@ fn build_connector(
         .map_err(|e| e.to_string())
 }
 
-// Ten, three past clippy's threshold, and every one of them is already the
-// shape the two commands above hold — a struct here would exist only to be
-// built twice and destructured once.
+// Mirrors the two commands' arguments.
 #[allow(clippy::too_many_arguments)]
 async fn start_connection<MakeCfg, Fut>(
     app: AppHandle,
@@ -667,12 +558,9 @@ async fn start_connection<MakeCfg, Fut>(
     cols: u16,
     rows: u16,
     state: &State<'_, SshState>,
-    // Produces a *fresh* config for each reconnect attempt, or `None` to opt
-    // this session out of auto-reconnect. Re-resolved rather than retained:
-    // `AuthMethod` is `ZeroizeOnDrop` precisely so the copy cloned out of the
-    // vault at connect time is not the one left in freed heap, and keeping a
-    // resolved credential alive for a long-lived session's whole life to make
-    // retries cheap would quietly reverse that for every pane in the app.
+    // A fresh config for each reconnect attempt, or `None` to opt out.
+    // Re-resolved rather than retained so credentials aren't kept alive for
+    // the session's whole life (`AuthMethod` is `ZeroizeOnDrop` for this).
     reconnect_config: Option<MakeCfg>,
     policy: ReconnectPolicy,
 ) -> Result<String, String>
@@ -682,13 +570,8 @@ where
 {
     let session_id = state.sessions.next_session_id();
 
-    // A magic packet is a broadcast on the local segment; the host behind a
-    // jump is, by definition, not on it. Waking would send the packet
-    // somewhere it can't help and then spend the whole wait probing a host
-    // this machine has no route to — failing a connection that would
-    // otherwise have gone through the jump perfectly well. Waking *through*
-    // the jump is a real thing to want, and a different feature: the packet
-    // has to originate on the far side.
+    // A magic packet only reaches the local segment, never a host behind a
+    // jump. Skip it rather than wait on a host we can't route to.
     let wake = match wake {
         Some(_) if config.jump.is_some() => {
             log::warn!(
@@ -697,9 +580,7 @@ where
             );
             None
         }
-        // Same reasoning: a proxy is only needed when the host is somewhere
-        // this machine cannot reach directly, which is also somewhere a
-        // broadcast from here does not arrive.
+        // Likewise behind a proxy.
         Some(_) if config.proxy.is_some() => {
             log::warn!(
                 "not waking {}: a magic packet can't reach a host behind a proxy",
@@ -710,9 +591,7 @@ where
         wake => wake,
     };
 
-    // Cloned before the config is handed to the connector: the probe needs to
-    // know where it's knocking, and this is the same endpoint the handshake
-    // will use.
+    // The probe knocks on the same endpoint as the handshake.
     let target = wake.map(|wake| (config.host.clone(), config.port, wake));
 
     let connector = build_connector(&app, &session_id, &channel, config, cols, rows)?;
@@ -733,10 +612,8 @@ where
         }
     });
 
-    // Given to every SSH session, not only the ones that reconnect
-    // unattended: a session that cannot come back still has forwards that die
-    // with its connection, and saying so is the whole point of the `Lost`
-    // phase. Cheap for a session that forwards nothing — it finds no entries.
+    // Every SSH session gets this, so forwards are marked dead on `Lost` even
+    // when no reconnect follows.
     let on_transport = {
         let app = app.clone();
         let session_id = session_id.clone();
@@ -789,8 +666,7 @@ pub async fn ssh_resize(
     state: State<'_, SshState>,
     logging: State<'_, crate::logging::LoggingState>,
 ) -> Result<(), String> {
-    // Noted before the resize is applied, so the log reads as "from here on,
-    // this size" -- the output that follows is the size the marker names.
+    // Logged before applying, so output after the marker is at the new size.
     crate::logging::note_resize(&logging, &session_id, cols, rows);
     state.sessions.resize(&session_id, cols, rows).await
 }
@@ -801,13 +677,8 @@ pub async fn ssh_disconnect(
     state: State<'_, SshState>,
     sftp_state: State<'_, crate::sftp::SftpState>,
 ) -> Result<(), String> {
-    // Before the registry entry goes, answer any prompt this session is parked
-    // on — closing a pane instead of answering is the normal way a user
-    // declines an unknown host or an auth challenge, and the handshake is
-    // blocked on `rx.await` until someone resolves it. Each gets the same
-    // answer its own Cancel button gives, so the handshake fails and never
-    // builds a session. Done first so the connect task is already unwinding by
-    // the time the id disappears.
+    // First, answer any prompt this session is parked on (closing a pane is
+    // how users decline), so the handshake fails and unwinds.
     for tx in take_pending(&state.pending_host_key, &session_id).await {
         let _ = tx.send(false);
     }
@@ -817,10 +688,7 @@ pub async fn ssh_disconnect(
 
     state.sessions.disconnect(&session_id).await?;
 
-    // Unlike the SFTP equivalent this can't collapse to a single `retain`:
-    // `stop()` is async and can't run under the lock. So it removes the
-    // entries in one pass and stops them afterward, rather than re-acquiring
-    // the lock once per forward as it used to.
+    // `stop()` is async, so remove under the lock and stop afterward.
     let stale: Vec<_> = {
         let mut forwards = state.forwards.lock().await;
         let ids: Vec<String> = forwards
@@ -837,19 +705,15 @@ pub async fn ssh_disconnect(
     }
 
     crate::sftp::stop_watching_session(&sftp_state, &session_id).await;
-    // A pane that is gone is not coming back for its interrupted transfers, and
-    // nothing else would ever take them out of the map.
+    // Nothing else would remove them.
     crate::sftp::forget_interrupted_transfers(&sftp_state, &session_id).await;
 
     Ok(())
 }
 
-/// Non-loopback binds (`0.0.0.0`, a LAN IP, ...) expose the forward beyond
-/// this machine — for `Dynamic` that's an unauthenticated SOCKS5 proxy onto
-/// whatever the SSH server can reach. Recognized by the frontend to prompt
-/// for confirmation before retrying with `confirmed: true` — checked here
-/// too regardless, since this is the actual enforcement point, not just a
-/// UI speed bump.
+/// Non-loopback binds expose the forward beyond this machine (for `Dynamic`, an
+/// unauthenticated SOCKS5 proxy). The frontend confirms and retries with
+/// `confirmed: true`; enforced here regardless.
 pub const NON_LOOPBACK_BIND_ERROR: &str = "non-loopback bind host requires confirmation";
 
 /// Starts a local, remote, or dynamic (SOCKS5) port forward on an active
@@ -881,12 +745,8 @@ pub async fn ssh_add_forward(
     Ok(forward_id)
 }
 
-/// Starts one forward on whatever connection `session_id` holds right now.
-///
-/// Shared by the three things that open one — adding, retrying, and restoring
-/// after a reconnect — because "right now" is the whole point: a reconnect
-/// leaves the session id pointing at a different `client::Handle`, and every
-/// caller here wants the current one rather than any it may have seen before.
+/// Starts one forward on whatever connection `session_id` holds now (it changes
+/// across reconnects). Used for adding, retrying and restoring.
 async fn open_forward(
     state: &State<'_, SshState>,
     session_id: &str,
@@ -909,20 +769,15 @@ pub async fn ssh_remove_forward(
     state: State<'_, SshState>,
 ) -> Result<(), String> {
     let entry = state.forwards.lock().await.remove(&forward_id);
-    // `None` for a forward that is already down — removing one of those is
-    // dismissing a row, and there is nothing left to stop.
+    // `None` when already down: just dismiss the row.
     if let Some(handle) = entry.and_then(|forward| forward.handle) {
         handle.stop().await.map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-/// Every forward this session has, live or down.
-///
-/// The backend is the authority on this rather than the panel, which is a
-/// change of ownership and not just an added command: the panel is unmounted
-/// while closed, so a list it kept in component state disappeared with it and
-/// left forwards running that nothing could name, let alone stop.
+/// Every forward this session has, live or down. The backend owns this list,
+/// so forwards stay visible after the panel closes.
 #[tauri::command]
 pub async fn ssh_list_forwards(
     session_id: String,
@@ -939,30 +794,20 @@ pub async fn ssh_list_forwards(
             error: forward.error.clone(),
         })
         .collect();
-    // A `HashMap` has no order to offer, and rows that shuffle every time the
-    // panel is opened are hard to read. The counter behind the ids only goes
-    // up, so sorting by it is the order they were added in.
+    // Ids only increase, so this is insertion order.
     list.sort_by_key(|info| forward_sequence(&info.id));
     Ok(list)
 }
 
-/// The number in a `fwd-N` id, for ordering. An id that somehow doesn't parse
-/// sorts first rather than failing the listing — a wrongly ordered row is a
-/// smaller problem than a panel that won't open.
+/// The number in a `fwd-N` id, for ordering; unparseable sorts first.
 fn forward_sequence(id: &str) -> u64 {
     id.rsplit_once('-')
         .and_then(|(_, n)| n.parse().ok())
         .unwrap_or(0)
 }
 
-/// Tries a forward that is down again, against the session's current
-/// connection.
-///
-/// The failure this exists for is a local port taken by something else while
-/// the session was away: nothing the app can resolve on the user's behalf, and
-/// entirely fixable by them — so the answer is to say so and offer the retry,
-/// rather than to keep retrying in the background against a port that is not
-/// coming free on its own.
+/// Retries a forward that's down, against the current connection. Typically
+/// the local port was taken during the outage; the user fixes that and retries.
 #[tauri::command]
 pub async fn ssh_retry_forward(
     forward_id: String,
@@ -978,8 +823,7 @@ async fn reestablish(state: &State<'_, SshState>, forward_id: &str) -> Result<()
         let mut forwards = state.forwards.lock().await;
         match forwards.get_mut(forward_id) {
             None => None,
-            // Claimed under the same lock that reads it, so two callers cannot
-            // both decide they own this entry.
+            // Claimed under the lock, so only one caller owns the entry.
             Some(forward) if forward.reestablishing => {
                 return Err("this forward is already being re-established".to_string())
             }
@@ -994,17 +838,13 @@ async fn reestablish(state: &State<'_, SshState>, forward_id: &str) -> Result<()
         }
     };
     let Some((session_id, spec, old)) = claimed else {
-        // Stopped while this was being scheduled. Nothing to re-open, and
-        // re-inserting it would resurrect a forward the user closed.
+        // Stopped meanwhile; don't resurrect it.
         return Ok(());
     };
 
-    // Stopped *before* rebinding, not after. A local or dynamic forward's
-    // listener owns its port until its accept task actually stops, and that
-    // port is the one about to be asked for again — so stopping afterward, or
-    // not waiting for the stop, fails every restore with "address in use".
-    // Errors are expected and ignored here: a remote forward's cancel is sent
-    // to the connection that just died.
+    // Stop before rebinding: the old listener owns the port until it stops.
+    // Errors are expected (a remote forward's cancel goes to the dead
+    // connection).
     if let Some(old) = old {
         let _ = old.stop().await;
     }
@@ -1013,9 +853,7 @@ async fn reestablish(state: &State<'_, SshState>, forward_id: &str) -> Result<()
 
     let mut forwards = state.forwards.lock().await;
     let Some(entry) = forwards.get_mut(forward_id) else {
-        // Stopped while the handshake ran. The handle just opened has no entry
-        // to belong to, so close it rather than leaking a listener nothing
-        // lists.
+        // Stopped while opening; close the orphaned handle.
         drop(forwards);
         if let Ok(handle) = result {
             let _ = handle.stop().await;
@@ -1039,46 +877,28 @@ async fn reestablish(state: &State<'_, SshState>, forward_id: &str) -> Result<()
     }
 }
 
-/// Marks every forward on `session_id` as down, without touching its handle.
-///
-/// Run when the transport dies. The handle stays because both alternatives are
-/// worse: dropping it leaks the local listener, which keeps the port bound with
-/// nothing able to reach it again, and stopping it frees that port for anything
-/// else on the machine to take during the outage — turning a restore that
-/// would have succeeded into the one failure the user cannot fix from here.
-/// So the listener keeps the port warm and this records the truth beside it.
+/// Marks every forward on `session_id` as down, keeping each handle so its
+/// listener holds the port during the outage (see `Forward::handle`).
 async fn mark_lost(state: &State<'_, SshState>, session_id: &str) {
     let mut forwards = state.forwards.lock().await;
     for forward in forwards.values_mut() {
         if forward.session_id == session_id {
             forward.live = false;
-            // Overwrites nothing worth keeping: an error from an earlier failed
-            // attempt describes a connection that has now gone anyway.
+            // Earlier errors describe a connection that's gone anyway.
             forward.error = Some("connection lost".to_string());
         }
     }
 }
 
-/// What this session's port forwards do when its connection dies and when one
-/// replaces it. Run from the registry's `on_transport` hook.
-///
-/// Without it a reconnect leaves every forward bound to a `client::Handle` that
-/// is gone: the local listener still accepts, the panel still lists it, and
-/// nothing that connects through it goes anywhere. That was invisible before
-/// auto-reconnect, because a dropped session was on its way to being torn down
-/// with its forwards; now the pane comes back and they do not.
-///
-/// Both phases end by emitting [`FORWARDS_CHANGED_EVENT`], which is the only
-/// thing that makes an open panel accurate — see that constant for why the
-/// status events it used to refetch on always arrive too early.
+/// Run from the registry's `on_transport` hook: marks forwards dead and
+/// interrupts transfers on `Lost`, restores both on `Restored`, then emits
+/// [`FORWARDS_CHANGED_EVENT`].
 pub(crate) async fn on_transport_phase(app: &AppHandle, session_id: &str, phase: TransportPhase) {
     let state = app.state::<SshState>();
     match phase {
         TransportPhase::Lost => {
             mark_lost(&state, session_id).await;
-            // Before the forwards are touched, and deliberately: this races the
-            // transfer's own task noticing the dead channel and tearing its
-            // entry down, so the sooner it runs the more it catches.
+            // Races the transfer's own teardown, so run it promptly.
             crate::sftp::interrupt_session_transfers(app, session_id).await;
         }
         TransportPhase::Restored => {
@@ -1090,12 +910,8 @@ pub(crate) async fn on_transport_phase(app: &AppHandle, session_id: &str, phase:
     let _ = app.emit(FORWARDS_CHANGED_EVENT, session_id.to_string());
 }
 
-/// Re-establishes every forward on `session_id` against the connection that
-/// just came back.
-///
-/// One at a time rather than concurrently. These are a handful of binds, the
-/// failures are per-forward and want to be reported as such, and doing them in
-/// order means the panel's rows settle in the order they are listed in.
+/// Re-establishes every forward on `session_id` against the new connection,
+/// one at a time in list order.
 async fn restore_forwards(state: &State<'_, SshState>, session_id: &str) {
     let ids: Vec<String> = {
         let forwards = state.forwards.lock().await;
@@ -1109,9 +925,7 @@ async fn restore_forwards(state: &State<'_, SshState>, session_id: &str) {
     };
     for id in ids {
         if let Err(message) = reestablish(state, &id).await {
-            // Reported on the entry, which is where the panel reads it. Logged
-            // as well because the panel may not be open: a forward that did not
-            // come back is worth being able to find afterward.
+            // Recorded on the entry; also logged since the panel may be closed.
             log::warn!("could not re-establish forward {id} after reconnect: {message}");
         }
     }
@@ -1129,15 +943,10 @@ pub async fn ssh_respond_host_key(
     Ok(())
 }
 
-/// Answers one round of keyboard-interactive auth. `responses` must hold one
-/// entry per field of the prompt, in order; `None` cancels, which abandons the
-/// connection rather than sending blanks the server would count as a failed
-/// attempt.
-///
-/// The responses are live secrets — a password, a one-time code — so they are
-/// wrapped for zeroizing the moment they arrive and never logged. Nothing here
-/// persists them: saving an interactive answer would mean saving a TOTP code,
-/// which is worthless by the next connection.
+/// Answers one round of keyboard-interactive auth: one response per field, in
+/// order. `None` cancels (abandoning the connection rather than sending blanks
+/// that count as a failure). Responses are zeroized and never logged or
+/// stored.
 #[tauri::command]
 pub async fn ssh_respond_auth_prompt(
     request_id: String,
@@ -1151,12 +960,8 @@ pub async fn ssh_respond_auth_prompt(
     Ok(())
 }
 
-/// Removes every prompt `session_id` owns from one pending map, returning the
-/// senders so they can be answered outside the lock.
-///
-/// Generic over the answer type because host-key and auth prompts differ only
-/// in what a cancel *is* (`false` vs `None`) — and an unanswered entry in
-/// either one parks its handshake on `rx.await` for the life of the process.
+/// Removes every prompt `session_id` owns from a pending map, returning the
+/// senders to answer outside the lock.
 async fn take_pending<T>(map: &PendingMap<T>, session_id: &str) -> Vec<oneshot::Sender<T>> {
     let mut pending = map.lock().await;
     let ids: Vec<String> = pending
@@ -1169,12 +974,8 @@ async fn take_pending<T>(map: &PendingMap<T>, session_id: &str) -> Vec<oneshot::
         .collect()
 }
 
-/// Every host key this app has been told to trust.
-///
-/// Loaded from the file on each call rather than held in state. The store is
-/// small, it is read once when a dialog opens, and every connector already
-/// keeps its own copy — adding a fourth long-lived one that could drift is the
-/// opposite of what a trust anchor needs.
+/// Every trusted host key, loaded from the file on each call so there's no
+/// long-lived copy to drift.
 #[tauri::command]
 pub async fn ssh_list_known_hosts(app: AppHandle) -> Result<Vec<wr_ssh::KnownHostEntry>, String> {
     let path = known_hosts_path(&app)?;
@@ -1183,11 +984,8 @@ pub async fn ssh_list_known_hosts(app: AppHandle) -> Result<Vec<wr_ssh::KnownHos
         .list())
 }
 
-/// Forgets one stored host key, identified by the exact line it is stored as.
-///
-/// By the line rather than by fingerprint because an unparseable entry has no
-/// fingerprint — and those are the ones that most need removing, since they pin
-/// a host to "the key changed" until someone edits the file by hand.
+/// Forgets one stored host key, by its exact stored line (an unparseable entry
+/// has no fingerprint, and those most need removing).
 #[tauri::command]
 pub async fn ssh_forget_host_key(
     app: AppHandle,
@@ -1212,11 +1010,8 @@ pub async fn ssh_forget_host(app: AppHandle, host: String, port: u16) -> Result<
         .map_err(|e| e.to_string())
 }
 
-/// `pub(crate)` so the `sftp` module can look up the SSH session an SFTP
-/// operation piggybacks on, without exposing `SshState`'s session map itself.
-/// Kept as a free function because `sftp.rs` reaches for a live SSH session
-/// to open its subsystem channel on, and shouldn't have to know that the
-/// registry is where sessions live.
+/// Looks up the SSH session an SFTP operation piggybacks on, without exposing
+/// the registry.
 pub(crate) async fn lookup(
     state: &State<'_, SshState>,
     session_id: &str,
@@ -1240,14 +1035,8 @@ mod tests {
         }
     }
 
-    /// A forward opened on "any port" must be re-opened on the port it actually
-    /// got, not on 0 again.
-    ///
-    /// This is not an exotic input: `ForwardPanel` builds `bindPort` as
-    /// `Number(bindPort) || 0`, so an empty port field produces exactly this.
-    /// Replaying the spec verbatim would rebind somewhere else on every
-    /// reconnect, breaking every client pointed at the old number while the row
-    /// still claimed the forward was healthy.
+    /// A forward opened on "any port" re-opens on the port it got. `ForwardPanel`
+    /// sends 0 for an empty port field, so this is common.
     #[test]
     fn a_forward_bound_to_any_port_is_reopened_on_the_port_it_got() {
         let f = forward(
@@ -1268,9 +1057,7 @@ mod tests {
         ));
     }
 
-    /// An explicitly chosen port is never rewritten, even though the bound port
-    /// is recorded for it too — the user asked for that number and a reconnect
-    /// that quietly moved it would be the same bug in the other direction.
+    /// An explicit port is never rewritten.
     #[test]
     fn an_explicit_port_is_left_alone() {
         let f = forward(
@@ -1289,8 +1076,7 @@ mod tests {
         ));
     }
 
-    /// Nothing bound yet — an entry that has never come up has no better answer
-    /// than the one it was asked for.
+    /// Never bound: use the spec as written.
     #[test]
     fn without_a_bound_port_the_spec_is_used_as_written() {
         let f = forward(
@@ -1308,8 +1094,7 @@ mod tests {
         ));
     }
 
-    /// Ids share one counter with request ids, so the sequence numbers a
-    /// session's forwards carry are not contiguous — only increasing.
+    /// Forward ids share a counter with request ids: increasing, not contiguous.
     #[test]
     fn forwards_are_ordered_by_the_counter_behind_their_ids() {
         let mut ids = vec![

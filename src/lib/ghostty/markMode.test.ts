@@ -139,8 +139,8 @@ describe('moving the cursor', () => {
     press('ArrowUp')
     press('ArrowUp')
     press('ArrowUp', { shiftKey: true })
-    // The regression this guards: anchoring on entry would have selected from
-    // row 5 — everything the unshifted moves walked past.
+    // Anchoring on entry would select from row 5, everything the unshifted moves
+    // walked past.
     expect(painted()).toEqual({ start: { x: 0, y: 3 }, end: { x: 0, y: 2 } })
   })
 

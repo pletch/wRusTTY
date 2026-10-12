@@ -1,13 +1,8 @@
 /**
- * Frontend half of the recent-command store — see
- * src-tauri/src/command_history.rs and docs/AUTOCOMPLETE_PLAN.md.
- *
- * Thin on purpose. The ranking, the redaction and the frecency all live in
- * Rust, and this file deliberately never holds a host's history: the only
- * strings that cross into the webview are the handful about to be shown, plus
- * whatever the Settings list asks for when the user opens it. That is the
- * whole reason `suggest` is a round trip rather than a local filter over a
- * list fetched once.
+ * Frontend half of the recent-command store (src-tauri/src/command_history.rs,
+ * docs/AUTOCOMPLETE_PLAN.md). Ranking, redaction and frecency live in Rust, and
+ * the webview never holds a host's history: only the few strings about to be
+ * shown cross over, which is why `suggest` is a round trip.
  */
 
 import { invoke } from '@tauri-apps/api/core'
@@ -20,10 +15,9 @@ export type HistorySource = 'harvest' | 'integration' | 'screen'
 
 export interface HistoryEntry {
   command: string
-  /** Distinct sightings — one entry per command, never a log of runs. */
+  /** Distinct sightings; one entry per command, not a log of runs. */
   count: number
-  /** Times it was accepted from a suggestion, which the ranking weighs above
-   * a plain sighting. */
+  /** Times accepted from a suggestion; weighted above a sighting. */
   accepted: number
   /** Epoch ms of the most recent sighting. */
   lastUsed: number
@@ -35,20 +29,14 @@ export interface HistoryEntry {
 export interface HostHistory {
   host: string
   entries: HistoryEntry[]
-  /** Commands never to suggest on this host, newest first. Forgetting one
-   * command puts it here; `allowCommandHistory` takes it back off. */
+  /** Commands never to suggest on this host, newest first. */
   blocked: string[]
 }
 
 /**
- * The key a session's history is filed under.
- *
- * Opaque to the backend, which only ever compares it — so the scheme can
- * change here alone. Includes the username because "what tim runs on this box"
- * and "what root runs on this box" are different histories and suggesting one
- * at the other's prompt would be both wrong and, for root, mildly dangerous.
- * Port is included for the same reason a port is part of a known-hosts entry:
- * two ports on one address can be two different machines behind a NAT.
+ * The key a session's history is filed under. Opaque to the backend, which
+ * only compares it. Includes the username (root's history shouldn't be offered
+ * at tim's prompt) and the port (two ports can be two machines behind a NAT).
  */
 export function historyKey(opts: {
   protocol: string
@@ -64,26 +52,14 @@ export function historyKey(opts: {
 /**
  * The key for a live pane, from the connection it was opened with.
  *
- * A saved session files under its **profile id** rather than its host. That is
- * deliberate, and it is the one place this scheme is not simply "the host":
- * a profile is the thing the user thinks of as "that machine", and it survives
- * the host being renamed, re-addressed or moved to a new port — all of which
- * would otherwise silently fork the history in two. The cost is that the same
- * box reached ad-hoc through the connect dialog keeps a separate history from
- * the saved session pointing at it. That is the right way round: merging them
- * would mean trusting a typed hostname to mean the same machine as a stored
- * one, and it is far better to under-share a history than to offer one host's
- * commands at another's prompt.
+ * A saved session files under its profile id rather than its host, so the
+ * history survives the host being renamed, re-addressed or moved. The same box
+ * reached ad hoc keeps a separate history; under-sharing is the safe direction.
  *
- * **`savedProfile` is the saved session this pane was opened from**, if any.
- * A saved session does not always connect as `sshProfile`: when its stored
- * credential cannot be used (vault locked, nothing saved) the pane falls back
- * to the connect form, which connects as plain `ssh` with the host typed out.
- * Keyed by address, that run's history split off from the session's own, and
- * Settings showed one machine twice. So a plain source files under the profile
- * after all — but only while it still points where the *stored* profile does.
- * Compared against the saved copy rather than the form, so editing the host in
- * the form before connecting is a different machine and gets its own history.
+ * `savedProfile` is the saved session this pane was opened from, if any. When
+ * its credential can't be used, the pane connects as plain `ssh`; that still
+ * files under the profile while it points where the stored profile does
+ * (editing the host in the form makes it a different machine).
  */
 export function historyKeyForSource(
   source: ConnectionSource,
@@ -108,40 +84,29 @@ export function historyKeyForSource(
       })
     case 'serial':
       return historyKey({ protocol: 'serial', host: source.config.portName })
-    // Both profile forms carry only an id — for sshProfile because the host
-    // lives in the saved profile, and for serialProfile because the COM port
-    // is resolved backend-side at connect time and deliberately isn't here.
+    // Both profile forms carry only an id; the host or COM port is resolved
+    // backend-side.
     case 'sshProfile':
       return `profile://${source.profileId}`
     case 'serialProfile':
       return `profile://${source.profileId}`
-    // Null means "this pane records nothing", which is decision 2 of
-    // docs/LOCAL_SHELL_PLAN.md applied where the source is chosen rather than
-    // filtered afterward.
-    //
-    // The split is by **shell family, not by transport**. PowerShell and CMD
-    // are an autocomplete non-goal (docs/TODO.md:406) because their prompt and
-    // echo model defeats the screen-scraping path, and because PSReadLine's
-    // Predictive IntelliSense already does the job better from inside the
-    // shell. WSL and Git Bash are ordinary bash hosts and record like any
-    // other — the rule was never about where the shell runs.
+    // Null means "records nothing" (decision 2 of docs/LOCAL_SHELL_PLAN.md). The
+    // split is by shell family: PowerShell and CMD are an autocomplete non-goal
+    // (their echo model defeats screen scraping, and PSReadLine already predicts),
+    // while WSL and Git Bash record like any bash host.
     case 'local':
       return recordsHistory(shellFamily(source.config))
         ? `local://${shellIdFor(source.config)}`
         : null
-    // A saved local shell files under its profile id, like every other saved
-    // session, for the reason above: the profile is the thing the user means
-    // by "that shell", and it survives the path being re-resolved under it.
-    // Decision 6 of docs/ELEVATED_TABS_PLAN.md: what an administrator typed
-    // must not come back as a suggestion in an ordinary tab.
+    // Decision 6 of docs/ELEVATED_TABS_PLAN.md: what an administrator typed must
+    // not come back as a suggestion in an ordinary tab.
     case 'elevated':
       return null
+    // A saved local shell files under its profile id, like other saved sessions.
     case 'localProfile': {
       const family = familyForShellId(source.shellId)
-      // No id at all means a hand-typed path whose family cannot be known from
-      // here. Declining to record is the safe direction — the cost is a
-      // missing convenience, where the cost of guessing wrong is a history
-      // full of half-redrawn PowerShell edit buffers.
+      // No id means a hand-typed path of unknown family; declining to record beats
+      // a history full of half-redrawn PowerShell buffers.
       if (!family || !recordsHistory(family)) return null
       return `profile://${source.profileId}`
     }
@@ -170,17 +135,9 @@ function pointsAtProfile(source: ConnectionSource, profile: SessionProfile): boo
 }
 
 /**
- * How a history key reads in Settings: what the user calls it, and where it
- * points.
- *
- * Display only — the key itself stays the profile id, for the reasons on
- * `historyKeyForSource`. Looked up at render time rather than stored beside the
- * history, so a renamed session shows its new name without the store having to
- * be told, and the store never holds a copy of the saved-session list.
- *
- * A `profile://` key whose session has since been deleted says so plainly:
- * its history outlives it on purpose (deleting a session is not "forget what
- * I ran there"), and the id is no use to anyone as a heading.
+ * How a history key reads in Settings: a title and where it points. Looked up
+ * at render time so a renamed session shows its new name. A `profile://` key
+ * whose session was deleted says so; its history outlives it on purpose.
  */
 export function describeHistoryHost(
   key: string,
@@ -201,10 +158,9 @@ export function describeHistoryHost(
   return { title: rest, detail: scheme }
 }
 
-/** Fold a command into a host's history. Resolves false when the backend
- * refused it — an empty line, or one that looked like it carried a
- * credential. Not an error: refusing is the expected outcome for a good
- * fraction of what gets offered. */
+/** Folds a command into a host's history. Resolves false when the backend
+ * refused it (empty, or apparently carrying a credential); that's expected,
+ * not an error. */
 export function recordCommand(opts: {
   host: string
   command: string
@@ -219,8 +175,8 @@ export function recordCommand(opts: {
   })
 }
 
-/** Best completions of `typed`, best first, or empty when there is nothing
- * worth offering. */
+/** Best completions of `typed`, best first; empty when nothing is worth
+ * offering. */
 export function suggestCommands(opts: {
   host: string
   typed: string
@@ -235,8 +191,7 @@ export function suggestCommands(opts: {
   })
 }
 
-/** Report that a suggestion was taken, which the ranking weighs above a
- * sighting — it is the only signal that says the suggestion was *right*. */
+/** Reports that a suggestion was taken: the only signal it was right. */
 export function recordAccepted(host: string, command: string): Promise<void> {
   return invoke('command_history_accepted', { host, command })
 }
@@ -246,10 +201,9 @@ export function listCommandHistory(): Promise<HostHistory[]> {
   return invoke<HostHistory[]>('command_history_list')
 }
 
-/** Drop one command, one host, or everything: `command` narrows `host`, and
- * omitting `host` clears the lot. One command is also blocked, so it is not
- * recorded, imported or suggested again until it is allowed; a host or
- * everything takes its blocks with it. */
+/** Drops one command, one host, or everything (`command` narrows `host`;
+ * omitting `host` clears all). A single command is also blocked until allowed;
+ * clearing a host or everything takes its blocks too. */
 export function forgetCommandHistory(opts?: {
   host?: string
   command?: string
@@ -260,38 +214,28 @@ export function forgetCommandHistory(opts?: {
   })
 }
 
-/** Lift a never-suggest block. Restores nothing: the command is learned again
- * the next time it is run or imported. */
+/** Lifts a never-suggest block. Restores nothing; the command is learned again
+ * when next run or imported. */
 export function allowCommandHistory(host: string, command: string): Promise<void> {
   return invoke('command_history_allow', { host, command })
 }
 
 /**
- * Import a host's own shell history over one `exec` channel, once.
+ * Imports a host's own shell history over one `exec` channel (SSH only).
  *
- * SSH only — it needs a second channel on the live connection, which telnet
- * and serial do not have.
+ * Only call this when autocomplete is on, the outer gate this side owns. The
+ * inner gate (the harvest setting and the profile's override) is resolved in
+ * Rust before any channel opens, so a refused import never reads the file.
  *
- * **Only call this when autocomplete itself is on.** That is the outer of the
- * two gates and the only one this side owns; the inner one — the harvest's own
- * setting, and the saved session's override of it — is resolved in Rust, where
- * the profile lives, and is checked before any channel is opened. Passing
- * `importGlobally: false` with no override therefore does nothing at all,
- * rather than doing it and discarding the answer: a read that happens and is
- * then thrown away has still read the file and still reached the host's logs.
- *
- * Resolves the number of commands newly added. Zero covers every ordinary way
- * this comes to nothing — the setting said no, the host has no readable
- * history, a restricted shell refused, an appliance ignored the command, or
- * everything in the file was already known.
+ * Resolves the number of commands newly added; zero covers every ordinary way
+ * this comes to nothing.
  */
 export function harvestRemoteHistory(opts: {
   sessionId: string
   host: string
   /** The global `autocompleteImportRemoteHistory` setting. */
   importGlobally: boolean
-  /** The saved session this pane was opened from, when it came from one — the
-   * backend reads its own override off it. */
+  /** The saved session this pane came from; the backend reads its override. */
   profileId?: string | null
 }): Promise<number> {
   return invoke<number>('command_history_harvest', {
@@ -302,8 +246,7 @@ export function harvestRemoteHistory(opts: {
   })
 }
 
-/** Drop everything a Tier 1 harvest imported, leaving what was witnessed —
- * the other half of the harvest's separate consent. */
+/** Drops everything a Tier 1 harvest imported, keeping what was witnessed. */
 export function forgetImportedHistory(): Promise<void> {
   return invoke('command_history_forget_imported')
 }

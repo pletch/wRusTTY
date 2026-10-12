@@ -18,108 +18,69 @@ export interface GlyphRect {
   u1: number
   v1: number
   /**
-   * True when the face drew this glyph in its own colors — an emoji from a
-   * COLR or CBDT font — and it therefore lives in `colorTexture` rather than
-   * in the coverage atlas. The two share one packing, so the UVs above address
-   * either; this only says which sampler to read them with.
+   * True when the face drew the glyph in its own colors (COLR/CBDT emoji), so it
+   * lives in `colorTexture`. Both atlases share the UV scheme; this says which
+   * sampler to use.
    */
   color: boolean
 }
 
 /**
- * Style bits a glyph is rasterized with. Weight and slant change the face, and
- * the two lines are baked into the raster rather than drawn as extra geometry —
- * an underline is a rectangle inside the cell either way, and baking it keeps
- * the renderer at one quad per cell.
+ * Style bits a glyph is rasterized with. Lines are baked into the raster so the
+ * renderer stays at one quad per cell.
  */
 export const GLYPH_BOLD = 1 << 0
 export const GLYPH_ITALIC = 1 << 1
 export const GLYPH_UNDERLINE = 1 << 2
 export const GLYPH_STRIKETHROUGH = 1 << 3
 /**
- * Rasterize into a slot two cells wide. East-Asian characters and most emoji
- * are drawn across two columns; squeezing one into a single-cell slot is what
- * made them come out narrow and overlapped.
+ * Rasterize into a two-cell slot, for East Asian characters and most emoji.
  */
 export const GLYPH_WIDE = 1 << 4
 export const GLYPH_OVERLINE = 1 << 5
 /**
- * Which underline to draw, in bits 6-8, using the `UNDERLINE_*` values from
- * wasmBindings. `GLYPH_UNDERLINE` above still means "underlined at all" and is
- * what gates the drawing; this only selects the shape, so a caller that never
- * sets it gets the plain rule it always got.
+ * Which underline shape to draw, in bits 6-8 (`UNDERLINE_*` from wasmBindings).
+ * `GLYPH_UNDERLINE` still gates drawing; zero here is the plain rule.
  */
 export const GLYPH_UL_SHIFT = 6
 export const GLYPH_UL_MASK = 0x07 << GLYPH_UL_SHIFT
 export const GLYPH_STYLE_COUNT = 1 << 9
 
 /**
- * Longest run `getRunGlyph` will shape, in cells.
- *
- * Five, because the arrows are what stop at three: `<==>`, `<-->` and `!===`
- * are four, `<--->`, `=====` and `<===>` are five, and a font carrying them
- * could not previously be asked to draw one — the cells were never handed to
- * `fillText` together. Past five the faces mostly stop enumerating and start
- * repeating, which is not something a fixed cap can follow anyway.
- *
- * The extra length costs nothing on its own: what the run cache may hold is
- * bounded in cells below, so a longer maximum buys longer ligatures out of
- * the same atlas rather than more atlas.
+ * Longest run `getRunGlyph` will shape, in cells. Five covers arrow ligatures
+ * like `<===>`; longer ones mostly repeat.
  */
 export const MAX_RUN_CELLS = 5
 
 /**
- * How much atlas the run cache may hold, in cells.
- *
- * In cells rather than runs, which is what it used to be, because runs are
- * not all one size and the thing being protected is the atlas: at 512 runs of
- * up to three, the old cap already reserved 1536 cells of a 1024x1024 atlas
- * that holds 1920 of them at an ordinary 16x34 device cell. Counting runs
- * meant the reservation moved every time the maximum length did — raising it
- * to five would have let this cache alone overflow the atlas.
- *
- * The number is the old worst case exactly, so nothing about the footprint
- * changes; only the way it is spent. Past it `getRunGlyph` declines and the
- * caller falls back to drawing the cells one at a time, which is what it did
- * before runs existed.
+ * How much atlas the run cache may hold, in cells (not runs, so changing
+ * `MAX_RUN_CELLS` doesn't change the reservation). Past it `getRunGlyph`
+ * declines and cells draw one at a time.
  */
 const RUN_CACHE_CELL_BUDGET = 1536
 
 /**
- * How far the atlas may double. 4096x4096 of R8 is 16MB, and it is per pane —
- * each pane has its own WebGL context, so the texture genuinely cannot be
- * shared with another one. Growth is demand-driven, so this is a ceiling on
- * the pathological case rather than a cost anything pays up front.
+ * How far the atlas may double. 4096x4096 R8 is 16MB per pane (each pane has
+ * its own context); growth is on demand.
  */
 const MAX_ATLAS_SIZE = 4096
 
 /**
- * What the color companion starts at, against the coverage atlas's 1024.
- *
- * Small because color glyphs are few. A pane is thousands of distinct
- * characters and a handful of emoji, and at four bytes a texel the companion
- * is the expensive one per slot -- so it starts at a quarter of the area and
- * doubles from there if that is ever wrong.
+ * The color atlas's starting size (vs 1024 for coverage): color glyphs are few
+ * and cost four bytes a texel.
  */
 const COLOR_ATLAS_START = 512
 
 /**
- * The hollow rectangle an unfocused pane draws instead of a filled block. It is
- * a glyph rather than geometry for the same reason the underline is: the
- * renderer draws exactly one quad per cell, and a shape that fits inside a cell
- * can just be part of what that cell samples.
- *
- * Given a codepoint no text will ever use, so it cannot collide with a real
- * glyph in the cache. (A Unicode noncharacter — permanently unassigned.)
+ * The hollow rectangle an unfocused pane's cursor draws, as a cached glyph.
+ * Uses a Unicode noncharacter so it can't collide with real text.
  */
 export const GLYPH_CURSOR_OUTLINE = 0xfdd0
 const CURSOR_OUTLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_OUTLINE)
 
 /**
- * The non-block DECSCUSR shapes, drawn the same way as the outline above: as
- * cached glyphs substituted for the cell's own, so a shaped cursor costs no
- * extra geometry and no second draw call. A block cursor stays a recolor of
- * the cell, which is what it is.
+ * The bar and underline DECSCUSR cursor shapes, as cached glyphs on
+ * noncharacters like the outline.
  */
 export const GLYPH_CURSOR_BAR = 0xfdd1
 export const GLYPH_CURSOR_UNDERLINE = 0xfdd2
@@ -128,40 +89,26 @@ const CURSOR_UNDERLINE_TEXT = String.fromCodePoint(GLYPH_CURSOR_UNDERLINE)
 
 export class GlyphAtlas {
   /**
-   * One slot's worth of drawing surface, not a canvas the size of the atlas.
-   *
-   * Every glyph is rasterized at the origin here and read straight back out,
-   * so the only thing this has to be big enough for is the widest single slot
-   * -- a three-cell run. What the atlas *holds* lives in `mirror` below, one
-   * byte a texel instead of a canvas's four.
+   * A scratch surface one slot wide (the widest is a run): each glyph is drawn
+   * at the origin and read back. The atlas contents live in `mirror`.
    */
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
   /**
-   * The coverage the texture holds, kept CPU-side because growing means
-   * reallocating the texture and the old texels have to come from somewhere.
-   *
-   * This used to be the canvas itself, which made it RGBA: four bytes a texel
-   * to mirror a single-channel texture, and 64MB of it once a pane of CJK had
-   * grown the atlas to 4096. Coverage is all that is ever read back out of it,
-   * so coverage is all it stores.
+   * CPU copy of the coverage texture (one byte a texel), needed to reallocate
+   * on growth.
    */
   private mirror: Uint8Array
   private gl: WebGL2RenderingContext
   public texture: WebGLTexture
-  /** The color companion; see the constructor. A 1x1 placeholder until the
-   *  first color glyph, then a space of its own -- see `COLOR_ATLAS_START`. */
+  /** The color atlas; a 1x1 placeholder until the first color glyph. */
   public colorTexture: WebGLTexture
   private colorWidth = 0
   private colorHeight = 0
   private colorX = 0
   private colorY = 0
   /**
-   * The companion's CPU mirror, needed for the same reason the coverage atlas
-   * keeps its canvas: growing means reallocating the texture, and the old
-   * texels have to come from somewhere. A flat array rather than a second
-   * canvas, because nothing ever *draws* here -- the pixels arrive already
-   * rasterized, read back from the canvas the trial draw happened on.
+   * CPU copy of the color atlas, for growth.
    */
   private colorMirror: Uint8Array | null = null
   /** Keyed by `codepoint * GLYPH_STYLE_COUNT + style`. */
@@ -170,7 +117,7 @@ export class GlyphAtlas {
   private clusterCache = new Map<string, GlyphRect>()
   /** Shaped runs, keyed by `style:cells:text`. See `getRunGlyph`. */
   private runCache = new Map<string, GlyphRect>()
-  /** Cells of atlas those runs occupy between them; see the budget above. */
+  /** Atlas cells those runs occupy; see the budget above. */
   private runCellsHeld = 0
 
   private atlasWidth = 1024
@@ -197,10 +144,8 @@ export class GlyphAtlas {
     fontSize: number,
     cellWidth: number,
     cellHeight: number,
-    /** How much of `cellWidth` is letter spacing rather than the face's own
-     *  advance, in the same device pixels. Passed in rather than derived from
-     *  the selection because the selection carries CSS pixels and the atlas
-     *  works entirely in device ones. */
+    /** How much of `cellWidth` is letter spacing, in device pixels (the
+     *  selection's value is in CSS pixels). */
     letterSpacing = 0
   ) {
     this.gl = gl
@@ -208,14 +153,10 @@ export class GlyphAtlas {
     this.cellHeight = cellHeight
     this.fonts = fonts
     this.fontSize = fontSize
-    // Half of it either side, so widened cells put the glyph in the middle of
-    // the space rather than against its left edge. Rounded down: an odd pixel
-    // is better spent on the right, where the next cell's own inset follows
-    // it, than on the left where it would shift the column.
+    // Center the glyph in a widened cell; an odd pixel goes on the right.
     this.inset = Math.max(0, Math.floor(letterSpacing / 2))
 
-    // Wide enough for the widest slot anything asks for -- a shaped run, which
-    // is longer than the two cells a wide glyph takes -- and one cell tall.
+    // Wide enough for the widest slot (a run), one cell tall.
     this.canvas = document.createElement('canvas')
     this.canvas.width = Math.max(2, MAX_RUN_CELLS) * cellWidth
     this.canvas.height = cellHeight
@@ -225,35 +166,22 @@ export class GlyphAtlas {
     this.ctx.font = this.fontFor(0)
     this.ctx.fillStyle = 'white'
 
-    // 'top' anchors to the font's ascent, which carries whatever internal
-    // leading the face declares — so the ink lands wherever that happens to
-    // put it, biased up or down by an amount that varies per font. The cursor
-    // is drawn as the whole cell, so any such bias reads as the block sitting
-    // off-center against the character it covers.
-    //
-    // Placing the baseline from measured metrics instead centers the ascent +
-    // descent box in the cell, which is where a block cursor expects to find
-    // the glyph. Older engines omit fontBoundingBox*, hence the fallback.
+    // Place the baseline from measured metrics so the ascent+descent box is
+    // centered in the cell (where a block cursor expects the glyph); 'top'
+    // would bias by the face's internal leading. Fallback for engines without
+    // fontBoundingBox*.
     this.ctx.textBaseline = 'alphabetic'
     const m = this.ctx.measureText('Mg')
     const ascent = m.fontBoundingBoxAscent ?? fontSize * 0.8
     const descent = m.fontBoundingBoxDescent ?? fontSize * 0.2
     this.ascent = ascent
-    // Shared with the DOM side rather than spelled out here: the inline
-    // suggestion has to land on this exact baseline, and two copies of the
-    // expression is how it stops doing so. See lib/cellBaseline.ts.
+    // Shared with the DOM inline suggestion, which must match exactly; see
+    // lib/cellBaseline.ts.
     this.baseline = cellBaseline(ascent, descent, cellHeight)
     this.lineThickness = Math.max(1, Math.round(fontSize / 14))
 
-    // Single-channel: the shader only ever reads coverage, and caching each
-    // glyph in up to sixteen style combinations makes an RGBA atlas four times
-    // the texture it needs to be, per pane.
-    //
-    // Which is also why color glyphs get a *second* texture rather than this
-    // one becoming RGBA. An emoji carries its own colors and cannot be a
-    // coverage mask, but a pane that never draws one should not pay four bytes
-    // a texel for the possibility — so the companion below shares this atlas's
-    // packing and stays 1x1 until the first color glyph actually arrives.
+    // Single-channel coverage. Color glyphs get a separate RGBA texture that
+    // stays 1x1 until needed, so panes without emoji don't pay for RGBA.
     this.texture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.atlasWidth, this.atlasHeight, 0, gl.RED, gl.UNSIGNED_BYTE, null)
@@ -263,9 +191,7 @@ export class GlyphAtlas {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
-    // Allocated at 1x1 rather than left null: a sampler the shader mentions
-    // must have a complete texture bound to it, even on the frames where no
-    // fragment takes that branch.
+    // A sampler the shader references must have a complete texture bound.
     this.colorTexture = gl.createTexture()!
     gl.bindTexture(gl.TEXTURE_2D, this.colorTexture)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
@@ -274,22 +200,15 @@ export class GlyphAtlas {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 
-    // Space, unstyled — blank by construction, so it doubles as the fallback
-    // for a codepoint that arrives once the atlas is full.
+    // Space: blank, so it doubles as the fallback when the atlas is full.
     this.blank = this.getGlyph(32, 0)
   }
 
   /**
-   * The CSS font shorthand for one style, and optionally for one pinned
-   * family.
-   *
-   * The weight and slant keywords are emitted only when the family being used
-   * does *not* already name a face of that style. Asking a face that is
-   * already italic for italic gets a double slant on a good day and an upright
-   * on a bad one, which is the trap the `*IsFace` flags exist to avoid.
-   *
-   * A range override keeps the keywords, because a family pinned to a
-   * codepoint range is one family rather than a set of per-style slots.
+   * The CSS font shorthand for a style, optionally for a pinned family. Weight
+   * and slant keywords are omitted when the family already is that face (the
+   * `*IsFace` flags), to avoid double slant. A range override is one family, so
+   * it keeps the keywords.
    */
   private fontFor(style: number, override?: string | null): string {
     const wantBold = (style & GLYPH_BOLD) !== 0
@@ -304,8 +223,7 @@ export class GlyphAtlas {
       family = this.fonts.boldItalic
       if (this.fonts.boldItalicIsFace) {
         emitItalic = false
-        // Only the dedicated bold-italic slot supplies the weight as well; a
-        // fall-through to the italic face still needs CSS to embolden it.
+        // Only the dedicated bold-italic slot supplies the weight too.
         emitBold = this.fonts.boldItalicNeedsWeight
       }
     } else if (wantItalic) {
@@ -318,75 +236,47 @@ export class GlyphAtlas {
       family = this.fonts.regular
     }
 
-    // The weight is a number rather than the `bold` keyword, which is only
-    // 700 spelled differently — but 700 spelled the one way that cannot also
-    // say 300 or 500. Emitted only when it is not the CSS default, so an
-    // untouched configuration produces the shorthand it always produced.
+    // A numeric weight, emitted only when not the CSS default.
     const weight = emitBold ? this.fonts.boldWeight : this.fonts.weight
     const emitWeight = emitBold || weight !== 400
     return `${emitItalic ? 'italic ' : ''}${emitWeight ? `${weight} ` : ''}${this.fontSize}px ${family}`
   }
 
   getGlyph(codepoint: number, style = 0): GlyphRect {
-    // Weight and slant are properties of a face, and these glyphs have no
-    // face — the heavy box-drawing characters are their own codepoints. Left
-    // in the key they would buy a second, identical raster of every border a
-    // bold prompt happens to draw.
+    // Box glyphs have no face; weight and slant would only duplicate rasters.
     if (isBoxGlyph(codepoint)) style &= ~(GLYPH_BOLD | GLYPH_ITALIC)
     const key = codepoint * GLYPH_STYLE_COUNT + style
     const hit = this.cache.get(key)
     if (hit) return hit
-    // A pinned range is a pure function of the codepoint, so it needs no place
-    // in the key — the key already distinguishes every codepoint that could
-    // resolve differently. Changing the table rebuilds the atlas outright.
+    // A pinned range depends only on the codepoint, so it needs no key.
     return this.rasterize(String.fromCodePoint(codepoint), style, (r) => this.cache.set(key, r), 1, codepoint)
   }
 
   /**
-   * A grapheme cluster — a base character plus its combining marks, or an emoji
-   * built out of joiners. It has to be rasterized as one string for the shaper
-   * to compose it; drawing only the first codepoint is what left accented
-   * letters bare and turned joined emoji into their first component.
-   *
-   * Kept in its own map so the single-codepoint path above stays a numeric key
-   * and doesn't build a string per cell per frame.
+   * A grapheme cluster (base plus combining marks, or a joined emoji),
+   * rasterized as one string so the shaper composes it. Separate map so the
+   * single-codepoint path keeps numeric keys.
    */
   getClusterGlyph(text: string, style = 0): GlyphRect {
     const key = `${style}:${text}`
     const hit = this.clusterCache.get(key)
     if (hit) return hit
-    // The base character picks the face for the whole cluster. Its combining
-    // marks have to be drawn by whatever draws it, or they land on nothing.
+    // The base character picks the face for the whole cluster.
     return this.rasterize(text, style, (r) => this.clusterCache.set(key, r), 1, text.codePointAt(0))
   }
 
   /**
-   * A run of `cells` same-styled columns, rasterized as one string into a slot
-   * that wide — which is what makes ligatures happen. Canvas 2D `fillText`
-   * runs the browser's full shaping stack, so `calt` fires as soon as the
-   * substitution has both of its inputs in the same call; drawing one cell at
-   * a time is the only reason it never did.
-   *
-   * The renderer slices the returned rect at cell boundaries and emits one
-   * quad per column, exactly as the two-cell wide path already does. Handing
-   * back a single quad spanning the run would be less code and would reopen
-   * every decision that rests on one-quad-per-cell: the baked underline, the
-   * unfocused cursor outline, the DECSCUSR shapes.
-   *
-   * Returns null once the held runs reach `RUN_CACHE_CELL_BUDGET` cells, so
-   * the caller can fall back rather than fill the atlas with them. The budget
-   * is in cells rather than runs so that what it reserves does not move every
-   * time `MAX_RUN_CELLS` does.
+   * A run of `cells` same-styled columns rasterized as one string, so `fillText`
+   * applies ligatures (`calt`). The renderer slices it per cell to keep one quad
+   * per cell. Returns null once `RUN_CACHE_CELL_BUDGET` is reached so the caller
+   * can fall back.
    */
   getRunGlyph(text: string, style: number, cells: number): GlyphRect | null {
     const key = `${style}:${cells}:${text}`
     const hit = this.runCache.get(key)
     if (hit) return hit
     if (this.runCellsHeld + cells > RUN_CACHE_CELL_BUDGET) {
-      // Said once, for the same reason the full-atlas warning is: this is
-      // reached per run per frame. Worth saying at all because the symptom of
-      // silently declining is "ligatures stopped working partway down the
-      // screen", which looks like a renderer fault rather than a bound.
+      // Warn once: the symptom is ligatures stopping partway down the screen.
       if (!this.warnedRunsFull) {
         this.warnedRunsFull = true
         console.warn(
@@ -396,16 +286,13 @@ export class GlyphAtlas {
       }
       return null
     }
-    // A run is ASCII operators by construction, so it can never straddle a
-    // pinned range; the first codepoint settles it the same way a cluster's
-    // base character does.
+    // Runs are ASCII operators, so the first codepoint settles the face.
     return this.rasterize(
       text,
       style,
       (r) => {
         this.runCache.set(key, r)
-        // Counted where the slot is actually handed out, so a run turned away
-        // by a full atlas is not also charged against this budget.
+        // Charged only when a slot is actually handed out.
         this.runCellsHeld += cells
       },
       cells,
@@ -414,22 +301,15 @@ export class GlyphAtlas {
   }
 
   /**
-   * One underline in the style SGR asked for. Everything is drawn as filled
-   * rects on whole pixels rather than stroked paths, for the same reason the
-   * cursor outline is: a stroke straddles its path and comes out half-covered
-   * on both sides at these sizes. The curl is the exception and is stroked,
-   * because a wave built from rects reads as a dotted line.
-   *
-   * `kind` is a `UNDERLINE_*` value; anything unrecognized (including `none`,
-   * which the caller should not have passed) falls back to a plain rule so an
-   * underlined cell is never silently un-underlined.
+   * One underline in the SGR style. Filled whole-pixel rects rather than strokes
+   * (strokes straddle pixels); the curl is stroked. Unknown kinds draw a plain
+   * rule.
    */
   private drawUnderline(x: number, y: number, w: number, kind: number): void {
     const t = this.lineThickness
     switch (kind) {
       case UNDERLINE_DOUBLE: {
-        // Pulled up rather than down: the lower rule would otherwise sit on the
-        // cell boundary and touch the row beneath.
+        // Upward, so the lower rule doesn't touch the next row.
         const gap = Math.max(1, Math.round(t * 2))
         this.ctx.fillRect(x, Math.max(0, y - gap), w, t)
         this.ctx.fillRect(x, y, w, t)
@@ -468,19 +348,8 @@ export class GlyphAtlas {
   }
 
   /**
-   * Doubles the atlas when it runs out of rows, up to `MAX_ATLAS_SIZE` or
-   * whatever the GL implementation will give us.
-   *
-   * This exists because running out was not a degradation, it was a cliff:
-   * every glyph after the last slot drew blank, nothing ever evicted, and the
-   * pane stayed that way until its font changed. And the cliff is close. At
-   * device-pixel-ratio 2 — an ordinary laptop — a 14px cell is 16x34, which is
-   * 1920 slots, or 960 for the double-width ones CJK uses. A thousand distinct
-   * Han characters is a document, not a stress test.
-   *
-   * Growth is demand-driven, so a Latin pane never leaves 1MB. Returns false
-   * when there is nowhere left to grow, which puts the old warn-and-blank back
-   * as the terminal state rather than as the first thing that happens.
+   * Doubles the atlas when it runs out of rows, up to `MAX_ATLAS_SIZE` or the GL
+   * limit. Returns false when it can't grow; glyphs then draw blank.
    */
   private grow(): boolean {
     const gl = this.gl
@@ -491,10 +360,7 @@ export class GlyphAtlas {
     const oldWidth = this.atlasWidth
     const oldHeight = this.atlasHeight
 
-    // A wider mirror with the old rows copied into it. The stride changes, so
-    // this is a row-by-row copy rather than one -- and the scratch surface is
-    // not involved at all, which is what makes the whole thing this short:
-    // there is no canvas to recreate and no context state to re-establish.
+    // Copy the old rows into the wider mirror.
     const next = new Uint8Array(size * size)
     for (let row = 0; row < oldHeight; row++) {
       next.set(this.mirror.subarray(row * oldWidth, (row + 1) * oldWidth), row * size)
@@ -504,36 +370,22 @@ export class GlyphAtlas {
     this.atlasWidth = size
     this.atlasHeight = size
 
-    // The same texture object, reallocated. Sampler parameters are texture
-    // state rather than level state, so they survive; the renderer re-reads
-    // `.texture` every frame anyway, but keeping the identity means nothing
-    // holding it can go stale.
+    // Reallocate the same texture object; sampler parameters survive.
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, size, size, 0, gl.RED, gl.UNSIGNED_BYTE, next)
 
-    // The right-hand half of every already-packed row is left unused — slots
-    // are handed out strictly forward and nothing goes back to fill it. So a
-    // doubling buys roughly three times the slots rather than four, which is
-    // the price of not having to relocate anything that has already been
-    // handed out.
-    //
-    // Every cached rect's UVs are normalized against the old dimensions, so
-    // they all move. Mutated in place rather than replaced: the renderer holds
-    // rects across cells within a frame — `pendingWide`, and a run's rect
-    // across its slices — and growth can happen in the middle of one.
-    // The companion is deliberately untouched. It has its own packing and its
-    // own dimensions, so coverage running out of rows says nothing about it --
-    // which is the whole reason it has them.
+    // The right half of existing rows stays unused (slots only move forward),
+    // so a doubling buys about three times the slots. Cached rects are rescaled
+    // in place, since the renderer may hold one mid-frame. The color atlas is
+    // independent.
     this.rescale()
     return true
   }
 
   /** Re-normalizes every cached rect against the current atlas dimensions. */
   private rescale(): void {
-    // Against whichever atlas the rect lives in: the two are packed and grown
-    // independently now, so a color rect and a coverage rect at the same x
-    // are not at the same u.
+    // Each rect against its own atlas's dimensions.
     const fix = (r: GlyphRect) => {
       const w = r.color ? this.colorWidth : this.atlasWidth
       const h = r.color ? this.colorHeight : this.atlasHeight
@@ -554,10 +406,8 @@ export class GlyphAtlas {
     cells = 1,
     codepoint?: number,
   ): GlyphRect {
-
-    // A wide glyph is rasterized across a two-cell slot and later drawn as two
-    // half-UV quads, so the whole character exists in the atlas exactly once.
-    // A shaped run is the same idea at `cells` wide.
+// A wide glyph or run is rasterized once across its slot and drawn as
+// per-cell slices.
     const slotWidth = (style & GLYPH_WIDE ? 2 : cells) * this.cellWidth
 
     if (this.currentX + slotWidth > this.atlasWidth) {
@@ -566,8 +416,7 @@ export class GlyphAtlas {
     }
 
     if (this.currentY + this.cellHeight > this.atlasHeight && !this.grow()) {
-      // Draws nothing rather than the wrong character, and only warns once —
-      // this fires per glyph, so logging each one buries the console.
+      // Draw nothing rather than the wrong glyph; warn once.
       if (!this.warnedFull) {
         this.warnedFull = true
         console.warn(
@@ -585,52 +434,35 @@ export class GlyphAtlas {
         ? null
         : familyForCodepoint(this.fonts.ranges, codepoint)
     this.ctx.font = this.fontFor(style, pinned)
-    // At the origin of the scratch surface. Where it *lands* is (x, y), which
-    // the upload and the mirror write below take care of.
+    // Drawn at the scratch origin; placed at (x, y) below.
     this.ctx.clearRect(0, 0, slotWidth, this.cellHeight)
 
-    // Box drawing, block elements and Powerline separators are geometry
-    // against the cell rather than characters from a face; see boxDrawing.ts
-    // for why. Tried before the cursor shapes only because it is the same
-    // kind of substitution and reads better grouped with them.
+    // Box drawing, block elements and Powerline glyphs are drawn as geometry;
+    // see boxDrawing.ts.
     const single = text.length <= 2 ? text.codePointAt(0) : undefined
     if (single !== undefined && isBoxGlyph(single)) {
       drawBoxGlyph(this.ctx, single, 0, 0, slotWidth, this.cellHeight, this.lineThickness)
     } else if (text === CURSOR_BAR_TEXT) {
-      // A bar sits at the leading edge of the cell and is deliberately thicker
-      // than a rule: at one pixel it disappears against text on a HiDPI pane.
+      // Thicker than a rule so it stays visible on HiDPI.
       this.ctx.fillRect(0, 0, Math.max(1, Math.round(this.lineThickness * 2)), this.cellHeight)
     } else if (text === CURSOR_UNDERLINE_TEXT) {
       const t = Math.max(1, Math.round(this.lineThickness * 2))
       this.ctx.fillRect(0, this.cellHeight - t, slotWidth, t)
     } else if (text === CURSOR_OUTLINE_TEXT) {
-      // Drawn as four edges rather than a stroked rect so the line lands on
-      // whole pixels; a stroke straddles its path and comes out half-covered on
-      // both sides of it.
+      // Four edges rather than a stroke, to land on whole pixels.
       const t = this.lineThickness
       this.ctx.fillRect(0, 0, slotWidth, t)
       this.ctx.fillRect(0, this.cellHeight - t, slotWidth, t)
       this.ctx.fillRect(0, 0, t, this.cellHeight)
       this.ctx.fillRect(slotWidth - t, 0, t, this.cellHeight)
     } else {
-      // Condensed to the slot when the face draws wider than the cell it was
-      // measured for. `measureCell` sizes a cell from one glyph of the first
-      // family that resolves, so anything reached by per-glyph fallback — a
-      // proportional face, a symbol font, a wide character that arrived
-      // without GLYPH_WIDE — can overrun. The readback below is bounded to the
-      // slot, so an overrun never reaches another glyph's texels; it is simply
-      // sliced off, and the character loses its right-hand side for the
-      // session. Scaling it to fit keeps it legible instead, which is what the
-      // GLYPH_WIDE slot already does for the wide characters the core flags.
-      // The face's own advance is measured against the slot minus the space
-      // this cell had added to it; widening a cell must not make a glyph that
-      // already fitted start being stretched into the gap.
+      // Condense glyphs wider than the slot (fallback faces can overrun the
+      // measured cell) rather than clipping them. Measured against the slot
+      // minus letter spacing, so widening cells doesn't stretch glyphs.
       const drawWidth = Math.max(1, slotWidth - this.inset * 2)
       const inkWidth = this.ctx.measureText(text).width
-      // A run is fitted in both directions, not just condensed. Its ink is the
-      // font's own advances for `cells` characters, and the cell is a rounded
-      // measurement of one — over three columns that difference accumulates
-      // into a visible drift against the cells the slices are drawn into.
+      // Runs are fitted both ways, so rounding of the cell width doesn't drift
+      // across columns.
       if (inkWidth > 0 && (cells > 1 ? inkWidth !== drawWidth : inkWidth > drawWidth)) {
         this.ctx.save()
         this.ctx.translate(this.inset, this.baseline)
@@ -654,16 +486,8 @@ export class GlyphAtlas {
       this.ctx.fillRect(0, sy, slotWidth, this.lineThickness)
     }
 
-    // Coverage lives in the alpha channel of the 2D canvas; the atlas stores
-    // only that, so it is unpacked here rather than uploaded four-fold.
-    //
-    // The same pass answers whether this glyph is a color one. Everything
-    // drawn here is drawn in white — the fill style, the rules, the box
-    // geometry — so a pixel that is *not* white can only have come from the
-    // face painting its own colors, which is what a COLR or CBDT emoji does
-    // and what makes `fillStyle` inert for it. No codepoint table, no
-    // presentation-selector rules, and no disagreement with whatever font the
-    // machine actually resolved: it is a property of the pixels that came out.
+    // Coverage is the canvas alpha. Everything is drawn white, so any
+    // non-white pixel means the face painted its own colors (a color emoji).
     const rgba = this.ctx.getImageData(0, 0, slotWidth, this.cellHeight).data
     const coverage = new Uint8Array(slotWidth * this.cellHeight)
     let colored = false
@@ -677,15 +501,12 @@ export class GlyphAtlas {
 
     const gl = this.gl
     if (colored) {
-      // Nothing of it has touched the coverage atlas: the draw happened on the
-      // scratch surface and the slot was never advanced past, so the next
-      // ordinary glyph simply takes it.
+      // Never touched the coverage atlas; the slot is reused.
       const rect = this.packColor(rgba, slotWidth)
       remember(rect)
       return rect
     }
-    // Into the mirror at the slot it is going to, which has the atlas's stride
-    // rather than this glyph's.
+    // Into the mirror with the atlas's stride.
     for (let row = 0; row < this.cellHeight; row++) {
       this.mirror.set(
         coverage.subarray(row * slotWidth, (row + 1) * slotWidth),
@@ -694,8 +515,7 @@ export class GlyphAtlas {
     }
 
     gl.bindTexture(gl.TEXTURE_2D, this.texture)
-    // Rows are one byte per texel and so rarely 4-aligned, which is the
-    // default and would shear every upload whose width isn't a multiple of 4.
+    // One-byte rows are rarely 4-aligned.
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
     gl.texSubImage2D(
       gl.TEXTURE_2D,
@@ -714,8 +534,7 @@ export class GlyphAtlas {
     return rect
   }
 
-  /** The rect for a coverage slot that has just been filled, and the cursor
-   *  moved past it. */
+  /** The rect for a just-filled coverage slot; advances the cursor. */
   private finishSlot(x: number, y: number, slotWidth: number): GlyphRect {
     const rect: GlyphRect = {
       x, y,
@@ -732,15 +551,8 @@ export class GlyphAtlas {
   }
 
   /**
-   * Packs a color glyph's own texels into the companion, in the companion's
-   * own coordinate space.
-   *
-   * Its own space is the point. Sharing the coverage atlas's packing would
-   * mean sharing its dimensions -- the UVs are normalized against them -- and
-   * so following it through every growth: a pane full of CJK grows coverage to
-   * 4096 and would drag a 64MB companion along to hold three emoji. Packed
-   * separately, the companion starts at 512 and grows only when color glyphs
-   * actually fill it.
+   * Packs a color glyph into the color atlas, which has its own packing and
+   * dimensions so it doesn't grow along with the coverage atlas.
    */
   private packColor(rgba: Uint8ClampedArray, slotWidth: number): GlyphRect {
     const gl = this.gl
@@ -788,8 +600,7 @@ export class GlyphAtlas {
     return rect
   }
 
-  /** The companion, for real this time: it has been a 1x1 placeholder until
-   *  now so the sampler the shader mentions had something complete bound. */
+  /** Allocates the color atlas on first use. */
   private allocateColor() {
     const gl = this.gl
     this.colorWidth = COLOR_ATLAS_START
@@ -840,9 +651,7 @@ export class GlyphAtlas {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, next)
 
-    // Same argument as the coverage atlas: every rect already handed out is
-    // normalized against the old dimensions, and the renderer holds them
-    // across cells within a frame.
+    // Rescale handed-out rects, as for the coverage atlas.
     this.rescale()
     return true
   }

@@ -5,24 +5,16 @@ import { dirname, join } from 'node:path'
 import { PromptInputTracker } from '../promptInput'
 
 /**
- * Reading the line being typed off a *real* grid, through a real core.
+ * Reading the typed line off a real grid through a real core, pinning what
+ * `promptInput.test.ts`'s fake can't:
  *
- * `promptInput.test.ts` pins the logic against a fake whose rows are exactly
- * what the test wrote. This pins the assumptions that fake cannot check, and
- * they are the ones the whole approach rests on:
- *
- *   - **`cursorCell` and `readRowText` agree about coordinates.** One reports
- *     absolute buffer rows and the other indexes them; if they disagreed by
- *     the scrollback offset, every read would come from the wrong row and the
- *     fake would never notice.
- *   - **Wrapping is real.** The core decides when a line wraps, not the test.
- *     A wrapped command has to read back as one string.
- *   - **The prompt-relative origin survives scrolling.** Absolute coordinates
- *     are supposed to be stable as output pushes rows into scrollback; the
- *     whole design assumes an origin noted at `B` still names the same row a
- *     moment later.
- *   - **Columns are not characters.** A wide character in the typed line is
- *     where a character-indexed slice would silently drift.
+ *   - **`cursorCell` and `readRowText` agree about coordinates** (both
+ *     absolute; a scrollback offset between them would read the wrong row).
+ *   - **Wrapping is real**: the core decides, and a wrapped command reads back
+ *     as one string.
+ *   - **The prompt-relative origin survives scrolling.**
+ *   - **Columns aren't characters**: a wide character would drift a
+ *     character-indexed slice.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -57,20 +49,18 @@ describe('reading the prompt line off a live grid', () => {
     engine.resize(cols, rows)
 
     const tracker = new PromptInputTracker(engine)
-    // Wired the way Terminal.tsx wires it: the same OSC handler feeds both
-    // the command tracker and this one.
+    // Wired as in Terminal.tsx: one OSC handler feeds both trackers.
     engine.registerOscHandler(133, (data) => {
       tracker.handleOsc(data)
       return true
     })
-    // Load-bearing: the `B` marker's origin is measured here, not in the OSC
-    // handler, because the scanner dispatches OSC before the parser has drawn
-    // the prompt the marker terminates.
+    // The `B` origin is measured after parsing, since OSC dispatches before the
+    // prompt it terminates is drawn.
     engine.onWriteParsed(() => tracker.noteParsed())
     return { engine, tracker }
   }
 
-  /** A prompt, its OSC 133 `B` marker, then typed text — the ordinary case. */
+  /** A prompt, its OSC 133 `B` marker, then typed text. */
   it('reads text typed after the prompt marker', async () => {
     const { engine, tracker } = await ready()
     expect(tracker.supported).toBe(true)
@@ -81,8 +71,7 @@ describe('reading the prompt line off a live grid', () => {
   })
 
   it('reads a line the core wrapped for itself', async () => {
-    // 20 columns, and a command comfortably longer than one row. Where it
-    // wraps is the core's decision, which is the point of testing it here.
+    // A command longer than one row of 20; the core decides where it wraps.
     const { engine, tracker } = await ready(20, 10)
     engine.write('$ \x1b]133;B\x07')
     engine.write('rsync -avz --dry-run src/ dst/')
@@ -90,9 +79,8 @@ describe('reading the prompt line off a live grid', () => {
   })
 
   /**
-   * The origin is noted in absolute coordinates precisely so that output
-   * arriving afterward cannot invalidate it. Here the prompt is pushed up the
-   * screen by a full screenful of earlier output before anything is typed.
+   * The origin is absolute, so output pushing the prompt up a full screen
+   * doesn't invalidate it.
    */
   it('keeps its origin as the screen scrolls', async () => {
     const { engine, tracker } = await ready(40, 6)
@@ -111,23 +99,19 @@ describe('reading the prompt line off a live grid', () => {
   })
 
   /**
-   * The property that makes this safe at a password prompt: the bytes were
-   * typed, the far end echoed nothing, so the grid holds nothing and the read
-   * is empty. Nothing here has to recognize a password prompt to get this
-   * right.
+   * At a password prompt the far end echoes nothing, so the read is empty,
+   * without recognizing the prompt.
    */
   it('reads nothing when the far end echoes nothing', async () => {
     const { engine, tracker } = await ready()
     engine.write("dev@host's password: \x1b]133;B\x07")
-    // No echo written, which is what `read -s` looks like from out here.
+    // No echo, as with `read -s`.
     expect(tracker.read()?.text).toBe('')
   })
 
   it('stops reading once a command starts and resumes at the next prompt', async () => {
     const { engine, tracker } = await ready()
-    // Prompt and marker in one write, the echo of typing in another, which is
-    // the ordinary shape of it. The case where one write carries both is its
-    // own test below.
+    // Prompt and marker in one write, typing in another (the ordinary shape).
     engine.write('$ \x1b]133;B\x07')
     engine.write('make')
     expect(tracker.read()?.text).toBe('make')
@@ -144,30 +128,19 @@ describe('reading the prompt line off a live grid', () => {
     const { engine, tracker } = await ready()
     engine.write('$ \x1b]133;B\x07')
     engine.write('git commit')
-    // Three columns left, as a left-arrow at a prompt would.
+    // Three columns left, like a left-arrow.
     engine.write('\x1b[3D')
     const input = tracker.read()
     expect(input?.text).toBe('git com')
-    // ...and it must not be completed there, since appending would splice
-    // text into the middle of the command.
+    // Not completable mid-line, which would splice into the command.
     expect(input?.atEnd).toBe(false)
   })
 
   /**
-   * The redraw readline does when the window is resized, and the regression
-   * this file exists to catch.
-   *
-   * On SIGWINCH — and on `^L`, and after a job-control message — the shell
-   * reprints the prompt *and* the line being edited, in one write. The prompt
-   * carries the `B` marker, so that single chunk says "the input starts here"
-   * and then keeps drawing. Measuring the origin at the end of the write puts
-   * it at the end of the recalled command instead of at the prompt, and every
-   * read afterward returns a fragment of the line or nothing at all: the
-   * history flicker blinked the tail of a wrapped command, and stopped
-   * blinking entirely once the window was widened enough to unwrap it.
-   *
-   * The engine splits its parse at each dispatched OSC, so the handler runs at
-   * exactly the right instant. This pins that the tracker measures there.
+   * Readline's redraw on SIGWINCH (and `^L`, and after job-control messages)
+   * reprints the prompt, `B` marker and line in one write. The engine splits
+   * its parse at each OSC so the tracker measures the origin at the prompt, not
+   * at the end of the write.
    */
   it('puts the origin at the prompt when one write redraws the whole line', async () => {
     const { engine, tracker } = await ready(20, 8)
@@ -176,28 +149,25 @@ describe('reading the prompt line off a live grid', () => {
     const before = tracker.read()
     expect(before?.text).toBe('cat a.log | grep x | sort | uniq -c')
 
-    // The whole line again — erase, prompt, marker, command — as one chunk.
+    // Erase, prompt, marker and command as one chunk.
     engine.write('\r\x1b[J$ \x1b]133;B\x07cat a.log | grep x | sort | uniq -c')
     const after = tracker.read()
     expect(after?.text).toBe('cat a.log | grep x | sort | uniq -c')
     expect(after?.origin.col).toBe(2)
-    // The command wraps, so the origin is a row above the cursor. Reading the
-    // origin off the end of the write would have collapsed the two onto the
-    // last row and left nothing between them.
+    // The command wraps, so the origin is a row above the cursor.
     expect(after!.cursor.row).toBe(after!.origin.row + 1)
   })
 
   /**
-   * The same redraw, then the widening that follows it. The command now fits
-   * on one row, and the origin still has to name the cell after the prompt —
-   * an origin left on the old second row is *below* the cursor, which the read
-   * can only answer with null.
+   * The same redraw, then a widening: the command fits one row, and the origin
+   * must still name the cell after the prompt (an origin below the cursor reads
+   * as null).
    */
   it('still reads the line after a redraw and a widening', async () => {
     const { engine, tracker } = await ready(20, 8)
     engine.write('$ \x1b]133;B\x07cat a.log | grep x | sort | uniq -c')
     engine.resize(60, 8)
-    // The shell redraws at the new width, as it does on SIGWINCH.
+    // The shell redraws at the new width, as on SIGWINCH.
     engine.write('\r\x1b[J$ \x1b]133;B\x07cat a.log | grep x | sort | uniq -c')
     const input = tracker.read()
     expect(input?.text).toBe('cat a.log | grep x | sort | uniq -c')

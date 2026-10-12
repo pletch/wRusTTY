@@ -1,12 +1,7 @@
-//! Tauri command layer for serial sessions — same push-`Channel` shape as
-//! `ssh.rs`/`telnet.rs`, plus port enumeration and line control (DTR, RTS,
-//! break), which have no equivalent in the other transports.
-//!
-//! The session map, id counter and write/resize/disconnect bodies live in
-//! `session_registry.rs`. The line-control commands below don't go through it:
-//! they aren't part of `wr_core::Session` and nothing generic could say
-//! anything useful about them, so they look the session up and call it
-//! directly.
+//! Tauri command layer for serial sessions, shaped like `ssh.rs`/`telnet.rs`,
+//! plus port enumeration and line control (DTR, RTS, break). Shared logic is
+//! in `session_registry.rs`; line control isn't part of `wr_core::Session`,
+//! so those commands call the session directly.
 
 use serde::Serialize;
 use tauri::ipc::Channel;

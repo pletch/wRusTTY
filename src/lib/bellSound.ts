@@ -1,27 +1,17 @@
-/** The audible half of the terminal bell.
- *
- * Synthesized rather than shipped as an audio file: it's one short tone, and
- * generating it avoids a binary asset in the bundle, a decode step, and the
- * question of what license the sample is under. It also can't fail to load.
- *
- * Deliberately soft and brief. A terminal bell fires on tab-completion
- * ambiguity in some shells, so it can arrive in bursts — anything sharp
- * enough to be startling once is intolerable five times in a row. */
+/** The audible half of the terminal bell: one synthesized tone (no asset,
+ * decode or license question). Soft and brief, since some shells ring in
+ * bursts on ambiguous completion. */
 
 let ctx: AudioContext | null = null
 
-/** Created on first use, not at import: constructing an AudioContext before
- * the page has seen a user gesture leaves it suspended under the browser's
- * autoplay policy, and a suspended context created at startup stays that way
- * even once the user does interact. */
+/** Created on first use: a context created before a user gesture stays
+ * suspended under the autoplay policy. */
 function audioContext(): AudioContext | null {
   if (!ctx) {
     try {
       ctx = new AudioContext()
     } catch {
-      // No Web Audio (or it's been disabled). The visual marker still works,
-      // so there's nothing to report — silently having no sound is the whole
-      // failure.
+      // No Web Audio; the visual marker still works.
       return null
     }
   }
@@ -31,9 +21,7 @@ function audioContext(): AudioContext | null {
 export function playBell() {
   const audio = audioContext()
   if (!audio) return
-  // A context can be suspended by the browser after a period of silence, not
-  // only before the first gesture — resume unconditionally rather than only
-  // on the first call.
+  // Browsers can suspend a context after silence too, so always resume.
   if (audio.state === 'suspended') audio.resume().catch(() => {})
 
   const now = audio.currentTime
@@ -42,9 +30,7 @@ export function playBell() {
   osc.type = 'sine'
   osc.frequency.value = 880
 
-  // Ramped in and out rather than started and stopped at full volume: an
-  // abrupt edge on a sine wave is a click, which is more audible than the
-  // tone itself and reads as a glitch rather than a bell.
+  // Ramped in and out: an abrupt edge on a sine wave is an audible click.
   gain.gain.setValueAtTime(0, now)
   gain.gain.linearRampToValueAtTime(0.06, now + 0.01)
   gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18)
@@ -52,8 +38,7 @@ export function playBell() {
   osc.connect(gain).connect(audio.destination)
   osc.start(now)
   osc.stop(now + 0.2)
-  // Nodes are one-shot; releasing them here keeps a burst of bells from
-  // accumulating disconnected graph nodes for the GC to find later.
+  // One-shot nodes are released so bursts don't accumulate them.
   osc.onended = () => {
     osc.disconnect()
     gain.disconnect()

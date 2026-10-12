@@ -112,48 +112,25 @@ import { usePanePortals } from './hooks/usePanePortals'
 import { useDragRegionDoubleClickGuard } from './hooks/useDragRegionDoubleClickGuard'
 
 function refit() {
-  // Terminal listens for window resize to re-fit; nudge it after a tab or
-  // pane becomes visible/resized (it may have been sized while hidden).
-  // A plain setTimeout(0) only guarantees "after this task," not "after the
-  // browser has actually flushed layout for the newly-visible container" —
-  // WebView2/Chromium schedules its layout/paint pipeline differently than
-  // WebKitGTK, so the synthetic resize could fire before the container's
-  // real size was settled, leaving the engine's fit computed against a
-  // transitional size (visible as the cursor rendering a few columns off
-  // right after a tab switch, self-correcting on the next full redraw).
-  // Double rAF reliably waits for a completed paint first.
+  // Nudge Terminal's resize listener after a tab or pane becomes visible.
+  // Double rAF waits for WebView2 to finish layout; a setTimeout(0) could fire
+  // against a transitional size.
   requestAnimationFrame(() => {
     requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
   })
 }
 
-/** Commands quicker than this never notify. Without a floor, a shell with
- * integration enabled reports *every* command, so switching tabs mid-`ls`
- * would fire a toast — which trains you to ignore them, defeating the point.
- * Ten seconds is roughly "long enough that you went and did something else". */
+/** Commands quicker than this never notify; with shell integration every
+ * command reports, and constant toasts would get ignored. */
 const COMMAND_NOTIFY_THRESHOLD_MS = 10_000
 
-/** Progress shorter than this leaves no marker behind when it clears.
- *
- * Lower than the command threshold above because it buys less and costs less.
- * It raises a passive marker rather than a toast, and a program only reports
- * progress at all when it deliberately chose to — there is no equivalent of a
- * shell reporting every `ls`. Five seconds is enough to rule out the one real
- * false positive: a tool that flashes progress for a moment on startup. */
+/** Progress shorter than this leaves no marker when it clears; rules out tools
+ * that flash progress briefly on startup. */
 const PROGRESS_NOTIFY_THRESHOLD_MS = 5_000
 
-/** The same event, for a notification the OS renders — which on Windows means
- * the lock screen, by default, for a machine the user has walked away from.
- *
- * Deliberately drops `result.command`: under OSC 633 that is the whole command
- * line, arguments included, and the native branch fires precisely when nobody
- * is at the screen to see it appear. `session_lock.rs` exists to auto-lock the
- * vault for the person who walks up to an unattended machine; putting a remote
- * command line on that machine's lock screen routes around the same reasoning.
- *
- * The session label stays, because a notification whose job is to bring you
- * back to the window has to say which pane to come back to. The detail is one
- * alt-tab away, in the in-app toast path, which only fires with the window up. */
+/** The command result for an OS notification, which may appear on the lock
+ * screen of an unattended machine. Omits the command line (OSC 633 includes
+ * its arguments); the in-app toast has the detail. */
 function describeCommandResultBriefly(result: CommandResult, tabTitle: string): string {
   const took = formatCommandDuration(result.durationMs)
   if (result.exitCode === null || result.exitCode === 0) {
@@ -163,22 +140,18 @@ function describeCommandResultBriefly(result: CommandResult, tabTitle: string): 
 }
 
 function describeCommandResult(result: CommandResult, tabTitle: string): string {
-  // Falls back to a generic noun under plain OSC 133, which has no field for
-  // the command line — only VS Code's OSC 633 superset reports it.
+  // Plain OSC 133 has no command text; only OSC 633 reports it.
   const what = result.command ? `\`${result.command}\`` : 'Command'
   const took = formatCommandDuration(result.durationMs)
-  // A null exit code means the shell reported completion without a status
-  // (a bare OSC 133;D, or a prompt arriving with no D at all) — no basis to
-  // call it a failure, so it reads the same as success minus the claim.
+  // A null exit code means completion without a status; not a failure.
   if (result.exitCode === null || result.exitCode === 0) {
     return `${what} finished in ${took} — ${tabTitle}`
   }
   return `${what} exited ${result.exitCode} after ${took} — ${tabTitle}`
 }
 
-/** Every dialog/prompt/palette App.tsx can show, as one value instead of
- * five independently-toggled booleans/nullables — see the `modal` state
- * below for why. */
+/** Every dialog, prompt or palette App can show, as one value so two can't be
+ * open at once. */
 type Modal =
   | { kind: 'none' }
   | { kind: 'palette' }
@@ -190,40 +163,21 @@ type Modal =
   | { kind: 'reconnectPrompt'; tabId: string; paneId: string }
 
 function App() {
-  // tabs/activeTabId used to be two separately-updated useState hooks; see
-  // state/tabs.ts for why moving the tree surgery (split/close/pop/attach)
-  // into one reducer both fixes a class of cross-hook staleness and makes
-  // every mutating operation on it unit-testable with no React.
+  // Tree surgery lives in one reducer; see state/tabs.ts.
   const [{ tabs, activeTabId }, dispatchTabs] = useReducer(tabsReducer, null, () => {
     const initial = blankTab()
     return { tabs: [initial], activeTabId: initial.id }
   })
-  // Replaces a `refit()` call manually appended to every function that could
-  // change what's on screen (closing a pane/tab, splitting, popping,
-  // attaching, switching tabs) — easy to add a new such function and forget
-  // it, which is exactly why the eight pane-runtime tables leaked. Keyed on
-  // the active tab's visible split geometry rather than on `tabs` itself, so
-  // dragging a divider (which changes `sizes`, not which pane is where)
-  // doesn't refire it — see layoutSignature.
+  // Refit whenever the active tab's visible layout changes. Keyed on
+  // layoutSignature so dragging a divider doesn't refire it.
   useLayoutEffect(() => {
     refit()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutSignature(tabs, activeTabId)])
   const [paneDragOverSpacer, setPaneDragOverSpacer] = useState(false)
-  // Live, ephemeral per-pane state (connection status, logging, forwarded
-  // panels, activity, attention) — see state/paneRuntime.ts for why this is
-  // one reducer instead of eight separately-managed Records keyed by pane
-  // id. The *ByPane/attentionPanes names below are kept as the read-side
-  // views so the rest of this component (and the child components they're
-  // passed to) didn't need to change.
-  //
-  // Memoized on `paneRuntime` because the reducer already returns the *same*
-  // object when nothing changed (see its no-op cases), so these eight views
-  // only need rebuilding when it genuinely does. Unmemoized they were eight
-  // fresh Records per App render — not on the output path, since terminal
-  // output bypasses React entirely, but it also means no child prop identity
-  // ever survives a render, which is what makes React.memo on TabBar /
-  // StatusBar / Pane worth nothing today.
+  // Live per-pane state (status, logging, panels, activity, attention); see
+  // state/paneRuntime.ts. The views are memoized because the reducer returns
+  // the same object when nothing changed.
   const [paneRuntime, dispatchPaneRuntime] = useReducer(paneRuntimeReducer, {})
   const statusByPane = useMemo(() => statusByPaneOf(paneRuntime), [paneRuntime])
   const connectedAtByPane = useMemo(() => connectedAtByPaneOf(paneRuntime), [paneRuntime])
@@ -238,9 +192,8 @@ function App() {
   const attentionPanes = useMemo(() => attentionPanesOf(paneRuntime), [paneRuntime])
   const dimensionsByPane = useMemo(() => dimensionsByPaneOf(paneRuntime), [paneRuntime])
   const scrollbackBudgetByPane = useMemo(() => scrollbackBudgetByPaneOf(paneRuntime), [paneRuntime])
-  // Where a Ctrl+clicked path asked each pane's files panel to go. Held only
-  // while that panel is open (see the effect below), so reopening it by hand
-  // later starts from the pane's directory as usual, not from an old click.
+  // Where a Ctrl+clicked path sent each pane's files panel; dropped when the
+  // panel closes.
   const [filesRevealByPane, setFilesRevealByPane] = useState<Record<string, FilesReveal>>({})
   const revealNonce = useRef(0)
   useEffect(() => {
@@ -252,22 +205,12 @@ function App() {
       return next
     })
   }, [filesOpenByPane])
-  // Set by the toolbar search button to ask one specific pane's terminal to
-  // open its search box (the box itself is per-Terminal local state, so this
-  // is how an App-level control reaches into it). Targeted by pane id — not a
-  // broadcast — because every tab has its own focused pane, so a plain signal
-  // would open search in background tabs too. The nonce lets a repeat click on
-  // the same pane re-fire.
+  // Asks one pane to open its search box. Targeted by pane id so background
+  // tabs aren't affected; the nonce lets a repeat click re-fire.
   const [searchRequest, setSearchRequest] = useState<{ nonce: number; paneId: string } | null>(null)
 
-  // Tabs currently broadcasting input to all their panes — SuperPuTTY's "send
-  // commands to all sessions", which is the main thing keeping people on it.
-  //
-  // Per-tab rather than global: a tab is already the unit users group related
-  // hosts into, and a global mode would mean a keystroke reaching panes in
-  // tabs they can't see. Deliberately *not* persisted into workspaces either —
-  // it changes what typing does, so it should not come back silently on
-  // restore hours later.
+  // Tabs broadcasting input to all their panes. Per-tab, and not persisted
+  // into workspaces since it changes what typing does.
   const [broadcastTabs, setBroadcastTabs] = useState<Set<string>>(new Set())
   const toggleBroadcast = useCallback((tabId: string) => {
     setBroadcastTabs((prev) => {
@@ -277,19 +220,12 @@ function App() {
     })
   }, [])
 
-  // The single pane you are actually looking at: the focused pane of the
-  // active tab. Everything else is out of view as far as the marker is
-  // concerned — including the other half of a split, which is visible but
-  // isn't where your attention is.
+  // The pane you're looking at: the focused pane of the active tab.
   const focusedPaneId = tabs.find((t) => t.id === activeTabId)?.activePaneId ?? null
 
-  // Focusing a pane acknowledges that pane's marker, and only that one.
-  // Driven off the focused pane id rather than any click handler so every
-  // route in counts — clicking into the pane, Ctrl+Tab to its tab, the
-  // quick-connect palette, closing the tab in front of it. The window focus
-  // listener covers the case with no id change to hang it off: a marker set
-  // while the whole window was in the background, where alt-tabbing back is
-  // itself the acknowledgment.
+  // Focusing a pane acknowledges its attention marker, whatever route got
+  // there. The window focus listener covers a marker set while the window
+  // was in the background.
   useEffect(() => {
     if (!focusedPaneId) return
     const clear = () => dispatchPaneRuntime({ type: 'attentionCleared', paneId: focusedPaneId })
@@ -298,16 +234,10 @@ function App() {
     return () => window.removeEventListener('focus', clear)
   }, [focusedPaneId])
   const [profilesVersion, setProfilesVersion] = useState(0)
-  // Kept fresh here (rather than fetched lazily wherever it's needed) since
-  // it now backs both the quick-connect palette and the saved-sessions
-  // sidebar inside every blank pane's connect dialog.
+  // Backs the quick-connect palette and every connect dialog's sidebar.
   const [sessions, setSessions] = useState<SessionProfile[]>([])
-  // Whether the first load has finished, as distinct from "the list is
-  // empty". The launch-restore prompt has to wait for it: which panes are
-  // vault-bound depends on their profiles' auth types, and an empty list
-  // reads as "every profile is unknown, so assume all of them are" — right
-  // as a default, but it would show the password form for a beat and then
-  // swap it for the plain Restore buttons once the profiles arrived.
+  // Whether the first load finished. The restore prompt waits for it, since
+  // which panes need the vault depends on their profiles.
   const [sessionsLoaded, setSessionsLoaded] = useState(false)
   useEffect(() => {
     profiles
@@ -316,9 +246,7 @@ function App() {
       .catch(() => setSessions([]))
       .finally(() => setSessionsLoaded(true))
   }, [profilesVersion])
-  // Held here rather than fetched by WorkspaceMenu, so the connect dialog's
-  // sidebar and the toolbar menu read the same list and a save in one is
-  // immediately visible in the other.
+  // Shared by the connect dialog sidebar and the toolbar menu.
   const [workspacesVersion, setWorkspacesVersion] = useState(0)
   const [savedWorkspaces, setSavedWorkspaces] = useState<Workspace[]>([])
   useEffect(() => {
@@ -328,45 +256,21 @@ function App() {
       .catch(() => setSavedWorkspaces([]))
   }, [workspacesVersion])
   const [terminalSettings, setTerminalSettings] = useState(() => loadSettings())
-  // Mirrors vibrancyMode/theme/opacity to the native window on every change
-  // ('off' still round-trips through the Rust side, which clears both
-  // effects unconditionally — the no-op case just costs one IPC call).
   const [vaultStatus, setVaultStatus] = useState<VaultStatus>('uninitialized')
   const [osUnlockAvailable, setOsUnlockAvailable] = useState(false)
   const [maximized, setMaximized] = useState(false)
-  // Whether this window is the active one, for `unfocusedDimPercent`. Starts
-  // true: the window is focused when it opens, and assuming otherwise would
-  // flash it dim on every launch until the first event corrected it.
+  // Starts true so the window doesn't flash dim on launch.
   const [windowFocused, setWindowFocused] = useState(true)
-  // What the window should look like now: the settings themselves, except
-  // that 'glass' mode swaps in effect Off and its own opacity while unfocused.
-  // Everything that paints the window reads this rather than terminalSettings.
+  // The settings as currently applied: 'glass' mode swaps in its unfocused
+  // appearance. Everything that paints the window reads this.
   const appearance = unfocusedAppearance(terminalSettings, windowFocused)
-  // Mirrors vibrancyMode/theme/opacity to the native window on every change
-  // ('off' still round-trips through the Rust side, which clears both
-  // effects unconditionally — the no-op case just costs one IPC call). In
-  // 'glass' mode that includes every focus change, which is what turns the
-  // effect off while unfocused and back on after.
+  // Mirror the effect and tint to the native window ('off' clears both).
   useEffect(() => {
     const tint = backgroundTint(findTheme(appearance.themeName), appearance.backgroundOpacity)
     setWindowVibrancy(appearance.vibrancyMode, tint).catch(() => {})
   }, [appearance.backgroundOpacity, appearance.themeName, appearance.vibrancyMode])
-  // The quick-connect palette, a close confirmation, the launch-restore
-  // prompt and the open-workspace-needs-vault prompt used to be five
-  // separately-updated pieces of state (paletteOpen, pendingRestore,
-  // pendingClose, pendingWorkspace, restoreDecided) — nothing stopped two
-  // of them from being true at once, which is a real class of bug in an app
-  // with this many prompts. One value that can only ever be one thing at a
-  // time makes "two dialogs open simultaneously" unrepresentable instead of
-  // just unlikely.
-  //
-  // The restore-prompt decision itself used to run in a post-mount effect;
-  // it's a lazy initializer here instead; sessionSnapshot.loadSnapshot() is
-  // synchronous and local, same as terminalSettings just above, so there's
-  // nothing to wait for the DOM to exist for. That's also what lets
-  // `restoreDecided` disappear entirely below — the very first render
-  // already reflects the decision, rather than needing a moment before an
-  // effect resolves it.
+  // One modal at a time. The restore decision is made in the initializer
+  // since loading the snapshot is synchronous.
   const [modal, setModal] = useState<Modal>(() => {
     if (!terminalSettings.restoreSessionsOnLaunch) return { kind: 'none' }
     const snapshot = sessionSnapshot.loadSnapshot()
@@ -376,14 +280,10 @@ function App() {
     return { kind: 'none' }
   })
   const closeModal = () => setModal({ kind: 'none' })
-  // Derived, not stored: true from the first render onward once there was
-  // never a restore prompt to begin with, and forever after the one time
-  // the modal actually does leave 'restorePrompt'.
+  // True unless the restore prompt is still up.
   const restoreDecided = modal.kind !== 'restorePrompt'
-  // Flat list of every live (source-holding) pane across every tab — the
-  // pool that Terminal instances are portaled from, and what usePanePortals
-  // prunes its home containers against. See usePanePortals.ts for why
-  // Terminal isn't just rendered inline per tab.
+  // Every pane with a source, across all tabs: the pool Terminals are
+  // portaled from. See usePanePortals.ts.
   const connectedEntries = tabs.flatMap((tab) =>
     allLeaves(tab.root)
       .filter((leaf) => leaf.source)
@@ -391,20 +291,9 @@ function App() {
   )
   const { registerSlot, getHomeContainer } = usePanePortals(connectedEntries.map(({ leaf }) => leaf.id))
 
-  // The window starts hidden (see tauri.conf.json) specifically so this can
-  // show it only once real content is actually painted — tauri-plugin-
-  // window-state restores saved size/position via an on_window_ready hook
-  // that fires after the window's already been created (and, if visible by
-  // default, already shown) at tauri.conf.json's plain 800x600 fallback, so
-  // a visible-by-default window flashes at the wrong size for a moment
-  // before snapping to its restored geometry. Waiting for this effect
-  // (which only runs after the browser has painted this component's first
-  // render) means the window only ever appears already correctly sized and
-  // already showing the real UI, not a flash of blank/wrong-sized chrome.
-  //
-  // Fitted to the screen first, for the same reason: the restored geometry is
-  // whatever was saved, on whatever display it was saved on — see
-  // keepWindowOnScreen. A failure there must not keep the window hidden.
+  // The window starts hidden (tauri.conf.json) and is shown after the first
+  // paint, so it never flashes at the default size before window-state
+  // restores its geometry. Fitted to the screen first (keepWindowOnScreen).
   useEffect(() => {
     keepWindowOnScreen()
       .catch(() => {})
@@ -412,50 +301,31 @@ function App() {
       .catch(() => {})
   }, [])
 
-  // The tone every label, hairline and hover wash outside the terminal is
-  // drawn in, and the surface every dialog and menu is painted with — see
-  // chromeRgb and surfaceRgb. Set on the document element rather than on
-  // this component's own root because the dialogs and menus that need them
-  // are portalled out to the body, which is not inside that root.
-  //
-  // Both together, because they are two halves of one answer: the text tone
-  // flips on a light theme, so the surface under it has to move in the same
-  // breath or the two end up the same color.
+  // Chrome text tone and surface color, set on the document element because
+  // dialogs are portaled to the body. Set together: the text tone flips on a
+  // light theme, so the surface must too.
   useEffect(() => {
     const theme = findTheme(terminalSettings.themeName)
     document.documentElement.style.setProperty('--chrome-rgb', chromeRgb(theme))
     document.documentElement.style.setProperty('--surface-rgb', surfaceRgb(theme))
-    // And the widgets the browser paints rather than we do — see
-    // themeColorScheme.
+    // Also the browser-painted widgets; see themeColorScheme.
     document.documentElement.style.colorScheme = themeColorScheme(theme)
   }, [terminalSettings.themeName])
 
-  // Panes with an auto-reconnect run under way, so the per-attempt failures a
-  // run produces don't each raise a toast. A ref rather than state because the
-  // only reader is the onStatus callback, which closes over a render's state
-  // and would always see this one status behind — and because nothing renders
-  // from it: the pane draws its own reconnecting strip from its own state.
+  // Panes in an auto-reconnect run, so per-attempt failures don't toast. A
+  // ref because the onStatus callback would otherwise read stale state.
   const reconnectingPanes = useRef(new Set<string>())
 
-  // Read by the window-close hook below, which is mounted once and so can't
-  // close over the current tabs/settings. Recomputed each render rather than
-  // kept in state: it's a handful of leaves, and a stale answer here means
-  // either nagging about nothing or dropping live sessions silently.
+  // Read by the once-mounted window-close hook below.
   const closeGuardRef = useRef({ connected: 0, enabled: true })
   closeGuardRef.current = {
     connected: tabs.reduce((n, t) => n + connectedPanes(t.root), 0),
     enabled: terminalSettings.confirmCloseWithConnection,
   }
-  // Registering this listener at all changes how the window closes: the JS
-  // API destroys the window itself once the handler returns without calling
-  // preventDefault (see onCloseRequested in @tauri-apps/api). So every close
-  // now goes through destroy(), which needs core:window:allow-destroy in
-  // capabilities/default.json — without it the permission check rejects the
-  // call and the close button silently does nothing at all.
-  //
-  // Nothing is lost by destroy() here: tauri-plugin-window-state saves the
-  // geometry from the CloseRequested event, which is this one, so it has
-  // already run by the time the window goes away.
+  // With this listener registered, the JS API closes via destroy(), which
+  // needs core:window:allow-destroy in capabilities/default.json (otherwise
+  // the close button silently does nothing). Window-state saves geometry on
+  // CloseRequested, before this runs.
   useEffect(() => {
     const unlisten = getCurrentWindow().onCloseRequested((event) => {
       const { connected, enabled } = closeGuardRef.current
@@ -468,16 +338,11 @@ function App() {
     }
   }, [])
 
-  // A double-click aimed at the ✕ on the last tab must not maximize the
-  // window when the drag-region spacer slides under the second press.
+  // Stops a double-click on the last tab's ✕ from maximizing the window.
   useDragRegionDoubleClickGuard()
 
-  // Rounded corners only make sense for a floating window — a maximized
-  // one should fill the screen edge-to-edge like any other app.
-  // One listener for the whole window. Terminal.tsx has its own
-  // `onFocusChanged`, but it is per pane and only acts on regaining focus — it
-  // exists to un-wedge WebView2's refocus — so it is the wrong shape to hang a
-  // window-wide appearance change off.
+  // Window focus, for the unfocused appearance. Terminal.tsx has its own
+  // per-pane listener for refocusing.
   useEffect(() => {
     const unlisten = getCurrentWindow().onFocusChanged(({ payload }) =>
       setWindowFocused(payload),
@@ -508,17 +373,12 @@ function App() {
       .status()
       .then(setVaultStatus)
       .catch(() => {})
-    // Kept alongside vault status (rather than only fetched inside
-    // VaultMenu) so the locked-session unlock prompt in the connect
-    // dialog's sidebar can also offer "Unlock with Windows sign-in".
+    // Also lets the connect dialog's unlock prompt offer Windows sign-in.
     vault
       .osUnlockAvailable()
       .then(setOsUnlockAvailable)
       .catch(() => setOsUnlockAvailable(false))
-    // A vault import replaces sessions.json and workspaces.json too (all
-    // three travel as one bundle — see vault_export/vault_import), so
-    // anything that can change vault status also potentially changed the
-    // saved-sessions and saved-workspace lists.
+    // A vault import also replaces sessions and workspaces.
     setProfilesVersion((v) => v + 1)
     setWorkspacesVersion((v) => v + 1)
   }
@@ -527,10 +387,7 @@ function App() {
     refreshVaultStatus()
   }, [])
 
-  // The vault can also get locked from the Rust side with no frontend
-  // command in flight (Windows session-lock auto-lock) — without this, the
-  // vault menu would keep showing "unlocked" until something unrelated
-  // happened to trigger a refresh.
+  // The vault can lock from the Rust side (Windows session-lock auto-lock).
   useEffect(() => {
     const unlisten = listen('vault-locked', () => refreshVaultStatus())
     return () => {
@@ -539,26 +396,16 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Keeps the on-disk snapshot current as tabs/panes change, rather than
-  // only writing it on a clean exit — a crash or force-quit shouldn't lose
-  // it either. Gated on restoreDecided so this can't fire (and overwrite
-  // the very snapshot being offered) before the startup prompt is answered.
+  // Save the snapshot as tabs change, not only on clean exit. Waits for the
+  // restore prompt so it can't overwrite the snapshot being offered.
   useEffect(() => {
     if (!restoreDecided) return
     sessionSnapshot.saveSnapshot(tabs, activeTabId)
   }, [tabs, activeTabId, restoreDecided])
 
-  /** The snapshot carries the same captured-copy staleness a workspace does —
-   * it was written before the app last closed, and profiles can have been
-   * edited since (by another window, or by a vault import) — so it gets the
-   * same live re-resolution. Unlike a workspace its pane ids are kept, since
-   * nothing else in the window is using them yet.
-   *
-   * `vaultUsable` is passed rather than read off `vaultStatus` for the same
-   * reason materializeWorkspace takes it: the unlock paths below call this
-   * immediately after refreshVaultStatus(), whose setState hasn't landed yet,
-   * so the state still reads 'locked' and every pane just unlocked for would
-   * be blanked. */
+  /** Restores a snapshot, re-resolving each pane against current profiles.
+   * Pane ids are kept. `vaultUsable` is passed in because the unlock paths call
+   * this before the vault status state has updated. */
   function applyRestore(snapshot: SessionSnapshot, vaultUsable: boolean) {
     dispatchTabs({
       type: 'restored',
@@ -577,10 +424,8 @@ function App() {
     if (modal.kind === 'restorePrompt') applyRestore(modal.snapshot, vaultStatus === 'unlocked')
   }
 
-  /** The effects half of the vault-gated action dispatcher; the union and the
-   * routing between these live in state/vaultGate.ts, where they can be
-   * tested without a React tree. Only the parts that genuinely need App's
-   * reducers and modal state are here. */
+  /** The effects half of the vault-gated action dispatcher; the routing lives in
+   * state/vaultGate.ts. */
   const vaultGateEffects: VaultGateEffects = {
     applyRestore,
     materializeWorkspace,
@@ -599,16 +444,10 @@ function App() {
     await runVaultGatedAction(action, vaultGateEffects)
   }
 
-  /** Same as unlockAndRun, but via the OS-keychain unlock (Windows sign-in,
-   * gated by a fresh Windows Hello/PIN check on Windows) instead of a typed
-   * master password. */
+  /** Same as unlockAndRun, via OS unlock (Windows Hello/PIN). */
   async function unlockWithOsAndRun(action: VaultGatedAction) {
     await vault.unlockWithOs()
-    // The Windows Hello/PIN prompt is a native OS-level dialog, not an
-    // in-page one — closing it doesn't hand keyboard focus back to our
-    // window the way dismissing a normal modal does, so without this the
-    // terminal's own auto-focus (in Terminal.tsx, once it connects) lands
-    // on a window that isn't actually focused.
+    // The native Hello dialog doesn't return focus to our window.
     getCurrentWindow()
       .setFocus()
       .catch(() => {})
@@ -620,9 +459,7 @@ function App() {
     dispatchTabs({ type: 'tabOpened', tab: blankTab() })
   }
 
-  /** Panes in this subtree holding a live connection — what closing would
-   * drop. A pane still sitting on its connect form costs nothing to close,
-   * so only established sessions are worth interrupting anyone over. */
+  /** Panes in this subtree with a live connection, i.e. what closing would drop. */
   function connectedPanes(root: PaneNode): number {
     return allLeaves(root).filter((l) => statusByPane[l.id] === 'connected').length
   }
@@ -638,11 +475,7 @@ function App() {
   }
 
   function closeTabNow(id: string) {
-    // Every pane in the tab is gone, not just the active one — a closed
-    // split tab used to leak its runtime state (status, logging, activity,
-    // ...) for every pane but the one or two spots that happened to clean up
-    // after themselves. One dispatch per leaf, closing the class of bug
-    // rather than one instance of it.
+    // Clean up runtime state for every pane in the tab.
     const closing = tabs.find((t) => t.id === id)
     if (closing) {
       for (const leaf of allLeaves(closing.root)) {
@@ -650,17 +483,14 @@ function App() {
       }
     }
     dispatchTabs({ type: 'tabClosed', tabId: id })
-    // Tab ids are never reused, but leaving the entry behind would mean a
-    // growing set of dead ids, so it goes with the tab.
+    // Tab ids aren't reused; just don't accumulate dead ones.
     setBroadcastTabs((prev) => {
       if (!prev.has(id)) return prev
       const next = new Set(prev)
       next.delete(id)
       return next
     })
-    // Closing the active tab can reveal its neighbor, which was hidden (and
-    // so sized 0x0) until now — handled by the layoutSignature-keyed refit
-    // effect below rather than a call here, same as every other tree change.
+    // The refit for a newly revealed tab happens in the layoutSignature effect.
   }
 
   function selectTab(id: string) {
@@ -691,25 +521,14 @@ function App() {
     dispatchTabs({ type: 'tabOpened', tab })
   }
 
-  /** Reconnects one specific pane in place (generation bump remounts its
-   * Terminal, which reconnects). */
+  /** Reconnects one pane in place (a generation bump remounts its Terminal). */
   function reconnectPaneNow(tabId: string, paneId: string) {
     dispatchTabs({ type: 'paneReconnected', tabId, paneId })
   }
 
-  /** The Reconnect action, gated on the vault the same way opening a
-   * workspace is.
-   *
-   * The case this exists for: the machine sleeps, every link drops, and the
-   * vault's idle timer locks it while nothing is watching. Reconnect on a
-   * profile-backed pane then remounts the Terminal, which dials, which fails
-   * on "vault is locked" — and the button, pressed again, fails again with no
-   * hint that the missing piece is one password away. Asking for it here
-   * turns that dead end into the unlock prompt the pane actually needs.
-   *
-   * Only vault-bound panes are gated: a telnet or serial pane, or a
-   * profile whose auth needs no secret, reconnects with the vault left
-   * locked exactly as before. */
+  /** The Reconnect action, gated on the vault: after sleep the idle timer may
+   * have locked it, and a vault-bound pane would just fail again. Panes that
+   * don't need the vault reconnect directly. */
   function reconnectPane(tabId: string, paneId: string) {
     const tab = tabs.find((t) => t.id === tabId)
     const leaf = tab && allLeaves(tab.root).find((l) => l.id === paneId)
@@ -726,31 +545,18 @@ function App() {
     if (tab) reconnectPane(id, tab.activePaneId)
   }
 
-  /** Adds a saved workspace's tabs to the window and focuses its first.
-   *
-   * Additive rather than replacing: opening a workspace must never close live
-   * sessions someone is in the middle of. Opening the same one twice gives
-   * duplicate tabs, which is visible and closable — the opposite mistake
-   * isn't recoverable.
-   *
-   * When `vaultUsable` is false, panes that would need the vault open on
-   * their (prefilled) connect form instead of carrying a source that can only
-   * fail. Mounting them with the source intact is what made every tab in a
-   * workspace come up as "vault is locked" with no way forward.
-   *
-   * `refreshTabs` also re-reads each pane's profile, so a workspace saved
-   * before a profile was renamed or moved opens against what that profile is
-   * now rather than what it was.
-   */
+  /** Adds a saved workspace's tabs to the window and focuses the first. Additive,
+   * so live sessions are never closed. With `vaultUsable` false, vault-bound
+   * panes open on their prefilled connect form. `refreshTabs` re-reads each
+   * pane's profile. */
   function materializeWorkspace(
     workspace: Workspace,
     vaultUsable: boolean,
     originTabId?: string | null,
   ) {
     const restored: Tab[] = refreshTabs(workspace.tabs, sessions, vaultUsable).map((t) => {
-      // reidentify() invalidates the stored activePaneId along with every
-      // other id, so the first pane takes over — and the title has to be
-      // recomputed from that same pane, not the one refreshTabs picked.
+      // reidentify() invalidates activePaneId; use the first pane, and title it
+      // from that pane.
       const root = reidentify(t.root)
       const active = firstLeaf(root)
       return { ...t, id: newTabId(), root, activePaneId: active.id, title: leafTitle(active, t.title) }
@@ -758,19 +564,13 @@ function App() {
     dispatchTabs({ type: 'workspaceMaterialized', restored, originTabId: originTabId ?? null })
   }
 
-  /** Gates on the vault the same way the launch-restore flow does, rather
-   * than letting each pane discover the lock separately and fail. */
-  /** `originTabId` is the tab whose connect dialog launched this, so it can
-   * be consumed rather than left empty in front of the new tabs. Absent (the
-   * toolbar menu) falls back to the active tab, which is blank often enough
-   * for the same tidy-up to apply. */
+  /** Opens a workspace, prompting for the vault first if it's locked.
+   * `originTabId` is the tab whose connect dialog launched it, which is replaced
+   * rather than left blank (defaults to the active tab). */
   function openWorkspace(workspace: Workspace, originTabId?: string) {
-    // Only 'locked' is worth prompting for. With no vault created at all
-    // there is nothing to unlock, so those panes go straight to their connect
-    // forms rather than showing an unlock dialog that can't help.
+    // Only prompt when locked; with no vault there's nothing to unlock.
     if (sessionSnapshot.needsVaultUnlock(workspace.tabs, sessions) && vaultStatus === 'locked') {
-      // The origin has to survive the prompt, or unlocking would materialize
-      // the workspace next to the blank tab instead of over it.
+      // Keep the origin through the prompt.
       setModal({ kind: 'workspacePrompt', workspace, originTabId: originTabId ?? activeTabId })
       return
     }
@@ -796,10 +596,7 @@ function App() {
       form?: PaneLeaf['initial'] | null
     },
   ) {
-    // Set logging state before the source, so the Terminal mounts with logging
-    // already armed and captures output from the first byte (batched with the
-    // dispatch below in the same event, so it's a single render). The toolbar
-    // icon then reflects this and can stop it mid-session.
+    // Arm logging before the source so the log captures the first byte.
     dispatchPaneRuntime({ type: 'loggingSet', paneId, logging: logSession })
     dispatchTabs({
       type: 'paneConnected',
@@ -808,23 +605,14 @@ function App() {
       source,
       backspaceSendsCtrlH: paneOptions?.backspaceSendsCtrlH ?? null,
       autoReconnect: paneOptions?.autoReconnect ?? null,
-      // Only the connect dialog's save-and-connect path supplies this. The
-      // sidebar path goes through `applyProfileToPane`, which already carries
-      // the whole profile.
+      // Only from the connect dialog's save-and-connect path.
       initialLabel: paneOptions?.label ?? null,
       initialForm: paneOptions?.form ?? null,
     })
   }
 
-  /** Clears a pane's connection back to blank (reopening the connect
-   * dialog in place) without touching the rest of the tab/tree — the only
-   * way back for a pane whose connection failed (bad credential, unreachable
-   * host, etc.), since closing it would otherwise take any sibling panes in
-   * the same split down with it too, and simply retrying replays the exact
-   * same failing source. `initial` is kept (not cleared) so the dialog
-   * reopens pre-filled with the same profile, in case the fix is just
-   * editing it (e.g. re-importing a missing vaulted key) rather than
-   * picking something else entirely. */
+  /** Returns a pane to its (prefilled) connect dialog without touching the rest
+   * of the tab; the way back from a failed connection. */
   function disconnectPane(tabId: string, paneId: string) {
     dispatchTabs({ type: 'paneDisconnected', tabId, paneId })
   }
@@ -834,9 +622,7 @@ function App() {
   }
 
   function splitPane(tabId: string, paneId: string, direction: 'horizontal' | 'vertical') {
-    // The limit check also lives on the toolbar buttons, which disable
-    // themselves at a limit — this only catches a caller that hasn't asked
-    // first, and the reducer itself no-ops past the cap regardless.
+    // Toolbar buttons check the limit first; the reducer also caps it.
     dispatchTabs({ type: 'paneSplit', tabId, paneId, direction })
   }
 
@@ -846,8 +632,7 @@ function App() {
 
   function toggleForwards(paneId: string) {
     dispatchPaneRuntime({ type: 'panelToggled', paneId, panel: 'forwards' })
-    // Both panels anchor to the same corner of the pane — keep them
-    // mutually exclusive rather than stacking or overlapping.
+    // The panels share a corner, so only one is open.
     dispatchPaneRuntime({ type: 'panelSet', paneId, panel: 'files', open: false })
   }
 
@@ -861,14 +646,9 @@ function App() {
   }
 
   /**
-   * A path in a pane's output was clicked: find it on that pane's host and
-   * show it in the files panel — the directory itself, or a file picked out in
-   * its parent.
-   *
-   * Looked up before the panel moves, because detection only knows the text
-   * looks like a path. `and/or`, a path printed before a `cd`, or one on some
-   * other machine all read the same, and the honest answer to each is "not
-   * found" rather than a panel opened on the wrong place.
+   * A path in a pane's output was clicked: look it up on that pane's host and
+   * show it in the files panel (the directory, or the file in its parent).
+   * Looked up first, since detection only knows it looks like a path.
    */
   async function openPathInFiles(paneId: string, path: string) {
     const sessionId = sessionIdByPane[paneId]
@@ -888,8 +668,7 @@ function App() {
           toast.error(`Not found on the host: ${abs}`)
           return
         }
-        // A listing describes a symlink as itself, not what it points at, so a
-        // link to a directory needs asking directly.
+        // A listing describes a symlink itself; ask whether it's a directory.
         const isDir =
           entry.isDir ||
           (entry.isSymlink &&
@@ -908,14 +687,9 @@ function App() {
   }
 
   /**
-   * A path in a local pane's output was clicked: open it on this machine.
-   *
-   * A relative path is tried against the directory the shell last reported,
-   * then the one the pane started in; the backend adds home after both, which
-   * is where a pane with no configured directory starts. Most Windows shells
-   * report nothing unless their prompt is set up to, so the start directory is
-   * often the only thing to go on — and the lookup is what keeps a wrong guess
-   * from opening the wrong file.
+   * A path in a local pane's output was clicked: open it on this machine. A
+   * relative path is tried against the last reported directory, then the
+   * pane's start directory; the backend adds home.
    */
   async function openLocalPathFor(paneId: string, source: ConnectionSource, path: string) {
     const launched =
@@ -932,8 +706,7 @@ function App() {
           toast.error(`Not found: ${path}`)
           break
         case 'revealed':
-          // Said, because Explorer opening instead of the file is otherwise a
-          // mystery — and the reason is the whole point.
+          // Explain why Explorer opened instead of the file.
           toast.info(`${outcome.path} is a program or script, so it was shown in Explorer rather than run.`)
           break
         default:
@@ -960,11 +733,7 @@ function App() {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
     if (!closeLeaf(tab.root, paneId)) {
-      // Already confirmed as a pane close if it needed to be — going through
-      // closeTab here would ask a second time for the same one connection.
-      // closeTabNow dispatches paneClosed for every leaf still in the tab
-      // (just this one, here), so there's nothing left to clean up on this
-      // path.
+      // Already confirmed as a pane close; closeTabNow cleans up this leaf.
       closeTabNow(tabId)
       return
     }
@@ -972,9 +741,8 @@ function App() {
     dispatchTabs({ type: 'paneClosed', tabId, paneId })
   }
 
-  /** Extracts a pane out of its (split) tab into its own new tab. The leaf
-   * object — and the pooled Terminal/session it identifies — carries over
-   * untouched; only its tree position changes. */
+  /** Moves a pane out of its split into a new tab. The leaf, and its pooled
+   * Terminal and session, carry over untouched. */
   function popPaneToNewTab(tabId: string, paneId: string) {
     const tab = tabs.find((t) => t.id === tabId)
     if (!tab) return
@@ -989,49 +757,26 @@ function App() {
     dispatchTabs({ type: 'panePoppedToNewTab', tabId, paneId, poppedTab })
   }
 
-  /** Attaches a dragged tab's connection into an empty pane elsewhere,
-   * closing the tab it came from. Same principle as popPaneToNewTab: the
-   * leaf object moves, its id (and therefore its pooled Terminal) doesn't
-   * change, so the live session is untouched by the move. */
+  /** Attaches a dragged tab's connection into an empty pane elsewhere, closing
+   * the source tab. The leaf keeps its id, so the session is untouched. */
   function attachTabToPane(targetPaneId: string, draggedTabId: string) {
     const draggedTab = tabs.find((t) => t.id === draggedTabId)
     if (!draggedTab || draggedTab.root.type !== 'leaf' || !draggedTab.root.source) return
     const draggedLeaf: PaneLeaf = draggedTab.root
-    // Whatever was at targetPaneId before is discarded from the tree by the
-    // reducer — its own leaf id is targetPaneId, since that's how it was
-    // found — so its runtime state (if it has any at all) needs to go too,
-    // same as any other pane that stops being reachable in the tree. The
-    // dragged leaf itself keeps its own id and needs no such cleanup; it's
-    // still live, just relocated.
+    // The pane being replaced leaves the tree, so drop its runtime state.
     const replacedExisting = tabs.some((t) => t.id !== draggedTabId && findLeaf(t.root, targetPaneId))
     if (replacedExisting) dispatchPaneRuntime({ type: 'paneClosed', paneId: targetPaneId })
     dispatchTabs({ type: 'tabAttachedToPane', targetPaneId, draggedTabId })
     toast.success(`Attached ${leafTitle(draggedLeaf, sourceLabel(draggedLeaf.source!))}`)
   }
 
-  // Shared by both "open in a new tab" (openSavedSession) and "load into
-  // this pane" (connectPaneFromProfile): resolves whether we can skip the
-  // manual connect form and go straight to connecting, with the secret (if
-  // any) resolved on the Rust side, never sent to the frontend — plus the
-  // prefill data for the connect form either way.
-  //
-  // Password auth always needs a secret to connect at all, so it only goes
-  // direct when the vault actually has one saved. Public-key auth doesn't
-  // necessarily need one — an unencrypted key connects fine with no
-  // passphrase — and there's no way to know from here whether the key on
-  // disk is actually encrypted, so it always goes direct (once the vault is
-  // unlocked); if the key does turn out to need a passphrase that isn't
-  // saved, the connection just fails the same way a stale saved password
-  // would, which this app already treats as an acceptable outcome of
-  // auto-connecting rather than a reason to withhold it.
-  //
-  // Agent auth needs neither a secret nor an unlocked vault — the agent holds
-  // the key — so it always connects direct, and notably does *not* wait on
-  // the vault the way the other two do.
+  // Shared by openSavedSession and connectPaneFromProfile: decides whether to
+  // connect directly (secrets resolve on the Rust side) and returns the form
+  // prefill either way. Password auth goes direct only with a saved secret;
+  // public-key auth goes direct once the vault is unlocked (whether the key is
+  // encrypted is unknown here); agent auth always goes direct.
   async function resolveProfileSource(profile: SessionProfile) {
-    // Telnet has no credential to resolve and nothing for the Rust side to
-    // look up, so it connects straight from the profile's own fields — no
-    // vault involvement, and no `telnetProfile` source variant needed.
+    // Telnet has no credential and connects straight from the profile.
     if (profile.protocol === 'telnet') {
       return {
         source: {
@@ -1042,11 +787,8 @@ function App() {
       }
     }
 
-    // Serial has no credential either, but unlike telnet it *does* need a
-    // backend round trip: the profile stores the adapter's USB identity, and
-    // only the Rust side can turn that into whichever COM number the adapter
-    // holds right now. Hence a `serialProfile` source rather than a config
-    // built from stored fields.
+    // Serial needs a backend round trip to map the adapter's USB identity to
+    // its current COM number.
     if (profile.protocol === 'serial') {
       return {
         source: { protocol: 'serialProfile' as const, profileId: profile.id },
@@ -1054,17 +796,11 @@ function App() {
       }
     }
 
-    // A local shell has no credential and needs a round trip for the same
-    // shape of reason serial does: the stored path is only true until the
-    // shell is upgraded, and the backend re-resolves the saved `shellId`
-    // against what is installed now. The id travels alongside so the webview
-    // can tell whether this is a shell whose history it should record without
-    // asking — see `historyKeyForSource`.
+    // Local shells re-resolve `shellId` on the backend (paths change on
+    // upgrade). The id also tells `historyKeyForSource` what to record.
     if (profile.protocol === 'local') {
-      // A saved administrator session goes through the elevated host, and is
-      // opened by its detected shell id only — which is all the host will
-      // accept. One that has lost its id (a hand-typed shell) cannot be
-      // elevated, and opens the form instead of quietly running unelevated.
+      // Administrator sessions open by detected shell id only; without one, open
+      // the form rather than running unelevated.
       if (profile.local?.elevated) {
         const shellId = profile.local.shellId
         return {
@@ -1104,18 +840,14 @@ function App() {
     dispatchTabs({ type: 'tabOpened', tab })
   }
 
-  /** Applies a source/initial pair to an already-open pane, in place —
-   * shared by connectPaneFromProfile, editPaneFromProfile, and
-   * unlockVaultAndConnectProfile below. */
-  /** Whether the saved session behind this source asks to be logged. Read from
-   * the live profile list rather than anything copied into the pane, so every
-   * route a saved session opens by — the sidebar, a restore, a workspace —
-   * agrees, and an edit takes effect on the next connect. */
+  /** Whether the saved session behind this source asks to be logged, read from
+   * the live profile list so every route agrees and edits apply next connect. */
   function profileLogsSession(source: ConnectionSource): boolean {
     const id = 'profileId' in source ? source.profileId : null
     return !!id && sessions.some((p) => p.id === id && p.logSession === true)
   }
 
+  /** Applies a source/initial pair to an already-open pane, in place. */
   function applyProfileToPane(
     tabId: string,
     paneId: string,
@@ -1125,31 +857,21 @@ function App() {
     dispatchTabs({ type: 'paneProfileApplied', tabId, paneId, source, initial })
   }
 
-  /** Loads a saved session into an already-open (blank) pane, in place —
-   * used by the saved-sessions sidebar inside that pane's own connect
-   * dialog, so picking a session there doesn't spawn a whole new tab. */
+  /** Loads a saved session into an already-open (blank) pane, from that pane's
+   * connect dialog sidebar. */
   async function connectPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
     const { source, initial } = await resolveProfileSource(profile)
     applyProfileToPane(tabId, paneId, source, initial)
   }
 
-  /** Populates the form from this profile without ever auto-connecting —
-   * the only way to edit a session's saved details rather than just reuse
-   * them, since a plain pick auto-connects whenever the vault already has
-   * a credential for it. */
+  /** Fills the form from this profile without auto-connecting, for editing. */
   function editPaneFromProfile(tabId: string, paneId: string, profile: SessionProfile) {
     applyProfileToPane(tabId, paneId, null, profileToInitial(profile))
   }
 
   function deleteSessionProfile(profile: SessionProfile) {
-    // Deleting the profile doesn't touch the vault on its own — without
-    // this, a profile with hasCredential would leave its actual credential
-    // orphaned in the vault, keyed by an id nothing references anymore.
-    // Best-effort: the profile itself is still gone either way, even if the
-    // vault happens to be locked right now and can't be reached. The backend
-    // sweeps whatever this misses on the next unlock (see
-    // `prune_orphaned_credentials`), which is the only place it *can* be
-    // done — a locked vault can't have an entry removed from it at all.
+    // Remove the profile's vault credential too. Best-effort: if the vault is
+    // locked, `prune_orphaned_credentials` sweeps it on the next unlock.
     if (profile.hasCredential) {
       vault.deleteCredential(profile.id).catch(() => {})
     }
@@ -1162,10 +884,7 @@ function App() {
       .catch((err) => toast.error(`Couldn't delete session: ${err}`))
   }
 
-  // Fire-and-forget by design: a magic packet is a UDP broadcast with no
-  // acknowledgment of any kind, so "sent" is the only thing that can honestly
-  // be reported. Whether the machine actually wakes is answered by connecting
-  // to it, which is the other half of the feature.
+  // A magic packet is unacknowledged UDP, so "sent" is all we can report.
   function wakeSessionProfile(profile: SessionProfile) {
     profiles
       .wakeSession(profile.id)
@@ -1174,8 +893,7 @@ function App() {
   }
 
   // Returns the promise so ConnectDialog can await the write before
-  // connecting through the profile it just saved — otherwise the connection
-  // reads whatever was on disk beforehand.
+  // connecting through the saved profile.
   function saveProfile(profile: SessionProfile) {
     return profiles
       .saveSession(profile)
@@ -1225,12 +943,8 @@ function App() {
   }
 
   /**
-   * A step up or down the font size, or back to the default.
-   *
-   * Through the same setting the slider writes, so zooming is not a second,
-   * temporary size that a visit to Settings would silently undo — and so it
-   * persists, which is what anyone who has just made the text bigger expects
-   * of the next window they open.
+   * A step up or down the font size, or back to the default. Writes the setting
+   * itself, so zoom persists and Settings agrees.
    */
   function zoomFont(step: number | 'reset') {
     const current = terminalSettings.fontSize
@@ -1242,9 +956,7 @@ function App() {
     updateSettings({ ...terminalSettings, fontSize: next })
   }
 
-  // Keydown handlers close over state that changes every render; rather than
-  // re-subscribing the listener on every change, keep a ref to the latest
-  // callbacks and mount the listener once.
+  // Mount the keydown listener once and read the latest callbacks from a ref.
   const shortcutsRef = useRef({
     newTab,
     closeTab,
@@ -1265,19 +977,15 @@ function App() {
   }
 
   useEffect(() => {
-    // Capture phase so these fire before the engine's own keydown handler can
-    // treat them as shell input. The chords are configurable — see
-    // lib/keybindings.ts, which also says why the tab defaults avoid plain
-    // Ctrl combos (Ctrl+W deletes a word in most shells).
+    // Capture phase so these fire before the engine sees them. The chords are
+    // configurable; see lib/keybindings.ts.
     function onKeyDown(e: KeyboardEvent) {
-      // Settings is recording a chord; acting on it too would open the tab
-      // the user was trying to bind a key to.
+      // Settings is recording a chord.
       if (isRecordingShortcut()) return
       const s = shortcutsRef.current
       const action = actionForEvent(e, s.keybindings, 'window')
       if (!action) return
-      // What keeps a claimed chord off the far end: the engine's input
-      // handler skips any event that has already been consumed.
+      // The engine's input handler skips consumed events.
       e.preventDefault()
       switch (action) {
         case 'zoomIn':
@@ -1311,40 +1019,31 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [])
 
-  // Split/logging/port-forwarding controls act on whichever pane is
-  // currently focused, rather than living as buttons on the pane itself.
+  // Toolbar controls act on the focused pane.
   const activeTab = tabs.find((t) => t.id === activeTabId)
   const activeLeaf = activeTab && allLeaves(activeTab.root).find((l) => l.id === activeTab.activePaneId)
   const activePaneId = activeTab?.activePaneId
   const activeIsSsh =
     activeLeaf?.source?.protocol === 'ssh' || activeLeaf?.source?.protocol === 'sshProfile'
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
-  // Per-direction, because the limits are per-axis: a tab that's four panes
-  // tall can still be split sideways, and only the button that would breach
-  // a cap goes dim.
+  // Per direction: split limits are per axis.
   const splitBlocked = (direction: 'horizontal' | 'vertical'): SplitLimit | null =>
     activeTab && activePaneId ? splitBlocker(activeTab.root, activePaneId, direction) : null
   const rightBlocked = splitBlocked('horizontal')
   const downBlocked = splitBlocked('vertical')
 
-  // Status-bar readout for the active pane: a display protocol tag plus a
-  // resolved target string. sshProfile carries only an id, so its label is
-  // looked up from saved sessions; serial appends its baud + framing (e.g.
-  // "115200 8N1") since that's the identifying detail for a serial link.
+  // Status-bar readout for the active pane: protocol tag plus target.
   const activePaneLeaves = activeTab ? allLeaves(activeTab.root) : []
   const statusBarConn = ((): { protocol: string; target: string } | null => {
     const src = activeLeaf?.source
     if (!src) return null
     switch (src.protocol) {
       case 'ssh':
-        // sourceLabel gives user@host; append the port here so the status bar
-        // shows the full endpoint (useful when it isn't the default 22).
+        // Include the port.
         return { protocol: 'SSH', target: `${sourceLabel(src)}:${src.config.port}` }
       case 'sshProfile': {
         const p = sessions.find((s) => s.id === src.profileId)
-        // Show the resolved endpoint (user@host:port), matching the direct-ssh
-        // case, rather than the profile's display label. Falls back to the raw
-        // id only if the profile can't be found (then its fields are gone too).
+        // The resolved endpoint, falling back to the id if the profile is gone.
         const target = p ? `${p.username}@${p.host}:${p.port}` : src.profileId
         return { protocol: 'SSH', target }
       }
@@ -1359,31 +1058,22 @@ function App() {
         const p = sessions.find((s) => s.id === src.profileId)?.serial
         if (!p) return { protocol: 'SERIAL', target: src.profileId }
         const framing = `${dataBitsDigit(p.dataBits)}${p.parity[0]}${p.stopBits === 'Two' ? 2 : 1}`
-        // The adapter, not the COM number: the port is resolved at connect
-        // time and may not be the one stored, so showing the stored name here
-        // would be showing something that isn't true.
+        // The adapter, not the stored COM number, which may not be current.
         const adapter = p.identity.usb?.serialNumber ?? p.identity.portName
         return { protocol: 'SERIAL', target: `${adapter} · ${p.baudRate} ${framing}` }
       }
-      // The shell's name plus its arguments, which is the whole of what
-      // identifies a local session — there is no endpoint to resolve. A WSL
-      // profile reads as `wsl -d Ubuntu`, which is what makes two of them
-      // distinguishable in the status bar.
+      // The shell and its arguments (e.g. `wsl -d Ubuntu`).
       case 'local': {
         const args = src.config.args.join(' ')
         const label = sourceLabel(src)
         return { protocol: 'LOCAL', target: args ? `${label} ${args}` : label }
       }
-      // The command lives in the saved profile, so this shows the profile's
-      // own label — the same thing sshProfile and serialProfile do, and for
-      // the same reason: the id on its own says nothing to a human.
+      // The profile's label.
       case 'localProfile': {
         const p = sessions.find((s) => s.id === src.profileId)
         return { protocol: 'LOCAL', target: p?.label ?? src.profileId }
       }
-      // Decision 5: "Administrator" in the bar, always, so the one tab that
-      // can do damage is named wherever the eye lands. The tag is ADMIN rather
-      // than LOCAL for the same reason.
+      // Always labeled Administrator, with an ADMIN tag.
       case 'elevated': {
         const p = src.profileId ? sessions.find((s) => s.id === src.profileId) : undefined
         return { protocol: 'ADMIN', target: `${p?.label ?? src.shellId} · Administrator` }
@@ -1394,26 +1084,14 @@ function App() {
     ? activePaneLeaves.findIndex((l) => l.id === activePaneId) + 1
     : 0
 
-  // Shared with the tab strip, where the active tab takes it as its own fill
-  // so that tab and terminal read as one surface, and with panes that have no
-  // connection yet, which paint it for themselves so waiting for one doesn't
-  // look different from having one.
-  //
-  // Three surfaces, three values, all equal while focused. They differ only
-  // while unfocused, because the areas they build are stacked to different
-  // depths and have to fade by the same visible amount — see
-  // `effectiveBackgroundLayers`. The terminal's value reaches the engine
-  // through the settings the panes receive, which costs one redraw per focus
-  // change: `setTheme` updates a uniform and flags the frame dirty, rather than
-  // anything being composited with CSS opacity on every frame.
+  // Background opacity per surface. Equal while focused; while unfocused they
+  // differ because the surfaces are stacked to different depths (see
+  // `effectiveBackgroundLayers`). The terminal's value reaches the engine via
+  // settings, a uniform update rather than CSS opacity.
   const backgroundLayers = effectiveBackgroundLayers(appearance, windowFocused)
   const configuredTheme = findTheme(terminalSettings.themeName)
-  // Unfocused, every surface also changes color, to the tab strip's: the
-  // lighter tone the inactive tabs already sit in. Thinning the background
-  // alone only reveals what is behind the window, and under Mica that is a
-  // flat gray Windows picks — about as dark as Tokyo Night itself — so the
-  // fade was invisible there and the strip, losing its wash, went darker.
-  // The color change reads the same over any wallpaper and any backdrop.
+  // Unfocused, every surface also takes the tab strip's color: thinning alone
+  // is invisible under Mica's flat gray backdrop.
   const faded = !windowFocused && appearance.unfocusedDimPercent > 0
   const backgroundOverride = faded ? stripColor(configuredTheme) : null
   const paneSettings =
@@ -1431,35 +1109,15 @@ function App() {
       className={`flex h-screen w-screen flex-col overflow-hidden ${
         maximized ? '' : 'rounded-lg border border-chrome/10'
       }`}
-      // The window's own background, which every other surface sits on.
       style={{ background: rootBackground }}
     >
-      {/* No bottom hairline: the tabs above it have rounded tops now, and a
-       * line running under the active one cut it off from the terminal it
-       * belongs to — the opposite of what the shape is for. Erasing the line
-       * only under that tab isn't available to us (every fill here is
-       * translucent, so overpainting a translucent border tints it rather than
-       * removing it, and segmenting the line leaves 2px breaks at the gaps
-       * between tabs). Dropping it outright is the better answer anyway: the
-       * strip's own wash is what separates it from the terminal by tone, and
-       * the active tab, painted in the terminal's own color, now runs
-       * straight down into it with nothing crossing the join. */}
+      {/* No bottom hairline: the active tab runs straight down into the
+          terminal, and the strip's wash separates it by tone. */}
       <div
         className="flex h-10 shrink-0 items-stretch"
-        // Away from the theme's background rather than a fixed direction —
-        // see stripOverlay. A hardcoded bg-black/20 here had nowhere to go on
-        // Campbell and left the strip, the quiet tabs and the active tab all
-        // the same color.
-        //
-        // Dropped while the window is faded. The active tab sits on this wash
-        // and is meant to read as the top of the terminal, but it is
-        // translucent, so the wash shows through it — and the thinner the tab
-        // gets as the window fades, the more does, until the tab is visibly
-        // lighter than the terminal it belongs to. No tab opacity cancels it:
-        // a translucent layer cannot hide added light. Focused, the tab is
-        // nearly opaque and what leaks through is a fraction of a level;
-        // faded, there is no wash to leak, and the strip still separates from
-        // the tab by being the more see-through of the two.
+        // Away from the theme background (see stripOverlay). Dropped while faded:
+        // the translucent active tab would otherwise show the wash through it and
+        // look lighter than its terminal.
         style={{
           background:
             windowFocused || appearance.unfocusedDimPercent <= 0
@@ -1488,19 +1146,12 @@ function App() {
         />
         <div
           data-tauri-drag-region
-          // Never narrower than this: it is the one place along the strip that
-          // is nothing but a handle for the window, and it used to shrink to
-          // nothing as tabs were added. The tabs scroll before it gives way.
+          // Keeps a minimum width as a window drag handle.
           className={`min-w-12 flex-1 transition-colors duration-100 ${
             paneDragOverSpacer ? 'bg-sky-400/10' : ''
           }`}
           onDoubleClick={() => getCurrentWindow().toggleMaximize()}
-          // The rest of what visually reads as "the tab bar" — everything
-          // to the right of the last real tab/the "+" button — is this
-          // separate drag-region spacer, not part of <TabBar> itself, so it
-          // needs its own acceptance of a pane being dragged out of a split
-          // (see the grip in Pane.tsx) or dropping anywhere here would
-          // silently do nothing.
+          // Accepts a pane dragged out of a split (see the grip in Pane.tsx).
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes(DRAG_PANE_MIME)) return
             e.preventDefault()
@@ -1531,10 +1182,8 @@ function App() {
                 <Search size={15} strokeWidth={2} />
               </button>
             )}
-            {/* Only offered on a tab with more than one pane: on a single
-                pane "broadcast" and "type normally" are the same thing, and a
-                mode that appears to do nothing is how a user learns to leave
-                it on. */}
+            {/* Only on a tab with more than one pane, where broadcasting means
+                something. */}
             {activeTab && allLeaves(activeTab.root).length > 1 && (
               <button
                 className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
@@ -1576,10 +1225,7 @@ function App() {
                     ? 'text-chrome/90'
                     : 'text-chrome/50 hover:text-chrome/90'
                 }`}
-                // Marks this button as part of the panel's own interaction
-                // scope, so the panel's click-away doesn't treat opening it as
-                // a click elsewhere. Without it the panel closed on the very
-                // click that opened it.
+                // Part of the panel's interaction scope, so opening it isn't a click-away.
                 data-forward-toggle
                 title="Port forwarding"
                 onClick={() => activePaneId && toggleForwards(activePaneId)}
@@ -1601,9 +1247,7 @@ function App() {
                 <Folder size={15} strokeWidth={2} />
               </button>
             )}
-            {/* Kept visible-but-disabled at the split limit rather than
-                hidden: buttons vanishing from the toolbar reads as a bug,
-                whereas a dimmed one with a tooltip explains itself. */}
+            {/* Disabled rather than hidden at the split limit, with a tooltip. */}
             <button
               disabled={!!rightBlocked}
               className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
@@ -1660,10 +1304,7 @@ function App() {
           {tabs.map((tab) => (
             <div
               key={tab.id}
-              // No margin/padding here on purpose — the terminal itself
-              // owns its own theme-matched inset now (see Terminal.tsx),
-              // which is the only place that can never drift out of sync
-              // with whatever color it actually paints.
+              // No padding; Terminal paints its own theme-matched inset.
               className="absolute inset-0"
               style={{ display: tab.id === activeTabId ? undefined : 'none' }}
             >
@@ -1688,11 +1329,7 @@ function App() {
                 workspaces={savedWorkspaces}
                 onOpenWorkspace={(w) => openWorkspace(w, tab.id)}
                 onFocusPane={(paneId) => focusPane(tab.id, paneId)}
-                // `paneOptions` carries the connect dialog's "Backspace key
-                // sends" choice. Dropping it here — which this did — left the
-                // setting with no effect on any connection made through the
-                // dialog; only panes restored from a saved profile got it,
-                // because those read it from the profile instead.
+                // `paneOptions` carries the dialog's Backspace setting.
                 onConnect={(paneId, config, logSession, paneOptions) =>
                   connectPane(tab.id, paneId, config, logSession, paneOptions)
                 }
@@ -1721,22 +1358,11 @@ function App() {
           ))}
           {connectedEntries.map(({ tab, leaf }) => {
             if (!leaf.source) return null
-            // Always the same element for this leaf's whole connected
-            // lifetime — see the useLayoutEffect above for why.
+            // The same element for this leaf's whole connected lifetime.
             const slot = getHomeContainer(leaf.id)
             return createPortal(
-              // React portals bubble events according to the *React* tree,
-              // not the DOM tree — this content's React parent is wherever
-              // createPortal was called (here, inside App), not
-              // PaneLeafView, so PaneLeafView's own onMouseDown/
-              // onFocusCapture never actually fire for clicks inside a
-              // connected terminal. That silently broke pane-focus tracking
-              // the moment a pane had a live connection (still worked for
-              // an unconnected ConnectDialog pane, which isn't portaled),
-              // which is why "move to new tab" looked broken — it was
-              // acting on a stale activePaneId. Re-declaring the focus
-              // handlers here, actually inside the portal's real React
-              // ancestry, fixes it.
+              // Portals bubble events through the React tree, so PaneLeafView's focus
+              // handlers never see clicks in a connected terminal; declare them here.
               <div
                 className="relative h-full w-full"
                 onFocusCapture={() => focusPane(tab.id, leaf.id)}
@@ -1763,58 +1389,21 @@ function App() {
                   broadcasting={broadcastTabs.has(tab.id)}
                   searchRequest={searchRequest}
                   onStatus={(s) => {
-                    // The connectedAt coupling (stamp once per connected run,
-                    // drop on anything else, so the uptime clock resets on
-                    // reconnect instead of counting through the outage) lives
-                    // in the reducer now — see paneRuntime.ts's statusChanged
-                    // case.
+                    // The reducer manages connectedAt; see paneRuntime.ts.
                     dispatchPaneRuntime({ type: 'statusChanged', paneId: leaf.id, status: s, now: Date.now() })
-                    // Surfaced even for background tabs — otherwise a
-                    // failed connection in a tab you're not looking at is
-                    // silent.
-                    //
-                    // Not while an auto-reconnect run is under way, though.
-                    // Each attempt reports its own failure from inside the
-                    // transport, so a run would raise a dozen toasts for one
-                    // outage and bury the reconnecting state under its own
-                    // progress. Giving up arrives as a final `failed` with the
-                    // run's last error in it, by which point the pane is no
-                    // longer reconnecting and this fires — one toast, carrying
-                    // the reason that actually matters.
+                    // Toast failures even in background tabs, but not per attempt during an
+                    // auto-reconnect run; giving up arrives as a final `failed`.
                     if (s.startsWith('failed') && !reconnectingPanes.current.has(leaf.id)) {
                       toast.error(s.replace(/^failed: /, ''))
                     }
-                    // A ref, not `statusByPane`: this callback closes over the
-                    // state from the render that installed it, so the map it
-                    // can see is always one status behind — the same staleness
-                    // the close-on-disconnect note below was written about.
+                    // A ref, since this callback's closure sees stale state.
                     if (parseReconnecting(s)) reconnectingPanes.current.add(leaf.id)
                     else if (s === 'connected' || s.startsWith('failed')) {
                       reconnectingPanes.current.delete(leaf.id)
                     }
-                    // A clean remote-initiated disconnect (the shell
-                    // exited, the server hung up) closes the pane on its
-                    // own rather than leaving a dead terminal sitting open
-                    // — but only a clean disconnect, not a failure, since
-                    // the error should stay visible until the user
-                    // dismisses it themselves.
-                    // closePaneNow, not closePane: there is nothing to
-                    // confirm here. The session has already ended — usually
-                    // because the user typed `exit` — so asking whether they
-                    // meant to drop it is both wrong and unanswerable.
-                    //
-                    // Going through the guarded closePane also asked at the
-                    // wrong time regardless: this callback's closure holds
-                    // the statusByPane from the render that ran *before* the
-                    // update above committed, so the check 800ms later still
-                    // read the pane as connected.
-                    //
-                    // A *clean* disconnect only — see `shouldAutoClosePane`.
-                    // This used to fire on `lost` too, which meant the setting
-                    // quietly disabled auto-reconnect for everyone who had it
-                    // on (it is on by default): closing the pane removes the
-                    // session id, and that is exactly what stops a reconnect
-                    // run. The two were never actually in conflict.
+                    // A clean remote disconnect (e.g. `exit`) closes the pane, without
+                    // confirmation since the session already ended. Never on `lost`, which
+                    // would stop auto-reconnect; see `shouldAutoClosePane`.
                     if (shouldAutoClosePane(s, terminalSettings.closeOnDisconnect)) {
                       setTimeout(() => closePaneNow(tab.id, leaf.id), 800)
                     }
@@ -1833,24 +1422,13 @@ function App() {
                     dispatchPaneRuntime({ type: 'progressChanged', paneId: leaf.id, progress })
                   }
                   onProgressComplete={(durationMs) => {
-                    // The moment a full-screen program over SSH finally has
-                    // something to say. While it works the running marker
-                    // covers it, but that marker vanishes the instant it
-                    // stops — so without this, coming back from another app
-                    // means finding a tab that looks exactly as idle as one
-                    // that never ran anything.
+                    // A full-screen program finished; leave a marker so the tab doesn't look
+                    // idle.
                     if (durationMs < PROGRESS_NOTIFY_THRESHOLD_MS) return
-                    // Same "was this pane in view" test as a bell — the other
-                    // half of a split finishing still deserves a marker.
+                    // Same in-view test as a bell.
                     if (leaf.id === focusedPaneId && document.hasFocus()) return
                     dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
-                    // Marker and flash, but no toast or notification, which is
-                    // the bell's treatment rather than a command completion's.
-                    // All this knows is that something stopped: it has no
-                    // command line, no exit code and no text, so a notification
-                    // would say nothing the flashing button doesn't. A program
-                    // with something to say can say it — that's OSC 9/777, and
-                    // it goes through onRemoteNotify below.
+                    // Marker and flash only: there's nothing to say in a notification.
                     if (!document.hasFocus()) void flashWindow()
                   }}
                   onRemoteTitle={(title) =>
@@ -1868,55 +1446,30 @@ function App() {
                   }}
                   onRemoteNotify={(notification) => {
                     if (!terminalSettings.remoteNotifications) return
-                    // The pane's name is prepended rather than used as the
-                    // title, so remote text can never occupy the line a user
-                    // reads as the app speaking. A hostile host gets to say
-                    // something; it does not get to say it *as* wRusTTY.
+                    // Prefix with the pane name so remote text never looks like the app.
                     const from = notification.title
                       ? `${tab.title}: ${notification.title}`
                       : tab.title
-                    // Same "was this pane in view" test as a bell or a
-                    // completion — a notification from the other half of a
-                    // split still deserves a marker.
+                    // Same in-view test as a bell.
                     if (!(leaf.id === focusedPaneId && document.hasFocus())) {
                       dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                     }
-                    // Shown even for the pane you are watching, unlike a
-                    // command completion. A completion is inferred, so it has
-                    // to guess whether you needed telling; this was asked for
-                    // by name, and swallowing it would make the sequence
-                    // unreliable in the one case its sender can't detect.
+                    // Shown even for the watched pane: it was asked for explicitly.
                     if (document.hasFocus()) {
                       toast.info(`${from} — ${notification.body}`)
                       return
                     }
-                    // The body is deliberately dropped on the native path, the
-                    // same call `describeCommandResultBriefly` makes and for a
-                    // stronger reason: this is 200 characters an attacker
-                    // chose, and the native branch fires precisely when nobody
-                    // is at the screen — on Windows that is the lock screen of
-                    // a machine the user has walked away from. Whoever walks up
-                    // to it is the person `session_lock.rs` exists for, and one
-                    // policy has to cover both channels.
-                    //
-                    // The pane name survives, because a notification whose job
-                    // is to bring you back to the window has to say which one.
-                    // The body is one alt-tab away in the toast path.
+                    // The body is dropped on the native path (it may show on the lock screen;
+                    // see `describeCommandResultBriefly`).
                     void notifyInBackground(tab.title, 'sent a notification')
                   }}
                   onCommandComplete={(result) => {
                     if (!terminalSettings.notifyOnCommandComplete) return
-                    // A full-screen program (vim, top) that you quit a moment
-                    // ago isn't a background job landing.
+                    // Not for full-screen programs.
                     if (result.interactive) return
                     if (result.durationMs < COMMAND_NOTIFY_THRESHOLD_MS) return
-                    // The marker and the toast have different bars, because
-                    // they cost different amounts of attention. The marker is
-                    // passive, so it only needs you to not have been watching
-                    // *this pane* — the other half of a split finishing while
-                    // you work in this one is exactly what it's for. The toast
-                    // interrupts, so it waits until the whole tab is out of
-                    // view and you had no way of seeing it at all.
+                    // The passive marker needs only this pane out of view; the toast waits
+                    // until the whole tab is.
                     const paneInView = leaf.id === focusedPaneId && document.hasFocus()
                     const tabInView = tab.id === activeTabId && document.hasFocus()
                     if (!paneInView) {
@@ -1924,45 +1477,26 @@ function App() {
                     }
                     if (tabInView) return
                     if (document.hasFocus()) {
-                      // The window is up, just on a different tab — an in-app
-                      // toast is exactly right here, and a native one would be
-                      // redundant with something already on screen. It gets
-                      // the full description, command line included: the user
-                      // is demonstrably at the machine.
+                      // Window up, different tab: an in-app toast with the full command.
                       const message = describeCommandResult(result, tab.title)
                       if (result.exitCode) toast.error(message)
                       else toast.success(message)
                       return
                     }
-                    // The window isn't in front, which is the case the whole
-                    // feature exists for and the one a toast cannot serve: it
-                    // would appear and expire entirely unseen. Deliberately
-                    // the shorter description — see
-                    // `describeCommandResultBriefly`.
+                    // Window in the background: a native notification, briefly worded.
                     void notifyInBackground(
                       result.exitCode ? 'Command failed' : 'Command finished',
                       describeCommandResultBriefly(result, tab.title),
                     )
                   }}
                   onBell={() => {
-                    // Sound fires for every bell, including one from the pane
-                    // you're looking at: that's the case where a bell is most
-                    // often deliberate (a script signaling it's done while
-                    // you read something else on screen), and it's the half
-                    // of the bell a terminal has always had.
+                    // Sound for every bell, including the watched pane.
                     if (terminalSettings.bellSound) playBell()
                     if (!terminalSettings.bellMarksTab) return
-                    // Same "was this pane in view" test as a completion — a
-                    // bell from the other half of a split still deserves a
-                    // marker.
+                    // Same in-view test as a completion.
                     if (leaf.id === focusedPaneId && document.hasFocus()) return
                     dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
-                    // A bell is the oldest "I want your attention" signal
-                    // there is, and it works with no shell-side setup at all —
-                    // so it earns the taskbar flash when the window is away.
-                    // No notification for it, though: a bell carries no
-                    // message, and a toast reading "bell" says nothing the
-                    // flashing button doesn't.
+                    // Flash the taskbar when away; no notification, since a bell has no text.
                     if (!document.hasFocus()) void flashWindow()
                   }}
                   onBackToConnect={() => disconnectPane(tab.id, leaf.id)}
@@ -2045,18 +1579,13 @@ function App() {
                 title="Quit wRusTTY?"
                 body={
                   `${plural(modal.count)} still open. ${ends(modal.count)}` +
-                  // Only mentioned when it's true, since it materially changes
-                  // how much closing costs — and claiming it when the setting
-                  // is off would be worse than saying nothing.
+                  // Only mentioned when true.
                   (terminalSettings.restoreSessionsOnLaunch ? ' They can be reopened next launch.' : '')
                 }
                 confirmLabel="Quit"
                 onConfirm={() => {
                   closeModal()
-                  // destroy() rather than close(): close() would just re-emit
-                  // CloseRequested and land back in the hook above, which then
-                  // destroys anyway — same outcome, one extra round trip, and
-                  // it needs a flag to avoid asking twice.
+                  // destroy(): close() would re-enter the close hook.
                   getCurrentWindow()
                     .destroy()
                     .catch((e) => toast.error(`Couldn't close the window: ${e}`))
@@ -2068,8 +1597,7 @@ function App() {
             return (
               sessionsLoaded && (
                 <RestoreSessionsPrompt
-                  // Administrator tabs are sessions too, even though they come
-                  // back waiting for approval rather than connected.
+                  // Administrator tabs count, though they return awaiting approval.
                   count={
                     sessionSnapshot.countSessions(modal.snapshot.tabs) +
                     sessionSnapshot.countAwaitingElevation(modal.snapshot.tabs)
@@ -2094,8 +1622,7 @@ function App() {
             return (
               <RestoreSessionsPrompt
                 count={sessionSnapshot.countSessions(modal.workspace.tabs)}
-                // Always true here — openWorkspace only sets this state when
-                // the vault is locked and the workspace needs it.
+                // Always true in this state.
                 needsVaultUnlock
                 osUnlockAvailable={osUnlockAvailable}
                 title={`Open "${modal.workspace.name}"?`}
@@ -2123,17 +1650,14 @@ function App() {
             return (
               <RestoreSessionsPrompt
                 count={1}
-                // Always true here — reconnectPane only reaches this state
-                // for a vault-bound pane with the vault locked.
+                // Always true in this state.
                 needsVaultUnlock
                 osUnlockAvailable={osUnlockAvailable}
                 title="Unlock the vault to reconnect?"
                 body="This session signs in with a credential from the vault, and the vault is locked."
                 submitLabel="Unlock & Reconnect"
                 cancelLabel="Cancel"
-                // Unreachable while needsVaultUnlock is true, but the prop is
-                // required: reconnecting without the unlock is the failure
-                // this prompt exists to avoid, so it cancels instead.
+                // Unreachable while needsVaultUnlock is true; cancels.
                 onRestore={closeModal}
                 onUnlockAndRestore={(password) =>
                   unlockAndRun(password, {

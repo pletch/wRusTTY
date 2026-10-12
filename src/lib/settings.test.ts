@@ -106,11 +106,9 @@ describe('loadSettings', () => {
   })
 
   /**
-   * The stacks grew a symbol tier — a list of symbol faces after the text
-   * face, which Canvas 2D falls back across per glyph. An existing install
-   * would otherwise keep its old stack forever: the value still works, so
-   * nothing looks broken, but the setting quietly stops matching any entry in
-   * the picker and the tier never arrives.
+   * A stored stack predating the symbol tier is moved to its current
+   * equivalent; otherwise it works but matches no picker entry and never gains
+   * the tier.
    */
   it('carries a stack from before the symbol tier onto its current equivalent', () => {
     localStorage.setItem(
@@ -184,14 +182,9 @@ describe('cursorStyleSequence', () => {
 })
 
 /**
- * The scrollback setting changed unit — from a row count to a per-pane memory
- * tier — and the field was renamed to make that safe. This is the migration
- * and the guard around it.
- *
- * The rename is the whole point. `loadSettings` merges a stored payload onto
- * the defaults, so a `scrollback: 10000` left under its old name would have
- * been read as 10,000 *MB*: every existing user silently moved to the largest
- * tier and roughly ten times the memory they had agreed to.
+ * The scrollback setting changed unit, from rows to a per-pane memory tier,
+ * under a new field name: `loadSettings` merges onto defaults, so an old
+ * `scrollback: 10000` read as megabytes would jump to the largest tier.
  */
 describe('scrollbackTierForRows', () => {
   it('rounds up to the first tier that covers what the user had', () => {
@@ -222,7 +215,7 @@ describe('scrollback settings migration', () => {
   })
 
   it('never reads the old row count as megabytes', () => {
-    // The regression the rename exists to prevent, stated directly.
+    // An old row count under the old name isn't read as megabytes.
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ scrollback: 100000 }))
     const settings = loadSettings()
     expect(settings.scrollbackBudgetMB).toBeLessThanOrEqual(64)
@@ -567,8 +560,7 @@ describe('effectiveBackgroundLayers', () => {
     }
   })
 
-  /** The regression from an earlier attempt: at 90%, a 5% dim took the tab
-   *  strip to 63%. It must move by the 5% it says. */
+  /** At 90%, a 5% dim moves the tab strip by 5%, not to 63%. */
   it('keeps a small fade small on the tab strip', () => {
     expect(effectiveBackgroundLayers(at(0.9, 5), false).root).toBeCloseTo(0.855, 6)
   })

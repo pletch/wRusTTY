@@ -8,19 +8,10 @@ import type { SessionProfile } from '../lib/profiles'
 afterEach(cleanup)
 
 /**
- * Dismissing the context menu must not also be a click on what is behind it.
- *
- * Dismissal used to be a `window` click listener: it closed the menu, and the
- * very same click carried on to whatever was underneath. With the vault
- * unlocked that connects to the wrong host; with it locked the whole browser is
- * replaced by that host's unlock prompt, which reads as the app deciding to
- * open a session nobody asked for. Both were reproduced against the running app
- * before this was fixed.
- *
- * The menu no longer opens over the list at all (see `menuAnchor`), so the two
- * fixes overlap — deliberately. Placement decides what a stray click *can*
- * reach; the backdrop decides whether a dismissing click reaches anything.
- * Either alone leaves a way to act on a session by trying to close a menu.
+ * Dismissing the context menu must not also click what's behind it. Two
+ * overlapping guards: placement beside the row (see `menuAnchor`) limits
+ * what a stray click can reach, and the backdrop stops a dismissing click
+ * reaching anything.
  */
 
 function profile(id: string, label: string): SessionProfile {
@@ -96,8 +87,7 @@ describe('SessionBrowser context menu', () => {
     await userEvent.pointer({ keys: '[MouseRight]', target: screen.getByText('alpha') })
     await userEvent.keyboard('{Escape}')
 
-    // The menu had no keyboard dismissal at all before — the only ways out
-    // were choosing an item or clicking away, and clicking away was the bug.
+    // Escape dismisses too.
     expect(screen.queryByText('Edit')).toBeNull()
     expect(onSelectSession).not.toHaveBeenCalled()
   })

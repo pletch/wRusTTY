@@ -1,20 +1,10 @@
-//! What shells this machine actually has.
+//! What shells this machine has: a stable id plus a display label, like
+//! `serial_list_ports` (Phase 3 of `docs/LOCAL_SHELL_PLAN.md`).
 //!
-//! Same shape as `serial_list_ports`: enumerate what is there, return a stable
-//! id plus a display label, and let the frontend render a list it did not have
-//! to build. Phase 3 of `docs/LOCAL_SHELL_PLAN.md`.
-//!
-//! This lives in the app rather than in `wr-local` because it needs the
-//! registry, and the app already carries the `windows` crate with
-//! `Win32_System_Registry` enabled for `putty_import.rs` — which is also the
-//! precedent for how a read is done here. Putting it in the transport crate
-//! would mean a second `windows` dependency to keep pinned in step with that
-//! one, to serve a question that is about this machine's inventory rather than
-//! about pseudoconsoles. `wr-serial` only owns its own enumeration because
-//! `tokio-serial` hands it over for free.
-//!
-//! Detection is a snapshot taken when the picker opens, not a watcher. Unlike
-//! COM ports, nothing here is hot-plugged.
+//! In the app rather than `wr-local` because it reads the registry, and the
+//! app already carries the `windows` crate with `Win32_System_Registry` (for
+//! `putty_import.rs`). Detection is a snapshot when the picker opens; nothing
+//! here is hot-plugged.
 
 use std::path::Path;
 
@@ -235,22 +225,16 @@ impl Machine for SystemMachine {
     }
 }
 
-/// The machine as the *elevated host* may see it: system locations only.
+/// The machine as the elevated host may see it: system locations only.
 ///
-/// [`SystemMachine`] answers from the environment, and the environment is the
-/// user's to set — `HKCU\Environment` can override `ComSpec`, `SystemRoot` or
-/// `ProgramFiles` for every process they start, the elevated one included, with
-/// no elevation needed to write it. `LOCALAPPDATA` is under the user's control
-/// by definition. Resolving an administrator shell through any of those would
-/// let anything running as the user pick what the next UAC approval runs.
-///
-/// So this answers the three folder variables detection needs from the known-
-/// folder API, which reads machine-wide configuration rather than the
-/// environment, and answers nothing else: no `ComSpec`, so Command Prompt is
-/// `System32\cmd.exe`; no `LOCALAPPDATA`, so neither the `WindowsApps` alias for
-/// PowerShell nor a per-user Git install is considered. Git's `HKLM` install
-/// path stays, since only an administrator can write it. WSL is not elevatable
-/// and is left out.
+/// The environment is the user's (`HKCU\Environment` can override `ComSpec`,
+/// `SystemRoot` or `ProgramFiles` without elevation, and `LOCALAPPDATA` is
+/// theirs by definition), so resolving an administrator shell through it would
+/// let anything running as the user choose what a UAC approval runs. Folders
+/// come from the known-folder API instead; Command Prompt is
+/// `System32\cmd.exe`, per-user installs (the `WindowsApps` PowerShell alias,
+/// per-user Git) aren't considered, Git's `HKLM` path stays (admin-writable
+/// only), and WSL isn't elevatable.
 #[cfg(windows)]
 pub struct ElevatedMachine;
 
@@ -681,16 +665,10 @@ mod tests {
         assert!(detect(&FakeMachine::default()).is_empty());
     }
 
-    /// The fake cannot exercise a line of the registry code, so this runs the
-    /// real thing against the real machine.
-    ///
-    /// It asserts only what is true of *any* Windows box, because a test that
-    /// expected this developer's WSL distros would fail on the next machine.
-    /// What it does catch is the whole class of failure the fake cannot: a
-    /// registry read that returns garbage, a path built with the wrong
-    /// separator, a buffer size miscalculated, or a `DistributionName` decoded
-    /// with its trailing NUL still attached — every one of which produces a
-    /// `command` that does not name a file.
+    /// Runs the real registry code against this machine, asserting only what
+    /// holds on any Windows box. Catches what the fake can't: garbage reads,
+    /// wrong separators, miscalculated buffers, a `DistributionName` with its
+    /// trailing NUL, each producing a `command` that names no file.
     #[cfg(windows)]
     #[test]
     fn every_shell_this_machine_reports_can_actually_be_run() {

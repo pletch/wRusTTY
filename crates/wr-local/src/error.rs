@@ -1,27 +1,17 @@
-/// What can go wrong opening or running a local shell.
+/// What can go wrong opening or running a local shell. What matters is
+/// whether a retry could fix it (see `LocalConnector::retryable`).
 ///
-/// The split that matters is between an error a retry could fix and one it
-/// cannot — see `LocalConnector::retryable`. A missing executable is permanent
-/// as far as an unattended loop is concerned, and retrying it is a loop that
-/// cannot succeed.
-///
-/// `portable-pty` reports failures as `anyhow::Error`, which is a report
-/// rather than a type to match on, so the variants below carry its rendering
-/// as a string instead of chaining to it. The one distinction worth having
-/// back — "the command is not there" — is recovered by checking for the
-/// executable ourselves before spawning, which is both more precise than
-/// inspecting an error after the fact and the case a stale saved profile
-/// actually produces.
+/// `portable-pty` reports `anyhow::Error`, so variants carry its rendering as
+/// a string. "The command isn't there" is detected by checking the executable
+/// before spawning.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalError {
-    /// No executable at that path. Routine rather than exceptional: a profile
-    /// outlives the shell it names, so this is what a PowerShell 7 uninstall
-    /// or a profile copied from another machine looks like.
+    /// No executable at that path: routine when a profile outlives its shell
+    /// (an uninstall, a profile from another machine).
     #[error("cannot run {command}: no such executable")]
     NotFound { command: String },
 
-    /// The pseudoconsole itself could not be created. Nothing to do with the
-    /// command — the OS refused the ConPTY.
+    /// The OS refused to create the pseudoconsole.
     #[error("failed to open a pseudoconsole: {0}")]
     Pty(String),
 
@@ -29,20 +19,16 @@ pub enum LocalError {
     #[error("failed to start {command}: {message}")]
     Spawn { command: String, message: String },
 
-    /// Writing to, resizing, or disconnecting a session whose I/O threads
-    /// have already shut down — which is what every method looks like once
-    /// the child has exited.
+    /// The session's I/O threads have shut down, as after the child exits.
     #[error("not connected")]
     NotConnected,
 
-    /// The user answered No to the UAC prompt. Its own variant because it is
-    /// an answer, not a failure: the pane should say so plainly, and nothing
-    /// should ever retry it — that would be asking again without being asked.
+    /// The user answered No to UAC: an answer, not a failure, and never retried.
     #[error("elevation was declined")]
     ElevationDeclined,
 
-    /// The elevated host could not be started or reached, or was not who it
-    /// should have been. See `elevated::connector`.
+    /// The elevated host couldn't be started or reached, or wasn't who it should
+    /// be. See `elevated::connector`.
     #[error("could not start the elevated shell: {0}")]
     Elevation(String),
 

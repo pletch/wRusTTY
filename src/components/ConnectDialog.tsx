@@ -296,26 +296,14 @@ export function ConnectDialog({
 
     if (protocol === 'ssh') {
       const usingVaultKey = authType === 'PublicKey' && keyStorage === 'vault'
-      // Leaving the key-path field blank while "Store key in vault" is
-      // selected means "keep using whatever's already vaulted" — not "this
-      // session no longer has a key." Connecting should then go through
-      // the saved profile (which resolves the credential from the vault,
-      // server-side) rather than building a manual AuthMethod::PublicKey
-      // with an empty path, which can only ever fail to find a key that
-      // was never on disk to begin with.
+      // A blank key path with "Store key in vault" means "keep the vaulted key",
+      // so connect through the saved profile rather than with an empty path.
       const relyOnExistingVaultedKey = usingVaultKey && vaultedInitially && !keyPath.trim()
 
-      // Connecting manually sends exactly what this form holds — and the
-      // credential fields are deliberately blank whenever a secret is already
-      // vaulted, because the plaintext never travels back to the webview to
-      // prefill them. Sending that blank as the password is an authentication
-      // failure every single time, which is what editing any saved
-      // password session and pressing Connect used to do.
-      //
-      // When the profile already holds what we'd need, connect *through* it
-      // instead and let Rust resolve the secret. Typing a fresh password or
-      // passphrase opts back out, since the form then has something the vault
-      // may not.
+      // Credential fields start blank when a secret is vaulted (plaintext never
+      // returns to the webview), so connecting with the form would send a blank
+      // password. When the profile holds what's needed, connect through it and let
+      // Rust resolve the secret; typing a fresh one opts back out.
       const relyOnSavedCredential =
         Boolean(initial?.id) &&
         (relyOnExistingVaultedKey ||
@@ -323,16 +311,9 @@ export function ConnectDialog({
             ((authType === 'Password' && !password) ||
               (authType === 'PublicKey' && !usingVaultKey && !passphrase))))
 
-      // Password auth with nothing typed and nothing stored to fall back on is
-      // the one state on this form that cannot mean anything else. It used to
-      // send an empty password, which is a guaranteed rejection that also
-      // spends one of the server's limited auth attempts (OpenSSH's
-      // `MaxAuthTries`) to achieve nothing. Ask instead.
-      //
-      // Safe against the *other* reading of a blank field — "use the
-      // credential in the vault", which is why the field starts blank when a
-      // secret is stored — because `relyOnSavedCredential` above has already
-      // claimed that case and routed it through the profile.
+      // Password auth with nothing typed or stored: prompt rather than send an
+      // empty password, which wastes one of the server's `MaxAuthTries`. The
+      // "use the vaulted credential" reading is already claimed above.
       const promptForPassword = authType === 'Password' && !password && !relyOnSavedCredential
 
       const auth: AuthMethod =
@@ -351,22 +332,10 @@ export function ConnectDialog({
         // the host is always present and is what the sidebar would show
         // as the subtitle anyway.
         const resolvedLabel = label.trim() || host
-        // A public key with no passphrase has no secret to store — nothing
-        // actually gets saved to the vault in that case even with the
-        // checkbox on, so hasCredential has to agree, or the sidebar would
-        // offer to "unlock the vault" for a session that never put
-        // anything there. Vault-mode keys have their own hasCredential
-        // logic below instead, since the key itself is the stored secret.
-        // Agent auth has no secret of ours to store — the key never leaves
-        // the agent — so it must never mark the profile as having a vault
-        // credential, or the sidebar would offer to unlock the vault for a
-        // session that put nothing in it.
-        //
-        // `hasNewSecret` is what makes an editing pass safe. The credential
-        // fields start blank even when a secret is vaulted, because the
-        // plaintext never comes back to the webview to prefill them — so
-        // "save credential is ticked" plus "field is empty" means *keep what
-        // is stored*, never "store an empty string over it".
+        // hasCredential must match what's actually stored: a passphrase-less key
+        // stores nothing (vault-mode keys are handled below), and agent auth never
+        // stores anything. `hasNewSecret` makes edits safe: a blank field with "save
+        // credential" ticked means keep what's stored, not store an empty string.
         const hasNewSecret = authType === 'Password' ? Boolean(password) : Boolean(passphrase)
         const willSaveCredential =
           storesSecret &&
@@ -382,15 +351,11 @@ export function ConnectDialog({
           // credential path above.
           onImportKeyToVault(profileId, keyPath, passphrase || null)
         } else if (!storesSecret && initial?.hasCredential && onDeleteCredential) {
-          // Switched an existing session over to the agent or to prompting.
-          // Whatever it had vaulted — password, passphrase, or the key itself —
-          // is no longer reachable through this profile, and nothing else
-          // references that entry, so drop it rather than leave it orphaned.
+          // Switched to the agent or to prompting: the vaulted secret is unreachable
+          // through this profile, so drop it.
           onDeleteCredential(profileId)
         } else if (!usingVaultKey && vaultedInitially && onDeleteCredential) {
-          // Switched back to a plain on-disk path — the previously vaulted
-          // key is no longer referenced by anything, so don't leave it
-          // behind as an orphaned vault entry.
+          // Back to an on-disk path: the vaulted key is no longer referenced.
           onDeleteCredential(profileId)
         }
 
@@ -417,13 +382,8 @@ export function ConnectDialog({
           importRemoteHistory,
           useProxy: savedUseProxy,
           logSession,
-          // Otherwise preserves a prior credential's flag across an unrelated
-          // edit — there's no "forget stored credential" affordance yet, so
-          // saving shouldn't silently lose track of one that already exists.
-          // Agent auth is the exception, and has to be: carrying the old flag
-          // forward would leave the sidebar offering to unlock the vault for
-          // a session that no longer goes near it (see the branch above, which
-          // deletes the entry that flag pointed at).
+          // Otherwise keep a prior credential's flag across an unrelated edit, except
+          // for agent auth, whose entry was deleted above.
           hasCredential: usingVaultKey
             ? Boolean(keyPath) || vaultedInitially
             : storesSecret && (willSaveCredential || Boolean(initial?.hasCredential)),
@@ -550,10 +510,8 @@ export function ConnectDialog({
           })
           return
         }
-        // Connect through the profile so this first connection resolves the
-        // shell the same way every later one will — the same reasoning serial
-        // uses, and the case it catches is a shell id that no longer matches
-        // anything installed, which is better found now than months from now.
+        // Through the profile, so this connection resolves the shell as later ones
+        // will, catching a stale shell id now.
         onConnect(
           { protocol: 'localProfile', profileId, shellId },
           logSession,
@@ -902,22 +860,13 @@ export function ConnectDialog({
           </>
         )}
 
-        {/* Terminal behavior, shared across protocols rather than nested
-            inside the SSH branch where these started.
-
-            Terminal type reaches SSH through the PTY request and telnet
-            through RFC 1091 option negotiation — different wire mechanisms,
-            same user-facing question. Serial has neither: it's a raw byte
-            stream with nothing to negotiate with, so the control is hidden
-            rather than shown and ignored. */}
+        {/* Terminal behavior shared across protocols: TERM reaches SSH via the PTY
+            request and telnet via RFC 1091. Serial has nothing to negotiate, so
+            it's hidden. */}
         {protocol !== 'serial' && (
           <>
-            {/* A select with an explicit Custom row, not a datalist.
-                A datalist looks right but behaves as an autocomplete
-                filter: once the field holds a value it only offers
-                options matching that text, so picking one collapses the
-                list to a single entry and the control appears broken
-                until the field is cleared. */}
+            {/* A select with a Custom row, not a datalist: a datalist filters to
+                the current text, so after a pick it offers only that one entry. */}
             <label className="block space-y-1">
               <span className="text-xs text-chrome/40">Terminal type</span>
               <select
@@ -1050,20 +999,10 @@ export function ConnectDialog({
           </select>
         </label>
 
-        {/* Every *remote* protocol reconnects, so this sits with Backspace
-            rather than in the SSH block. Worded as an opt-out because that is
-            all it is: ticked stores nothing and follows Settings, and neither
-            state can make a session come back whose credential has to be typed
-            in.
-
-            Hidden for a local shell, which is the one transport it cannot
-            describe. Auto-reconnect fires on a transport that died under a
-            live session (`DisconnectKind::Lost`), and `wr-local` only ever
-            reports a clean close — a shell has either exited or it has not, so
-            there is no state where the process is gone but the session should
-            return by itself. Leaving the control visible would offer a choice
-            that changes nothing whichever way it is set. See decision 5 in
-            docs/LOCAL_SHELL_PLAN.md. */}
+        {/* An opt-out: ticked stores nothing and follows Settings, and neither
+            state revives a session whose credential must be typed. Hidden for
+            local shells, which only ever close cleanly, so reconnect never
+            applies (decision 5 in docs/LOCAL_SHELL_PLAN.md). */}
         {protocol !== 'local' && (
           <>
             <label className="flex items-center gap-2 text-xs text-chrome/70">
@@ -1084,15 +1023,8 @@ export function ConnectDialog({
           </>
         )}
 
-        {/* SSH only, because importing needs a second channel on the
-            connection and neither telnet nor a serial line has one.
-
-            Three states rather than a checkbox, unlike auto-reconnect above.
-            The global setting this overrides is off by default, so both
-            directions are useful and neither is merely an opt-out: allow it
-            for the homelab box without allowing it everywhere, and forbid it
-            for a customer's bastion even if the global setting is later turned
-            on. */}
+        {/* SSH only: importing needs a second channel. Three states, since the
+            global setting is off by default and both overrides are useful. */}
         {protocol === 'ssh' && (
           <label className="flex items-center gap-2 text-xs text-chrome/70">
             Import this host's shell history
@@ -1187,13 +1119,8 @@ export function ConnectDialog({
                     <option value={NEW_FOLDER_SENTINEL}>+ New folder...</option>
                   </select>
                 )}
-                {/* SSH only. `storesSecret` asks which *auth type* has a
-                    secret worth vaulting, which is a question only SSH has —
-                    the other three protocols leave `authType` at its default
-                    and were being offered a vault entry for a credential they
-                    never collect. Same rule as the auto-reconnect opt-out
-                    above: a form must not offer a control the backend will
-                    ignore. */}
+                {/* SSH only: the other protocols collect no secret, and the form
+                    shouldn't offer a control the backend ignores. */}
                 {protocol === 'ssh' &&
                   onSaveCredential &&
                   storesSecret &&

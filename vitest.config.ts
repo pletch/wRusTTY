@@ -12,12 +12,7 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/lib/**/*.{ts,tsx}', 'src/state/**/*.{ts,tsx}', 'src/hooks/**/*.{ts,tsx}'],
       exclude: ['src/lib/**/*.test.ts', 'src/lib/ghostty/vendor/**'],
-      // Phase 1-9 baseline (paneTree, sessionSnapshot, shellIntegration,
-      // lineEditor, settings, theme, oscScanner, state/tabOps,
-      // state/paneRuntime, state/tabs, hooks/usePanePortals,
-      // state/connectDraft, lib/ghostty/GlyphAtlas — plus incidental
-      // wasmBindings coverage from the grid-state parity tests in
-      // src/bench). Ratchet upward as more gets covered — never lower these.
+      // The coverage baseline. Ratchet upward as coverage grows; never lower.
       thresholds: {
         lines: 33,
         statements: 32,

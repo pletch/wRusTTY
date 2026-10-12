@@ -2,15 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createPtyResizeSender, PTY_RESIZE_QUIET_MS } from './ptyResize'
 
 /**
- * What a drag costs the far end.
- *
- * The behavior under test is not "fewer messages" for its own sake — it is
- * that a program holding a status line at the bottom of the screen redraws it
- * on every SIGWINCH, at the new last row, leaving the previous row behind as
- * text. Measured against a live apt progress bar, a drag across five row
- * boundaries left five stranded bars and scrolled the real output away. So the
- * assertions here are about *how many sizes reach the remote*, and about the
- * last one always being the settled one.
+ * What a drag costs the far end: each SIGWINCH makes a pinned status line
+ * redraw at the new last row and strands the old one, so these assert how
+ * many sizes reach the remote and that the last is the settled one.
  */
 describe('createPtyResizeSender', () => {
   beforeEach(() => vi.useFakeTimers())
@@ -38,7 +32,7 @@ describe('createPtyResizeSender', () => {
     const { sent, sender } = record()
     sender.post(178, 38)
     vi.advanceTimersByTime(PTY_RESIZE_QUIET_MS)
-    // Every tab switch used to deliver one of these.
+    // Tab switches resend an unchanged size.
     for (let i = 0; i < 5; i++) {
       sender.post(178, 38)
       vi.advanceTimersByTime(PTY_RESIZE_QUIET_MS)

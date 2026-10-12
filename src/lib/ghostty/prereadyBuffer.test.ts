@@ -1,22 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// Imported dynamically, never statically: `vi.resetModules` below gives the
-// engine a fresh module graph, and writePhases keeps module-level state. A
-// static import here would be a *different* copy from the one the engine
-// records into, and the recording assertions would silently see nothing.
+// Imported dynamically: `vi.resetModules` gives the engine a fresh module
+// graph, and a static import would be a different writePhases copy.
 type Phases = typeof import('../writePhases')
 
 /**
- * What a Ghostty pane does with output that arrives before its core has loaded.
- *
- * This is the failure that produced a published parse figure roughly 3x too
- * fast. A core that never resolves leaves `wasm` null and `fatalError` null
- * forever, so every write takes the buffering path: it returns promptly having
- * parsed nothing, keeps a copy of every byte, and enters no phase timer — so
- * the instrument divides all the bytes by the time spent parsing none of them.
- * The pane is blank, the numbers are excellent, and nothing is logged.
- *
- * The core is stubbed to never load, which is exactly the state being pinned.
+ * Output arriving before a pane's core has loaded. A core that never resolves
+ * leaves every write on the buffering path: nothing parsed, no phase timed, a
+ * blank pane and excellent-looking numbers. The core is stubbed never to load.
  */
 describe('writes that arrive before the core is ready', () => {
   let phases: Phases | null = null
@@ -24,12 +15,9 @@ describe('writes that arrive before the core is ready', () => {
   beforeEach(() => {
     vi.resetModules()
     phases = null
-    // A fetch that never settles: initWasm stays pending, so `wasm` is null for
-    // the life of the engine and no error is ever raised by the load itself.
+    // A fetch that never settles, so `wasm` stays null without an error.
     vi.stubGlobal('fetch', () => new Promise(() => {}))
-    // Enough of a DOM for teardown: dispose unmounts, which cancels the render
-    // loop and drops window listeners. Nothing here is mounted, so these only
-    // need to exist, not to work.
+    // Enough DOM for teardown; nothing is mounted.
     vi.stubGlobal('cancelAnimationFrame', () => {})
     vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} })
   })
@@ -65,15 +53,12 @@ describe('writes that arrive before the core is ready', () => {
     engine.write(new Uint8Array(2 * 1024 * 1024))
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('never finished loading')
-    // The consequence is stated, not just the cause: the reader's real question
-    // is whether anything they saw was real.
+    // The message states the consequence: nothing was parsed.
     expect(errors[0]).toContain('has been parsed')
   })
 
   /**
-   * The bound exists to stop a flood from being retained in full. Feeding well
-   * past it must not keep growing the buffer, and must not raise repeatedly —
-   * a dead engine reporting once per delivery is its own kind of unusable.
+   * Feeding past the bound neither grows the buffer nor reports more than once.
    */
   it('reports once and stops accumulating, however much follows', async () => {
     const { engine, errors } = await newEngine()
@@ -82,21 +67,15 @@ describe('writes that arrive before the core is ready', () => {
   })
 
   /**
-   * The phase report has to be able to tell this apart from a fast parse. Bytes
-   * that were only buffered are counted separately so the throughput line can
-   * be marked invalid instead of celebrated.
-   */
-  /**
-   * The count is the point: engines surviving a hot reload, each with its own
-   * linear memory, is one of the two live explanations for the same WASM
-   * parsing 2.6x faster in one page session than another.
+   * Every live engine is counted (engines surviving a hot reload each hold
+   * their own linear memory).
    */
   it('counts every live engine, and stops counting a disposed one', async () => {
     const { GhosttyEngine } = await import('./GhosttyEngine')
     const a = new GhosttyEngine()
     const b = new GhosttyEngine()
     expect(GhosttyEngine.diagnostics().engines).toBe(2)
-    // No core loaded here, so there is no terminal and no linear memory to hold.
+    // No core loaded, so no terminal or linear memory.
     expect(GhosttyEngine.diagnostics().terminals).toBe(0)
     expect(GhosttyEngine.diagnostics().wasmBytes).toBe(0)
 
@@ -107,9 +86,7 @@ describe('writes that arrive before the core is ready', () => {
   })
 
   /**
-   * A devtools flood has no handle on any particular pane, so it targets the
-   * one most recently on screen. Getting this wrong would flood a background
-   * pane and measure a grid nobody is looking at.
+   * A devtools flood targets the pane most recently on screen.
    */
   it('targets no pane when none exists, and the visible one when it does', async () => {
     const { GhosttyEngine } = await import('./GhosttyEngine')
@@ -117,7 +94,7 @@ describe('writes that arrive before the core is ready', () => {
     const a = new GhosttyEngine()
     expect(GhosttyEngine.activeEngine()).toBe(a)
     const b = new GhosttyEngine()
-    // Neither has been on screen, so the choice is stable rather than arbitrary.
+    // Neither has been on screen, so the choice is stable.
     expect([a, b]).toContain(GhosttyEngine.activeEngine())
     a.dispose()
     b.dispose()
@@ -129,11 +106,14 @@ describe('writes that arrive before the core is ready', () => {
     rec.start()
     const { engine } = await newEngine()
     engine.write(new Uint8Array(1024))
-    // Registered by the engine's own constructor, so any report taken during a
-    // session carries the state that produced it.
+    // Registered by the engine's constructor, so every report carries it.
     expect(rec.formatReport()).toContain('1 live engine(s)')
   })
 
+  /**
+   * Buffered-only bytes are counted separately, so the throughput line is
+   * marked invalid.
+   */
   it('tells the instrument the bytes were never parsed', async () => {
     const rec = await recorder()
     rec.start()

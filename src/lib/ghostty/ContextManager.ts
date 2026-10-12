@@ -1,26 +1,15 @@
 /**
- * Sharing a browser's WebGL context budget across every mounted pane,
- * extracted from `GhosttyEngine`.
- *
- * The odd one out among the engine's controllers: the other two are per-pane,
- * this is inherently cross-instance — it was a static `Set` plus a static
- * timestamp plus two per-instance fields (`visible`, `lastVisibleAt`) that
- * only the static pass ever read. Making it an object means the registry and
- * the per-pane bookkeeping it depends on live in one place instead of being
- * spread across the instance/static boundary of a 2,000-line class.
- *
- * Generic over the participant so the engine's diagnostics can still walk the
- * live set and read engine-specific things off it.
+ * Sharing the browser's WebGL context budget across every mounted pane,
+ * extracted from `GhosttyEngine`. Unlike the other controllers it's
+ * cross-instance, holding the registry and per-pane bookkeeping together.
+ * Generic over the participant so diagnostics can read engine fields.
  */
 
 /**
- * How many panes may hold a GL context at once.
- *
- * Browsers cap live contexts — around sixteen in Chromium — and past that they
- * take them from whoever they like, quite possibly the pane being looked at.
- * Eight leaves headroom for anything else on the page. Below the budget
- * nothing is given up at all: a handful of tabs is the common case and should
- * cost nothing. Above it, the least recently seen panes give theirs up.
+ * How many panes may hold a GL context at once. Chromium caps live contexts
+ * around sixteen and then takes them from anyone, possibly the visible pane;
+ * eight leaves headroom. Past the budget, the least recently seen panes give
+ * theirs up.
  */
 const CONTEXT_BUDGET = 8
 
@@ -29,9 +18,7 @@ const RECONCILE_INTERVAL_MS = 100
 
 export interface ContextClient {
   /**
-   * Reclaims a context. Also covers one the browser took by itself: whatever
-   * the reason a pane that should have a context doesn't, asking for it back
-   * is the answer.
+   * Reclaims a context, including one the browser took on its own.
    */
   ensureContext(): void
   dropContext(): void
@@ -60,9 +47,8 @@ export class ContextManager<T extends ContextClient> {
   }
 
   /**
-   * Closing a pane frees a context, which may put someone else back under the
-   * budget — so this reconciles immediately rather than letting them wait for
-   * their own next poll.
+   * Closing a pane frees a context, so reconcile immediately for whoever is
+   * waiting.
    */
   remove(client: T): void {
     this.clients.delete(client)
@@ -92,22 +78,13 @@ export class ContextManager<T extends ContextClient> {
   }
 
   /**
-   * Decides which panes hold a GL context.
+   * Decides which panes hold a GL context. Tabs stay mounted when hidden, so
+   * panes accumulate.
    *
-   * Every tab here stays mounted and merely hidden, so panes accumulate
-   * whether or not they are on screen.
-   *
-   * Below the budget nothing is given up at all: a handful of tabs is the
-   * normal case, and making it rebuild a context on every tab switch buys
-   * nothing but a flash. Only once there are more panes than the budget do the
-   * least recently seen ones hand theirs back, and a pane that is on screen
-   * never does — a visible pane going dark is the thing this exists to prevent.
-   *
-   * Ordering by when a pane was last visible rather than by whether it is
-   * visible right now is also what makes this stable: a pane measures zero for
-   * the first frames after mount and while a split is dragged, and a recency
-   * ranking rides straight over that where a strict hidden/visible rule would
-   * tear the context down and build it back.
+   * Below the budget nothing is given up (rebuilding on every tab switch would
+   * only flash). Above it, the least recently seen give theirs back; a visible
+   * pane never does. Ranking by recency rather than current visibility rides
+   * over the zero-size frames after mount and during split drags.
    */
   reconcile(): void {
     const now = this.now()

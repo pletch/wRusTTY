@@ -95,11 +95,8 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
-  // Enrollment raises a Windows Hello prompt and blocks until it's answered.
-  // Without this the checkbox is controlled by state that can't update until
-  // that returns, so it silently snaps back and sits there looking broken —
-  // which invites exactly the repeated clicking that used to queue up a
-  // prompt per click.
+  // Enrollment blocks on a Windows Hello prompt; reflect the click right away
+  // so the checkbox doesn't snap back and invite repeated clicks.
   async function toggleOsUnlock(next: boolean) {
     if (osUnlockBusy) return
     setError(null)
@@ -146,13 +143,9 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
-  // Saved session profiles reference vault entries by id, and workspaces
-  // reference session profiles by id — each is meaningless without the
-  // others, so the export bundles all three. A plain `.wrv` (vault-only)
-  // export from an older build isn't importable here anymore, hence the
-  // distinct extension. The file dialog itself now runs Rust-side (the
-  // backend won't accept a path from this process), so there's no `save()`
-  // or `open()` call here; both helpers resolve `false` on cancel.
+  // The bundle carries vault, sessions and workspaces together (each
+  // references the next by id), hence its own extension. The file dialogs run
+  // Rust-side; both helpers resolve `false` on cancel.
   async function doImport() {
     if (await importVaultBundle(confirm)) onStatusChange()
   }

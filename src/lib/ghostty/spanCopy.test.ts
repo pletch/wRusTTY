@@ -90,11 +90,9 @@ describe('a selection spanning scrollback and the visible screen', () => {
   })
 
   /**
-   * The reported case: the pane is scrolled back, and the selection runs from
-   * above the visible rows down into them. Copying the same text without
-   * scrolling first was said to come out whole, so the scroll position is the
-   * variable -- and nothing in `readRows` reads it, which is what makes this
-   * worth asserting rather than assuming.
+   * A selection spanning from above the visible rows into them, copied while
+   * scrolled back. Nothing in `readRows` reads the scroll position, so this
+   * asserts it doesn't matter.
    */
   it('copies a spanning range while the viewport is scrolled back', async () => {
     const { e, inner } = await pane()

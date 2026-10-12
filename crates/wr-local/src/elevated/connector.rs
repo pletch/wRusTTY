@@ -1,17 +1,13 @@
 //! The tab's end: a `Connector`/`Session` that reaches an elevated host.
 //!
-//! Starting the host is not done here. A [`Launcher`] is handed in: the app's
-//! runs `wrustty.exe` through `ShellExecuteEx`/`runas` (and so owns the
-//! `windows` UI APIs that needs), and the tests' starts the host in-process,
-//! unelevated. Everything else — the pipe, the checks, the relay — is the same
-//! code either way, which is what lets it be tested without a UAC prompt.
+//! Starting the host is a [`Launcher`] handed in (the app's uses
+//! `ShellExecuteEx`/`runas`; the tests' runs the host in-process, unelevated),
+//! so the pipe, checks and relay are tested without UAC.
 //!
-//! The one check that lives here rather than in the host is the mirror of the
-//! host's own: **the tab confirms the pipe it reached is served by the process
-//! it launched.** Without that there is a window where something that created
-//! the pipe name first — which makes the real host refuse to start — gets the
-//! tab's connection instead, and with it everything typed into what the user
-//! believes is an administrator shell.
+//! **The tab confirms the pipe it reached is served by the process it
+//! launched.** Otherwise something that claimed the pipe name first (making
+//! the real host refuse to start) would receive everything typed into what
+//! the user believes is an administrator shell.
 
 use std::future::Future;
 use std::os::windows::io::AsRawHandle;
@@ -128,16 +124,10 @@ impl ElevatedConnector {
             .await
             .map_err(|e| LocalError::Elevation(format!("could not reach the host: {e}")))?;
 
-        // Only the pipe is watched from here, not the host's exit. Once
-        // connected, the host going away shows up on the pipe itself — what it
-        // wrote stays readable, then the pipe ends — and watching the exit as
-        // well was a race: a host that could not start the shell writes its
-        // `Error` and exits at once, and when the exit won, the reason sitting
-        // in the pipe was thrown away for a vaguer one. Found by repeating the
-        // test for exactly that case; it failed about one run in three.
-        //
-        // Canceling `read_frame` on the timeout loses a partial frame, which
-        // is fine: nothing more is read from this pipe after it.
+        // Only the pipe is watched, not the host's exit: a host that couldn't
+        // start the shell writes its `Error` and exits, and watching the exit
+        // raced the pipe, losing that reason. Canceling `read_frame` on timeout
+        // loses a partial frame, which is fine: nothing more is read.
         drop(exited);
         let first = tokio::select! {
             frame = read_frame(&mut reader) => frame,

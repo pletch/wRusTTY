@@ -7,138 +7,102 @@ export interface SessionProfile {
   folder: string | null
   host: string
   port: number
-  /** Which transport this profile opens. A discriminator rather than a union
-   * type: the two share everything that matters (label, folder, host, port,
-   * terminal behavior) and differ only in whether the auth fields apply. */
+  /** Which transport this profile opens. A discriminator rather than a union:
+   * the protocols share most fields. */
   protocol: 'ssh' | 'telnet' | 'serial' | 'local'
-  /** SSH only — empty string for telnet. */
+  /** SSH only; empty string otherwise. */
   username: string
-  /** SSH only — empty string for telnet. */
+  /** SSH only; empty string otherwise. */
   authType: 'password' | 'public_key' | 'agent' | 'keyboard_interactive' | ''
   keyPath: string | null
-  // Whether a credential for this profile is stored in the vault. Tracked
-  // here (not just inferred by asking the vault) because the vault can't
-  // be queried at all while it's locked — this flag is what lets a locked
-  // session's entry in the sidebar prompt "unlock to connect automatically"
-  // instead of just silently falling back to the manual form.
+  /** Whether the vault holds a credential for this profile. Stored here because
+   * a locked vault can't be asked, and the sidebar uses it to offer "unlock to
+   * connect automatically". */
   hasCredential: boolean
-  /** Id of another saved profile to jump through (SSH ProxyJump) before
-   * reaching this one — `null` connects directly. */
+  /** Another saved profile to jump through (ProxyJump), or `null` to connect
+   * directly. */
   jumpProfileId: string | null
-  /** Overrides the `TERM` sent with the PTY request — `null` sends
-   * `xterm-256color`. */
+  /** Overrides `TERM` in the PTY request; `null` sends `xterm-256color`. */
   termType: string | null
-  /** Which byte Backspace sends: `true` = ^H, `false` = ^?, `null` = follow
-   * the global terminal setting. */
+  /** Backspace byte: `true` = ^H, `false` = ^?, `null` = the global setting. */
   backspaceSendsCtrlH: boolean | null
-  /** SSH only — seconds between keepalives, null for the 60s default and 0 to
-   * disable. Per-profile because the idle timeout that makes it necessary
-   * belongs to the network path to one host, not to this machine. */
+  /** SSH only: seconds between keepalives; null for the 60s default, 0 to
+   * disable. Per profile, since idle timeouts belong to the network path. */
   keepaliveSeconds: number | null
   /** How to wake this host before connecting, or null to just connect. */
   wakeOnLan: WakeOnLan | null
-  /** Whether this session may reconnect itself when its transport drops.
-   * `null` — which every profile saved before this field existed reads as —
-   * follows the global `autoReconnect` setting, and `false` opts this one
-   * session out of it.
-   *
-   * Opt-out only, deliberately: `true` cannot switch reconnect *on* for a
-   * profile when the global setting is off, and neither value can make a
-   * session reconnect whose credential has to be typed in each time. A
-   * per-profile "always" would therefore be a promise the app cannot keep in
-   * two of the three cases it appears to cover. See `reconnectPolicy`. */
+  /** Whether this session may reconnect itself when its transport drops. `null`
+   * follows the global setting; `false` opts out. Opt-out only: it can't
+   * override a global "off" or a credential that must be typed. See
+   * `reconnectPolicy`. */
   autoReconnect: boolean | null
-  /** Whether this session may have its remote shell history imported once,
-   * for autocomplete. `null` follows the global setting; `false` opts this
-   * host out whatever that setting says. Per-host because the question is
-   * about the host — importing from the homelab box and never from the
-   * customer's bastion is the normal shape of the answer. */
+  /** Whether this host's shell history may be imported for autocomplete. `null`
+   * follows the global setting; `false` opts out. */
   importRemoteHistory: boolean | null
-  /** SSH only — `false` connects directly even when Settings names a proxy;
-   * null/absent follows the global setting. Optional because every profile
-   * saved before proxies existed lacks it. */
+  /** SSH only: `false` connects directly even when Settings names a proxy;
+   * null/absent follows the global setting. */
   useProxy?: boolean | null
-  /** Start a transcript as this session connects. null/absent leaves it to
-   * the global "log every session" switch. */
+  /** Start a transcript on connect; null/absent follows the global setting. */
   logSession?: boolean | null
-  /** Serial only — null for SSH and telnet. */
+  /** Serial only; null otherwise. */
   serial: SerialProfile | null
-  /** Local shells only — null for everything else, and for every profile saved
-   * before local sessions could be stored. */
+  /** Local shells only; null otherwise. */
   local: LocalProfile | null
 }
 
-/** Whether connecting with this auth type needs a secret out of the vault.
- *
- * Two auth types don't have one, for opposite reasons: `agent` keeps the key
- * in the agent, which signs on our behalf, and `keyboard_interactive` gets its
- * credential typed in at connect time and never stores it. Both are resolved
- * by `resolve_auth` in ssh.rs before it ever takes the vault lock, so making
- * either wait on an unlock prompt would be asking for a secret that isn't
- * there. Shared so the "should we prompt to unlock?" check and the sidebar's
- * "can this connect directly?" check can't drift apart. */
+/** Whether this auth type needs a secret from the vault. `agent` (the agent
+ * signs) and `keyboard_interactive` (typed at connect) don't; `resolve_auth` in
+ * ssh.rs handles both before touching the vault. Shared so the unlock prompt
+ * and the sidebar agree. */
 export function authNeedsVault(authType: SessionProfile['authType']): boolean {
   return authType !== 'agent' && authType !== 'keyboard_interactive'
 }
 
-/** What to send to wake a sleeping host, and where.
- *
- * Everything but the MAC is optional and means "use the default" when absent,
- * so the common profile stores a MAC and nothing else. `broadcast` is the one
- * worth setting by hand: a magic packet doesn't route, so reaching a host on
- * another subnet — or picking which interface the packet leaves by on a
- * machine with several — means naming that subnet's directed broadcast
- * (`192.168.1.255`) rather than the default 255.255.255.255. */
+/** What to send to wake a sleeping host, and where. Only the MAC is required.
+ * `broadcast` matters for another subnet (or picking an interface): use that
+ * subnet's directed broadcast (`192.168.1.255`) instead of 255.255.255.255. */
 export interface WakeOnLan {
   /** Any of `aa:bb:cc:dd:ee:ff`, `aa-bb-...`, `aabb.ccdd.eeff`, bare hex. */
   mac: string
   broadcast: string | null
   /** 9 by convention; 7 on some gear. */
   port: number | null
-  /** How long to wait for the host to answer before giving up. Null is 60. */
+  /** Seconds to wait for the host to answer; null is 60. */
   waitSeconds: number | null
 }
 
-/** The stable identity of a USB serial adapter: a COM number is a property of
- * the socket, not the cable, so it stops meaning anything the moment the
- * adapter is moved. These three don't. */
+/** A USB serial adapter's stable identity (a COM number belongs to the socket,
+ * not the cable). */
 export interface UsbIdentity {
   vid: number
   pid: number
-  /** Absent on cheap CH340/CP2102 clones, which program no serial number. */
+  /** Absent on cheap CH340/CP2102 clones. */
   serialNumber: string | null
 }
 
 /** How a saved serial session finds its port again. */
 export interface PortIdentity {
-  /** The port name when the session was saved — the only identity a non-USB
-   * port has, and the tiebreaker between identical adapters with no serial
-   * number. */
+  /** The port name when saved: the only identity for a non-USB port, and the
+   * tiebreaker between identical adapters without serial numbers. */
   portName: string
   usb: UsbIdentity | null
 }
 
-/** A saved serial session: which adapter, and how to talk to it. There is no
- * `portName` here on purpose — the port is resolved from `identity` at connect
- * time, so storing one as well would let the two contradict each other. */
-/** A saved local shell: which shell, and how to start it.
- *
- * Mirrors `LocalProfile` in src-tauri/src/profiles.rs. It stores both an id
- * and a path for the same reason `SerialProfile` stores a USB identity rather
- * than a COM number: the path is only true until the shell is upgraded, and
- * the id is what a connect re-resolves against. */
+/** A saved local shell. Mirrors `LocalProfile` in src-tauri/src/profiles.rs.
+ * Stores the detected shell id, which a connect re-resolves (paths change on
+ * upgrade), as well as the command. */
 export interface LocalProfile {
-  /** `pwsh`, `cmd`, `wsl:Ubuntu`. Empty for a hand-typed path, which has no
-   * detected identity and is therefore used exactly as written. */
+  /** `pwsh`, `cmd`, `wsl:Ubuntu`; empty for a hand-typed path, used as written. */
   shellId: string
   command: string
   args: string[]
   cwd: string | null
-  /** Opens as administrator, through the elevated host. Optional because every
-   * profile saved before elevated tabs existed lacks it, and means no. */
+  /** Opens as administrator via the elevated host; absent means no. */
   elevated?: boolean
 }
 
+/** A saved serial session: the adapter's identity and line settings. The port
+ * is resolved from `identity` at connect time, so no `portName` is stored. */
 export interface SerialProfile {
   identity: PortIdentity
   baudRate: number
@@ -148,31 +112,25 @@ export interface SerialProfile {
   flowControl: 'None' | 'Software' | 'Hardware'
   localEcho: boolean
   lineEnding: 'Cr' | 'Lf' | 'CrLf'
-  /** Frontend-only input mode, stored so it travels with the profile — the
-   * backend never interprets it (see lib/serial.ts). */
+  /** Frontend-only input mode, stored with the profile (see lib/serial.ts). */
   inputMode: InputMode | null
 }
 
-/** One-line endpoint description for a saved session. Shared by the sidebar
- * and the quick-connect palette so the two can't drift — and so adding a
- * third protocol later is one edit, not a hunt. */
+/** One-line endpoint description, shared by the sidebar and the quick-connect
+ * palette. */
 export function profileSubtitle(p: SessionProfile): string {
   if (p.protocol === 'local') {
     const args = (p.local?.args ?? []).join(' ')
     const command = p.local?.command ?? ''
-    // The executable's name, not its full path: a sidebar row is narrow, and
-    // the full install path tells the user nothing the label above it did not.
+    // The executable's name only; the row is narrow.
     const exe = command.split(/[\\/]/).pop()?.replace(/\.exe$/i, '') ?? 'shell'
     const line = args ? `${exe} ${args}` : exe
-    // Said in the sidebar, not only once the tab is open: choosing a saved
-    // session is the moment to know it will raise a UAC prompt.
+    // Shown in the sidebar so the UAC prompt isn't a surprise.
     return p.local?.elevated ? `${line} · Administrator` : line
   }
   if (p.protocol === 'telnet') return `telnet ${p.host}:${p.port}`
   if (p.protocol === 'serial') {
-    // Named by the adapter when we have one, because that is what the profile
-    // actually points at — the COM number shown is only where it was last
-    // seen, and may well not be where it is now.
+    // The adapter, not the last-seen COM number.
     const serial = p.serial
     if (!serial) return 'serial'
     const label = serial.identity.usb?.serialNumber ?? serial.identity.portName
@@ -181,13 +139,8 @@ export function profileSubtitle(p: SessionProfile): string {
   return `${p.username}@${p.host}`
 }
 
-/** Builds the stored form of a serial session from what the connect form holds.
- *
- * `identity` is the whole point: the form works in COM names, but the profile
- * records the adapter's USB identity so it can be found again after it moves
- * socket. `usb` comes from the port list at the moment the user picked the
- * port — it isn't derivable later, since by then the COM number may belong to
- * something else. */
+/** Builds a stored serial session from the connect form. `usb` must come from
+ * the port list when the port was picked; it can't be derived later. */
 export function serialProfileFrom(config: SerialConfig, usb: UsbIdentity | null): SerialProfile {
   return {
     identity: { portName: config.portName, usb },
@@ -202,11 +155,8 @@ export function serialProfileFrom(config: SerialConfig, usb: UsbIdentity | null)
   }
 }
 
-/** The inverse, for populating the form when a saved serial session is edited.
- *
- * `portName` is the *last known* port, which is exactly right for a form the
- * user is about to look at — it shows where the adapter was, and re-picking
- * from the live list is what refreshes both the name and the identity. */
+/** The inverse, for editing: shows the last-known port, and re-picking from
+ * the live list refreshes the identity. */
 export function serialConfigFrom(profile: SerialProfile): SerialConfig {
   return {
     portName: profile.identity.portName,
@@ -224,11 +174,8 @@ export function listSessions() {
   return invoke<SessionProfile[]>('list_sessions')
 }
 
-/** Sends this session's magic packet and returns — no probe, no connection.
- *
- * The deliberate half of Wake-on-LAN, for wanting the machine up without
- * opening a terminal on it. Rejects if the profile has no MAC saved, which is
- * why the menu item offering this is hidden in that case. */
+/** Sends this session's magic packet without probing or connecting. Rejects if
+ * no MAC is saved. */
 export function wakeSession(profileId: string) {
   return invoke<void>('wake_host', { profileId })
 }
@@ -241,8 +188,7 @@ export function deleteSession(id: string) {
   return invoke<void>('delete_session', { id })
 }
 
-/** Persists a new display order — `orderedIds` must be the full list of
- * session ids in their desired order. */
+/** Persists a new display order (the full list of ids). */
 export function reorderSessions(orderedIds: string[]) {
   return invoke<void>('reorder_sessions', { orderedIds })
 }
@@ -250,39 +196,31 @@ export function reorderSessions(orderedIds: string[]) {
 /** What an import from another client did. */
 export interface SessionImportSummary {
   imported: number
-  /** Sessions already present by label and host — an import is additive and
-   * never overwrites, so re-running it is harmless. */
+  /** Already present by label and host; imports are additive. */
   skippedDuplicates: number
-  /** Sessions this app can't represent — for PuTTY, a raw/rlogin/hostless
-   * session; for an SSH config, nothing (wildcard blocks aren't sessions to
-   * begin with, so they aren't counted as skipped ones). */
+  /** Sessions this app can't represent (for PuTTY: raw, rlogin or hostless). */
   skippedUnsupported: number
   labels: string[]
 }
 
-/** How many PuTTY sessions this app could open — what *would* import, not what
- * exists, so a machine whose only entry is PuTTY's hostless "Default Settings"
- * reports 0. Always 0 on non-Windows platforms and on Windows without PuTTY. */
+/** How many PuTTY sessions would import (0 without PuTTY or off Windows). */
 export function puttySessionCount() {
   return invoke<number>('putty_sessions_available')
 }
 
-/** Appends PuTTY's saved sessions to the session list. Additive: an existing
- * profile with the same label and host is left exactly as it is. */
+/** Appends PuTTY's saved sessions; existing label+host matches are left
+ * alone. */
 export function importPuttySessions() {
   return invoke<SessionImportSummary>('putty_import_sessions')
 }
 
-/** How many `Host` blocks in `~/.ssh/config` would become sessions. Counts
- * literal aliases only, so a config that is nothing but `Host *` defaults
- * reports 0 — as does a machine that has never run `ssh`. */
+/** How many literal `Host` aliases in `~/.ssh/config` would import. */
 export function sshConfigSessionCount() {
   return invoke<number>('ssh_config_sessions_available')
 }
 
-/** Appends `~/.ssh/config`'s hosts to the session list, on the same additive
- * terms as the PuTTY import. `ProxyJump` is carried across where the hop it
- * names is itself a saved session. */
+/** Appends `~/.ssh/config`'s hosts, additively. `ProxyJump` carries over when
+ * the hop is itself a saved session. */
 export function importSshConfigSessions() {
   return invoke<SessionImportSummary>('ssh_config_import_sessions')
 }

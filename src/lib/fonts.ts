@@ -8,17 +8,9 @@ export interface InstalledFont {
 }
 
 /**
- * The families installed on this machine, monospaced ones first-class.
- *
- * Asked of Rust rather than of the webview on purpose: Local Font Access is
- * Chromium-only and permission-gated, and DirectWrite is already in the
- * process and resolving against the same system font collection the webview
- * will. The webview constrains where glyphs are *rasterized*, not what the
- * application may know about fonts.
- *
- * Returns an empty list if the command is unavailable — running under `vite
- * dev` in a plain browser, say — so a caller can treat "no enumeration" and
- * "no fonts" the same way and fall back to the curated stacks.
+ * The families installed on this machine, from Rust (see
+ * `src-tauri/src/fonts.rs` for why). Empty when the command is unavailable
+ * (a plain browser), so callers fall back to the curated stacks.
  */
 export async function listInstalledFonts(): Promise<InstalledFont[]> {
   try {
@@ -29,14 +21,9 @@ export async function listInstalledFonts(): Promise<InstalledFont[]> {
 }
 
 /**
- * A CSS family list built around one installed family, with the same symbol
- * tier the curated stacks carry.
- *
- * Quoting is unconditional: a bare family name with a space in it is not a
- * parse error in a CSS list, but `Courier New` and `"Courier New"` are
- * different productions and only the quoted one is guaranteed to survive the
- * round trip through `ctx.font`. A name containing a quote could not be
- * expressed at all, so it is dropped rather than allowed to break the stack.
+ * A CSS family list around one installed family, with the curated stacks'
+ * symbol tier. Always quoted, since only the quoted form reliably survives
+ * `ctx.font`; a name containing a quote can't be expressed and is dropped.
  */
 export function stackFor(family: string): string {
   const safe = family.replace(/["\\]/g, '')

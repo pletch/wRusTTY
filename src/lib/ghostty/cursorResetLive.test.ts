@@ -5,17 +5,10 @@ import { dirname, join } from 'node:path'
 import type { GhosttyWasm } from './wasmBindings'
 
 /**
- * The cursor preference surviving a reset, through a real engine and a real
- * core rather than through the decision function alone.
- *
- * `cursorRestore.test.ts` pins the decision; this pins the wiring around it,
- * which is where every bug in this area actually landed — the preference not
- * reaching a new pane, the blink gated on a flag nothing ever set, the write
- * skipped because the core's default was misremembered. Each of those passed
- * every unit test that existed at the time.
- *
- * So this drives the public surface only: construct an engine, let its core
- * load, write bytes, and ask the core what the cursor is.
+ * The cursor preference surviving a reset, through a real engine and core.
+ * `cursorRestore.test.ts` pins the decision; this drives only the public
+ * surface (construct, load, write, ask the core), since the wiring is where
+ * this area's bugs landed.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

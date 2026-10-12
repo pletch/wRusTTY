@@ -1,34 +1,22 @@
 /**
- * Splits a terminal write into its phases, so "the engine is slow" can be
- * attributed to a part of the engine.
+ * Splits a terminal write into phases, so "the engine is slow" can be
+ * attributed to a part of it. `deliveryStats` times `engine.write` as one
+ * span; this times the parts, with sub-phases inside `writeBytes`.
  *
- * The delivery-path recorder (`deliveryStats`) times `engine.write` as one
- * span. That was enough to establish a local flood is engine-bound, and no
- * further: it left a 2.7x gap between what the same Ghostty WASM parses in the
- * benchmark harness (~88 MB/s) and what it manages in a live pane (~33 MB/s),
- * with no way to say which part of the write differed. This times the parts.
- *
- * The first split narrowed it to `writeBytes` (93%), ruling out the JS OSC
- * scan, response draining and callbacks. The sub-phases go inside that call,
- * since the cost proved invariant to content shape, grid geometry and
- * scrollback — none of which the buffer handoff touches.
- *
- * Off by default and free when off — `time` calls straight through without
- * reading a clock — because these wrap the hottest path in the app.
+ * Off by default and free when off (`time` calls straight through without a
+ * clock read), since it wraps the hottest path in the app.
  */
 
 /** Phases of `write`. These partition it, so they reconcile against the whole. */
 export const PHASES = ['scan', 'parse', 'drain', 'bufferChange', 'handlers'] as const
-/** Phases *within* `parse` (i.e. within `writeBytes`). Counted separately so
- *  they subdivide `parse` rather than being added alongside it. */
+/** Phases within `parse` (`writeBytes`), counted as a subdivision of it. */
 export const SUBPHASES = ['alloc', 'copy', 'coreWrite', 'free'] as const
 
 export type Phase = (typeof PHASES)[number]
 export type Subphase = (typeof SUBPHASES)[number]
 export type AnyPhase = Phase | Subphase
 
-/** What each phase covers, for the report — the names alone are too terse to
- *  act on, and the point of this module is telling someone where to look. */
+/** What each phase covers, for the report. */
 const HELP: Record<AnyPhase, string> = {
   scan: 'scanOsc over every byte, in JS (only when an OSC/bell handler is registered)',
   parse: 'writeBytes into the WASM core — the parser itself',
@@ -81,22 +69,11 @@ export function isEnabled(): boolean {
 }
 
 /**
- * An optional line of page state printed beside the throughput, for whoever can
- * describe what the process is holding — in practice GhosttyEngine, which
- * registers this when the first engine is constructed.
- *
- * A hook rather than a direct import because this module is the instrument and
- * has no business knowing about engines, and because the production report
- * (`deliveryStats`) and the benchmark harness both want the same line without
- * either reaching for the other.
- *
- * It exists for a specific unexplained result: the same WASM, in the same
- * binary, parses at 11.9 ms/MB in one page session and 30.5 in another, stable
- * to 0.2% within each, while the pure-JS pass over the same bytes moves 8%.
- * Something about the page — not the workload, the grid, the scrollback, the
- * volume or the backend, all of which were measured and cleared — selects which.
- * A throughput figure with no record of the state that produced it is what let
- * that go unnoticed for weeks.
+ * An optional line of page state printed beside the throughput (registered by
+ * GhosttyEngine). A hook, so this instrument needn't know about engines and
+ * both `deliveryStats` and the benchmark harness can share it. The same WASM
+ * has parsed at very different rates in different page sessions, so a
+ * throughput figure should carry the state that produced it.
  */
 let context: (() => string) | null = null
 
@@ -105,12 +82,10 @@ export function setContext(fn: (() => string) | null): void {
 }
 
 /**
- * Runs `fn` — always — attributing its duration to `phase` when recording.
- *
- * Top-level phases partition `write`; sub-phases partition `parse`. Nothing
- * else nests: `parse` and `bufferChange` are called from inside the
- * scan-and-dispatch path and are deliberately *not* wrapped by an enclosing
- * phase there, so each byte of work is counted once at each level.
+ * Runs `fn`, attributing its duration to `phase` when recording. Top-level
+ * phases partition `write`; sub-phases partition `parse`. `parse` and
+ * `bufferChange` aren't wrapped by an enclosing phase, so work is counted
+ * once per level.
  */
 export function time<T>(phase: AnyPhase, fn: () => T): T {
   if (!enabled) return fn()
@@ -123,8 +98,7 @@ export function time<T>(phase: AnyPhase, fn: () => T): T {
   }
 }
 
-/** Clock read that costs nothing when recording is off, for callers timing a
- *  whole write around the phases inside it. */
+/** A clock read that costs nothing when recording is off. */
 export function now(): number {
   return enabled ? performance.now() : 0
 }
@@ -137,14 +111,9 @@ export function recordWrite(byteLength: number, ms: number): void {
 }
 
 /**
- * Bytes `write` accepted but never handed to the parser — buffered because the
- * core had not loaded.
- *
- * Recorded because this module cannot otherwise tell the difference. It times
- * phases, and a buffered write enters none of them: the throughput line divides
- * bytes that arrived by time nobody spent, and reports the fastest parse ever
- * seen. That is how a Ghostty figure roughly 3x too fast reached the published
- * findings. Counting them makes the report say so instead.
+ * Bytes `write` accepted but buffered (the core hadn't loaded), which enter no
+ * phase. Counted so the report says so instead of dividing them by time
+ * nobody spent.
  */
 export function recordUnparsed(byteLength: number): void {
   if (!enabled) return
@@ -161,16 +130,14 @@ export interface PhaseSnapshot {
   totals: Record<AnyPhase, number>
   calls: Record<AnyPhase, number>
   /** Top-level phases as a share of `writeMs`; sub-phases as a share of
-   *  `parse`, which is what they subdivide. */
+   *  `parse`. */
   shares: Record<AnyPhase, number>
-  /** Time inside `write` that no top-level phase claimed, and time inside
-   *  `parse` that no sub-phase claimed. A large value means the cost is
-   *  somewhere these wrappers do not cover, which is itself a finding. */
+  /** Time no top-level phase claimed within `write`, and no sub-phase within
+   *  `parse`. A large value is itself a finding. */
   unattributedMs: number
   parseUnattributedMs: number
-  /** Of `bytes`, how many were buffered rather than parsed. Anything above zero
-   *  invalidates `bytesPerSec`, which divides all of `bytes` by the time spent
-   *  parsing only some of them. */
+  /** Of `bytes`, how many were buffered rather than parsed. Above zero, the
+   *  rate is invalid. */
   unparsedBytes: number
 }
 
@@ -216,8 +183,7 @@ export function formatReport(s: PhaseSnapshot = snapshot()): string {
   lines.push(
     `${s.writes} writes, ${(s.bytes / 1048576).toFixed(2)} MB, ${s.writeMs.toFixed(0)} ms inside write => ${mbs(s.bytesPerSec)}`,
   )
-  // Before the breakdown, not after: the throughput above is the number people
-  // read and quote, and if it is nonsense they have to learn that first.
+  // First, since the throughput above is what people quote.
   if (s.unparsedBytes > 0) {
     const share = s.bytes > 0 ? (s.unparsedBytes / s.bytes) * 100 : 100
     lines.push(
@@ -226,15 +192,14 @@ export function formatReport(s: PhaseSnapshot = snapshot()): string {
       `!! spent parsing only some of them, so it overstates by roughly ${(100 / Math.max(1, 100 - share)).toFixed(1)}x. Discard this run.`,
     )
   }
-  // Beside the rate, not at the foot of the report: it is there to be compared
-  // against the rate on the line above it, across sessions.
+  // Beside the rate, for comparison across sessions.
   const ctx = context?.()
   if (ctx) lines.push(ctx)
-  // Ordered by cost, because the first line is the one worth acting on.
+  // By cost, so the first line is the one worth acting on.
   const ranked = [...PHASES].sort((a, b) => s.totals[b] - s.totals[a])
   for (const p of ranked) {
     lines.push(row(p, s.totals[p], s.shares[p], s.calls[p], HELP[p]))
-    // Sub-phases follow the phase they subdivide, as shares of it.
+    // Sub-phases follow the phase they subdivide.
     if (p === 'parse' && s.totals.parse > 0) {
       const sub = [...SUBPHASES].sort((a, b) => s.totals[b] - s.totals[a])
       for (const q of sub) {

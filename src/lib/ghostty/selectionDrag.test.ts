@@ -2,22 +2,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
- * Dragging out a selection, through the engine's real mouse handlers.
+ * Dragging out a selection through the engine's real mouse handlers, since
+ * the bugs live in the handoff between handlers.
  *
- * These go through mount() and real MouseEvents rather than calling a helper,
- * because the bugs they pin live entirely in the handoff between handlers and in
- * what one leaves behind for the next — a stale `selectionStart`, a `rectangular`
- * set on the selection but not on the field the drag rebuilds it from. Nothing
- * inspecting either handler alone would show either.
- *
- * Mouse reporting is the axis that matters most here. Once a program turns it on
- * (which any full-screen UI does), shift is what takes a drag off the program and
- * gives it to the terminal — so shift-drag becomes the *only* way to select, and
- * anything else shift is overloaded to mean has to give way.
- *
- * The core is deliberately absent — none of this consults it, and the renderer is
- * stubbed to the members the selection path actually uses, which is what lets the
- * test run without WebGL.
+ * Under mouse reporting (any full-screen UI), shift is what takes a drag from
+ * the program, so shift-drag is the only way to select and anything else
+ * shift means must give way. No core is needed; the renderer is stubbed.
  */
 
 const CELL = { width: 10, height: 20 }
@@ -126,9 +116,8 @@ describe('dragging past the edge of the pane', () => {
   it('keeps following the pointer once it has left the canvas', async () => {
     const { engine, selection, down, moveOutside } = await mounted()
     down(2, 0)
-    // The regression: `mousemove` was bound to the canvas, so this event — the
-    // only kind that can ever report a pointer outside it — was delivered
-    // nowhere, and the selection stopped dead at the edge.
+    // `mousemove` must be bound beyond the canvas, or a pointer outside it
+    // reports nowhere and the selection stops at the edge.
     moveOutside(95, 600)
     expect(selection()).toMatchObject({ start: { x: 2, y: 0 } })
     engine.unmount()
@@ -207,9 +196,7 @@ describe('selecting while a program has the mouse', () => {
     dragOut(2, 5, { shiftKey: true })
     expect(selection()).toMatchObject({ start: { x: 2, y: 0 }, end: { x: 5, y: 0 } })
 
-    // The regression: shift was read as "extend", so this second drag stayed
-    // anchored to the first selection's start (x: 2) and there was no gesture
-    // left that could begin a selection somewhere else.
+    // A shift-drag starts a new selection rather than extending the old one.
     down(20, 0, { shiftKey: true })
     move(24, 0, { shiftKey: true })
     expect(selection()).toMatchObject({ start: { x: 20, y: 0 }, end: { x: 24, y: 0 } })

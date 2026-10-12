@@ -71,29 +71,17 @@ interface Props {
    * live uptime readout. */
   connectedAt: number | null
   logging: boolean
-  /** What the active pane's far end calls itself (OSC 0/2), and the directory
-   * it last reported (OSC 7) — null until it says, which is the resting state
-   * for anything that never does.
-   *
-   * Shown beside the connection's own identifiers rather than in place of
-   * them, and styled below them: this is text the remote end chose, sharing a
-   * bar with the fields that say what you are actually connected to. It must
-   * not be able to pass itself off as one of those. See lib/remoteIdentity.ts. */
+  /** The active pane's self-reported title (OSC 0/2) and directory (OSC 7),
+   * or null. Styled below the connection's own identifiers so remote-chosen
+   * text can't pass for them (see lib/remoteIdentity.ts). */
   remoteTitle: string | null
   remoteCwd: string | null
-  /** The active pane's grid in cells, or null before its engine has fitted.
-   *
-   * Worth a permanent slot rather than a transient overlay on resize (the
-   * usual idiom): on network gear you set `terminal width`/`terminal length`
-   * by hand to match the client, and you need the numbers at the moment you
-   * type them, not at the moment you resized. It is also the only place the
-   * width is visible, and width decides scrollback depth — see
-   * `scrollbackBudgetBytesFor`. */
+  /** The active pane's grid in cells, or null before its first fit. A
+   * permanent slot: network gear needs `terminal width`/`length` set by hand,
+   * and width decides scrollback depth (`scrollbackBudgetBytesFor`). */
   dimensions: { cols: number; rows: number } | null
-  /** Bytes of scrollback the active pane's engine was built with, or null
-   * before it has reported. Paired with `dimensions` to estimate depth — both
-   * are needed, since the same budget is worth very different depths at
-   * different widths, which is the whole reason the setting is memory. */
+  /** Scrollback bytes the active pane's engine was built with, or null; with
+   * `dimensions`, estimates depth. */
   scrollbackBudgetBytes: number | null
   /** 1-based position of the active pane among its tab's panes, and the total.
    * The pane readout is only shown when the tab is actually split. */
@@ -179,15 +167,9 @@ export function StatusBar({
       ? estimateScrollbackRows(scrollbackBudgetBytes, dimensions.cols)
       : null
 
-  // A running local shell says nothing about its connection, because it has
-  // none: the process is either running — in which case this pane exists — or
-  // gone, in which case the pane closes. "● Connected" there restates the
-  // pane's own existence. Same rule as the tab badge (TabBar.statusDotColor),
-  // and for the same reason it stops at `connected`: a shell that failed to
-  // start keeps its red dot and its "Failed", since that pane stays open
-  // precisely so the reason can be read.
-  //
-  // An administrator shell is a local shell too, and gets the same quiet.
+  // A running local or administrator shell shows no connection status: it
+  // has none. Like the tab badge (TabBar.statusDotColor), only `connected` is
+  // quieted, so a shell that failed to start keeps its "Failed".
   const quietLocal = (protocol === 'LOCAL' || protocol === 'ADMIN') && status === 'connected'
 
   return (
@@ -237,9 +219,8 @@ export function StatusBar({
         </span>
       )}
 
-      {/* Serial line controls. Placed here rather than in a menu because on a
-          console cable these are used mid-session, often urgently — a break
-          has to land inside a boot window measured in seconds. */}
+      {/* Serial line controls, on the bar since a break may need to land in a
+          seconds-long boot window. */}
       {serialSessionId && (
         <span className="flex shrink-0 items-center gap-1.5 border-l border-chrome/10 pl-2">
           <button

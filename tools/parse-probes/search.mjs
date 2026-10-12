@@ -1,14 +1,9 @@
 /**
- * Prices the scrollback SEARCH path — the one thing iter.mjs never measured.
+ * Prices the scrollback search path. `SearchController` reads the whole
+ * scrollback: on the vendored build one `get_scrollback_line` per row; on
+ * ghostty main, through grid_ref one cell at a time.
  *
- * iter.mjs priced the render path: the viewport, redrawn. Search is a different
- * shape and a different API. `SearchController` calls `readRows(0, total - 1)`,
- * which walks the WHOLE scrollback, and on the vendored build that is one
- * `get_scrollback_line` per ROW — a whole row of packed 16-byte cells per call.
- * On ghostty main there is no such call: scrollback is addressed through
- * grid_ref, which resolves a point and hands back one cell.
- *
- * Modes (one per child process, per iter.mjs's megamorphism lesson):
+ * Modes (one per child process, as in iter.mjs):
  *   today          vendored: 1 call/row, JS unpacks cols x 16 bytes
  *   gridref        main: 1 grid_ref/row, then mutate ref.x + grid_ref_cell/cell,
  *                  unpacking the u64 in JS (the RAW-equivalent fast path)
@@ -17,18 +12,12 @@
  *   gridref-naive  main: re-resolve grid_ref per CELL, which is what a direct
  *                  transliteration of readRows would do
  *   gridref-match  main: the gridref walk PLUS building each row's text and
- *                  running the query over it — what SearchController actually
- *                  does, and the only fair thing to compare a search against
+ *                  running the query over it, what SearchController does
  *   native         main: ghostty_search_*, one cold full-scrollback pass
  *   native-feed    main: one feed on a search that has already caught up, which
  *                  is the cost a live pane pays per frame
  *
- * The headline result, 200x60 with ~10k rows: native is 42.7 ms against 21.3 ms
- * for gridref-match, so the core is ~2x SLOWER at the cold pass. It wins on
- * everything after it — a feed is 0.69 ms and does not grow with depth, where
- * the JS path re-reads and re-matches the whole buffer on every change.
- *
- * ABI facts established by layout.mjs / gridprobe.mjs, none of them guessable:
+ * ABI facts (from layout.mjs / gridprobe.mjs):
  *   GhosttyPoint  = { tag u32 @0; pad; x u16 @8; y u32 @12 }  (16 bytes)
  *   GhosttyGridRef= { size u32 @0; node ptr @4; x u16 @8; y u16 @10 }
  *   GhosttyCell   = uint64_t, passed to ghostty_cell_get BY VALUE (i64 arg)
@@ -236,12 +225,9 @@ function measureMain(mode) {
     }
 
     /**
-     * What `SearchController` actually does, rather than only the read it
-     * needs first: build the row's text and run the query over it. Without
-     * this the JS side is credited with a cell walk that never matches
-     * anything, and the native mode below is the only one being asked to
-     * search. Wrap-joining (`logicalLines`) is left out, so this is still a
-     * floor for the JS path rather than the whole of it.
+     * What `SearchController` does: build the row's text and run the query, so
+     * the JS side isn't credited with a walk that matches nothing. Still a floor,
+     * without wrap-joining (`logicalLines`).
      */
     const rowWalkMatch = () => {
       const re = new RegExp('zzz-not-here', 'gi')
@@ -278,17 +264,9 @@ function measureMain(mode) {
 // ---- main: the core does the searching --------------------------------------
 
 /**
- * What `NativeSearchController` actually costs: set the needle, then feed and
- * tick until the whole scrollback has been searched.
- *
- * This is the only mode that measures a *search* rather than a read. The four
- * above measure the read the JS matcher needs before it can start, which is
- * the honest comparison — the JS path has to pull every row across the
- * boundary and then match in JS, and this one never crosses it at all.
- *
- * `ghostty_search_run` is the blocking form, which is right here and wrong in
- * the app: it is one uninterrupted pass, whereas the controller ticks in
- * slices from the render loop so a deep scrollback does not cost a frame.
+ * What `NativeSearchController` costs: set the needle, feed and tick until
+ * the scrollback is searched. Uses the blocking `ghostty_search_run`; the app
+ * ticks in slices per frame instead.
  */
 function measureNative(mode) {
   const { ex, mem, dv } = boot(WASM)
@@ -320,10 +298,8 @@ function measureNative(mode) {
     const strPtr = ex.ghostty_wasm_alloc_u8_array(8)
 
     /**
-     * The steady-state cost, which is the one the app pays every frame: a
-     * search that has already caught up, fed once because the terminal moved.
-     * The JS path has no equivalent — its answer to "the buffer changed" is to
-     * read and match the whole scrollback again.
+     * Steady state, paid every frame: one feed on a caught-up search. The JS
+     * path's answer is to re-read and re-match everything.
      */
     if (mode === 'native-feed') {
       const search = make((s) => ex.ghostty_search_new(0, s, term), 'search_new')
@@ -366,14 +342,10 @@ function measureNative(mode) {
 const MODES = ['today', 'gridref', 'gridref-match', 'gridref-cellget', 'gridref-naive', 'native', 'native-feed']
 
 /**
- * The gate that makes the rest of this file mean anything: both engines must
- * read the SAME text out of the same corpus.
- *
- * This is not ceremony. The first run of this probe had `today` measuring an
- * empty loop — `get_scrollback_line` reads through `RenderState.row_data`, so
- * without a `render_state_update` first every row comes back blank. The
- * benchmark happily reported grid_ref at 5.2x SLOWER than a baseline that was
- * doing nothing. Run this whenever the harness changes.
+ * Both engines must read the same text from the same corpus.
+ * `get_scrollback_line` reads through `RenderState.row_data`, so it needs a
+ * `render_state_update` first or every row is blank. Run this whenever the
+ * harness changes.
  */
 function check() {
   const A = boot(VENDORED)

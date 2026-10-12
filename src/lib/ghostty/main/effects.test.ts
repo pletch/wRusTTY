@@ -8,14 +8,9 @@ import { MainEffects } from './effects'
 import { instantiateGhosttyWasm, readResponse, writeString, createTerminal } from '../wasmBindings'
 
 /**
- * Query responses through `OPT_WRITE_PTY`, checked against what the vendored
- * queue answers for the same query.
- *
- * The first test is the one that matters most, and it asserts a *negative*:
- * without the callback installed, `vt_write` answers nothing. That is `main`'s
- * documented default and the reason this step is the dangerous one — a port
- * that skips it produces a screen that is correct in every visible respect
- * while every program that asks the terminal a question waits out its timeout.
+ * Query responses through `OPT_WRITE_PTY`, checked against the vendored
+ * queue's answers. The first test asserts the negative: without the callback,
+ * `vt_write` answers nothing (main's documented default).
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -77,14 +72,9 @@ run('query responses via OPT_WRITE_PTY', () => {
   })
 
   it('does not echo the window title back for CSI 21 t, even with the callback installed', () => {
-    // The security property from upstream `38e891e6c`. Registering WRITE_PTY
-    // used to be enough to make the terminal answer title queries, so a remote
-    // host could set a title with OSC 2 and read it back into its own input
-    // stream — command injection after one keystroke. The title report is now
-    // opt-in via `T_OPT_TITLE_REPORT` and we never opt in.
-    //
-    // Asserting the negative here is the point: if a future pin flips the
-    // default back, or someone sets the option, this fails.
+    // Upstream `38e891e6c`: title reports are opt-in (`T_OPT_TITLE_REPORT`),
+    // and we never opt in, since a host could set a title with OSC 2 and read
+    // it back into its own input (command injection). Fails if that changes.
     const { ex, term, write } = boot()
     const effects = new MainEffects({ ex, term })
     write('\x1b]2;pwned\x07')

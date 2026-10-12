@@ -19,17 +19,8 @@ import {
 import { createTerminal, instantiateGhosttyWasm, writeString, type GhosttyWasm } from './wasmBindings'
 
 /**
- * The mouse encoder, against the binary that ships.
- *
- * This replaced hand-rolled reporting that covered two wire formats out of
- * five and three tracking modes out of five, and which had no test at all —
- * the suites that touch the mouse stub `mouseTracking` to steer the
- * report-versus-select decision and never look at the bytes, so every one of
- * them would have passed with reporting completely broken.
- *
- * As with `KeyEncoder.test.ts`, the modes are set the only way a real session
- * sets them: by writing the sequence to the terminal, not by configuring the
- * encoder.
+ * The mouse encoder, against the binary that ships. Modes are set as a real
+ * session sets them, by writing the sequence to the terminal.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -94,8 +85,7 @@ describe('MouseEncoder', () => {
 
   it('reports nothing at all until a program asks', () => {
     const { encode } = boot()
-    // The default. A terminal that reported unasked would send escape
-    // sequences into every shell that never enabled tracking.
+    // Off by default; reporting unasked would spray escapes into shells.
     expect(encode({})).toBeNull()
   })
 

@@ -16,14 +16,10 @@ enum WriteCommand {
     Break(Duration),
 }
 
-/// How long a break condition is held by default.
-///
-/// A break is the line held at logic zero for longer than one character
-/// frame — the out-of-band attention signal on a serial console. Cisco
-/// password recovery and ROMMON entry need one during boot, as do plenty of
-/// embedded bootloaders. RS-232 has no fixed duration; ~300 ms is comfortably
-/// past every receiver's detection threshold at any baud rate anyone still
-/// uses, and matches what PuTTY sends.
+/// How long a break is held by default: the line at logic zero past one
+/// character frame, the serial console's attention signal (Cisco password
+/// recovery, ROMMON, bootloaders). ~300 ms clears every receiver's threshold
+/// at any common baud rate, and matches PuTTY.
 pub const DEFAULT_BREAK: Duration = Duration::from_millis(300);
 
 /// Everything needed to open a serial port, before one is open.

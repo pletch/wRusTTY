@@ -166,11 +166,8 @@ describe('suggestionKeyAction', () => {
 })
 
 /**
- * A tracker stub whose read is set by the test.
- *
- * `exact` defaults to true — a host with shell integration — because that is
- * the case with no extra rules attached, and the tests below are about the
- * controller rather than about inference. The inferred case has its own tests.
+ * A tracker stub whose read the test sets. `exact` defaults to true (a host
+ * with shell integration); the inferred case has its own tests.
  */
 function fakeTracker(input: PromptInput | null, exact = true) {
   const state = { input, exact }
@@ -214,8 +211,7 @@ function makeController(
     noteAccepted: (command) => accepted.push(command),
     forget: async (command) => {
       if (overrides.forget) return overrides.forget(command)
-      // The store as the backend would leave it: the next suggest no longer
-      // returns what was forgotten.
+      // As the backend would leave it: the next suggest omits it.
       forgotten.push(command)
       items.splice(items.indexOf(command), 1)
     },
@@ -519,10 +515,9 @@ describe('AutocompleteController', () => {
 
   describe("walking the shell's own history", () => {
     /**
-     * The reported bug, in sequence. Up recalls a command, which rewrites the
-     * whole line — indistinguishable from a burst of typing when read off the
-     * grid. That used to open a list, and the list then ate the *next* Up, so
-     * history recall stopped working after one press.
+     * Up recalls a command, rewriting the whole line, which looks like a burst
+     * of typing on the grid. It must not open a list, which would eat the next
+     * Up.
      */
     it('does not open a list when the far end redraws the line', async () => {
       const { controller, state } = makeController(promptInput(''), ['git status'])
@@ -693,9 +688,7 @@ describe('suggestionSuffix', () => {
   })
 
   /**
-   * Belt and braces against drawing something misleading. A view whose
-   * candidate no longer extends what is on the line would otherwise render
-   * ghost text that does not continue the command under it.
+   * A candidate that no longer extends the line yields no ghost text.
    */
   it('is empty when the candidate does not extend what was typed', () => {
     expect(suggestionSuffix(view(['sudo reboot'], 'git s'))).toBe('')
@@ -733,11 +726,8 @@ describe('placeSuggestions', () => {
   })
 
   /**
-   * The reported bug. With the prompt near the bottom, the list has to go
-   * above — and it has to go above by *its own* height, not by a count of
-   * terminal rows. A row of the list is a cell of text plus padding plus a
-   * border, so reserving `items.length` cells left it overlapping the line
-   * being typed.
+   * Near the bottom, the list goes above by its own height (a list row is
+   * text plus padding plus border), not by a count of terminal rows.
    */
   it('sits above the line when the prompt is near the bottom', () => {
     const place = placeSuggestions({ ...pane, cursorRow: 22 })

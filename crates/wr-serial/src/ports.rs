@@ -2,18 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SerialError;
 
-/// The stable identity of a USB serial adapter, as distinct from the COM
-/// number Windows happens to have assigned it today.
-///
-/// A COM number is a property of *the socket the adapter is plugged into*, not
-/// of the adapter: move an FTDI cable to a different USB port and COM4 becomes
-/// COM7. That is why saved serial sessions were ruled out — "COM4" is only
-/// meaningful until something moves. But the premise is fixable rather than
-/// fixed: `tokio_serial` already reports `vid`, `pid` and `serial_number`
-/// alongside the manufacturer and product strings this used to keep, and those
-/// *are* stable across replug, reboot and a different socket. Storing them
-/// turns "COM4" into "the FTDI cable with serial A50285BI", which is what the
-/// user meant by it.
+/// A USB serial adapter's stable identity, as opposed to its COM number,
+/// which belongs to the socket. `tokio_serial` reports `vid`, `pid` and
+/// `serial_number`, stable across replug, reboot and sockets: "the FTDI cable
+/// with serial A50285BI" rather than "COM4".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsbIdentity {
@@ -62,24 +54,17 @@ pub enum Resolved {
     Ambiguous(Vec<String>),
 }
 
-/// Finds the port a saved session meant, among the ports present now.
+/// Finds the port a saved session meant among the ports present now, in
+/// order of confidence:
 ///
-/// In order of confidence:
+/// 1. **VID + PID + serial number**: unique in practice and stable.
+/// 2. **VID + PID without a serial number**: identifies the model. Unambiguous
+///    with one attached; with several, a still-present stored port name breaks
+///    the tie, otherwise the result is reported ambiguous.
+/// 3. **Port name**: for non-USB ports (which don't move), and profiles saved
+///    before USB identity was recorded.
 ///
-/// 1. **VID + PID + serial number.** Unique in practice, and stable across
-///    replug, reboot and a different socket. This is the case the whole feature
-///    exists for.
-/// 2. **VID + PID, when the adapter reports no serial number.** Identifies the
-///    *model*, not the unit. With one such adapter attached that is
-///    unambiguous. With several, the stored port name breaks the tie if it is
-///    still present — that adapter probably didn't move — and otherwise the
-///    caller is told it's ambiguous rather than handed a guess.
-/// 3. **Port name.** For non-USB ports, which don't move: a PCI serial card
-///    stays where it is, so its name is a perfectly good identity. This is also
-///    the path for a profile saved before any USB identity was recorded.
-///
-/// Pure, and takes the port list as an argument, so every branch is testable
-/// with no hardware attached.
+/// Pure over the port list, so every branch is testable without hardware.
 pub fn resolve(identity: &PortIdentity, available: &[PortInfo]) -> Resolved {
     let Some(want) = &identity.usb else {
         return match available.iter().find(|p| p.name == identity.port_name) {

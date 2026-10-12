@@ -1,63 +1,30 @@
 /**
- * Keyboard encoding, done by the engine rather than by us.
- *
- * ## Why this exists
- *
- * `GhosttyInputHandler` used to carry its own table: a modifier mask, a switch
- * over named keys, SS3 for application cursor mode. It was about ninety lines
- * and it was wrong in ways that are invisible until someone hits them —
- * Ctrl+Alt+letter and Ctrl+Shift+anything fell between its two branches and
- * produced *nothing at all*; there was no Ctrl+digit and no Ctrl+Space; and
- * Shift+Enter, Ctrl+Enter and Ctrl+Tab were indistinguishable from the
- * unmodified key, which is the exact thing modern TUIs ask for the Kitty
- * keyboard protocol in order to tell apart. `KeyEncoder.test.ts` pins each of
- * those, against the binary rather than against a belief about it.
- *
- * None of that is unusual. Legacy xterm encoding, xterm's `modifyOtherKeys`
- * and the Kitty protocol are three overlapping specifications, and the far
- * end switches between them at runtime with sequences nobody's hand-rolled
- * table is watching for. Ghostty implements all three and reads its own
- * terminal state to decide which applies, so this is a wrapper, not a port.
+ * Keyboard encoding, done by the engine. Legacy xterm, `modifyOtherKeys` and
+ * the Kitty protocol overlap and switch at runtime; Ghostty implements all
+ * three, so this is a wrapper, not a port. `KeyEncoder.test.ts` pins the
+ * results against the binary.
  *
  * ## Which protocol is in force
  *
- * Not our decision, and not a setting. `setopt_from_terminal` reads the modes
- * the *application* has set — DECCKM, DECKPAM, `modifyOtherKeys`, and the
- * Kitty flag stack pushed with `CSI > flags u` — and applies them to the
- * encoder. So a pane speaks the Kitty protocol from the moment something in
- * it asks to, for as long as it asks, and drops back to legacy encoding when
- * that program exits and pops its flags. It is re-read per keystroke because
- * that push can arrive between any two of them, and it costs a handful of
- * loads against a keyboard's ~10 events a second.
+ * Not a setting: `setopt_from_terminal` reads the modes the application set
+ * (DECCKM, DECKPAM, `modifyOtherKeys`, the Kitty flag stack) per keystroke,
+ * since a push can arrive between any two.
  *
- * One of those modes looks inert and is not. **Application keypad mode does
- * nothing until the application also clears DEC 1035**, which defaults to on
- * and hard-disables the keypad mode whenever it is set — xterm's modern
- * default, and upstream's. `ESC =` alone therefore changes no numpad output,
- * which reads exactly like an unimplemented mode. It is implemented;
- * `KeyEncoder.test.ts` pins the whole keypad both ways round.
+ * Application keypad mode does nothing until the application also clears DEC
+ * 1035, which defaults on (xterm's and upstream's default). So `ESC =` alone
+ * changes no numpad output; that's correct, not unimplemented.
  *
- * ## What still has to be decided here
+ * ## What's decided here
  *
- * The DOM does not describe a key event the way the encoder wants one:
- *
- * - **The physical key** is `KeyboardEvent.code`, which is the same W3C
- *   vocabulary `GhosttyKey` is built from — a lookup (see `keyAbi.ts`). An
- *   event injected rather than typed can carry no `code` at all, and
- *   `keyFor` falls back to `key` for those; the note there says why.
- * - **The text** is `KeyboardEvent.key`, but only when it is a single
- *   character. The header is explicit that this must be the character
- *   *before* any Ctrl/Meta transformation and must never be a C0 control, so
- *   `Enter`, `Tab` and friends pass no text and let the encoder work from the
- *   logical key.
- * - **The unshifted codepoint** is only knowable when Shift is not down. On a
- *   non-US layout the browser will not say what the key would have produced
- *   unshifted, and guessing from `code` assumes a US keyboard — so it is left
- *   at zero, which costs the Kitty protocol's alternate-key reporting and
- *   nothing else.
- * - **Modifier sides** (left vs right Ctrl) are not knowable either:
- *   `location` describes the key that was pressed, not which Shift is being
- *   held while some other key is. Upstream expects platforms that can't say.
+ * - **The physical key** is `KeyboardEvent.code`, the vocabulary `GhosttyKey`
+ *   uses (see `keyAbi.ts`). An injected event without a `code` falls back to
+ *   `key` in `keyFor`.
+ * - **The text** is `KeyboardEvent.key` when it's a single character: before
+ *   any Ctrl/Meta transformation and never a C0 control, so `Enter`, `Tab`
+ *   and the like pass no text.
+ * - **The unshifted codepoint** is only knowable without Shift; on non-US
+ *   layouts it's left at zero, costing only Kitty's alternate-key reporting.
+ * - **Modifier sides** (left vs right) aren't knowable, which upstream allows.
  */
 
 import * as abi from './main/abi'
@@ -78,41 +45,31 @@ import {
 import type { GhosttyWasm } from './wasmBindings'
 
 /**
- * Room for one encoded key. The longest thing the encoder produces is a Kitty
- * report carrying associated text, which is still well under this; the
- * `OUT_OF_SPACE` path below is what makes the number a starting point rather
- * than a limit, so it does not have to be argued about.
+ * Room for one encoded key; the `OUT_OF_SPACE` path below handles anything
+ * longer.
  */
 const BUF_BYTES = 128
 
-/** UTF-8 for one key's text. A grapheme, not a paste — 16 bytes is generous. */
+/** UTF-8 for one key's text (a grapheme, not a paste). */
 const UTF8_BYTES = 16
 
 /**
- * A `code` we don't recognize, or one that produces text through a route
- * keydown cannot see. Encoding these would be worse than declining: the
- * encoder would fall back to the logical key and send *something*, where
- * declining lets the browser's own text path deliver the real character.
+ * Declines a `code` we don't recognize, or one producing text through a route
+ * keydown can't see, so the browser's text path delivers the real character.
  */
 function isEncodable(e: KeyboardEvent): boolean {
-  // A dead key is the first half of a composition. The character arrives later
-  // through `compositionend`; the key itself has no sequence, and encoding it
-  // by physical key would send the unaccented character now and the accented
-  // one after.
+  // A dead key starts a composition; the character arrives via
+  // `compositionend`. Encoding it would send the unaccented character first.
   if (e.key === 'Dead' || e.key === 'Unidentified') return false
-  // AltGr. Windows reports it as Ctrl+Alt, which is indistinguishable from a
-  // real Ctrl+Alt chord except through this — and on the layouts where it
-  // matters (a German `@`, a Polish `ą`) it is *producing text*, so it belongs
-  // to the text path. Chromium implements the modifier state; a browser that
-  // doesn't returns false and loses only the distinction we never had.
+  // AltGr: Windows reports it as Ctrl+Alt, but it produces text (German `@`,
+  // Polish `ą`), so it belongs to the text path.
   if (e.getModifierState('AltGraph')) return false
   return keyFor(e.code, e.key) !== KEY_UNIDENTIFIED
 }
 
 /** The single character `key` names, or null for a named key or a C0. */
 function textOf(e: KeyboardEvent): string | null {
-  // Codepoints, not UTF-16 units: an astral character is one key's worth of
-  // text and two units long.
+  // Codepoints, not UTF-16 units.
   const chars = [...e.key]
   if (chars.length !== 1) return null
   const cp = chars[0].codePointAt(0)!
@@ -149,10 +106,9 @@ export class KeyEncoder {
     this.utf8Buf = ex.ghostty_wasm_alloc(UTF8_BYTES)
     this.lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
 
-    // The one option `setopt_from_terminal` cannot derive, and it resets this
-    // to false on every call anyway. Set once for the record: there is no
-    // option key on the platform this ships to, and treating a hypothetical
-    // one as Alt is the behavior a terminal wants.
+    // The one option `setopt_from_terminal` can't derive (and resets anyway).
+    // There's no option key on Windows; treating one as Alt is what a terminal
+    // wants.
     const optSlot = ex.ghostty_wasm_alloc(1)
     new Uint8Array(ex.memory.buffer, optSlot, 1)[0] = 0
     ex.ghostty_key_encoder_setopt(this.encoder, KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, optSlot)
@@ -160,14 +116,9 @@ export class KeyEncoder {
   }
 
   /**
-   * An encoder over a live terminal, or null when the binary has no key
-   * encoder in it.
-   *
-   * That is only ever the v1.3.1 build, which nothing in the app loads — it is
-   * kept as the port's test oracle (`vendor-131/README.md`). Returning null
-   * rather than throwing keeps that build usable for the suites that compare
-   * against it, at the price of a pane with no control keys, which is a
-   * trade only a test ever makes.
+   * An encoder over a live terminal, or null when the binary has no key encoder
+   * (only the v1.3.1 test oracle, `vendor-131/README.md`). Null keeps that build
+   * usable for comparison suites.
    */
   static create(wasm: GhosttyWasm, term: number): KeyEncoder | null {
     const ex = wasm.instance.exports as unknown as abi.GhosttyMainExports
@@ -184,19 +135,15 @@ export class KeyEncoder {
   }
 
   /**
-   * The bytes a key event should put on the wire, or null for a key that
-   * produces none.
-   *
-   * Null is an ordinary answer, not a failure: a bare Shift press encodes to
-   * nothing, and so does every key release unless the far end has asked for
-   * release events through the Kitty protocol. The caller uses it to decide
-   * whether to consume the event — see `GhosttyInputHandler`.
+   * The bytes a key event should send, or null for none. Null is ordinary: a
+   * bare Shift press, or a release the far end didn't ask for. The caller uses
+   * it to decide whether to consume the event (see `GhosttyInputHandler`).
    */
   encode(e: KeyboardEvent): Uint8Array | null {
     if (!isEncodable(e)) return null
     const { ex } = this
 
-    // The application's modes as of *this* keystroke; see the note above.
+    // The application's modes as of this keystroke.
     ex.ghostty_key_encoder_setopt_from_terminal(this.encoder, this.term)
 
     ex.ghostty_key_event_set_action(
@@ -205,9 +152,8 @@ export class KeyEncoder {
     )
     ex.ghostty_key_event_set_key(this.event, keyFor(e.code, e.key))
     ex.ghostty_key_event_set_mods(this.event, modsOf(e))
-    // Nothing here consumes a modifier before the encoder sees it — a
-    // translation layer that did (macOS option-as-text) would report it here
-    // so the encoder leaves it out of the sequence.
+    // Nothing consumes a modifier before the encoder (a translation layer like
+    // macOS option-as-text would report it here).
     ex.ghostty_key_event_set_consumed_mods(this.event, 0)
     ex.ghostty_key_event_set_composing(this.event, e.isComposing ? 1 : 0)
 
@@ -221,7 +167,7 @@ export class KeyEncoder {
         new Uint8Array(ex.memory.buffer, this.utf8Buf, UTF8_BYTES),
       ).written
       ex.ghostty_key_event_set_utf8(this.event, this.utf8Buf, written)
-      // Only meaningful unshifted — see the header comment.
+      // Only meaningful unshifted; see the header.
       ex.ghostty_key_event_set_unshifted_codepoint(this.event, e.shiftKey ? 0 : text.codePointAt(0)!)
     }
 
@@ -229,13 +175,10 @@ export class KeyEncoder {
   }
 
   /**
-   * What the keyboard is speaking right now, as the bytes Ctrl+A would send:
-   * `^A` under legacy encoding, a CSI sequence under either `modifyOtherKeys`
-   * or the Kitty protocol. Not a value to interpret — two calls that agree mean
-   * the far end left the protocol where it was, and that comparison is all
-   * `sessionModes.leftoverModeReset` asks of it. (Ctrl+Enter, the obvious
-   * probe, does not do: the core's `modifyOtherKeys` leaves keys without text
-   * alone.)
+   * The bytes Ctrl+A would send: `^A` under legacy encoding, a CSI sequence
+   * under `modifyOtherKeys` or Kitty. Only compared between calls, by
+   * `sessionModes.leftoverModeReset`. (Ctrl+Enter doesn't work as a probe: the
+   * core's `modifyOtherKeys` leaves keys without text alone.)
    */
   probeProtocol(): string {
     const { ex } = this
@@ -265,11 +208,8 @@ export class KeyEncoder {
     let len = this.dv().getUint32(this.lenSlot, true)
 
     if (result === abi.GHOSTTY_OUT_OF_SPACE) {
-      // `len` is now the size required. Nothing observed needs this — the
-      // fixed buffer holds every sequence the protocols define — so the grown
-      // buffer is not kept: paying an allocation on a keystroke that will
-      // likely never happen again beats holding the memory for the pane's
-      // life.
+      // `len` is now the size required. The grown buffer isn't kept; no observed
+      // sequence needs it.
       const big = ex.ghostty_wasm_alloc(len)
       try {
         result = ex.ghostty_key_encoder_encode(this.encoder, this.event, big, len, this.lenSlot)
@@ -282,8 +222,7 @@ export class KeyEncoder {
     }
 
     if (result !== abi.GHOSTTY_SUCCESS || len === 0) return null
-    // Copied out: the next keystroke writes over this buffer, and linear
-    // memory can move under a view that outlives the call.
+    // Copied out: the next keystroke reuses the buffer, and memory can move.
     return new Uint8Array(ex.memory.buffer, this.buf, len).slice()
   }
 
@@ -298,11 +237,8 @@ export class KeyEncoder {
 }
 
 /**
- * `GhosttyMods` for a DOM event.
- *
- * Caps and Num Lock are included because the Kitty protocol reports them and
- * because `IGNORE_KEYPAD_WITH_NUMLOCK` (DEC 1035) is a mode a far end can set;
- * without Num Lock the encoder cannot honor it.
+ * `GhosttyMods` for a DOM event. Caps and Num Lock are included: Kitty reports
+ * them, and DEC 1035 (`IGNORE_KEYPAD_WITH_NUMLOCK`) needs Num Lock.
  */
 export function modsOf(e: KeyboardEvent): number {
   let mods = 0

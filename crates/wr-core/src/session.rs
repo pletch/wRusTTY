@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Opaque session identifier, shared by the session manager (Phase 2), the
-/// vault (Phase 3), and the transport commands that key their in-memory
-/// connection handles by it.
+/// Opaque session identifier, shared by session management, the vault and
+/// the transport commands that key connection handles by it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
@@ -20,8 +19,7 @@ pub enum Protocol {
     Ssh,
     Telnet,
     Serial,
-    /// A shell process on this machine, on a pseudoconsole. The only variant
-    /// with nothing on the other end of a network, which is why it is also the
-    /// only one with no host, port or credential to its name.
+    /// A shell process on this machine, on a pseudoconsole: the only variant with
+    /// no host, port or credential.
     Local,
 }

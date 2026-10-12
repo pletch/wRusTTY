@@ -1,58 +1,28 @@
-//! Doing something as root on a connection that is already up.
+//! Running things as root on an established connection, so the Files panel can
+//! open and save root-owned files (SFTP runs as the authenticated user and has
+//! no escalation).
 //!
-//! SFTP has no privilege-escalation verb — the subsystem runs as the user who
-//! authenticated and there is no way to ask it for more — so a root-owned file
-//! is unreadable and unwritable through the Files panel however plainly the
-//! user can `sudo` in the pane beside it. Everything here exists to close that
-//! gap for one narrow case: opening such a file in a local editor and saving it
-//! back.
+//! # Privilege as a process, not a secret
 //!
-//! # Why this is not "run sudo when needed"
+//! Running `sudo -S` per operation would mean holding the user's sudo password
+//! (often their login or directory credential) for as long as a file is open,
+//! and sudo's timestamp doesn't help: it's keyed to the tty or parent pid, and
+//! each `exec` channel is a separate process. Instead, one channel per elevated
+//! edit runs a small root helper; the password authenticates it once and is
+//! dropped. The channel's lifetime is visible (the edit is listed as watched)
+//! and ends with the edit, the pane or the session.
 //!
-//! The obvious implementation — `sudo -S` on a fresh `exec` channel per
-//! operation, with the password piped in each time — would mean holding the
-//! user's sudo password in this process for as long as the file stays open. It
-//! is the wrong secret to hold: on most hosts it is also the login password,
-//! and on a domain-joined estate it may be the directory credential. A save
-//! happens every time the user presses Ctrl-S, minutes apart, so "ask each
-//! time" is not an option either.
+//! The trade: an attacker who takes this process mid-edit gets root on that one
+//! host while the edit is open, rather than a reusable credential.
 //!
-//! The tempting middle road is sudo's own timestamp — authenticate once, let
-//! the 15-minute ticket cover the rest — and it does not work here. `sudo` keys
-//! its timestamp to the controlling tty, and falls back to the *parent process
-//! id* when there is none. Every `exec` channel is a separate process under a
-//! separate `sshd` child, so a ticket primed on one channel is invisible to the
-//! next. Two channels, two authentications.
+//! # What the helper does
 //!
-//! So the privilege is held as **a process rather than a secret**: one channel
-//! per elevated edit, running a small root helper that copies a staged file
-//! over a destination and does nothing else. The password authenticates it
-//! once, at open, and is dropped immediately afterward. What remains is a
-//! channel whose lifetime the user can see (the edit is listed as watched) and
-//! end (stop watching, close the pane, disconnect), and which cannot outlive
-//! the SSH session it rides on.
-//!
-//! That trade is deliberate and worth stating plainly: an attacker who takes
-//! this process mid-edit gets root **on that one host, for as long as the edit
-//! is open**. The design it replaces would have given them a reusable
-//! credential good on every host that accepts it, for as long as it stayed in
-//! memory. Neither is nothing; the first is much smaller.
-//!
-//! # What the helper will do
-//!
-//! Copy a path it is given over another path it is given, if the destination is
-//! an existing regular file. That is not a security boundary — anything that
-//! can write any file as root is root — but it keeps a framing bug in this
-//! module from becoming arbitrary command execution on the far end, which is a
-//! meaningfully different class of accident.
-//!
-//! `cp` rather than a rename or an `install`, because it writes *through* the
-//! destination inode: owner, mode, ACLs, xattrs and SELinux context all survive
-//! the save, and a symlinked config file is followed to its target. This is the
-//! same write-back `sudoedit` performs, and it inherits the same caveat — the
-//! copy truncates before it writes, so it is not atomic. The source is a local
-//! file on the far end by then, so the window is a few milliseconds of local
-//! I/O rather than the length of a network transfer.
+//! Copies a given path over another, if the destination is an existing regular
+//! file. Not a security boundary (root is root), but it keeps a framing bug from
+//! becoming arbitrary command execution. It uses `cp`, which writes through the
+//! destination inode, preserving owner, mode, ACLs, xattrs and SELinux context
+//! and following symlinks, as `sudoedit` does. Like `sudoedit` it isn't atomic,
+//! but the source is already local to the host.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,61 +34,49 @@ use zeroize::Zeroizing;
 use crate::error::SshError;
 use crate::handler::ClientHandler;
 
-/// How long any single step may go without producing a byte.
-///
-/// An inactivity budget rather than a total one, because the same primitive
-/// streams a file whose size is whatever the host says it is — a total timeout
-/// would have to be either uselessly long or wrong for large files, while
-/// silence is what actually distinguishes a stalled host from a slow one.
+/// How long any step may go without producing a byte. An idle budget rather
+/// than a total one, since file reads can be any size.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Cap on collected stderr. Enough for sudo's complaint and a line of context;
-/// past that a host is saying something this cannot act on anyway.
+/// Cap on collected stderr.
 const STDERR_CAP: usize = 4 * 1024;
 
-/// Cap on the diagnostic lines kept from the helper channel, same reasoning.
+/// Cap on diagnostic lines kept from the helper channel.
 const NOTES_CAP: usize = 32;
 
-/// Printed by the helper once it is running as root. Reaching this is the only
-/// evidence that authentication actually succeeded — sudo's failures arrive on
-/// stderr, which this channel does not carry.
+/// Printed by the helper once running as root: the only evidence that
+/// authentication succeeded (sudo's failures go to stderr, which this channel
+/// doesn't carry).
 const READY: &str = "__WRUSTTY_SUDO_READY__";
-/// Printed after a copy that worked, and after one that did not.
+/// Printed after each copy, success or failure.
 const OK: &str = "__WRUSTTY_SUDO_OK__";
 const ERR: &str = "__WRUSTTY_SUDO_ERR__";
 
-/// Why an elevated operation could not be done.
-///
-/// Split this finely because the fixes have nothing to do with each other: a
-/// wrong password is retried, a missing sudoers entry is a conversation with
-/// whoever administers the host, and `requiretty` is a policy this app cannot
-/// satisfy at all. Collapsing them into one string would send every user down
-/// the same wrong path.
+/// Why an elevated operation failed, split by remedy: retry the password, ask
+/// the host's admin, or accept that this app can't satisfy the policy.
 #[derive(Debug, thiserror::Error)]
 pub enum SudoError {
     /// sudo rejected the password. The only variant worth re-prompting on.
     #[error("that sudo password was not accepted")]
     WrongPassword,
 
-    /// sudo wants a password and none was supplied — the ordinary result of
-    /// optimistically trying `sudo -n` first.
+    /// sudo wants a password and none was supplied (the optimistic `sudo -n`
+    /// attempt).
     #[error("sudo requires a password on this host")]
     NeedsPassword,
 
-    /// sudo will never work here for this user: no sudoers entry, no sudo
-    /// installed, or a policy requiring a terminal this app has no way to
-    /// provide. Carries wording meant to be shown as-is.
+    /// sudo will never work for this user here (no sudoers entry, not installed,
+    /// or `requiretty`). The message is shown as-is.
     #[error("{0}")]
     Unavailable(String),
 
-    /// sudo ran and the command under it failed — a read-only mount, a full
-    /// disk, a destination that is not a regular file.
+    /// sudo ran but the command failed (read-only mount, full disk, not a regular
+    /// file).
     #[error("{0}")]
     Failed(String),
 
-    /// The privileged channel went away: the session dropped, or the helper
-    /// exited. Distinct from `Failed` because the answer is to reopen the file
-    /// rather than to fix anything about it.
+    /// The privileged channel ended (session dropped or helper exited); the file
+    /// must be reopened.
     #[error("the privileged session for this file has ended — open the file again")]
     ChannelClosed,
 
@@ -138,13 +96,9 @@ impl SudoError {
     }
 }
 
-/// A path, quoted so a remote POSIX shell sees exactly the bytes we meant.
-///
-/// Single quotes disable every expansion the shell has, which leaves one
-/// character to handle — the quote itself, closed and reopened around an
-/// escaped copy. This matters more than it looks: remote filenames come from
-/// the *server*, and a directory listing containing `; rm -rf ~` would
-/// otherwise be run rather than copied.
+/// A path single-quoted for a remote POSIX shell, with embedded quotes closed
+/// and reopened. Remote filenames come from the server, so `; rm -rf ~` must be
+/// data, not a command.
 fn shell_quote(path: &str) -> String {
     let mut out = String::with_capacity(path.len() + 2);
     out.push('\'');
@@ -161,8 +115,7 @@ fn shell_quote(path: &str) -> String {
 
 /// What a one-shot command did.
 struct ExecOutcome {
-    /// `None` when the host closed the channel without reporting one, which
-    /// several appliance SSH implementations do.
+    /// `None` when the host closed without reporting one (some appliances).
     code: Option<u32>,
     stderr: String,
 }
@@ -173,13 +126,9 @@ impl ExecOutcome {
     }
 }
 
-/// Runs one command on a channel of its own, with optional stdin, streaming
-/// stdout into `sink` and collecting stderr separately.
-///
-/// The separation is the reason this exists rather than reusing
-/// `SshSession::exec_capture`: everything here needs the exit status, and needs
-/// sudo's complaint kept apart from the file it is being asked to print. A
-/// `cat` whose first line is "sudo: a password is required" is not a file.
+/// Runs one command on its own channel with optional stdin, streaming stdout to
+/// `sink` and collecting stderr separately, with the exit status. (Unlike
+/// `SshSession::exec_capture`, which drops stderr and the exit status.)
 async fn run_once<W>(
     handle: &Arc<client::Handle<ClientHandler>>,
     command: &str,
@@ -194,8 +143,7 @@ where
     if let Some(data) = stdin {
         channel.data_bytes(data.to_vec()).await?;
     }
-    // Always, even with no stdin: a command that reads stdin and never gets an
-    // EOF hangs until the idle timeout, and there is nothing further to send.
+    // Always send EOF, or a command reading stdin hangs.
     channel.eof().await?;
 
     let mut stderr = Vec::new();
@@ -210,16 +158,13 @@ where
                     sink.write_all(&data).await?;
                 }
             }
-            // Extended data type 1 is stderr; there is no other in practice.
+            // Extended data type 1 is stderr.
             Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
                 let room = STDERR_CAP.saturating_sub(stderr.len());
                 stderr.extend_from_slice(&data[..data.len().min(room)]);
             }
             Some(ChannelMsg::ExitStatus { exit_status }) => code = Some(exit_status),
-            // Deliberately *not* breaking on `Eof`. The exit status arrives as
-            // its own message and OpenSSH sends it around the same time;
-            // stopping at the first EOF would throw away the one fact every
-            // caller here is asking for.
+            // Don't stop at `Eof`: the exit status may still be coming.
             Some(ChannelMsg::Close) | None => break,
             _ => {}
         }
@@ -233,11 +178,8 @@ where
     })
 }
 
-/// The refusals no password can fix, if this is one of them.
-///
-/// Kept apart from everything else because these three are the only failures
-/// where prompting the user would be cruelty: the answer is a conversation with
-/// whoever administers the host, not a credential.
+/// The refusals no password can fix, if this is one: these need the host's
+/// admin, not a credential.
 fn hopeless_policy(said: &str, code: Option<u32>) -> Option<SudoError> {
     let has = |needle: &str| said.contains(needle);
 
@@ -260,22 +202,11 @@ fn hopeless_policy(said: &str, code: Option<u32>) -> Option<SudoError> {
     None
 }
 
-/// Reads the answer to `sudo -v`, which authenticates and runs nothing.
-///
-/// **Anything unrecognized means "ask for a password".** That is the whole
-/// reason this is separate from [`classify`], and it is a correctness fix
-/// rather than a nicety. `-v` executes no command, so the only things it can
-/// fail on are authentication and policy — there is no third category for an
-/// unfamiliar message to belong to. Matching an allowlist of phrasings instead
-/// meant that a sudo saying `interactive authentication is required` rather
-/// than `a password is required` was reported to the user as a hard failure,
-/// and the password dialog that would have satisfied it never opened.
-///
-/// Sudo's wording varies by version, by build, and by the PAM stack underneath
-/// it; `LC_ALL=C` fixes the language and nothing fixes the vocabulary. So the
-/// two ends are pinned — the refusals nothing can fix, and a rejected password
-/// — and the open middle is read as the thing that is almost always true when
-/// `sudo -n` says no: it wants a password.
+/// Reads the answer to `sudo -v` (authenticates, runs nothing). Since `-v` can
+/// only fail on authentication or policy, anything other than a known hopeless
+/// policy or a rejected password means "ask for a password". sudo's wording
+/// varies by version and PAM stack, so an allowlist of phrasings would miss
+/// some.
 fn classify_probe(outcome: &ExecOutcome, had_password: bool) -> SudoError {
     let said = outcome.stderr.to_ascii_lowercase();
     if let Some(hopeless) = hopeless_policy(&said, outcome.code) {
@@ -287,21 +218,14 @@ fn classify_probe(outcome: &ExecOutcome, had_password: bool) -> SudoError {
     if said.contains("incorrect password") || said.contains("sorry, try again") {
         return SudoError::WrongPassword;
     }
-    // A password was given, sudo would not take it, and it did not say the
-    // password was wrong. Reported as it stands rather than guessed at — a
-    // second prompt for a credential that was accepted is its own kind of
-    // wrong answer.
+    // Given a password, sudo refused without saying it was wrong; report it
+    // rather than prompting again.
     SudoError::Failed(last_line(outcome))
 }
 
-/// Turns sudo's own complaint about a *command* into something the user can act
-/// on.
-///
-/// Unlike [`classify_probe`], an unrecognized message here really can be a
-/// third thing: the command under sudo failing on its own terms — no such file,
-/// read-only file system, out of space. So this one keeps the allowlist, and an
-/// unknown message stays an error rather than becoming a password prompt for a
-/// problem no password would fix.
+/// Classifies sudo's complaint about a command. Unlike [`classify_probe`], an
+/// unknown message here can be the command's own failure, so it stays an error
+/// rather than becoming a password prompt.
 fn classify(outcome: &ExecOutcome) -> SudoError {
     let said = outcome.stderr.to_ascii_lowercase();
     let has = |needle: &str| said.contains(needle);
@@ -309,9 +233,8 @@ fn classify(outcome: &ExecOutcome) -> SudoError {
     if has("incorrect password") || has("sorry, try again") {
         return SudoError::WrongPassword;
     }
-    // Every phrasing seen for "sudo wants a password and did not get one".
-    // `-n` produces the first two; the third is what sudo says when it needs
-    // one, has no terminal, and was not given `-S`.
+    // Known phrasings for "needs a password": `-n` gives the first two; the
+    // third is sudo with no terminal and no `-S`.
     if has("password is required")
         || has("interactive authentication is required")
         || has("no password was provided")
@@ -325,10 +248,8 @@ fn classify(outcome: &ExecOutcome) -> SudoError {
     SudoError::Failed(last_line(outcome))
 }
 
-/// The sentence worth showing out of whatever the host printed.
-///
-/// The last line, because sudo and the tools under it prefix their own name and
-/// the useful part comes last. Whole multi-line stderr in a toast is unreadable.
+/// The last line of the host's message (tools put the useful part last), or a
+/// generic message with the exit status.
 fn last_line(outcome: &ExecOutcome) -> String {
     let detail = outcome.stderr.trim();
     if detail.is_empty() {
@@ -340,15 +261,9 @@ fn last_line(outcome: &ExecOutcome) -> String {
     detail.lines().last().unwrap_or(detail).trim().to_string()
 }
 
-/// Builds `sudo` with the flags every call here shares.
-///
-/// `env LC_ALL=C` rather than an `LC_ALL=C ` assignment prefix because the
-/// command string is handed to the user's *login* shell, which is not always
-/// POSIX — an assignment prefix is a syntax error in csh, and `env` is just a
-/// command.
-///
-/// `-p ''` silences sudo's own prompt: nothing is reading it, and on the helper
-/// channel it would land in the middle of the framing.
+/// The `sudo` invocation shared by every call. `env LC_ALL=C` rather than an
+/// assignment prefix, which non-POSIX login shells (csh) reject. `-p ''`
+/// silences the prompt, which would otherwise land in the helper's framing.
 fn sudo_prefix(with_password: bool) -> &'static str {
     if with_password {
         "env LC_ALL=C sudo -S -p '' "
@@ -357,13 +272,9 @@ fn sudo_prefix(with_password: bool) -> &'static str {
     }
 }
 
-/// Password bytes as sudo wants them on stdin: one line, newline-terminated.
-///
-/// `Zeroizing` so the copy this makes is wiped when it goes out of scope. Note
-/// what it cannot cover: `russh` takes these bytes by value to encrypt them, and
-/// that copy is not ours to wipe. Holding the password for one call rather than
-/// for the session is what actually bounds the exposure; this is hygiene on top
-/// of it, not the guarantee.
+/// The password as one newline-terminated line for sudo's stdin, zeroized on
+/// drop. `russh`'s internal copy can't be wiped; holding the password for one
+/// call is what actually bounds exposure.
 fn password_line(password: &Zeroizing<String>) -> Zeroizing<Vec<u8>> {
     let mut line = Zeroizing::new(Vec::with_capacity(password.len() + 1));
     line.extend_from_slice(password.as_bytes());
@@ -371,11 +282,8 @@ fn password_line(password: &Zeroizing<String>) -> Zeroizing<Vec<u8>> {
     line
 }
 
-/// Runs things as root on one already-authenticated SSH connection.
-///
-/// Cheap to make and holds nothing open — it is a handle on the connection, so
-/// it can be taken while the session mutex is held and used long after it is
-/// released, the same shape `get_or_open_sftp` has.
+/// Runs things as root on one authenticated SSH connection. Holds nothing open,
+/// so it can outlive the session mutex.
 pub struct SudoRunner {
     handle: Arc<client::Handle<ClientHandler>>,
 }
@@ -385,11 +293,8 @@ impl SudoRunner {
         Self { handle }
     }
 
-    /// Streams a file only root can read into `sink`.
-    ///
-    /// `password` is `None` for the first, optimistic attempt: a host with a
-    /// `NOPASSWD` sudoers entry never needs to be asked, and finding that out
-    /// costs one round trip against prompting a user who did not have to be.
+    /// Streams a root-only file into `sink`. `password` is `None` on the first try,
+    /// so `NOPASSWD` hosts never prompt.
     pub async fn read_file<W>(
         &self,
         path: &str,
@@ -419,21 +324,12 @@ impl SudoRunner {
         }
     }
 
-    /// Makes an empty file on the host that the *connected user* owns, for a
-    /// save to land in before it is copied into place.
-    ///
-    /// `mktemp` rather than picking a name and creating it over SFTP, for one
-    /// reason: it creates the file `0600` in the same step. Writing first and
-    /// tightening the mode afterward would leave the contents of a file the
-    /// user needed root to read sitting world-readable in `/tmp` for a round
-    /// trip.
-    ///
-    /// Unprivileged on purpose — this is the user's own scratch file, and
-    /// nothing about it needs sudo.
+    /// Makes an empty staging file owned by the connected user (unprivileged), for
+    /// a save to land in before it's copied into place. `mktemp` creates it `0600`
+    /// atomically, so root-only contents are never world-readable in `/tmp`.
     pub async fn make_staging_file(&self) -> Result<String, SudoError> {
         let mut out: Vec<u8> = Vec::new();
-        // An explicit template rather than a bare `mktemp`: GNU defaults one in
-        // and BSD does not.
+        // An explicit template: BSD `mktemp` has no default.
         let outcome = run_once(
             &self.handle,
             "env LC_ALL=C mktemp /tmp/wrustty-edit.XXXXXXXX",
@@ -453,23 +349,16 @@ impl SudoRunner {
         Ok(path)
     }
 
-    /// Starts the root helper and waits for it to say it is running.
-    ///
-    /// The password is used here and nowhere else. On return it can be dropped:
-    /// what authorizes every later save is this channel's continued existence,
-    /// not a remembered secret.
+    /// Starts the root helper and waits for READY. The password is used only here;
+    /// afterward the channel's existence is the authorization.
     pub async fn start_writer(
         &self,
         password: Option<&Zeroizing<String>>,
     ) -> Result<SudoWriter, SudoError> {
-        // Reads a source and a destination as two lines, copies one over the
-        // other, answers with a sentinel. `exec 2>&1` folds the copy's own
-        // errors into the framing stream, where they are kept as diagnostics —
-        // sudo's own failures happen before this runs and are dealt with by
-        // `diagnose` instead.
-        //
-        // No single quotes anywhere in here: the whole script is one
-        // single-quoted argument.
+        // Reads source and destination lines, copies one over the other, and answers
+        // with a sentinel. `exec 2>&1` folds the copy's errors into the stream as
+        // diagnostics; sudo's own failures happen first and go to `diagnose`. The
+        // script contains no single quotes (it's one quoted argument).
         let script = format!(
             "exec 2>&1; echo {READY}; \
              while IFS= read -r s && IFS= read -r d; do \
@@ -482,11 +371,8 @@ impl SudoRunner {
             shell_quote(&script)
         );
 
-        // Logged at every stage, because this whole path is invisible when it
-        // goes wrong: it runs on a channel nobody can see, its failures arrive
-        // as an absence of output, and the user's only evidence is a dialog
-        // that did or did not appear. The command is safe to log — the
-        // password never appears in it, only ever on stdin.
+        // Logged throughout: failures here are otherwise invisible. The password is
+        // only ever on stdin, never in the command.
         tracing::debug!(with_password = password.is_some(), %command, "sudo: starting helper");
         let channel = self
             .handle
@@ -503,17 +389,12 @@ impl SudoRunner {
             write_half.flush().await.map_err(SshError::from)?;
         }
 
-        // Nothing is written to the helper until it has said READY. sudo reads
-        // exactly the password line and hands the rest of stdin to the child,
-        // but "exactly" is a property of sudo's implementation rather than
-        // something owed to us — waiting removes any chance of a command line
-        // being swallowed along with the password.
+        // Write nothing until READY, so no command line can be consumed along with
+        // the password.
         let mut notes = Vec::new();
         loop {
             match read_line(&mut reader).await? {
-                // The channel closed before the helper ran, which means sudo
-                // refused. Its reason went to stderr, which this stream does
-                // not carry, so go and ask for it properly.
+                // Closed before READY: sudo refused, and its reason went to stderr.
                 None => {
                     let why = self.diagnose(password).await;
                     tracing::warn!(error = %why, "sudo: helper closed before it was ready");
@@ -533,11 +414,7 @@ impl SudoRunner {
         })
     }
 
-    /// Asks sudo why it refused, on a channel that keeps stderr.
-    ///
-    /// Only ever runs on a failure path, so the extra round trip costs nothing
-    /// anyone is waiting on — and it is the difference between "that did not
-    /// work" and "this account is not in the sudoers file on this host".
+    /// Asks sudo why it refused, on a channel that keeps stderr. Failure path only.
     async fn diagnose(&self, password: Option<&Zeroizing<String>>) -> SudoError {
         let command = format!("{}-v", sudo_prefix(password.is_some()));
         let stdin = password.map(password_line);
@@ -549,9 +426,8 @@ impl SudoRunner {
         )
         .await
         {
-            // The probe succeeded where the helper did not, so the refusal was
-            // not about authentication at all — the likeliest cause is a
-            // sudoers rule that permits some commands and not `sh`.
+            // The probe succeeded where the helper didn't: likely a sudoers rule that
+            // allows specific commands but not `sh`.
             Ok(outcome) if outcome.succeeded() => SudoError::Unavailable(
                 "sudo accepted this account but would not run the helper — a sudoers rule may \
                  allow only specific commands."
@@ -563,26 +439,17 @@ impl SudoRunner {
     }
 }
 
-/// The live root helper for one edit.
-///
-/// Holds the channel it runs on, so dropping this ends the privilege: the
-/// stream closes, the shell reading from it sees EOF, and the process exits.
-/// That is the whole teardown story — there is nothing to remember to call, and
-/// no path (stop watching, close the pane, disconnect, drop the session) that
-/// can leave a root shell behind.
+/// The live root helper for one edit. Dropping it closes the channel, the
+/// helper reads EOF and exits, so no teardown path can leave a root shell
+/// behind.
 pub struct SudoWriter {
     reader: BufReader<ReadHalf<russh::ChannelStream<client::Msg>>>,
     writer: WriteHalf<russh::ChannelStream<client::Msg>>,
 }
 
 impl SudoWriter {
-    /// Copies `staged` over `dest` as root.
-    ///
-    /// Both paths are sent as lines, so neither may contain one. A newline in a
-    /// filename is legal on POSIX and would desynchronize the helper — the next
-    /// save would be reading this one's answer — so it is refused here rather
-    /// than escaped into a framing this deliberately keeps too simple to get
-    /// wrong.
+    /// Copies `staged` over `dest` as root. Paths containing a line break are
+    /// refused, since they would desynchronize the line-based framing.
     pub async fn copy_into(&mut self, staged: &str, dest: &str) -> Result<(), SudoError> {
         for path in [staged, dest] {
             if path.contains('\n') || path.contains('\r') {
@@ -641,9 +508,7 @@ where
     Ok(Some(line.trim_end_matches(['\n', '\r']).to_string()))
 }
 
-/// Keeps a bounded tail of whatever the helper said that was not a sentinel.
-/// Bounded because the useful line is the last one, and a host that talks
-/// forever must not grow this without limit.
+/// Keeps a bounded tail of the helper's non-sentinel output.
 fn push_note(notes: &mut Vec<String>, line: String) {
     let line = line.trim().to_string();
     if line.is_empty() {
@@ -669,7 +534,7 @@ mod tests {
 
     #[test]
     fn neutralises_shell_metacharacters() {
-        // The listing this path came from is the *server's* to write.
+        // The listing came from the server.
         assert_eq!(shell_quote("/tmp/a; rm -rf ~"), "'/tmp/a; rm -rf ~'");
         assert_eq!(shell_quote("/tmp/$(id)"), "'/tmp/$(id)'");
         assert_eq!(shell_quote("/tmp/`id`"), "'/tmp/`id`'");
@@ -677,8 +542,7 @@ mod tests {
 
     #[test]
     fn closes_and_reopens_around_a_quote() {
-        // The one character single quotes cannot contain. Getting this wrong
-        // ends the quoted region and hands the rest to the shell.
+        // Getting this wrong ends the quoted region early.
         assert_eq!(shell_quote("/tmp/it's"), r#"'/tmp/it'\''s'"#);
     }
 
@@ -691,10 +555,8 @@ mod tests {
 
     #[test]
     fn an_unfamiliar_refusal_of_the_probe_asks_for_a_password() {
-        // The regression this split exists for. `sudo -v` runs no command, so
-        // its only failures are authentication and policy — and a sudo that
-        // words the first of those unfamiliarly must still reach a password
-        // prompt rather than being reported as a hard failure.
+        // `sudo -v`'s failures are authentication or policy, so an unfamiliar
+        // refusal must still reach the password prompt.
         for said in [
             "sudo: interactive authentication is required",
             "sudo: a password is required",
@@ -713,8 +575,7 @@ mod tests {
 
     #[test]
     fn the_probe_still_refuses_what_no_password_can_fix() {
-        // Prompting for these would be asking the user for a credential that
-        // cannot possibly help.
+        // No credential could help these.
         for said in [
             "sudo: sorry, you must have a tty to run sudo",
             "tim is not in the sudoers file.",
@@ -730,9 +591,7 @@ mod tests {
 
     #[test]
     fn a_probe_that_was_given_a_password_does_not_ask_again_blindly() {
-        // A password was supplied and sudo would not take it, without saying it
-        // was wrong. Asking a second time for a credential that may have been
-        // accepted is its own wrong answer, so this reports what happened.
+        // Refused without "wrong password": report it, don't prompt again.
         let err = classify_probe(&outcome(1, "sudo: account expired"), true);
         assert!(!err.needs_password());
         assert_eq!(err.to_string(), "sudo: account expired");
@@ -745,9 +604,7 @@ mod tests {
 
     #[test]
     fn a_command_failure_is_not_read_as_a_password_problem() {
-        // `classify`, unlike the probe, is reading a *command's* stderr — where
-        // an unknown message really can be a third thing, and prompting for a
-        // password would not fix any of them.
+        // A command's stderr can be its own failure.
         let err = classify(&outcome(1, "cat: /etc/shadow: No such file or directory"));
         assert!(!err.needs_password());
     }
@@ -786,8 +643,7 @@ mod tests {
 
     #[test]
     fn reports_the_last_line_of_an_unrecognised_failure() {
-        // Everything a tool under sudo can fail with lands here, and the
-        // sentence worth showing is the final one.
+        // The final line is the one worth showing.
         let err = classify(&outcome(
             1,
             "cp: cannot create regular file\ncp: read-only file system",

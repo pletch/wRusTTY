@@ -1,30 +1,12 @@
 /**
- * `abi.ts`'s struct layouts, checked against the binary's own description of
- * them.
+ * `abi.ts`'s struct layouts, checked against the binary's own manifest
+ * (`ghostty_type_json`: size, alignment and every field's offset).
  *
- * The offsets in `abi.ts` were *probed* — write a known value, read it back,
- * move the offset until the grid agrees — because the C headers do not say what
- * the wasm32 layout is and several of them read as something it is not
- * (`GhosttyPoint` especially; see the comment there). Probing works, and every
- * offset it found is correct. What it cannot find is where a struct *ends*: a
- * field you never read has no observable position, so a union with an unused
- * tail is invisible to it.
- *
- * That is exactly what went wrong. `POINT_SIZE` was 16 for the whole life of
- * the port while the struct is 24, so `ScrollbackReader` handed the core a
- * 16-byte allocation to read 24 bytes from, and its zeroing loop cleared two
- * thirds of the union it was written to clear. Nothing looked wrong, because
- * the eight missing bytes are the arm nobody reads.
- *
- * The binary has been able to settle this the whole time: `ghostty_type_json`
- * returns a machine-readable manifest of every public struct — size, alignment,
- * and every field's offset. This asserts our constants against it. It is a
- * different *kind* of check from `abi.parity.test.ts`: that one proves the
- * values behave, this one proves they are the values upstream says they are, so
- * a constant that is wrong in a way no current call path exercises still fails.
- *
- * When a rebuild moves a layout, this fails with both numbers rather than
- * leaving it to be rediscovered by probing.
+ * The offsets in `abi.ts` were probed (write a value, read it back), which
+ * can't find where a struct ends: an unread union tail has no observable
+ * position. Unlike `abi.parity.test.ts`, which proves the values behave, this
+ * proves they match upstream, so a wrong constant no call path exercises
+ * still fails, with both numbers.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -34,7 +16,7 @@ import { describe, expect, it } from 'vitest'
 import * as abi from './abi'
 
 const here = dirname(fileURLToPath(import.meta.url))
-/** The shipped binary — the one whose layouts `abi.ts` has to be right about. */
+/** The shipped binary, whose layouts `abi.ts` must match. */
 const WASM = join(here, '../vendor/ghostty-vt.wasm')
 
 interface ManifestField {
@@ -55,13 +37,10 @@ interface ManifestAbi {
 }
 
 /**
- * The whole document, which gained a wrapper in the `d9ffbbf17` pin.
- *
- * It used to be a bare map of type name to layout. It is now
- * `{ schema, abi, library_version, commit, dirty, types }`, so the layouts live
- * under `types`. Both shapes are accepted: the `schema` key is the discriminator
- * upstream added for exactly this, and checking out an older binary should not
- * fail this suite in a way that looks like a layout change.
+ * The whole document. Since the `d9ffbbf17` pin it's
+ * `{ schema, abi, library_version, commit, dirty, types }`; older binaries
+ * emit a bare map of type name to layout. `schema` discriminates, so both are
+ * accepted.
  */
 interface Manifest {
   schema?: number
@@ -79,7 +58,7 @@ function document(): Manifest {
   }
   const ptr = ex.ghostty_type_json()
   expect(ptr, 'ghostty_type_json returned NULL').not.toBe(0)
-  // Null-terminated, and valid for the life of the module.
+  // Null-terminated, valid for the module's life.
   const bytes = new Uint8Array(ex.memory.buffer)
   let end = ptr
   while (bytes[end] !== 0) end++
@@ -107,8 +86,8 @@ run('abi.ts against ghostty_type_json', () => {
   }
 
   it('describes the types we transcribe', () => {
-    // A guard on the manifest itself: if a rebuild stops emitting these, every
-    // assertion below would vacuously pass on an empty object.
+    // If a rebuild stopped emitting these, every assertion below would pass on
+    // an empty object.
     for (const t of [
       'GhosttyPoint',
       'GhosttyPointCoordinate',
@@ -129,16 +108,15 @@ run('abi.ts against ghostty_type_json', () => {
 
   it('agrees with us about what a wasm32 pointer and size_t are', () => {
     const { abi: a } = document()
-    // Older binaries carry no abi block; there is nothing to check against.
+    // Older binaries carry no abi block.
     if (!a) return
     expect(a.target).toBe('wasm32')
     expect(a.pointer_size).toBe(4)
-    // The constant that replaced the retired `ghostty_wasm_alloc_usize`, which
-    // reserved exactly this much. Asserted rather than assumed because every
-    // call site that used to say `alloc_usize()` now says `alloc(USIZE_BYTES)`.
+    // Replaced `ghostty_wasm_alloc_usize`; call sites now use
+    // `alloc(USIZE_BYTES)`.
     expect(abi.USIZE_BYTES).toBe(a.usize_size)
-    // `ghostty_wasm_alloc` promises this alignment, which is what makes it safe
-    // to hand one of its buffers to a struct-shaped out-parameter.
+    // This alignment makes `ghostty_wasm_alloc` buffers safe as struct
+    // out-parameters.
     expect(a.max_alignment).toBeGreaterThanOrEqual(m.GhosttyPoint.align)
   })
 
@@ -146,14 +124,13 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.POINT_SIZE).toBe(m.GhosttyPoint.size)
     expect(abi.POINT_OFF_TAG).toBe(field('GhosttyPoint', 'tag').offset)
 
-    // x and y are not fields of the point — they are fields of the coordinate
-    // arm of its union, so their absolute offsets are the union's plus theirs.
+    // x and y belong to the union's coordinate arm, so offsets add up.
     const value = field('GhosttyPoint', 'value')
     expect(abi.POINT_OFF_X).toBe(value.offset + field('GhosttyPointCoordinate', 'x').offset)
     expect(abi.POINT_OFF_Y).toBe(value.offset + field('GhosttyPointCoordinate', 'y').offset)
 
-    // The tail that made the under-allocation invisible: the union is wider
-    // than the arm we read, so the struct outlives the fields we probed.
+    // The union is wider than the arm we read, so the struct extends past the
+    // probed fields.
     expect(value.offset + value.size).toBe(m.GhosttyPoint.size)
     expect(value.size).toBeGreaterThan(m.GhosttyPointCoordinate.size)
   })
@@ -167,10 +144,8 @@ run('abi.ts against ghostty_type_json', () => {
   })
 
   /**
-   * The native search path's types. Every one of these is written by us and
-   * read by the core — the selection carries its own `size` field, and every
-   * element of a selection buffer carries one too — so a moved offset here is
-   * the core reading a match out of the wrong four bytes.
+   * The native search path's types, written by us and read by the core (the
+   * selection and each buffer element carry a `size` field).
    */
   it('GhosttySelection and its buffer', () => {
     expect(abi.SELECTION_SIZE).toBe(m.GhosttySelection.size)
@@ -178,8 +153,7 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.SELECTION_OFF_START).toBe(field('GhosttySelection', 'start').offset)
     expect(abi.SELECTION_OFF_END).toBe(field('GhosttySelection', 'end').offset)
     expect(abi.SELECTION_OFF_RECTANGLE).toBe(field('GhosttySelection', 'rectangle').offset)
-    // The endpoints are grid refs, which is what makes a match convertible with
-    // point_from_grid_ref rather than being coordinates in its own right.
+    // Endpoints are grid refs, convertible with point_from_grid_ref.
     expect(field('GhosttySelection', 'start').size).toBe(abi.GRID_REF_SIZE)
 
     expect(abi.SELECTION_BUFFER_SIZE).toBe(m.GhosttySelectionBuffer.size)
@@ -188,9 +162,9 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.SELECTION_BUFFER_OFF_LEN).toBe(field('GhosttySelectionBuffer', 'len').offset)
   })
 
-  /** The needle, and the out-parameter of `point_from_grid_ref` — which is a
-   *  `GhosttyPointCoordinate`, not the wider `GhosttyPoint` above. `y` sits at
-   *  +4 rather than +2, because a u32 after a u16 is aligned. */
+  /** The needle, and `point_from_grid_ref`'s out-parameter (a
+   *  `GhosttyPointCoordinate`, not `GhosttyPoint`). `y` is at +4: a u32 after a
+   *  u16 is aligned. */
   it('GhosttyString and GhosttyPointCoordinate', () => {
     expect(abi.STRING_SIZE).toBe(m.GhosttyString.size)
     expect(abi.STRING_OFF_PTR).toBe(field('GhosttyString', 'ptr').offset)
@@ -205,8 +179,7 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.STYLE_SIZE).toBe(m.GhosttyStyle.size)
     expect(abi.STYLE_OFF_SIZE).toBe(field('GhosttyStyle', 'size').offset)
 
-    // Each color is a nested GhosttyStyleColor, so our flat tag/value offsets
-    // are the member's offset plus the tag/value offsets inside it.
+    // Each color is a nested GhosttyStyleColor, so offsets add up.
     const tag = field('GhosttyStyleColor', 'tag').offset
     const val = field('GhosttyStyleColor', 'value').offset
     for (const [member, offTag, offValue] of [
@@ -232,8 +205,8 @@ run('abi.ts against ghostty_type_json', () => {
       expect(ours, name).toBe(field('GhosttyStyle', name).offset)
     }
 
-    // Named `underline` upstream; ours says UNDERLINE_STYLE to keep it apart
-    // from the color above, which is the pair most likely to be confused.
+    // Upstream's `underline`; ours says UNDERLINE_STYLE to keep it apart from
+    // the color.
     expect(abi.STYLE_OFF_UNDERLINE_STYLE).toBe(field('GhosttyStyle', 'underline').offset)
   })
 
@@ -259,9 +232,8 @@ run('abi.ts against ghostty_type_json', () => {
       expect(ours, name).toBe(field('GhosttyRenderStateCursor', name).offset)
     }
 
-    // The two gaps are the whole reason this is transcribed rather than counted:
-    // a `uint16_t` cannot follow a `bool` at +5, nor a 4-byte enum at +14.
-    // Counting the fields off the header gives 5 and 14 and reads plausible.
+    // Alignment gaps: a `uint16_t` can't follow a `bool` at +5, nor a 4-byte
+    // enum at +14, though counting fields off the header suggests it.
     expect(abi.RS_CURSOR_OFF_VIEWPORT_X).toBeGreaterThan(
       field('GhosttyRenderStateCursor', 'viewport_has_value').offset + 1,
     )
@@ -283,15 +255,14 @@ run('abi.ts against ghostty_type_json', () => {
       expect(ours, name).toBe(field('GhosttyRenderStateColors', name).offset)
     }
 
-    // Packed at a 3-byte stride, not padded to 4. At a 4-byte stride the
-    // foreground's red would be read as part of the background and every color
-    // after it would shift — which looks like a theme bug, not a layout one.
+    // A 3-byte stride, not 4; a 4-byte stride would shift every color after the
+    // first.
     const rgb = m.GhosttyColorRgb.size
     expect(abi.RS_COLORS_OFF_FOREGROUND).toBe(abi.RS_COLORS_OFF_BACKGROUND + rgb)
     expect(abi.RS_COLORS_OFF_CURSOR).toBe(abi.RS_COLORS_OFF_FOREGROUND + rgb)
 
-    // The palette is inline and is most of the struct, which is why this gets
-    // its own buffer in the shim rather than borrowing the 16-byte scratch.
+    // The inline palette is most of the struct, hence its own buffer in the
+    // shim.
     expect(field('GhosttyRenderStateColors', 'palette').size).toBe(abi.PALETTE_ENTRIES * rgb)
   })
 

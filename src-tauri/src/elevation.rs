@@ -1,17 +1,12 @@
-//! Elevated tabs, on the app's side: launching the host through UAC, and the
-//! Tauri commands a pane talks to. See `docs/ELEVATED_TABS_PLAN.md`.
+//! Elevated tabs, on the app's side: launching the host through UAC
+//! (`ShellExecuteEx` `runas`, owned by the main window) and the Tauri commands
+//! a pane talks to. Protocol lives in `wr_local::elevated`; see
+//! `docs/ELEVATED_TABS_PLAN.md`.
 //!
-//! Everything protocol-shaped lives in `wr_local::elevated`. What is here is
-//! the part that needs the app: `ShellExecuteEx`'s `runas`, the main window to
-//! hang the UAC prompt off, and a session registry for the pane's commands.
-//!
-//! Host mode — what `wrustty.exe --elevated-host` does when it starts — is
-//! [`elevated_entry_point`], which `main` calls before Tauri exists. Debug
-//! builds also have `--elevated-smoke`, a manual check of the whole path
-//! through a real UAC prompt.
-//!
-//! Windows only — `lib.rs` compiles `elevation_unsupported.rs` in its place
-//! elsewhere, since the host and connector it drives exist only on Windows.
+//! Host mode (`wrustty.exe --elevated-host`) is [`elevated_entry_point`],
+//! called by `main` before Tauri exists. Debug builds also have
+//! `--elevated-smoke`. Windows only; `elevation_unsupported.rs` stands in
+//! elsewhere.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -53,8 +48,7 @@ impl Launcher for RunasLauncher {
         let owner = self.owner;
         let app = self.app.clone();
         Box::pin(async move {
-            // ShellExecuteEx blocks until the UAC prompt is answered, which
-            // can take as long as the user likes.
+            // Blocks until the UAC prompt is answered.
             let launched = tokio::task::spawn_blocking(move || runas(owner, &request))
                 .await
                 .map_err(|e| LaunchError::Failed(format!("the launch thread failed: {e}")))?;
@@ -66,13 +60,9 @@ impl Launcher for RunasLauncher {
     }
 }
 
-/// Gives the window its keyboard focus back after the UAC prompt.
-///
-/// The prompt runs on the secure desktop in a higher-integrity process, and
-/// when it closes focus does not come back to us on its own — the same problem
-/// the Windows Hello and vault consent prompts have, which is what
-/// `win_focus::restore_after_broker_prompt` exists to solve. Without it the
-/// user approves the prompt and then types into nothing.
+/// Returns keyboard focus after the UAC prompt, which runs on the secure
+/// desktop and doesn't hand focus back (see
+/// `win_focus::restore_after_broker_prompt`).
 fn restore_focus(app: Option<&AppHandle>, owner: Option<isize>) {
     let (Some(app), Some(owner)) = (app, owner) else {
         return;
@@ -127,8 +117,7 @@ fn runas(owner: Option<isize>, request: &LaunchRequest) -> Result<LaunchedHost, 
     let file = wide(&exe.to_string_lossy());
     let params = wide(&parameters);
 
-    // ShellExecuteEx may hand off to shell extensions, which expect COM;
-    // this is a fresh blocking thread, so it has none until it is given some.
+    // Shell extensions may expect COM, and this fresh thread has none.
     let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
 
     let mut info = SHELLEXECUTEINFOW {
@@ -286,14 +275,10 @@ pub async fn elevated_disconnect(
     state.sessions.disconnect(&session_id).await
 }
 
-/// What `main` checks before anything else. `Some(exit code)` when this
-/// process was started in one of the elevated modes; `None` for an ordinary
-/// launch, which then carries on into [`crate::run`].
-///
-/// This has to run **before** Tauri, and in particular before
-/// `tauri_plugin_single_instance` (see `lib.rs`), which would otherwise see a
-/// second `wrustty.exe`, hand its arguments to the running window and exit —
-/// quietly turning every elevated tab into a host that never started.
+/// Checked first in `main`: `Some(exit code)` when started in an elevated
+/// mode, `None` for an ordinary launch. Must run before
+/// `tauri_plugin_single_instance`, which would forward a second
+/// `wrustty.exe`'s arguments to the running window and exit.
 pub fn elevated_entry_point() -> Option<i32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -333,14 +318,10 @@ fn parse_host_args(args: &[String]) -> Result<HostArgs, String> {
     }
 }
 
-/// What an elevatable shell id runs, resolved by this — elevated — process's
-/// own detection. Nothing the tab sent chooses the executable: only the id
-/// travels, and only the ids in [`ELEVATABLE_SHELLS`] resolve at all.
-///
-/// Through [`ElevatedMachine`](crate::local_shells::ElevatedMachine), not the
-/// environment: nothing the user can set without elevation — `ComSpec` in
-/// `HKCU\Environment`, a binary under `%LOCALAPPDATA%` — gets to decide what an
-/// approved UAC prompt runs.
+/// What an elevatable shell id runs, resolved by this elevated process via
+/// [`ElevatedMachine`](crate::local_shells::ElevatedMachine). Only the id
+/// travels, only [`ELEVATABLE_SHELLS`] resolve, and nothing the user can set
+/// without elevation chooses the executable.
 fn resolve_elevatable(shell_id: &str) -> Option<wr_local::LocalConfig> {
     if !ELEVATABLE_SHELLS.contains(&shell_id) {
         return None;
@@ -355,13 +336,9 @@ fn resolve_elevatable(shell_id: &str) -> Option<wr_local::LocalConfig> {
     })
 }
 
-/// Why `shell_id` cannot be opened elevated, decided *before* the UAC prompt.
-///
-/// The host would refuse it anyway, but only after the user had approved a
-/// prompt, and its refusal reaches the tab as nothing better than "the host
-/// exited". The usual cause is a shell installed for this user alone — the
-/// Store's PowerShell, a per-user Git — which is detected for an ordinary tab
-/// and deliberately not for an elevated one, so that case is named.
+/// Why `shell_id` can't be opened elevated, decided before the UAC prompt
+/// (the host's own refusal would arrive after approval as "the host exited").
+/// Usually a per-user install, which is detected for ordinary tabs only.
 fn elevation_refusal(shell_id: &str) -> Option<String> {
     if !ELEVATABLE_SHELLS.contains(&shell_id) {
         return Some(format!("{shell_id} cannot be run as administrator"));
@@ -413,16 +390,11 @@ fn host_main(args: &[String]) -> i32 {
     }
 }
 
-/// `wrustty.exe --elevated-smoke [shell]`: opens an elevated shell through the
-/// real launcher — a real UAC prompt, a real elevated host — runs
-/// `whoami /groups` in it, and says whether that shell is actually running at
-/// high integrity.
-///
-/// It exists because the one thing the automated tests cannot cover is the
-/// thing most likely to be wrong: whether an unelevated tab can reach an
-/// elevated host through the pipe's security descriptor. It has to be
-/// `wrustty.exe` itself, because the host refuses any client that is not the
-/// same executable as it is.
+/// `wrustty.exe --elevated-smoke [shell]`: opens an elevated shell through a
+/// real UAC prompt and host, runs `whoami /groups`, and reports whether it's
+/// at high integrity. Covers what tests can't: an unelevated tab reaching the
+/// host through the pipe's security descriptor (the host only accepts its own
+/// executable as a client).
 #[cfg(debug_assertions)]
 mod smoke {
     use std::sync::Arc;

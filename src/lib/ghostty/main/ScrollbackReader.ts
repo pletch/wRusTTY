@@ -1,38 +1,25 @@
 /**
- * Fills a packed row of scrollback from ghostty `main`'s `grid_ref`, in the same
- * 16-byte layout `ghostty_terminal_get_scrollback_line` produces.
- *
- * The other half of the read path. `GhosttyEngine.readRows` takes viewport rows
- * from the batched buffer and scrollback rows one at a time, and
- * `WebGLRenderer` does the same when the viewport is scrolled up; both consume
- * the identical packed layout, so this keeps that contract and swaps only the
- * source — exactly as `ViewportReader` does for the viewport.
+ * Fills a packed row of scrollback from ghostty `main`'s `grid_ref`, in the
+ * 16-byte layout `ghostty_terminal_get_scrollback_line` produces. The
+ * scrollback counterpart to `ViewportReader`: `readRows` and `WebGLRenderer`
+ * consume the same layout, so only the source changes.
  *
  * ## Resolve once per row, then step `ref.x`
  *
- * `GhosttyGridRef` is a plain struct in caller memory, so a row is walked by
- * writing `x` and asking again. This is not a micro-optimization: resolution is
- * O(scrollback depth) — 14 ns at row 0, 188 ns at row 39,540 — so one resolve
- * per row amortizes over `cols` cells, while one per cell makes a full search
- * pass 9x slower than today's. Measured in `tools/parse-probes/search.mjs`,
- * where this shape comes out at **0.8x-0.9x** the row-at-a-time read it
- * replaces, holding to 0.86x at 100k rows.
+ * Resolution is O(scrollback depth) (14 ns at row 0, 188 ns at row 39,540),
+ * so it's done once per row and amortized over its cells
+ * (`tools/parse-probes/search.mjs`).
  *
- * ## Colors have to be flattened here
+ * ## Colors are flattened here
  *
- * The render iterator has `FG_COLOR`/`BG_COLOR` keys that flatten a cell's
- * color from its three possible sources. `grid_ref` has no such accessor — it
- * gives the raw cell and the style and nothing else — so this reader reproduces
- * that flattening itself:
+ * `grid_ref` gives the raw cell and style only, so this reproduces the render
+ * iterator's color flattening:
  *
- * - **foreground** comes only from the style, palette indices resolved through
- *   the terminal's palette. Bold brightening is deliberately not applied, which
- *   matches what the render path documents.
- * - **background** takes the cell's own content tag first (a blank cell painted
- *   by `ED`/`EL` carries its color there, not in a style), then the style.
- *
- * Getting that order wrong is invisible on ordinary text and shows up only on
- * cleared regions, which is why the byte-identity test covers them explicitly.
+ * - **foreground** from the style only, palette indices resolved; no bold
+ *   brightening, matching the render path.
+ * - **background** from the cell's content tag first (an `ED`/`EL` blank
+ *   carries its color there), then the style. The byte-identity test covers
+ *   cleared regions, where getting this wrong shows.
  */
 import * as abi from './abi'
 import {
@@ -73,13 +60,10 @@ export interface ScrollbackReaderHandles {
 }
 
 /**
- * Which coordinate space a lookup is in.
- *
- * `SCREEN` counts from the top of scrollback — the numbering
- * `get_scrollback_line` uses. `ACTIVE` counts from the top of the active
- * screen, which is what our `is_row_wrapped` and `render_state_get_grapheme`
- * take. Both resolve through the same `grid_ref`, so the viewport/scrollback
- * split in our ABI collapses into one path here; only the tag differs.
+ * Which coordinate space a lookup is in. `SCREEN` counts from the top of
+ * scrollback (`get_scrollback_line`'s numbering); `ACTIVE` from the top of
+ * the active screen (`is_row_wrapped`, `render_state_get_grapheme`). Both
+ * resolve through `grid_ref`.
  */
 export const SPACE_SCREEN = abi.POINT_TAG_SCREEN
 export const SPACE_ACTIVE = abi.POINT_TAG_ACTIVE
@@ -129,9 +113,8 @@ export class MainScrollbackReader {
   /** Refreshes palette and default colors. Cheap, and done once per row. */
   private refreshColors(): void {
     const { ex } = this
-    if (ex.ghostty_terminal_get(this.term, abi.T_DATA_COLOR_PALETTE, this.palPtr) === abi.GHOSTTY_SUCCESS) {
-      // filled in place
-    }
+    // Fills the palette in place.
+    ex.ghostty_terminal_get(this.term, abi.T_DATA_COLOR_PALETTE, this.palPtr)
     if (ex.ghostty_terminal_get(this.term, abi.T_DATA_COLOR_FOREGROUND, this.scratch) === abi.GHOSTTY_SUCCESS) {
       this.defFg = this.rgbAt(this.scratch)
     }
@@ -154,16 +137,9 @@ export class MainScrollbackReader {
   }
 
   /**
-   * Points the ref at (x, y) in `tag`'s coordinate space.
-   *
-   * Zeroes the whole point first: there is a hole between the tag and the
-   * value, and a stale byte in there is read as part of the union.
-   *
-   * "The whole point" is 24 bytes, not the 16 this said until the layout was
-   * checked against `ghostty_type_json` — so this loop used to leave the last
-   * eight bytes of the union exactly as stale as the comment warned about,
-   * and the allocation it clears was eight bytes shorter than what the core
-   * reads. `abi.manifest.test.ts` pins the size now.
+   * Points the ref at (x, y) in `tag`'s space. Zeroes the whole 24-byte point
+   * first: a stale byte in the gap between tag and value would be read as part
+   * of the union (`abi.manifest.test.ts` pins the size).
    */
   private resolve(tag: number, x: number, y: number): boolean {
     const d = this.dv()
@@ -175,18 +151,15 @@ export class MainScrollbackReader {
   }
 
   /**
-   * Packs row `absY` — counted from the top of scrollback, the same numbering
-   * `get_scrollback_line` uses — into `bufPtr`.
-   *
-   * Returns false when the row cannot be resolved, leaving the buffer alone so
-   * the caller's blank stays a blank rather than becoming stale content.
+   * Packs row `absY` (from the top of scrollback) into `bufPtr`. Returns false
+   * if the row can't be resolved, leaving the caller's blank intact.
    */
   readRow(bufPtr: number, absY: number, cols: number, tag: number = SPACE_SCREEN): boolean {
     this.refreshColors()
     if (!this.resolve(tag, 0, absY)) return false
 
     for (let x = 0; x < cols; x++) {
-      // Stepping the row: write x back into the ref rather than resolving again.
+      // Step the row by writing x back into the ref.
       this.dv().setUint16(this.refPtr + abi.GRID_REF_OFF_X, x, true)
       this.packCell(bufPtr + x * CELL_BYTES)
     }
@@ -205,10 +178,8 @@ export class MainScrollbackReader {
     abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_CONTENT_TAG, this.scratch), 'cell_get CONTENT_TAG')
     const contentTag = this.dv().getUint32(this.scratch, true)
 
-    // The packed cell's payload is a union: a codepoint, *or* a background
-    // color for a cell with no text. Unpacking it unconditionally turns a
-    // blank painted by ED/EL into a control character — a cleared row with
-    // bg 0x445566 came back with codepoint 1.
+    // The payload is a union: a codepoint, or a background color for a cell with
+    // no text (otherwise an ED/EL blank becomes a control character).
     d = this.dv()
     d.setUint32(at + OFF_CODEPOINT, abi.cellHasText(contentTag) ? abi.codepointOf(lo) : 0, true)
 
@@ -218,16 +189,14 @@ export class MainScrollbackReader {
 
     const hasStyle = ex.ghostty_grid_ref_style(this.refPtr, this.stylePtr) === abi.GHOSTTY_SUCCESS
 
-    // Foreground: style only, palette resolved. Bold brightening deliberately
-    // not applied, matching the render path.
+    // Foreground: style only, palette resolved, no bold brightening.
     let fg = this.defFg
     if (hasStyle) {
       const c = this.styleColor(abi.STYLE_OFF_FG_TAG, abi.STYLE_OFF_FG_VALUE)
       if (c >= 0) fg = c
     }
 
-    // Background: the cell's own content tag wins over the style, because a
-    // blank painted by ED/EL carries its color there and has no style at all.
+    // Background: the content tag wins, since an ED/EL blank has no style.
     let bg = this.defBg
     if (contentTag === abi.CELL_CONTENT_BG_COLOR_PALETTE) {
       abi.expectOk(ex.ghostty_cell_get(raw, abi.CELL_DATA_COLOR_PALETTE, this.scratch), 'cell_get COLOR_PALETTE')
@@ -268,13 +237,9 @@ export class MainScrollbackReader {
     d.setUint8(at + OFF_ATTRS2, attrs2)
 
     /**
-     * Counts codepoints beyond the base, where main counts the base too.
-     *
-     * Asked with a null buffer and zero capacity this reports nothing — it does
-     * not treat "just tell me the length" as a query — so it gets a real
-     * buffer. A cluster longer than the scratch is still counted correctly:
-     * the call writes the required length even when it has no room, so the
-     * count is read whether or not it succeeded.
+     * Counts codepoints beyond the base, where main counts the base too. A null
+     * buffer reports nothing, so it gets a real one; an overlong cluster still
+     * reports its required length.
      */
     ex.ghostty_grid_ref_graphemes(this.refPtr, this.gbufPtr, GRAPHEME_SCRATCH, this.scratch)
     const n = this.dv().getUint32(this.scratch, true)
@@ -296,17 +261,11 @@ export class MainScrollbackReader {
   }
 
   /**
-   * Whether the row at `y` **continues the row above it**, which is what our
-   * `is_row_wrapped` answers and what `logicalLines` joins on.
+   * Whether the row at `y` continues the row above it (our `is_row_wrapped`,
+   * what `logicalLines` joins on). That's `ROW_DATA_WRAP_CONTINUATION`, not
+   * `ROW_DATA_WRAP`, which marks the other end and would shift joins up a row.
    *
-   * So it is `ROW_DATA_WRAP_CONTINUATION`, not `ROW_DATA_WRAP` — the pair are
-   * the two ends of the same wrap, and taking the other one shifts every joined
-   * line up by a row. Both answer plausibly on a wrapped line, which is why the
-   * mistake survives until something is compared: the vendored build reports
-   * row 1 of a two-row line, `ROW_DATA_WRAP` reports row 0.
-   *
-   * The row comes back as a `GhosttyRow` in caller memory and is then passed to
-   * `row_get` **by value**, i.e. as an i64, hence the BigInt.
+   * The row is passed to `row_get` by value (an i64), hence the BigInt.
    */
   isRowWrapped(y: number, tag: number = SPACE_SCREEN): boolean {
     const { ex } = this

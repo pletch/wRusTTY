@@ -1,22 +1,12 @@
-//! Recent-command history — the store autocomplete suggests from.
+//! Recent-command history, the store autocomplete suggests from (see
+//! docs/AUTOCOMPLETE_PLAN.md). Filled three ways: OSC 633 `E` reports from
+//! shells with integration (`Integration`), the prompt line read off the grid
+//! on Enter (`Screen`), and a one-off import of the remote shell's history file
+//! over `exec` (`Harvest`, gated on its own setting).
 //!
-//! docs/AUTOCOMPLETE_PLAN.md. Filled from two directions: a host with shell
-//! integration reports its own command lines verbatim through OSC 633 `E`
-//! (`HistorySource::Integration`), and one without has its prompt line read off
-//! the terminal grid when Enter is pressed (`HistorySource::Screen`). The third
-//! is a one-off import of the remote shell's own history file over an `exec`
-//! channel (`HistorySource::Harvest`), which is the only one that reads
-//! anything on the far side and is gated on its own setting because of it.
-//!
-//! **Why the ranking lives here rather than in the webview.** Suggesting runs
-//! on every keystroke, so the obvious design ships each host's entries to the
-//! frontend once and ranks them there, saving an IPC round trip per character.
-//! That trip is worth paying. It keeps every command the user has ever run out
-//! of the webview — the process that also renders untrusted remote output —
-//! and hands it only the two or three strings actually about to be shown. It
-//! also leaves the door open to the vault-encrypted store the plan is still
-//! deciding on, without changing this API. Keystrokes arrive at human speed
-//! against an in-memory map; the trip is not the expensive part of anything.
+//! Ranking happens here rather than in the webview, at the cost of an IPC round
+//! trip per keystroke, so the webview (which renders untrusted remote output)
+//! only ever sees the few suggestions being shown.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,26 +15,19 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
-/// Bumped only for a change the previous version cannot read. Additive fields
-/// are `#[serde(default)]` instead, exactly as `sessions.json` handles them.
+/// Bumped only for incompatible changes; new fields use `#[serde(default)]`.
 const STORE_VERSION: u32 = 1;
 
-/// Entries kept per host before the lowest-scoring are dropped. A shell's own
-/// `HISTSIZE` is typically 1,000–10,000; this sits at the top of that so a
-/// harvest is not immediately truncated, and it bounds both the file and the
-/// per-keystroke scan.
+/// Entries kept per host before the lowest-scoring are dropped; at the top of
+/// typical `HISTSIZE` values, and it bounds the per-keystroke scan.
 const MAX_ENTRIES_PER_HOST: usize = 5_000;
 
-/// Longer than this is not a command anyone will want suggested back — it is a
-/// pasted script, a base64 blob, or a line that wrapped a terminal several
-/// times. Dropped rather than truncated: half a command is worse than none,
-/// because accepting it would send something the user never ran.
+/// Longer lines are pasted scripts or blobs. Dropped rather than truncated:
+/// accepting half a command would send something never run.
 const MAX_COMMAND_LEN: usize = 2_048;
 
-/// Where an entry came from. Kept per entry because the Tier 1 harvest is
-/// separately consented to (see the plan's Tier 1 section), and withdrawing
-/// that consent has to be able to drop exactly what the harvest imported
-/// without touching what the user typed in front of us.
+/// Where an entry came from. Kept so withdrawing harvest consent can drop
+/// exactly what the harvest imported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HistorySource {
@@ -60,44 +43,31 @@ pub enum HistorySource {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
     pub command: String,
-    /// Times this command has been seen. Not a usage *log* — one entry per
-    /// distinct command, so the store never grows with repetition and never
-    /// records when any individual run happened.
+    /// Times seen. One entry per distinct command; no per-run timestamps.
     pub count: u32,
-    /// Times it was accepted from a suggestion, which is a stronger signal
-    /// than merely having been typed: it says the suggestion was the thing
-    /// the user actually wanted, in the position autocomplete offered it.
+    /// Times accepted from a suggestion, a stronger signal than a sighting.
     #[serde(default)]
     pub accepted: u32,
     /// Epoch milliseconds of the most recent sighting.
     pub last_used: i64,
     pub source: HistorySource,
-    /// The directory it was last run in, when the host reports one (OSC 7).
-    /// One directory rather than a set: the ranking only asks "was this last
-    /// used where I am now", and a set would turn a bounded entry into one
-    /// that grows for every place a common command was ever run.
+    /// The directory it was last run in, when the host reports one (OSC 7). One
+    /// directory, so entries stay bounded.
     #[serde(default)]
     pub cwd: Option<String>,
 }
 
-/// The whole store: entries grouped by an opaque host key the frontend
-/// chooses (`user@host:port`), so a rename of that scheme is a frontend
-/// change and nothing here has to know how a host is identified.
+/// The whole store: entries grouped by an opaque host key chosen by the
+/// frontend (`user@host:port`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryStore {
     pub version: u32,
     #[serde(default)]
     pub hosts: BTreeMap<String, Vec<HistoryEntry>>,
-    /// Commands the user has said never to suggest, per host, newest last.
-    ///
-    /// Forgetting one command lands it here, so a forget is permanent rather
-    /// than lasting until the next harvest re-imports the line or the next run
-    /// re-records it — either of which would make the delete look broken. A
-    /// block is lifted only explicitly ("Allow again"), never by time or use.
-    ///
-    /// Exact, normalized command text: the same form `redact` stores, so a
-    /// lookup is a string comparison and needs no idea of what a command means.
+    /// Commands the user said never to suggest, per host, newest last, as
+    /// normalized text. A forget blocks the command so a later run or harvest
+    /// can't bring it back; only "Allow again" lifts it.
     #[serde(default)]
     pub blocked: BTreeMap<String, Vec<String>>,
 }
@@ -134,9 +104,8 @@ impl HistoryStore {
         self.drop_empty_hosts();
     }
 
-    /// Lift a block. Nothing is restored — the command was deleted when it was
-    /// blocked — so it is learned again from scratch, the next time it is run
-    /// or imported.
+    /// Lift a block. Nothing is restored; the command is learned again from
+    /// scratch.
     pub fn allow(&mut self, host: &str, command: &str) {
         if let Some(commands) = self.blocked.get_mut(host) {
             commands.retain(|c| c != command);
@@ -144,9 +113,7 @@ impl HistoryStore {
         self.drop_empty_hosts();
     }
 
-    /// Forget a host entirely, blocks included. A block list is itself a list
-    /// of commands typed on that host, so "forget this host" leaving it behind
-    /// would not be forgetting.
+    /// Forget a host entirely, blocks included (they're commands typed there too).
     pub fn forget_host(&mut self, host: &str) {
         self.hosts.remove(host);
         self.blocked.remove(host);
@@ -167,13 +134,9 @@ impl HistoryStore {
 // Redaction
 // ---------------------------------------------------------------------------
 
-/// Argument prefixes whose *value* is a secret, so the line carrying them is
-/// dropped whole. Matched against whitespace-separated words, case-insensitively.
-///
-/// Dropping the line rather than masking the value is deliberate. A masked
-/// command is still a suggestion, so accepting it would send `--password=****`
-/// to a shell — a command that looks right, runs, and fails. And masking
-/// assumes the parse was correct; dropping only assumes it was suspicious.
+/// Argument prefixes whose value is a secret; the whole line is dropped.
+/// Matched case-insensitively against words. Dropped rather than masked, since a
+/// masked command would still be offered and would run wrongly.
 const SECRET_ARG_PREFIXES: &[&str] = &[
     "--password",
     "--passwd",
@@ -203,15 +166,8 @@ const SECRET_SUBSTRINGS: &[&str] = &[
     "bearer ",
 ];
 
-/// Whether a word looks like a credential in its own right — a long run of
-/// token alphabet with the mix of cases and digits that random material has
-/// and English does not.
-///
-/// Deliberately conservative in one direction only: it will miss secrets that
-/// look like words, and it must not fire on ordinary arguments. Real paths and
-/// flags fail it on length, on alphabet, or on the mixed-case-and-digits test
-/// — `/var/log/nginx/access.log` has no digits and no uppercase,
-/// `--reconnect-max-seconds` is one case, and a git SHA is one case too.
+/// Whether a word looks like a random credential: long, token alphabet, mixed
+/// case and digits. Conservative toward not firing on paths, flags and SHAs.
 fn looks_like_token(word: &str) -> bool {
     // A base64/hex-ish run, allowing the separators tokens actually contain.
     const MIN_TOKEN_LEN: usize = 24;
@@ -225,10 +181,8 @@ fn looks_like_token(word: &str) -> bool {
     {
         return false;
     }
-    // A path is the false positive to beat, and a long one clears every other
-    // test here — so anything carrying a separator is treated as a path and
-    // left alone. Costs us tokens that contain a dot (a JWT, for one), which
-    // the substring list catches by the header they travel under instead.
+    // Anything with a separator is treated as a path. Dotted tokens (JWTs) are
+    // caught by the substring list instead.
     if body.contains('/') || body.contains('.') {
         return false;
     }
@@ -238,21 +192,15 @@ fn looks_like_token(word: &str) -> bool {
     has_upper && has_lower && has_digit
 }
 
-/// Normalize a command for storage, or refuse it.
-///
-/// `None` means "do not store this line at all" — it was empty, absurdly long,
-/// carried control characters, or looked like it contained a credential. The
-/// caller stores nothing; there is no partial form.
+/// Normalize a command for storage, or `None` to store nothing (empty, too
+/// long, control characters, or apparently a credential).
 pub fn redact(command: &str) -> Option<String> {
     let trimmed = command.trim();
     if trimmed.is_empty() || trimmed.len() > MAX_COMMAND_LEN {
         return None;
     }
-    // A command with a control character in it never came from someone typing
-    // at a prompt — it is a stray escape sequence that survived reconstruction,
-    // and storing it risks suggesting bytes that would be *interpreted* rather
-    // than typed when accepted. Tab is included: a real command line has none,
-    // because Tab at a prompt is completion rather than a character.
+    // Control characters mean a stray escape sequence, which could be
+    // interpreted when accepted. Tab too: at a prompt it's completion.
     if trimmed.chars().any(|c| c.is_control()) {
         return None;
     }
@@ -269,11 +217,8 @@ pub fn redact(command: &str) -> Option<String> {
             if !word.starts_with(prefix) {
                 continue;
             }
-            // `-p` is the one that needs care: bare `-p` is a flag on a dozen
-            // harmless commands (`mkdir -p`, `ssh -p 22`, `cp -p`), and only
-            // `-p` with a value *attached* is mysql's password form. The
-            // separated `mysql -p Hunter2` spelling does not exist — mysql
-            // reads an attached value or prompts — so this is exact.
+            // Bare `-p` is common (`mkdir -p`, `ssh -p 22`); only an attached value is
+            // mysql's password form, and mysql has no separated spelling.
             if *prefix == "-p" && word.len() == 2 {
                 continue;
             }
@@ -283,12 +228,8 @@ pub fn redact(command: &str) -> Option<String> {
     if trimmed.split_whitespace().any(looks_like_token) {
         return None;
     }
-    // Every real command contains a letter or a digit somewhere. A line with
-    // none is not one — and the case this actually catches is a password
-    // prompt that masks each character with `*` or a bullet rather than
-    // echoing nothing at all. Passive capture (see Terminal.tsx) checks that
-    // everything typed showed up, which a masking prompt satisfies exactly,
-    // so this is the check that stops `********` being stored as a command.
+    // No letters or digits at all: a masked password prompt (`********`),
+    // which passes the echo check in Terminal.tsx.
     if !trimmed.chars().any(|c| c.is_alphanumeric()) {
         return None;
     }
@@ -299,23 +240,18 @@ pub fn redact(command: &str) -> Option<String> {
 // Ranking
 // ---------------------------------------------------------------------------
 
-/// How long it takes an unused command's weight to halve. Thirty days is long
-/// enough that a monthly chore survives to its next outing, and short enough
-/// that the shape of what you are working on this month wins over what you
-/// were working on last year.
+/// How long an unused command's weight takes to halve; a monthly chore survives
+/// to its next use.
 const HALF_LIFE_DAYS: f64 = 30.0;
 const MS_PER_DAY: f64 = 86_400_000.0;
 
-/// An acceptance is worth this many sightings. Above 1 because it is the only
-/// signal that says the suggestion was *right*, and it is the one the ranking
-/// most wants to reinforce.
+/// An acceptance counts as this many sightings.
 const ACCEPT_WEIGHT: f64 = 3.0;
 
 /// Multiplier for an entry last used in the directory the prompt is in now.
 const CWD_MATCH_BONUS: f64 = 1.5;
 
-/// Frecency: how much the entry has been used, decayed by how long ago, with a
-/// nudge for having been used where we are standing.
+/// Frecency: use count decayed by age, with a bonus for the current directory.
 pub fn score(entry: &HistoryEntry, now_ms: i64, cwd: Option<&str>) -> f64 {
     let age_days = ((now_ms - entry.last_used).max(0) as f64) / MS_PER_DAY;
     let recency = 0.5_f64.powf(age_days / HALF_LIFE_DAYS);
@@ -327,10 +263,8 @@ pub fn score(entry: &HistoryEntry, now_ms: i64, cwd: Option<&str>) -> f64 {
     weight * recency * here
 }
 
-/// How well a candidate matches what has been typed. Lower is better, and the
-/// ranks are strictly ordered rather than blended into the score: a
-/// worse-scoring exact prefix must still beat a better-scoring fuzzy hit, or
-/// the top suggestion stops being predictable from what you typed.
+/// How well a candidate matches, lower is better. Ranked strictly before score
+/// so the top suggestion stays predictable from what was typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MatchRank {
     Prefix = 0,
@@ -338,31 +272,16 @@ enum MatchRank {
     Initials = 2,
 }
 
-/// Whether `needle`'s characters all appear in `haystack`, in order — the
-/// fuzzy fallback, so `gcm` can reach `git commit -m`.
-/// Characters that end a word, so the next one starts a new one.
+/// Characters that end a word.
 const WORD_BOUNDARIES: &[char] = &[
     ' ', '\t', '-', '_', '/', '.', ':', '=', ',', ';', '|', '&', '"', '\'', '(', '[', '{', '$',
 ];
 
-/// Whether `needle` is the sequence of *word initials* of `haystack`, starting
-/// at its very first character — so `gcm` reaches `git commit -m`.
-///
-/// This replaced a plain subsequence test, which was far too loose to be
-/// useful and produced exactly the failure it was meant to avoid. A command
-/// line is long and full of common letters, so almost any short input matched
-/// almost everything: typing `exit` matched
-/// `/home/dev/Repos/xrdp/xrdp_accel_assist/...` (the `e` of *home*, the `x` of
-/// *xrdp*, an `i` and a `t` from *assist*), and with no real prefix hits to
-/// outrank them the whole list was noise. A suggestion list that answers
-/// something other than what was typed is worse than an empty one.
-///
-/// Two rules keep it predictable. Every matched character has to begin a word,
-/// and the first one has to begin the *command* — so whatever is offered
-/// always starts with the letter that was typed.
+/// Whether `needle` is the sequence of word initials of `haystack`, starting at
+/// its first character, so `gcm` reaches `git commit -m`. Every matched
+/// character must begin a word, and the first must begin the command.
 fn matches_initials(command_lower: &str, needle_lower: &str) -> bool {
-    // Once a space has been typed the input is a command line being written,
-    // not an acronym, and matching initials across it invites nonsense.
+    // After a space the input is a command line, not an acronym.
     if needle_lower.is_empty() || needle_lower.contains(' ') {
         return false;
     }
@@ -372,7 +291,7 @@ fn matches_initials(command_lower: &str, needle_lower: &str) -> bool {
     }
     let mut previous: Option<char> = None;
     for current in command_lower.chars() {
-        // `is_none_or` would read better and postdates this crate's MSRV.
+        // `is_none_or` postdates this crate's MSRV.
         let starts_a_word = match previous {
             None => true,
             Some(p) => WORD_BOUNDARIES.contains(&p),
@@ -386,8 +305,7 @@ fn matches_initials(command_lower: &str, needle_lower: &str) -> bool {
 }
 
 fn match_rank(command: &str, typed: &str, typed_lower: &str) -> Option<MatchRank> {
-    // Never offer what is already typed, and never offer something that would
-    // delete characters — accepting a suggestion only ever appends.
+    // Suggestions only ever append.
     if command.len() <= typed.len() {
         return None;
     }
@@ -404,10 +322,8 @@ fn match_rank(command: &str, typed: &str, typed_lower: &str) -> Option<MatchRank
     None
 }
 
-/// The best `limit` completions of `typed`, best first.
-///
-/// Empty when `typed` is empty: a bare prompt has nothing to complete, and a
-/// list of everything there is a menu rather than a suggestion.
+/// The best `limit` completions of `typed`, best first. Empty for an empty
+/// prompt.
 pub fn suggest(
     entries: &[HistoryEntry],
     typed: &str,
@@ -426,9 +342,7 @@ pub fn suggest(
                 .map(|rank| (rank, score(entry, now_ms, cwd), entry.command.as_str()))
         })
         .collect();
-    // Rank first, score descending within it, then the command itself so that
-    // two entries with identical scores come out in a stable order rather than
-    // one that depends on how the map happened to be laid out.
+    // Rank, then score descending, then the command for a stable order.
     ranked.sort_by(|a, b| {
         a.0.cmp(&b.0)
             .then_with(|| b.1.total_cmp(&a.1))
@@ -445,11 +359,8 @@ pub fn suggest(
 // Mutation
 // ---------------------------------------------------------------------------
 
-/// Fold a command into a host's entries, redacting first.
-///
-/// Returns whether anything was stored, so a caller can tell "recorded" from
-/// "refused" — the store-nothing path is the common one for password prompts
-/// and is not an error.
+/// Fold a command into a host's entries, redacting first. Returns whether
+/// anything was stored (refusal is normal, e.g. password prompts).
 pub fn record(
     entries: &mut Vec<HistoryEntry>,
     command: &str,
@@ -465,9 +376,8 @@ pub fn record(
             existing.count = existing.count.saturating_add(1);
             existing.last_used = now_ms;
             existing.cwd = cwd.map(str::to_string).or_else(|| existing.cwd.clone());
-            // A command first seen in a harvest and then actually run is no
-            // longer merely imported, and must survive "forget imported
-            // history". Provenance only ever moves toward what we witnessed.
+            // Running a harvested command makes it witnessed, so it survives
+            // "forget imported history".
             if existing.source == HistorySource::Harvest && source != HistorySource::Harvest {
                 existing.source = source;
             }
@@ -485,10 +395,8 @@ pub fn record(
     true
 }
 
-/// Note that a suggestion was taken, which weighs more than a sighting.
-/// Silently does nothing for a command that is not stored — the accepted
-/// command always is, but the store may have been cleared between the
-/// suggestion and the acceptance.
+/// Note that a suggestion was taken. Does nothing if the command is no longer
+/// stored.
 pub fn record_accepted(entries: &mut [HistoryEntry], command: &str) {
     if let Some(entry) = entries.iter_mut().find(|e| e.command == command) {
         entry.accepted = entry.accepted.saturating_add(1);
@@ -496,8 +404,6 @@ pub fn record_accepted(entries: &mut [HistoryEntry], command: &str) {
 }
 
 /// Hold a host to `MAX_ENTRIES_PER_HOST`, dropping the lowest-scoring first.
-/// Scored rather than oldest-first so a command used constantly for a year
-/// outlives a hundred one-offs typed yesterday.
 fn prune(entries: &mut Vec<HistoryEntry>, now_ms: i64) {
     if entries.len() <= MAX_ENTRIES_PER_HOST {
         return;
@@ -514,12 +420,8 @@ fn prune(entries: &mut Vec<HistoryEntry>, now_ms: i64) {
 // Persistence
 // ---------------------------------------------------------------------------
 
-/// The store, held in memory between writes.
-///
-/// Unlike `ProfileState`, which locks a file and re-reads it each time, this
-/// caches: `suggest` runs per keystroke and cannot go to disk for it. The file
-/// is still the source of truth across launches, and every mutation writes it
-/// through before returning, so a crash loses nothing that was acknowledged.
+/// The store, cached in memory because `suggest` runs per keystroke. Every
+/// mutation writes through to disk before returning.
 #[derive(Default)]
 pub struct HistoryState {
     cache: Mutex<Option<HistoryStore>>,
@@ -552,10 +454,8 @@ fn history_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-/// A store that won't parse is replaced rather than reported. This file is a
-/// cache of conveniences, not user data anyone can recreate by hand, and
-/// refusing to start autocomplete forever because one write was interrupted
-/// mid-upgrade is a worse failure than losing suggestions once.
+/// A store that won't parse is replaced rather than reported: losing
+/// suggestions once beats autocomplete never working again.
 fn read_store(path: &PathBuf) -> Result<HistoryStore, String> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(serde_json::from_str(&contents).unwrap_or_default()),
@@ -579,8 +479,7 @@ fn now_ms() -> i64 {
 // Commands
 // ---------------------------------------------------------------------------
 
-/// One host's stored commands, for the Settings list. Carries the host key so
-/// the frontend can group and delete without a second call.
+/// One host's stored commands, for the Settings list.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostHistory {
@@ -602,7 +501,7 @@ pub async fn command_history_record(
     let now = now_ms();
     state
         .with_store(&app, |store| {
-            // Checked against the normalized form, which is what a block holds.
+            // Blocks hold the normalized form.
             if redact(&command).is_some_and(|c| store.is_blocked(&host, &c)) {
                 return Ok((false, false));
             }
@@ -653,8 +552,7 @@ pub async fn command_history_accepted(
         .await
 }
 
-/// Everything stored, for the Settings list — the "visible way to read it"
-/// the plan requires of anything that remembers what you typed.
+/// Everything stored, for the Settings list.
 #[tauri::command]
 pub async fn command_history_list(
     app: AppHandle,
@@ -663,8 +561,7 @@ pub async fn command_history_list(
     state
         .with_store(&app, |store| {
             let now = now_ms();
-            // A host can have blocks and nothing else — every command it had was
-            // forgotten — and still needs a row, or there is no way back.
+            // A host with only blocks still needs a row so they can be lifted.
             let hosts: std::collections::BTreeSet<&String> =
                 store.hosts.keys().chain(store.blocked.keys()).collect();
             let listed = hosts
@@ -690,9 +587,7 @@ pub async fn command_history_list(
         .await
 }
 
-/// Drop one command, or one host's worth, or everything — `command` narrows
-/// `host`, and no `host` means all of them. A single command is also blocked
-/// from coming back; see [`HistoryStore::blocked`].
+/// Forget one command (and block it), one host, or everything (no `host`).
 #[tauri::command]
 pub async fn command_history_forget(
     app: AppHandle,
@@ -728,9 +623,7 @@ pub async fn command_history_allow(
         .await
 }
 
-/// Drop everything a Tier 1 harvest imported, leaving what was witnessed.
-/// The other half of the harvest's separate consent: turning the setting off
-/// should be able to undo what it did.
+/// Drop everything the harvest imported, keeping what was witnessed.
 #[tauri::command]
 pub async fn command_history_forget_imported(
     app: AppHandle,
@@ -751,45 +644,26 @@ pub async fn command_history_forget_imported(
 // Tier 1: importing the remote shell's own history
 // ---------------------------------------------------------------------------
 
-/// Lines asked for from the remote history file. High enough to cover a real
-/// working history, low enough that the reply stays small on a slow link.
+/// Lines requested from the remote history file.
 const HARVEST_LINES: usize = 5_000;
 
-/// Hard cap on the reply, whatever the line count implies. A `HISTFILE`
-/// pointing at something enormous — or a host that answers with a stream
-/// rather than a file — must not be able to make this app read forever.
+/// Hard cap on the reply, whatever the remote sends.
 pub const HARVEST_MAX_BYTES: usize = 1_024 * 1_024;
 
-/// How long the remote gets. Generous for `tail` on a file, short enough that
-/// a host which accepts the channel and then says nothing is given up on
-/// rather than left hanging behind a spinner nobody sees.
+/// How long the remote gets before the harvest gives up.
 pub const HARVEST_TIMEOUT_SECS: u64 = 10;
 
-/// The most an imported command may claim to have been run.
-///
-/// A history file will happily say `ls` appears 400 times, and taking that at
-/// face value would let one import outrank everything the user actually does
-/// in front of us for months. Capping keeps frequency as a *signal* without
-/// letting it become the only one.
+/// Cap on an imported command's count, so one import can't outrank real use
+/// for months.
 const MAX_IMPORTED_COUNT: u32 = 25;
 
-/// Marks the start of a real answer, so a host that ignored the command and
-/// printed its own banner can be told from one that answered.
+/// Marks the start of a real answer, to tell it from a banner.
 const HARVEST_MARKER: &str = "@@WRUSTTY-HISTORY:";
 
-/// The command sent down the `exec` channel.
-///
-/// Wrapped in `/bin/sh -c` deliberately. `exec` runs the request through the
-/// user's *login* shell, which may be fish — whose syntax is not POSIX and
-/// which would choke on the `case` below. Every shell there is can parse a
-/// simple command with one single-quoted argument, so the wrapper is what
-/// makes one script work everywhere. The script itself therefore contains no
-/// single quote of its own.
-///
-/// It asks the shell rather than guessing a path, because the file is both
-/// shell- and configuration-dependent: `HISTFILE` overrides everything, and
-/// `$SHELL` is what sshd sets from the account's entry. And it `tail`s rather
-/// than `cat`s, because the interesting end of a history file is the end.
+/// The command sent down the `exec` channel. Wrapped in `/bin/sh -c '...'`
+/// because the login shell may be fish (not POSIX); the script itself must
+/// contain no single quote. It asks the shell for the history file (`HISTFILE`,
+/// then a per-shell default) and `tail`s it.
 pub fn harvest_command() -> String {
     format!(
         "/bin/sh -c 'case \"${{SHELL##*/}}\" in \
@@ -802,17 +676,16 @@ esac; [ -r \"$f\" ] || exit 0; printf \"{marker}%s\\n\" \"$f\"; tail -n {lines} 
     )
 }
 
-/// Which on-disk format a history file is in, decided by its name — which is
-/// the only evidence available, and is reliable because the name came from the
-/// same `case` that chose it by shell.
+/// A history file's format, decided by its name (which came from the shell
+/// `case` above).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HistoryFormat {
-    /// One command per line. `HISTTIMEFORMAT` adds `#<epoch>` lines between.
+    /// One command per line; `HISTTIMEFORMAT` adds `#<epoch>` lines.
     Plain,
-    /// zsh's extended format: `: <epoch>:<elapsed>;<command>`, with a trailing
-    /// backslash continuing onto the next line.
+    /// zsh extended: `: <epoch>:<elapsed>;<command>`, trailing backslash
+    /// continues.
     Zsh,
-    /// fish's YAML-ish store: `- cmd: <command>` followed by `  when: <epoch>`.
+    /// fish: `- cmd: <command>` then `  when: <epoch>`.
     Fish,
 }
 
@@ -826,20 +699,12 @@ fn format_for(path: &str) -> HistoryFormat {
     }
 }
 
-/// Turn what the remote printed into commands and how often each appeared.
-///
-/// `None` means the host did not answer the question — no marker, so what came
-/// back is a banner, a restricted shell's complaint, or an appliance's own CLI.
-/// Treating that as an empty history would be wrong in a way that matters: it
-/// would look like a successful import of nothing, and never be retried.
-///
-/// Counts rather than timestamps. Only zsh and fish record when a command ran,
-/// and bash usually does not, so there is no honest per-entry time to import —
-/// but "this appears forty times" is real information present in every format,
-/// and it is what makes an imported history rank sensibly on arrival.
+/// Turn the remote's output into commands and their counts. `None` when there
+/// is no marker (a banner or restricted shell), which must not look like an
+/// empty history. Counts rather than timestamps, since bash usually records
+/// none.
 pub fn parse_remote_history(payload: &str) -> Option<Vec<(String, u32)>> {
-    // The marker is written with `printf` and normally lands at the very
-    // start, but a login banner or an rc file that prints will push it down.
+    // A banner or chatty rc file can push the marker down.
     let at = payload.find(HARVEST_MARKER)?;
     let rest = &payload[at + HARVEST_MARKER.len()..];
     let (path, body) = rest.split_once('\n')?;
@@ -877,13 +742,8 @@ fn extract_commands(body: &str, format: HistoryFormat) -> Vec<String> {
             }
         }
         HistoryFormat::Zsh | HistoryFormat::Plain => {
-            // A command continued onto the next line with a trailing
-            // backslash is one command, and importing its halves separately
-            // would offer back two fragments that do nothing. Joined, it then
-            // fails `redact` for containing a newline — which is also right:
-            // accepting a suggestion with a newline in it would *submit* a
-            // half-finished command line. The join is here to stop the
-            // fragments, not to preserve the whole.
+            // Join backslash continuations so fragments aren't imported; the joined
+            // command then fails `redact` (newline), which is also right.
             let mut pending: Option<String> = None;
             for line in body.lines() {
                 let line = line.strip_suffix('\r').unwrap_or(line);
@@ -893,10 +753,7 @@ fn extract_commands(body: &str, format: HistoryFormat) -> Vec<String> {
                         if format == HistoryFormat::Zsh {
                             strip_zsh_prefix(line).to_string()
                         } else if line.starts_with('#') {
-                            // bash writes `#<epoch>` between entries when
-                            // HISTTIMEFORMAT is set. A real command can start
-                            // with `#` only as a comment, which is not worth
-                            // suggesting either way.
+                            // bash's `#<epoch>` lines under HISTTIMEFORMAT.
                             continue;
                         } else {
                             line.to_string()
@@ -917,9 +774,8 @@ fn extract_commands(body: &str, format: HistoryFormat) -> Vec<String> {
     out
 }
 
-/// Strips zsh's `: <epoch>:<elapsed>;` metadata, leaving the command.
-/// A line without it is a plain entry, which zsh also writes when
-/// `EXTENDED_HISTORY` is off.
+/// Strips zsh's `: <epoch>:<elapsed>;` metadata; lines without it are plain
+/// entries.
 fn strip_zsh_prefix(line: &str) -> &str {
     let Some(rest) = line.strip_prefix(": ") else {
         return line;
@@ -927,9 +783,8 @@ fn strip_zsh_prefix(line: &str) -> &str {
     let Some((meta, command)) = rest.split_once(';') else {
         return line;
     };
-    // Only when the part before the `;` really is `<digits>:<digits>`.
-    // Otherwise this is an ordinary command that happens to start with a colon
-    // and a space, and eating up to its first semicolon would mangle it.
+    // Only if it really is `<digits>:<digits>`, or a command starting with ": "
+    // would be mangled.
     let looks_like_meta = meta.split_once(':').is_some_and(|(epoch, elapsed)| {
         !epoch.is_empty()
             && epoch.chars().all(|c| c.is_ascii_digit())
@@ -942,21 +797,14 @@ fn strip_zsh_prefix(line: &str) -> &str {
     }
 }
 
-/// Fold an imported history into a host's entries.
-///
-/// Everything lands as [`HistorySource::Harvest`] so that "forget imported
-/// history" can take exactly this back out again, and an entry that already
-/// exists keeps whatever provenance it had — a command we have actually
-/// watched the user run is not turned back into an import.
+/// Fold an imported history into a host's entries as `Harvest`. Existing
+/// entries keep their provenance.
 pub fn import(entries: &mut Vec<HistoryEntry>, imported: Vec<(String, u32)>, now_ms: i64) -> usize {
     let mut added = 0;
     for (command, count) in imported {
         match entries.iter_mut().find(|e| e.command == command) {
-            // Already known. The import is not evidence of a *new* use, so the
-            // count rises only if the file claims more, and the timestamp is
-            // not touched at all — the file cannot say when it was last run,
-            // and overwriting a real `last_used` with "now" would make every
-            // stale command look fresh.
+            // Not a new use: raise the count if the file claims more, but don't touch
+            // `last_used`, or stale commands would look fresh.
             Some(existing) => existing.count = existing.count.max(count),
             None => {
                 added += 1;
@@ -964,10 +812,7 @@ pub fn import(entries: &mut Vec<HistoryEntry>, imported: Vec<(String, u32)>, now
                     command,
                     count,
                     accepted: 0,
-                    // The import time, not a fabricated one. Only zsh and fish
-                    // record when a command ran and bash usually does not, so
-                    // there is no honest per-entry time to use — and inventing
-                    // a spread of them would put made-up data in the ranking.
+                    // The import time; there's no honest per-entry time to use.
                     last_used: now_ms,
                     source: HistorySource::Harvest,
                     cwd: None,
@@ -979,23 +824,11 @@ pub fn import(entries: &mut Vec<HistoryEntry>, imported: Vec<(String, u32)>, now
     added
 }
 
-/// Import a host's own shell history, over one `exec` channel on the
-/// connection that is already up.
-///
-/// **The setting is resolved before the channel is opened, and that ordering
-/// is the point.** A harvest that runs and then discards its answer has still
-/// opened a channel, still read the file, and still appeared in whatever the
-/// host logs — so the decision has to be made before the channel exists, not
-/// after the bytes arrive. The caller has already checked that autocomplete
-/// itself is on; the harvest's own setting and the saved session's override
-/// of it are resolved below. See the Tier 1 section of
-/// docs/AUTOCOMPLETE_PLAN.md.
-///
-/// Returns how many commands were newly added — zero when the host has no
-/// readable history, when everything in it was already known, or when the
-/// answer was refused. `Err` only for a session that is not connected; a host
-/// that will not or cannot answer is an ordinary outcome, not a failure to
-/// report, and it must never be retried for the rest of the session.
+/// Import a host's own shell history over one `exec` channel. The setting is
+/// resolved before the channel opens, since running it at all is visible to
+/// the host. The caller has checked autocomplete is on. Returns how many
+/// commands were newly added; a host that won't answer returns 0, not an
+/// error. See docs/AUTOCOMPLETE_PLAN.md.
 #[tauri::command]
 pub async fn command_history_harvest(
     app: AppHandle,
@@ -1006,17 +839,10 @@ pub async fn command_history_harvest(
     import_globally: bool,
     profile_id: Option<String>,
 ) -> Result<usize, String> {
-    // Resolved here rather than in the webview because the per-host half lives
-    // in `sessions.json`, and splitting one decision across two processes is
-    // how the halves come to disagree.
-    //
-    // The saved session's answer wins outright when it has one, which is
-    // *unlike* how auto-reconnect resolves its two halves (there, either
-    // saying no is no). Deliberate: auto-reconnect's global switch is the one
-    // place someone turns a behavior off everywhere, so it has to be able to.
-    // This one is off by default, so a per-host `true` is the entire point of
-    // the override — it is how a read is allowed on your own machine without
-    // being allowed on every machine you happen to log into.
+    // Resolved here, where the per-host half (`sessions.json`) lives. The saved
+    // session's answer wins outright (unlike auto-reconnect, where either "no"
+    // wins): this is off by default, so a per-host `true` is the override's
+    // purpose.
     let profile_override = profile_id
         .and_then(|id| crate::profiles::get_profile(&app, &id).ok())
         .and_then(|p| p.import_remote_history);
@@ -1038,17 +864,10 @@ pub async fn command_history_harvest(
             .map_err(|e| e.to_string())?
     };
 
-    // Lossy on purpose. A history file is whatever bytes the shell appended to
-    // it, and one line of Latin-1 from years ago must not cost the import
-    // every other line in the file. Anything undecodable becomes U+FFFD and is
-    // then almost certainly refused by `redact` as a control-free but
-    // nonsensical line — which is the right outcome for a line nobody can read.
+    // Lossy: one undecodable line mustn't cost the whole import.
     let payload = String::from_utf8_lossy(&output);
     let Some(imported) = parse_remote_history(&payload) else {
-        // No marker: the host ignored the command and printed something of its
-        // own — a banner, a restricted shell's complaint, an appliance's CLI.
-        // Reported as zero rather than an error, because there is nothing the
-        // user can act on and nothing has gone wrong with their session.
+        // No marker: the host printed something else. Not an error.
         return Ok(0);
     };
     let now = now_ms();
@@ -1116,23 +935,20 @@ mod tests {
         }
     }
 
-    /// The `-p` rule is the one most likely to be got wrong in either
-    /// direction, so both directions are pinned.
+    /// The `-p` rule, pinned in both directions.
     #[test]
     fn bare_dash_p_is_a_flag_and_attached_dash_p_is_a_password() {
         assert!(redact("mkdir -p one/two").is_some());
         assert!(redact("mysqldump -pS3cret db").is_none());
     }
 
-    /// What a masking password prompt puts on the screen. Passive capture
-    /// cannot tell this from a command by echo alone — every character typed
-    /// did appear — so the store is the thing that has to refuse it.
+    /// A masking password prompt's output; echo checks can't catch it.
     #[test]
     fn a_line_of_mask_characters_is_not_a_command() {
         assert_eq!(redact("********"), None);
         assert_eq!(redact("\u{2022}\u{2022}\u{2022}\u{2022}"), None);
         assert_eq!(redact("...."), None);
-        // ...but a real command made mostly of punctuation still is one.
+        // A real command of mostly punctuation still counts.
         assert!(redact("cd ..").is_some());
         assert!(redact("./configure").is_some());
     }
@@ -1161,10 +977,7 @@ mod tests {
     #[test]
     fn an_exact_prefix_beats_a_better_scoring_initials_match() {
         let entries = vec![entry("git status", 1, 0), entry("git commit -m x", 50, 0)];
-        // `gcm` reaches the second by its word initials; typing it out reaches
-        // the first by prefix. Rank is ordered above score, so the prefix hit
-        // wins despite fifty times the weight — the top suggestion stays
-        // predictable from what was typed.
+        // Prefix rank beats fifty times the score.
         assert_eq!(
             suggest(&entries, "gcm", None, NOW, 1),
             vec!["git commit -m x"]
@@ -1172,12 +985,8 @@ mod tests {
         assert_eq!(suggest(&entries, "git s", None, NOW, 5), vec!["git status"]);
     }
 
-    /// The bug this rule exists to prevent, from a real screenshot: typing
-    /// `exit` offered a screenful of unrelated commands, because a plain
-    /// subsequence test found `e`, `x`, `i` and `t` scattered through long
-    /// paths. A command line is long and full of common letters, so almost any
-    /// short input matched almost everything — and with no prefix hits to
-    /// outrank them, the entire list was noise.
+    /// Typing `exit` once offered a screenful of unrelated commands because a
+    /// subsequence test found the letters scattered through long paths.
     #[test]
     fn a_short_word_does_not_match_every_long_command_it_shares_letters_with() {
         let entries = vec![
@@ -1190,8 +999,6 @@ mod tests {
             entry("md5sum /usr/local/libexec/xrdp/xrdp-accel-assist", 5, 0),
         ];
         assert!(suggest(&entries, "exit", None, NOW, 5).is_empty());
-        // Nor do the odd letters of a path pull in a match that starts
-        // somewhere other than where the user's own typing does.
         assert!(suggest(&entries, "sst", None, NOW, 5).is_empty());
     }
 
@@ -1199,14 +1006,11 @@ mod tests {
     fn initials_have_to_start_words_and_the_first_has_to_start_the_command() {
         let command = "docker compose logs -f";
         assert!(matches_initials(command, "dcl"));
-        // `ocl` skips the command's own first letter, so whatever is offered
-        // would not begin with what was typed.
+        // Skips the command's first letter.
         assert!(!matches_initials(command, "ocl"));
-        // `dol` takes its `o` from the middle of `docker`, not the start of a
-        // word.
+        // `o` from the middle of `docker`.
         assert!(!matches_initials(command, "dol"));
-        // Once a space is typed the input is a command line being written, not
-        // an acronym.
+        // A space ends acronym matching.
         assert!(!matches_initials(command, "d c"));
     }
 
@@ -1216,8 +1020,7 @@ mod tests {
             entry("git push origin main", 1, 0),
             entry("git pull", 20, 365),
         ];
-        // Used once today versus twenty times a year ago: the year of decay
-        // (twelve half-lives) is worth more than the twenty sightings.
+        // A year of decay (twelve half-lives) outweighs twenty sightings.
         assert_eq!(
             suggest(&entries, "git p", None, NOW, 2),
             vec!["git push origin main", "git pull"],
@@ -1261,7 +1064,7 @@ mod tests {
         let entries = vec![entry("git status", 5, 0)];
         assert!(suggest(&entries, "", None, NOW, 5).is_empty());
         assert!(suggest(&entries, "   ", None, NOW, 5).is_empty());
-        // Already typed in full: there is nothing left to append.
+        // Nothing left to append.
         assert!(suggest(&entries, "git status", None, NOW, 5).is_empty());
     }
 
@@ -1301,8 +1104,7 @@ mod tests {
         assert!(entries.is_empty());
     }
 
-    /// Running a harvested command for real makes it ours, so that forgetting
-    /// the import doesn't take it away.
+    /// Running a harvested command makes it witnessed.
     #[test]
     fn provenance_moves_from_harvested_to_witnessed_but_not_back() {
         let mut entries = Vec::new();
@@ -1342,8 +1144,7 @@ mod tests {
         assert!(entries.iter().any(|e| e.command == "the one that matters"));
     }
 
-    /// The file is a compatibility surface like `sessions.json`: a store
-    /// written by a version that had no `accepted` or `cwd` still parses.
+    /// A store without `accepted` or `cwd` still parses.
     #[test]
     fn a_store_saved_without_the_optional_fields_still_parses() {
         let json = r#"{
@@ -1369,10 +1170,7 @@ mod tests {
         parse_remote_history(payload).expect("payload should carry the marker")
     }
 
-    /// The one-liner runs through whatever login shell the account has, and
-    /// fish is not POSIX. The `/bin/sh -c '...'` wrapper is what makes one
-    /// script work everywhere — which only holds while the script itself
-    /// contains no single quote to close the wrapper early.
+    /// The script must not contain a single quote, or the `sh -c` wrapper breaks.
     #[test]
     fn the_remote_command_survives_a_non_posix_login_shell() {
         let command = harvest_command();
@@ -1387,7 +1185,7 @@ mod tests {
         assert!(inner.contains("$HOME/.bash_history"));
         assert!(inner.contains("$HOME/.zsh_history"));
         assert!(inner.contains("fish_history"));
-        // Bounded at the far end as well as this one.
+        // Bounded remotely too.
         assert!(inner.contains("tail -n 5000"));
     }
 
@@ -1400,7 +1198,7 @@ mod tests {
         );
     }
 
-    /// With `HISTTIMEFORMAT` set, bash writes an epoch line before each entry.
+    /// `HISTTIMEFORMAT` epoch lines aren't commands.
     #[test]
     fn bash_timestamp_lines_are_not_commands() {
         let payload = "@@WRUSTTY-HISTORY:/root/.bash_history\n#1700000000\nsystemctl status\n#1700000060\nuptime\n";
@@ -1424,26 +1222,19 @@ mod tests {
         );
     }
 
-    /// A command that genuinely begins `": "` must not have its own text eaten
-    /// up to the first semicolon.
+    /// A command starting `": "` isn't zsh metadata.
     #[test]
     fn a_command_starting_with_a_colon_is_not_mistaken_for_metadata() {
         let payload = "@@WRUSTTY-HISTORY:/home/dev/.zsh_history\n: nope;echo hi\n";
         assert_eq!(harvested(payload), vec![(": nope;echo hi".to_string(), 1)]);
     }
 
-    /// A continued line is joined, and the join is then refused as a whole.
-    /// That is the right answer twice over: importing the halves separately
-    /// would offer back fragments that do nothing on their own, and importing
-    /// the join would store a command containing a newline — *accepting* which
-    /// would send the newline and submit a half-finished command line. The
-    /// join exists to stop the fragments, not to preserve the whole.
+    /// A continued line is neither split into fragments nor stored with its
+    /// newline.
     #[test]
     fn a_continued_line_is_neither_split_into_fragments_nor_stored_whole() {
         let payload =
             "@@WRUSTTY-HISTORY:/home/dev/.bash_history\nfor f in *.log; do \\\n  gzip $f\\\ndone\nls\n";
-        // Only the single-line command survives — no `for f in *.log; do`, no
-        // bare `done`, and nothing carrying a newline.
         assert_eq!(harvested(payload), vec![("ls".to_string(), 1)]);
     }
 
@@ -1461,23 +1252,20 @@ mod tests {
         );
     }
 
-    /// A host that ignored the command entirely — a banner, a restricted
-    /// shell, an appliance's own CLI. Distinct from an empty history, because
-    /// "imported nothing successfully" would never be retried.
+    /// A host that ignored the command isn't an empty history.
     #[test]
     fn a_host_that_did_not_answer_is_not_an_empty_history() {
         assert!(parse_remote_history("").is_none());
         assert!(parse_remote_history("-rbash: tail: command not found\n").is_none());
         assert!(parse_remote_history("Welcome to SwitchOS v4.\nswitch> ").is_none());
-        // ...whereas a readable file with nothing in it is a real answer.
+        // A readable empty file is a real answer.
         assert_eq!(
             parse_remote_history("@@WRUSTTY-HISTORY:/home/dev/.bash_history\n"),
             Some(Vec::new()),
         );
     }
 
-    /// The marker is printed first, but a login banner or a chatty rc file
-    /// gets there before it.
+    /// A banner before the marker doesn't hide it.
     #[test]
     fn a_login_banner_before_the_marker_does_not_hide_it() {
         let payload =
@@ -1485,9 +1273,7 @@ mod tests {
         assert_eq!(harvested(payload), vec![("htop".to_string(), 1)]);
     }
 
-    /// Redaction is not something the import gets to skip: a history file is
-    /// exactly where a password typed on a command line a year ago still
-    /// lives.
+    /// Imports are redacted like everything else.
     #[test]
     fn credentials_in_the_history_file_are_refused_like_any_other_line() {
         let payload = "@@WRUSTTY-HISTORY:/home/dev/.bash_history\n\
@@ -1525,15 +1311,13 @@ mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         assert_eq!(added, 1);
 
         let witnessed = entries.iter().find(|e| e.command == "make test").unwrap();
-        // Provenance, directory and acceptance all survive: this is a command
-        // we watched the user run, and an import must not demote it.
+        // Provenance, directory and acceptance survive.
         assert_eq!(witnessed.source, HistorySource::Integration);
         assert_eq!(witnessed.cwd.as_deref(), Some("/src"));
         assert_eq!(witnessed.accepted, 1);
-        // The count rises to what the file claims...
+        // The count rises to the file's claim...
         assert_eq!(witnessed.count, 9);
-        // ...but the timestamp does not, or every stale command in the file
-        // would come back looking like it was run a moment ago.
+        // ...but the timestamp doesn't.
         assert_eq!(witnessed.last_used, NOW - 10 * DAY);
 
         let imported = entries.iter().find(|e| e.command == "htop").unwrap();
@@ -1541,9 +1325,7 @@ mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         assert_eq!(imported.count, 3);
     }
 
-    /// The other half of the harvest's separate consent: turning the setting
-    /// off has to be able to undo what it did, without touching anything the
-    /// user actually ran in front of us.
+    /// Forgetting the import keeps what was witnessed.
     #[test]
     fn forgetting_the_import_leaves_only_what_was_witnessed() {
         let mut entries = Vec::new();
@@ -1581,8 +1363,7 @@ mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         assert_eq!(reparsed.hosts["h"], store.hosts["h"]);
     }
 
-    /// A store written before blocks existed still loads, rather than being
-    /// discarded as unparseable — which `read_store` would do silently.
+    /// A store from before blocks existed still loads.
     #[test]
     fn a_store_from_before_blocks_still_loads() {
         let json = r#"{"version":1,"hosts":{"h":[{"command":"ls","count":1,"lastUsed":0,"source":"screen"}]}}"#;
@@ -1609,7 +1390,6 @@ mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         assert!(!store.is_blocked("b", "rm -rf build"));
         assert_eq!(store.hosts["b"].len(), 1);
 
-        // Forgetting twice does not list it twice.
         store.forget_and_block("a", "rm -rf build");
         assert_eq!(store.blocked["a"].len(), 1);
     }
@@ -1628,7 +1408,7 @@ mysql -uroot -pHunter2\ncurl -H \"Authorization: Bearer abc\" x\nls\n";
         store.allow("a", "make deploy");
         assert!(!store.is_blocked("a", "make deploy"));
         assert!(store.blocked.is_empty());
-        // Learned again from scratch, not brought back.
+        // Learned again from scratch.
         assert!(store.hosts.is_empty());
     }
 

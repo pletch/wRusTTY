@@ -9,55 +9,35 @@ pub struct SshConfig {
     pub port: u16,
     pub username: String,
     pub auth: AuthMethod,
-    /// An SSH hop to connect and authenticate to first, tunneling this
-    /// connection's own handshake through a `direct-tcpip` channel opened
-    /// on it — the same shape as OpenSSH's `-J`/`ProxyJump`. `None` connects
-    /// directly. Boxed since it's the same type one level down.
+    /// An SSH hop to connect through first, tunneling this handshake through a
+    /// `direct-tcpip` channel (OpenSSH's `ProxyJump`). `None` connects directly.
     #[serde(default)]
     pub jump: Option<Box<SshConfig>>,
-    /// The `TERM` value sent with the PTY request. `None` uses
-    /// [`DEFAULT_TERM_TYPE`], which is right for essentially every Unix host.
-    /// It exists for the ones where it isn't: some network and embedded gear
-    /// drives the screen badly (or refuses a PTY outright) unless told
-    /// `vt100`, and there is no way to discover that except by asking the
-    /// user.
+    /// The `TERM` sent with the PTY request; `None` uses [`DEFAULT_TERM_TYPE`].
+    /// Some network and embedded gear needs `vt100`, and only the user knows.
     #[serde(default)]
     pub term_type: Option<String>,
-    /// Seconds between keepalive messages, or `None` for
-    /// [`DEFAULT_KEEPALIVE_INTERVAL`].
-    ///
-    /// The classic knob behind "my session keeps dropping". Corporate
-    /// firewalls and NAT devices commonly drop an idle TCP flow after 5–10
-    /// minutes with no notification to either end, so a connection that looks
-    /// fine is dead the next time you touch it. PuTTY exposes this prominently
-    /// (Connection → *Seconds between keepalives*), so it's also something a
-    /// migrating user goes looking for.
-    ///
-    /// `0` disables keepalives, matching PuTTY's own meaning for the value —
-    /// worth having, since a few devices respond badly to them.
+    /// Seconds between keepalives, or `None` for
+    /// [`DEFAULT_KEEPALIVE_INTERVAL`]. Firewalls and NAT often drop idle flows
+    /// after 5-10 minutes silently. `0` disables them, as in PuTTY (a few devices
+    /// respond badly).
     #[serde(default)]
     pub keepalive_seconds: Option<u64>,
     /// Open the first socket through an outbound proxy (HTTP `CONNECT` or
-    /// SOCKS5) rather than directly. With a jump host it is the jump host the
-    /// proxy reaches, and the target is then reached from the jump host's side
-    /// of the network. `None` connects directly.
+    /// SOCKS5). With a jump host, the proxy reaches the jump host. `None`
+    /// connects directly.
     #[serde(default)]
     pub proxy: Option<ProxyConfig>,
 }
 
-/// What we claim to be when no session overrides it. 256-color xterm is what
-/// every modern terminal advertises, and what this app's engine implements.
-/// (The `xterm-` prefix is a terminfo name, not a statement about which
-/// engine renders it — that's Ghostty.)
+/// The default `TERM`. A terminfo name, not a claim about the engine.
 pub const DEFAULT_TERM_TYPE: &str = "xterm-256color";
 
-/// Sixty seconds is comfortably inside the idle timeout of every NAT and
-/// firewall that commonly causes the problem, and is cheap: one message per
-/// minute per session.
+/// Inside every common NAT/firewall idle timeout, at one message a minute.
 pub const DEFAULT_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Missed keepalives before the connection is considered dead. Three at the
-/// default interval means a dead link is noticed within about three minutes.
+/// Missed keepalives before the link is dead: about three minutes at the
+/// default interval.
 pub const KEEPALIVE_MAX: usize = 3;
 
 impl SshConfig {
@@ -65,9 +45,8 @@ impl SshConfig {
         self.term_type.as_deref().unwrap_or(DEFAULT_TERM_TYPE)
     }
 
-    /// The keepalive interval to hand to russh: `None` here means "don't send
-    /// keepalives at all", which is what both an explicit `0` and russh's own
-    /// `keepalive_interval: None` mean.
+    /// The interval for russh; `None` (from an explicit `0`) disables
+    /// keepalives.
     pub fn keepalive_interval(&self) -> Option<std::time::Duration> {
         match self.keepalive_seconds {
             None => Some(DEFAULT_KEEPALIVE_INTERVAL),
@@ -86,8 +65,7 @@ mod tests {
         assert_eq!(SshConfig::default().term_type(), DEFAULT_TERM_TYPE);
     }
 
-    /// Every profile saved before this setting existed has no value, and must
-    /// keep the keepalives it has always had.
+    /// Profiles without the field keep the default keepalive.
     #[test]
     fn an_unset_keepalive_uses_the_default_interval() {
         assert_eq!(
@@ -96,8 +74,7 @@ mod tests {
         );
     }
 
-    /// PuTTY's meaning for 0, and worth having: a few devices respond badly to
-    /// keepalives, and "off" has to be expressible.
+    /// `0` means off, as in PuTTY.
     #[test]
     fn zero_disables_keepalives_entirely() {
         let config = SshConfig {
@@ -128,8 +105,7 @@ mod tests {
         assert_eq!(config.term_type(), "vt100");
     }
 
-    /// A profile saved before `term_type` existed must still deserialize —
-    /// otherwise adding this field silently orphans every saved session.
+    /// A profile without `term_type` still deserializes.
     #[test]
     fn config_without_term_type_still_parses() {
         let json = r#"{"host":"h","port":22,"username":"u",
@@ -138,9 +114,7 @@ mod tests {
         assert_eq!(config.term_type(), DEFAULT_TERM_TYPE);
     }
 
-    /// `Agent` carries no fields, so it has to survive the round trip as a
-    /// bare tag — a shape serde handles differently from the struct variants
-    /// beside it.
+    /// `Agent` round-trips as a bare tag, unlike the struct variants beside it.
     #[test]
     fn agent_auth_round_trips() {
         let json = serde_json::to_string(&AuthMethod::Agent).unwrap();
@@ -171,7 +145,7 @@ mod tests {
         assert!(!rendered.contains("hunter2"));
     }
 
-    /// The path is shown deliberately; the passphrase beside it is not.
+    /// The path is shown; the passphrase isn't.
     #[test]
     fn debug_shows_key_path_but_not_its_passphrase() {
         let auth = AuthMethod::PublicKey {
@@ -183,9 +157,8 @@ mod tests {
         assert!(!rendered.contains("hunter2"));
     }
 
-    /// The transitive case — `SshConfig` keeps its derived `Debug`, and it is
-    /// the type that actually gets logged in practice. Its safety is a
-    /// consequence of `AuthMethod`'s impl, so pin it rather than assume it.
+    /// `SshConfig`'s derived `Debug` (what actually gets logged) inherits
+    /// `AuthMethod`'s redaction.
     #[test]
     fn ssh_config_debug_does_not_leak_its_auth() {
         let config = SshConfig {
@@ -198,13 +171,11 @@ mod tests {
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("hunter2"));
-        // The non-secret fields must still be there, or the redaction has
-        // cost the diagnostic its whole reason for existing.
+        // Non-secret fields remain, or the diagnostic is useless.
         assert!(rendered.contains("example.com"));
     }
 
-    /// A jump host is a nested `SshConfig` with its own `auth`, so the
-    /// recursion has to stay clean too.
+    /// A jump host's nested `auth` is redacted too.
     #[test]
     fn ssh_config_debug_does_not_leak_a_jump_hosts_auth() {
         let config = SshConfig {
@@ -241,20 +212,12 @@ impl Default for SshConfig {
     }
 }
 
-/// How to authenticate once the transport (and, for SSH, the host key) is
-/// trusted. Kept in `wr-ssh` rather than `wr-core` since telnet/serial have
-/// no equivalent concept.
+/// How to authenticate once the transport and host key are trusted.
 ///
-/// `ZeroizeOnDrop` because these carry live secrets (passwords,
-/// passphrases, whole private keys) cloned out of the vault at connect
-/// time — the vault's own copies are zeroized on lock, and these
-/// short-lived copies shouldn't be the ones left lingering in freed heap.
-///
-/// `Serialize` is an *inbound* path: `ssh_connect` receives an `SshConfig`
-/// from the webview, so the derive has to stay. Nothing here may be
-/// serialized *outbound* — not to disk, not into a log line. The session
-/// snapshot code already respects this by dropping ad-hoc SSH panes rather
-/// than persisting them.
+/// `ZeroizeOnDrop`: these carry secrets cloned out of the vault at connect.
+/// `Deserialize` is needed inbound (`ssh_connect` receives an `SshConfig` from
+/// the webview), but nothing here may be serialized outbound, to disk or logs;
+/// session snapshots drop ad hoc SSH panes for this reason.
 #[derive(Clone, Serialize, Deserialize, ZeroizeOnDrop)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
@@ -265,42 +228,25 @@ pub enum AuthMethod {
         key_path: String,
         passphrase: Option<String>,
     },
-    /// Same as `PublicKey` but the key itself is already in hand (loaded
-    /// from the vault) rather than needing to be read from disk — built
-    /// only on the Rust side (`resolve_auth`), never sent from or parsed on
-    /// the frontend.
+    /// `PublicKey` with the key already loaded from the vault. Built only by
+    /// `resolve_auth`, never sent from the frontend.
     PublicKeyMaterial {
         key_material: String,
         passphrase: Option<String>,
     },
-    /// PAM/2FA-style challenge-response auth. The actual prompt/response
-    /// round-trip happens through `HostKeyVerifier`'s sibling in the
-    /// session layer (Phase 1 follow-up); this variant just selects it.
+    /// PAM/2FA-style challenge-response; the prompts round-trip through the
+    /// session layer.
     KeyboardInteractive,
-    /// Delegate to a running SSH agent: Pageant, or the Windows OpenSSH
-    /// agent service.
-    ///
-    /// Carries no secret, and that is the point — the agent holds the
-    /// decrypted key and performs the signature, so no key material ever
-    /// enters this process. It is also the *only* way to use a key that
-    /// physically cannot be exported: FIDO2 security keys, PIV smartcards,
-    /// YubiKeys. Those are unreachable through every other variant here, no
-    /// matter what the vault stores.
+    /// Delegate to a running SSH agent (Pageant, or the Windows OpenSSH agent).
+    /// No key material enters this process, and it's the only way to use
+    /// unexportable keys (FIDO2, PIV smartcards, YubiKeys).
     Agent,
 }
 
-/// Written by hand rather than derived, for the same reason `Dek`/`Kek` in
-/// `wr-vault`'s `key.rs` do it: a derived `Debug` is one `tracing::debug!(?
-/// config)` away from writing a plaintext password — or a whole private key —
-/// into `%LOCALAPPDATA%/sh.wrustty.app/logs`, which isn't encrypted and is
-/// exactly what `reveal_session_logs` opens in Explorer. Nothing logs this
-/// type today; the point is to close the class rather than depend on every
-/// future edit remembering.
-///
-/// `key_path` is printed because it's a local filename the user chose, and a
-/// diagnostic saying only `PublicKey(<redacted>)` can't distinguish "wrong
-/// key" from "wrong passphrase" — which is the question this type usually
-/// gets debugged for. Everything that is or derives from a secret is not.
+/// Hand-written, like `Dek`/`Kek` in `wr-vault`'s `key.rs`: a derived `Debug`
+/// is one `tracing::debug!` away from writing a password or private key into
+/// the unencrypted logs folder. `key_path` is printed, since it tells "wrong
+/// key" from "wrong passphrase"; anything secret isn't.
 impl std::fmt::Debug for AuthMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

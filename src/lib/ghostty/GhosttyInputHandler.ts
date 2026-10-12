@@ -1,41 +1,25 @@
 /**
  * Keyboard input for the Ghostty engine.
  *
- * Input arrives through an offscreen textarea rather than straight off the
- * canvas. A canvas can take focus and report keydown, which is enough for
- * control keys, and that is all this used to do — but it is not enough for
- * text. Anything composed rather than typed outright never appears as a
- * keydown: an IME sends `keyCode: 229` placeholders and delivers the real
- * characters through composition events, and a dead key on an international
- * layout reports `key: "Dead"` and then hands the accented character over the
- * same way. Both were dropped on the floor.
- *
- * So there are two paths, and this file is the arbitration between them. Text
- * that the browser composes arrives through `input`/`compositionend`;
- * everything else is handed to the engine's own key encoder
- * (`KeyEncoder.ts`), which decides both what bytes a key produces and which
- * protocol — legacy, `modifyOtherKeys`, or Kitty — it produces them in. The
- * two paths cannot double up: whatever keydown claims, it also cancels, and a
- * canceled keydown produces no input event.
- *
- * The encoder decides *whether* it claims a key, too. It answers null for a
- * key that has no sequence, and that null is what lets the browser's text
- * path deliver characters keydown has no business inventing.
+ * Input arrives through an offscreen textarea, since composed text (IME
+ * input, dead keys) never appears as a keydown. Two paths: text the browser
+ * composes arrives via `input`/`compositionend`; everything else goes to the
+ * engine's encoder (`KeyEncoder.ts`), which picks the bytes and the protocol.
+ * They can't double up: whatever keydown claims it cancels, and a canceled
+ * keydown produces no input event. The encoder's null for a key with no
+ * sequence is what lets the text path deliver it.
  */
 import type { KeyEncoder } from './KeyEncoder'
 
 export class GhosttyInputHandler {
   private container: HTMLElement
-  /** Focus lives here, not on the canvas — see the note above. */
+  /** Focus lives here, not on the canvas. */
   readonly element: HTMLTextAreaElement
   private onData: (data: Uint8Array) => void
   private encoder = new TextEncoder()
   /**
-   * Null until the pane's WASM instance is up, which is a few milliseconds
-   * after mount. Keys pressed in that window produce no sequence — text still
-   * goes out through the `input` path, since nothing cancels it — and the
-   * alternative was a queue whose only customer is somebody typing Ctrl+C at
-   * a terminal that has not drawn yet.
+   * Null for the few milliseconds before the pane's WASM is up. Keys then
+   * produce no sequence; text still goes out via `input`.
    */
   private keyEncoder: () => KeyEncoder | null
   private composing = false
@@ -55,9 +39,8 @@ export class GhosttyInputHandler {
     ta.setAttribute('autocapitalize', 'off')
     ta.spellcheck = false
     ta.tabIndex = 0
-    // Invisible but genuinely present: a display:none or zero-sized element
-    // can't hold focus, and the IME's candidate window is positioned against
-    // this box, so it has to sit where the cursor is (see setCursorPosition).
+    // Invisible but present: a hidden or zero-sized element can't hold focus, and
+    // the IME positions its candidate window against this box.
     const s = ta.style
     s.position = 'absolute'
     s.zIndex = '1'
@@ -74,18 +57,15 @@ export class GhosttyInputHandler {
     s.color = 'transparent'
     s.caretColor = 'transparent'
     s.whiteSpace = 'nowrap'
-    // It sits over the canvas at the cursor cell, so without this a click that
-    // happened to land on it would hit an invisible textarea instead of the
-    // terminal — including a right-click, which would raise the webview's own
-    // context menu over the pane's.
+    // It sits over the cursor cell, so clicks (including right-clicks) must pass
+    // through to the terminal.
     s.pointerEvents = 'none'
     this.element = ta
     container.appendChild(ta)
 
     ta.addEventListener('keydown', this.handleKeyDown)
-    // Releases matter only under the Kitty protocol, and only when the far end
-    // has asked for them. Asking the encoder is how that is discovered: it
-    // answers null for every release until an application sets the flag.
+    // Releases matter only when a Kitty-protocol application asks; the encoder
+    // returns null until then.
     ta.addEventListener('keyup', this.handleKeyUp)
     ta.addEventListener('compositionstart', this.handleCompositionStart)
     ta.addEventListener('compositionend', this.handleCompositionEnd)
@@ -98,13 +78,10 @@ export class GhosttyInputHandler {
   }
 
   /**
-   * Clears any in-flight IME composition. A `compositionstart` can be stranded
-   * with no matching `compositionend` — switching to another Windows app does
-   * not fire `blur` and WebView2 keeps this textarea as the active element, so
-   * the composition never closes. Left stuck, `composing` stays true and
-   * `handleInput` drops every printable key as pre-edit; only keydown-handled
-   * keys (Enter, arrows) still reach the wire — the tell for this wedge. The
-   * engine calls this on a programmatic refocus (tab switch, window/app return).
+   * Clears an in-flight IME composition. Switching to another Windows app fires
+   * no `blur` (WebView2 keeps this the active element), so a composition can be
+   * stranded, leaving `handleInput` dropping every printable key while
+   * Enter and arrows still work. Called on a programmatic refocus.
    */
   cancelComposition() {
     this.composing = false
@@ -112,33 +89,25 @@ export class GhosttyInputHandler {
   }
 
   /**
-   * Rebuilds the textarea's link to the OS input method. When the app window is
-   * deactivated and reactivated, WebView2 can leave this element focused yet with
-   * a dead input/IME context: keydown still fires (Enter, arrows work) but the
-   * `input`/composition events that carry printable text no longer do. Blurring
-   * and refocusing forces the input context to be re-established. Called on
-   * window/app return; a plain focus() is not enough.
+   * Rebuilds the textarea's link to the OS input method. After window
+   * deactivation WebView2 can leave it focused with a dead input context
+   * (keydown fires, `input` doesn't); a blur and refocus re-establishes it.
    */
   resetForRefocus() {
     this.cancelComposition()
     this.element.blur()
-    // Defer the refocus a frame: a blur immediately followed by focus on the
-    // same element within one task can be coalesced away, which would leave the
-    // input context un-rebuilt. Letting the blur settle first is what makes the
-    // rebuild actually happen.
+    // Refocus a frame later: a blur and focus in one task can be coalesced away.
     requestAnimationFrame(() => this.element.focus({ preventScroll: true }))
   }
 
   private handleBlur = () => {
-    // When blur does fire (focus moving within the window), end any composition
-    // too — the same strand can otherwise outlive the focus change.
+    // End any composition on blur too.
     this.cancelComposition()
   }
 
   /**
-   * Parks the input box on the cursor cell. Nothing is drawn there, but this is
-   * where the IME puts its candidate window, and an IME anchored to the corner
-   * of the pane while you type in the middle of it is disorienting.
+   * Parks the input box on the cursor cell, where the IME puts its candidate
+   * window.
    */
   setCursorPosition(left: number, top: number) {
     this.element.style.left = `${left}px`
@@ -175,38 +144,27 @@ export class GhosttyInputHandler {
     const ie = e as InputEvent
     // Mid-composition input is the preedit being revised, not text to send.
     if (this.composing || ie.isComposing) return
-    // The composed result arrives once through compositionend and again here;
-    // this is that second delivery.
+    // The composed result arrives via compositionend and again here; skip this
+    // one.
     if (ie.inputType === 'insertCompositionText') {
       this.element.value = ''
       return
     }
     if (typeof ie.data === 'string') this.send(ie.data)
-    // Left to accumulate, the box would eventually hold the whole session and
-    // hand a stale value to the next composition.
+    // Clear it so a stale value doesn't reach the next composition.
     this.element.value = ''
   }
 
   /**
-   * Whether this event is the engine's to encode at all.
+   * Whether this event is the engine's to encode. Refused:
    *
-   * Three things get first refusal, and each is a case where sending bytes
-   * would be actively wrong rather than merely unhelpful:
-   *
-   * - **An event the app already claimed.** Every in-app binding — copy,
-   *   paste, search, mark mode, the tab shortcuts in `App.tsx` — runs on a
-   *   capture listener above this element and calls `preventDefault`. Testing
-   *   for that here is what keeps the two sets from having to know about each
-   *   other. It matters more than it used to: those handlers were written
-   *   against a keyboard that mapped Ctrl+Shift+C to nothing, and the encoder
-   *   maps it to `^C`, so "consuming it costs nothing on the wire" is no
-   *   longer true and this is what makes it true again.
-   * - **A Super chord.** Win+L, Win+D and the rest belong to the OS, and a
-   *   terminal that encoded them would be reporting keys the user never gave
-   *   it.
-   * - **An IME's key.** 229 is the placeholder keycode browsers report while
-   *   a composition is active, and some omit `isComposing` on the first key
-   *   of one.
+   * - **An event the app already claimed.** In-app bindings (copy, paste,
+   *   search, mark mode, tab shortcuts in `App.tsx`) run on a capture listener
+   *   and call `preventDefault`. The encoder maps Ctrl+Shift+C to `^C`, so this
+   *   check is what keeps those bindings off the wire.
+   * - **A Super chord**, which belongs to the OS.
+   * - **An IME's key**: keycode 229, since some browsers omit `isComposing` on
+   *   a composition's first key.
    */
   private isOurs(e: KeyboardEvent): boolean {
     if (e.defaultPrevented) return false
@@ -218,10 +176,8 @@ export class GhosttyInputHandler {
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.isOurs(e)) return
     const bytes = this.keyEncoder()?.encode(e)
-    // No sequence: a bare modifier, a key the encoder has no opinion on, or
-    // one whose character the browser is about to deliver as text. Leaving the
-    // event alone is what lets that text arrive — canceling it here is
-    // precisely what used to lose composed characters.
+    // No sequence: a bare modifier, or a character the browser is about to
+    // deliver as text. Leave the event alone so that text arrives.
     if (!bytes) return
     e.preventDefault()
     e.stopPropagation()
@@ -229,15 +185,9 @@ export class GhosttyInputHandler {
   }
 
   /**
-   * Key releases, which encode to nothing at all unless the far end has asked
-   * for them with the Kitty protocol's `report events` flag. There is no test
-   * for that flag here on purpose: the encoder holds the terminal's state and
-   * answers null while it is off, so this stays correct through an
-   * application setting and clearing it mid-session.
-   *
-   * Not canceled even when it does produce bytes — a release has no default
-   * action worth suppressing, and canceling one has been known to confuse
-   * IMEs.
+   * Key releases, which encode to nothing unless a Kitty-protocol application
+   * asked for them; the encoder tracks that flag. Never canceled: a release
+   * has no default worth suppressing, and canceling can confuse IMEs.
    */
   private handleKeyUp = (e: KeyboardEvent) => {
     if (!this.isOurs(e)) return

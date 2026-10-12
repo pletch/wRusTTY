@@ -6,23 +6,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 /**
  * Mark mode's grip on the keyboard, through the engine's real listeners.
+ * `markMode.test.ts` covers the rules; this covers the wiring: the mode (a
+ * capture listener on the container) must take a key before the input
+ * handler (on the textarea inside) encodes it.
  *
- * `markMode.test.ts` covers the rules; this covers the one thing only the wiring
- * can get wrong, and the thing the whole feature rests on: that a key the mode
- * claims is taken *before* the input handler turns it into a sequence on the
- * wire. The two live on different elements — the mode listens on the container
- * in the capture phase, the input handler on the textarea inside it — and
- * nothing about that ordering is visible from either file alone.
- *
- * The renderer is stubbed to the members the selection path uses, which is what
- * lets this run without WebGL.
- *
- * **The core is not stubbed, and used not to be here at all.** Keyboard
- * encoding is the engine's now (`KeyEncoder.ts`), so an arrow key that reaches
- * the wire only does so because a real terminal was there to encode it against
- * — a coreless pane sends nothing at all, and every assertion below would pass
- * for the wrong reason. So the binary is served through the `fetch` the engine
- * uses to load it, and `mounted` waits for it.
+ * The renderer is stubbed, so no WebGL is needed. The core is real: encoding
+ * needs a terminal, and a coreless pane sends nothing, which would pass every
+ * assertion for the wrong reason. The binary is served through the engine's
+ * `fetch`, and `mounted` waits for it.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -39,24 +30,20 @@ async function mounted() {
   document.body.appendChild(container)
   engine.mount(container)
 
-  // The core loads asynchronously from the constructor. Waiting on the pointer
-  // rather than on a timer: it is the thing the encoder is built from, and it
-  // appears in the same turn as the encoder does.
+  // The core loads asynchronously; wait on the pointer, which appears with
+  // the encoder.
   const inner = engine as unknown as { renderer: unknown; termPtr: number }
   for (let i = 0; i < 200 && inner.termPtr === 0; i++) await new Promise((r) => setTimeout(r, 5))
   if (inner.termPtr === 0) throw new Error('the core never came up')
 
-  // After the wait: setting up the real renderer is what fails in jsdom (there
-  // is no WebGL), and the engine reports that failure rather than throwing, so
-  // this replaces it exactly as it did when there was no core at all.
+  // After the wait: the real renderer fails in jsdom (no WebGL), so replace it.
   inner.renderer = { selection: null as Sel | null, getCellSize: () => CELL, dispose: () => {} }
 
   const sent: string[] = []
   engine.onData((d) => sent.push(new TextDecoder().decode(d)))
 
   const input = container.querySelector('textarea')!
-  // `code` as well as `key`: the encoder identifies the physical key from it,
-  // and for every key this file presses the two happen to be spelled the same.
+  // `code` as well as `key`, since the encoder reads the physical key.
   const press = (key: string, mods: KeyboardEventInit = {}) =>
     input.dispatchEvent(
       new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, code: key, ...mods }),
@@ -83,8 +70,8 @@ describe('mark mode and the wire', () => {
     const { engine, sent, press } = await mounted()
     press('ArrowUp')
     press('ArrowUp', { shiftKey: true })
-    // The reason keyboard selection is a mode at all: these belong to whatever
-    // is running, and shift+arrow is a sequence programs bind.
+    // These belong to the running program; shift+arrow is a sequence programs
+    // bind.
     expect(sent).toEqual(['\x1b[A', '\x1b[1;2A'])
     engine.unmount()
   })
@@ -93,17 +80,15 @@ describe('mark mode and the wire', () => {
     const { engine, sent, press, selection } = await mounted()
     engine.toggleMarkMode()
     expect(engine.isMarkMode()).toBe(true)
-    // Downwards: with no core there is no scrollback and the cursor opens on
+    // Downward: a fresh terminal has no scrollback and the cursor opens on
     // row 0, where up is clamped.
     const from = selection()!.end.y
     press('ArrowDown')
     press('ArrowDown', { shiftKey: true })
-    // Nothing reached the wire: a key that both moved the mark cursor and got
-    // sent would be doing two contradictory things at once.
+    // Nothing reached the wire.
     expect(sent).toEqual([])
     expect(selection()!.end.y).toBe(from + 2)
-    // The second press was shifted, so it left a selection behind rather than
-    // just a cursor.
+    // The second press was shifted, so it left a selection.
     expect(selection()!.start.y).toBe(from + 1)
     engine.unmount()
   })
@@ -113,7 +98,7 @@ describe('mark mode and the wire', () => {
     engine.toggleMarkMode()
     press('Escape')
     expect(engine.isMarkMode()).toBe(false)
-    // Escape itself is consumed by the exit — it is the way out of the mode.
+    // Escape is consumed by the exit.
     expect(sent).toEqual([])
     press('ArrowUp')
     expect(sent).toEqual(['\x1b[A'])
@@ -125,8 +110,7 @@ describe('mark mode and the wire', () => {
     engine.toggleMarkMode()
     const canvas = container.querySelector('canvas')!
     canvas.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, detail: 1 }))
-    // Left on, the mode would keep the arrow keys captured while pointing at a
-    // selection the drag has already replaced.
+    // Otherwise the arrows stay captured over a replaced selection.
     expect(engine.isMarkMode()).toBe(false)
     press('ArrowUp')
     expect(sent).toEqual(['\x1b[A'])
@@ -138,8 +122,8 @@ describe('mark mode and the wire', () => {
     engine.toggleMarkMode()
     engine.unmount()
     press('ArrowUp')
-    // The listener lives on the container, which outlives the engine — a mode
-    // left armed on a dead pane would swallow keys with nothing to show for it.
+    // The listener is on the container, which outlives the engine; a mode left
+    // armed would swallow keys.
     expect(sent).toEqual([])
     expect(engine.isMarkMode()).toBe(false)
   })

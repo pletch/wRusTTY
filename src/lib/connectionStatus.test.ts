@@ -62,14 +62,9 @@ describe('isCleanDisconnect', () => {
 })
 
 /**
- * The rule behind `closeOnDisconnect`.
- *
- * Pinned because getting it wrong is invisible in the worst way: the setting is
- * on by default, and closing the pane removes the session id, which is the very
- * thing that stops a reconnect run. Firing it on `lost` therefore switched
- * auto-reconnect off for most users while looking like an unrelated preference,
- * and no test caught it because the two features were only ever exercised
- * apart.
+ * The rule behind `closeOnDisconnect`, on by default: closing a pane removes
+ * its session id, which stops a reconnect run, so it must not fire on
+ * `lost`.
  */
 describe('shouldAutoClosePane', () => {
   it('closes the pane when the session ended cleanly and the setting is on', () => {

@@ -5,20 +5,12 @@ import { dirname, join } from 'node:path'
 import type { GhosttyWasm } from './wasmBindings'
 
 /**
- * What `readRows` hands its three callers, through a real core.
- *
- * There was no coverage here at all, which is why this exists: copy, word
- * selection and search are the only readers of the cell walk, and each depends
- * on a different part of what it returns — the joined text, the per-column
- * spans, and the mapping from a character offset back to a column. A row is
- * now stored as text plus a column index rather than one string per cell, and
- * the cases that distinguish those two representations are exactly the ones
- * that were never tested: a wide character (one column of text, one empty
- * spacer column), a grapheme cluster (one column, several characters), and the
- * blank right-hand edge.
- *
- * Driven through the public surface — `getSelection`, `search` — with the
- * renderer stubbed, since none of this needs WebGL.
+ * What `readRows` gives its three callers (copy, word selection, search)
+ * through a real core: joined text, per-column spans, and offset-to-column
+ * mapping. Rows are text plus a column index, so the cases that matter are a
+ * wide character (text in one column, an empty spacer), a grapheme cluster
+ * (several characters in one column), and the blank right edge. Driven
+ * through `getSelection` and `search`, with the renderer stubbed.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -57,24 +49,19 @@ describe('readRows, through its three callers', () => {
     for (let i = 0; i < 200 && !inner.termPtr; i++) await new Promise((r) => setTimeout(r, 5))
     if (!inner.termPtr || !inner.wasm) throw new Error('core did not load')
 
-    // Nothing is mounted, so the engine has no size of its own — and a row is
-    // `_cols` columns wide by definition, so without this every read is empty.
-    // `resize` is also what sizes the core, so this is the real path.
+    // Nothing is mounted, so size the engine (and the core) explicitly.
     engine.resize(40, 6)
 
-    // Only the members the selection path touches. It never draws. Set after
-    // `resize` so its own `renderer.resize` call isn't the stub's problem.
+    // Only what the selection path touches. Set after `resize`, which calls
+    // `renderer.resize` itself.
     inner.renderer = {
       selection: null as Sel | null,
       getCellSize: () => ({ width: 10, height: 20 }),
       dispose: () => {},
     }
     engine.write(new TextEncoder().encode(text))
-    // `readRows` reads the core's render state, which is populated by
-    // `ghostty_render_state_update` on each drawn frame. In the app that has
-    // always happened by the time a user can copy or search; here nothing
-    // draws, so this stands in for the frame. Without it the render state
-    // reports zero columns and every read comes back empty.
+    // `readRows` reads the render state, normally refreshed by each drawn frame;
+    // without this it reports zero columns.
     inner.wasm!.exports.ghostty_render_state_update(inner.termPtr)
     return { engine, inner }
   }
@@ -89,8 +76,7 @@ describe('readRows, through its three callers', () => {
     expect(engine.getSelection()).toBe('hello world')
   })
 
-  /** The blank right-hand edge is grid padding, not content — but a selection
-   *  that stops part-way along a row chose the spaces it dragged over. */
+  /** Trailing blanks are kept only when a selection ends partway along a row. */
   it('keeps trailing blanks only when the selection ends mid-row', async () => {
     const { engine, inner } = await engineWith('ab')
     select(inner, { x: 0, y: 0 }, { x: 5, y: 0 })
@@ -98,9 +84,8 @@ describe('readRows, through its three callers', () => {
   })
 
   /**
-   * The case a bare `string` per row cannot represent: a wide character
-   * occupies two columns but has one character of text, and its second column
-   * is a spacer holding nothing.
+   * A wide character spans two columns but has one character of text; its
+   * second column is an empty spacer.
    */
   it('gives a wide character one character across its two columns', async () => {
     const { engine, inner } = await engineWith('你好x')
@@ -114,8 +99,8 @@ describe('readRows, through its three callers', () => {
 
     // Its head column alone still yields the whole character.
     select(inner, { x: 0, y: 0 }, { x: 0, y: 0 + 0 })
-    // A zero-width selection is empty by definition, so widen by one row-free
-    // column: the spacer contributes nothing of its own.
+    // A zero-width selection is empty, so widen by one column: the spacer adds
+    // nothing.
     select(inner, { x: 1, y: 0 }, { x: 2, y: 0 })
     expect(engine.getSelection()).toBe('好')
   })
@@ -137,9 +122,7 @@ describe('readRows, through its three callers', () => {
   })
 
   /**
-   * A line too long for the pane is several rows on screen and one line in the
-   * buffer. Copying it used to put a newline at each wrap point, so a command
-   * copied from a narrow pane pasted back as several broken ones.
+   * A soft-wrapped line copies without a newline at the wrap point.
    */
   it('does not break a soft-wrapped line at the wrap point', async () => {
     const line = 'echo "' + 'x'.repeat(50) + '"' // 58 columns across a 40-column pane
@@ -148,8 +131,7 @@ describe('readRows, through its three callers', () => {
     expect(engine.getSelection()).toBe(line)
   })
 
-  /** The join is per wrap flag, not per selection: a wrapped line followed by a
-   *  real newline keeps the one break the buffer actually has. */
+  /** Joins follow wrap flags: a real newline after a wrapped line is kept. */
   it('keeps the real newline after a wrapped line', async () => {
     const long = 'a'.repeat(45)
     const { engine, inner } = await engineWith(long + '\r\nnext')
@@ -157,8 +139,8 @@ describe('readRows, through its three callers', () => {
     expect(engine.getSelection()).toBe(long + '\nnext')
   })
 
-  /** Every row of a column selection ends at the same arbitrary column, so
-   *  none of them keeps its padding. */
+  /** Every row of a column selection ends at the same arbitrary column, so all
+   *  are trimmed. */
   it('trims every row of a rectangular selection', async () => {
     const { engine, inner } = await engineWith('abcdef\r\nghijkl')
     select(inner, { x: 1, y: 0 }, { x: 3, y: 1 }, true)
@@ -172,13 +154,12 @@ describe('readRows, through its three callers', () => {
     engine.search('needle')
     expect(results.at(-1)?.count).toBe(1)
 
-    // The match's own columns, read back through the selection path.
+    // The match's own columns, read back via the selection path.
     select(inner, { x: 4, y: 0 }, { x: 9, y: 0 })
     expect(engine.getSelection()).toBe('needle')
   })
 
-  /** Search matches on the row's joined text, so a wide character must not
-   *  contribute a phantom character for its spacer column. */
+  /** A wide character's spacer adds no phantom character to the search text. */
   it('matches across a wide character without a phantom spacer character', async () => {
     const { engine } = await engineWith('a你b')
     const results: { index: number; count: number }[] = []
@@ -195,8 +176,7 @@ describe('readRows, through its three callers', () => {
     expect(results.at(-1)?.count).toBe(0)
   })
 
-  /** Double-click selects a whole path, not just the segment under the
-   *  pointer — that's the reason the word class is as wide as it is. */
+  /** Double-click selects a whole path, hence the wide word class. */
   it('selects a path as one word', async () => {
     const { engine, inner } = await engineWith('run /usr/local/bin/tool now')
     inner.selection.selectWordAt({ x: 6, y: 0 })
@@ -204,37 +184,27 @@ describe('readRows, through its three callers', () => {
   })
 
   /**
-   * Output that arrives between the last painted frame and the copy must not
-   * change what a standing selection yields.
-   *
-   * `readRows` reads the active screen off the render snapshot, which is
-   * rebuilt once a frame. Pairing that snapshot with a *live* scrollback depth
-   * mapped every absolute row on the active screen by however many rows had
-   * scrolled since the frame: a selection came back correct through its
-   * scrollback rows and then jumped backwards through the rest. This is that
-   * shape — six lines still on screen, two more arriving with no frame in
-   * between — and the far end of an SSH session writing while a drag finishes
-   * is how it happened for real.
+   * Output arriving between the last frame and the copy doesn't change what a
+   * standing selection yields: the active screen comes from the frame's
+   * snapshot, so the scrollback depth must come from the same snapshot.
    */
   it('copies the rows the snapshot holds, not rows shifted by unpainted output', async () => {
     const lines = ['L01', 'L02', 'L03', 'L04', 'L05', 'L06', 'L07', 'L08']
     const { engine, inner } = await engineWith(lines.map((l) => l + '\r\n').join(''))
-    // Through the engine rather than the raw export, because recording the
-    // depth the snapshot was taken at is precisely what is under test.
+    // Through the engine, since recording the snapshot's depth is under test.
     engine.syncReadState()
 
-    // Rows 0-2 are scrollback (L01-L03); 3-8 are the active screen, holding
-    // L04-L08 and the row the cursor sits on.
+    // Rows 0-2 are scrollback (L01-L03); 3-8 the active screen (L04-L08 and the
+    // cursor's row).
     select(inner, { x: 0, y: 2 }, { x: inner._cols - 1, y: 5 })
     const before = engine.getSelection()
     expect(before).toBe('L03\nL04\nL05\nL06')
 
-    // Two more lines, and no frame: the core's scrollback grows to five while
-    // the snapshot still holds the screen as it was at three.
+    // Two more lines without a frame: scrollback grows to five while the
+    // snapshot holds three.
     engine.write(new TextEncoder().encode('L09\r\nL10\r\n'))
 
-    // Same rows, same text. Read live, the last row came back as L04 — the
-    // snapshot's first active row, two scrolls out of step.
+    // Same rows, same text.
     expect(engine.getSelection()).toBe(before)
   })
 
@@ -245,16 +215,9 @@ describe('readRows, through its three callers', () => {
   })
 
   /**
-   * Clicking a wide character's spacer resolves to the character it belongs
-   * to rather than selecting nothing.
-   *
-   * Note what this also pins: the word *stops* at the spacer. Scanning right
-   * reads column 3 as empty, `'' || ' '` makes it a space, and a space ends a
-   * word — so `ab你cd` double-clicks as `ab你`, not the whole run. That is
-   * pre-existing behavior, identical before and after the row representation
-   * changed (the old per-cell form stored `''` for a spacer and hit the same
-   * `|| ' '`), and it is recorded here rather than fixed because this pass is
-   * about what `readRows` allocates, not about what counts as a word.
+   * Clicking a wide character's spacer resolves to its head. Also pins that the
+   * word stops at the spacer (`ab你cd` selects `ab你`), since a spacer reads as
+   * a space; unchanged by the row representation, and not addressed here.
    */
   it('resolves a click on a wide character spacer to its head', async () => {
     const { engine, inner } = await engineWith('ab你cd')

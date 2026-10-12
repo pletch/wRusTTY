@@ -1,14 +1,7 @@
 /**
- * A byte count as something a person reads at a glance.
- *
- * Its own module because two places show one — the remote file list and an
- * upload's progress — and they have to agree. The first copy of this lived in
- * `FilesPanel`; the second would have rounded differently within a week, which
- * reads as a bug when the same file is on screen twice.
- *
- * One decimal below 10 and none above, so a column of these has a stable width
- * and "9.4 MB" is still distinguishable from "9.9 MB" while "412 MB" does not
- * pretend to a precision the number does not have.
+ * A byte count for people. Shared by the remote file list and upload
+ * progress so they agree. One decimal below 10 and none above, so columns
+ * keep a stable width without false precision.
  */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`

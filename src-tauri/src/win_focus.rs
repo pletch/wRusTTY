@@ -1,82 +1,23 @@
-//! Reclaiming keyboard focus after a Windows broker process has shown a
-//! modal prompt over us.
+//! Reclaiming focus around Windows credential prompts hosted by a separate
+//! broker process (the `UserConsentVerifier` consent dialog and the Windows
+//! Hello prompt from `RequestSignAsync`). Focus doesn't return on its own when
+//! they close.
 //!
-//! Both credential prompts we raise — the `UserConsentVerifier` consent
-//! dialog and the Windows Hello gesture prompt that `RequestSignAsync`
-//! triggers — are hosted by a *separate broker process*, not by us. When one
-//! closes, focus does not come back on its own, and the obvious fixes don't
-//! work either. Hence this module, which exists solely so the two call sites
-//! share one correct implementation rather than each growing their own
-//! subtly-wrong copy.
+//! # Limits
 //!
-//! # What cannot be done to the Hello prompt, and why
+//! The Hello prompt can't be given an owner HWND (`KeyCredentialManager` has no
+//! interop for it), so it may open behind us with its own generic taskbar
+//! button. Its window runs at a higher integrity level, so UIPI silently drops
+//! attempts to change it (`WM_SETICON`, `AttachThreadInput`, reparenting, or
+//! setting its AppUserModelID). That's by design; leave the prompt alone.
 //!
-//! The consent dialog behaves because `IUserConsentVerifierInterop` takes an
-//! owner HWND. `KeyCredentialManager` has no such interop, so the Hello
-//! prompt's window is *unowned* — which is why it opens behind us and earns
-//! its own taskbar button wearing the generic executable icon
-//! (`CredentialUIBroker.exe` carries no icon resource of its own).
+//! The taskbar button belongs to Explorer, at our integrity level, so
+//! `ITaskbarList::DeleteTab` can remove it (`hide_broker_taskbar_button`). The
+//! prompt stays reachable via Alt-Tab.
 //!
-//! Reaching over and fixing that window directly is the obvious next idea. It
-//! does not work, and the reason is worth recording so nobody spends the
-//! afternoon rediscovering it: **the broker runs at a higher integrity level
-//! than we do.** Measured against a live prompt, its token carries
-//! `S-1-16-8202` against our `S-1-16-8192`, and UIPI compares those
-//! numerically before delivering anything. Everything in the obvious toolkit
-//! is therefore silently dropped — not failed, *dropped*, with a success-ish
-//! return value and no error to notice:
-//!
-//! - `WM_SETICON` to re-icon its taskbar button. Verified inert: after
-//!   sending it, `WM_GETICON` on that window still reads back 0.
-//! - `AttachThreadInput` onto its thread, which is the trick
-//!   `force_foreground` below relies on. Fails outright with
-//!   `ERROR_ACCESS_DENIED`.
-//! - `SetParent` / `GWLP_HWNDPARENT` to give it an owner after the fact —
-//!   these don't work across processes at all, integrity aside.
-//!
-//! This is deliberate on Windows' part: a credential prompt that any
-//! medium-integrity process could re-skin or drive would not be worth much.
-//! Treat the elevated integrity level as load-bearing rather than as an
-//! obstacle, and leave the prompt's own window alone.
-//!
-//! # What can be done instead
-//!
-//! The taskbar button is not the broker's to defend — it belongs to Explorer,
-//! which runs at our own integrity level. `ITaskbarList::DeleteTab` therefore
-//! goes straight through, and `hide_broker_taskbar_button` uses it to drop
-//! the stray button without ever touching the prompt itself. Confirmed
-//! against a live prompt by reading the taskbar back over UI Automation: the
-//! `Credential Manager UI Host` entry is present before the call and gone
-//! after it.
-//!
-//! What that buys is the button's *absence*, not a wRusTTY-branded button.
-//! Re-branding would mean giving the window our AppUserModelID — Explorer
-//! keys buttons by AUMID, and the prompt's window carries none, which is
-//! exactly why it falls back to a generic per-executable entry. That was
-//! tried too, via `SHGetPropertyStoreForWindow`, on the theory that a shell
-//! API might get through where a window message doesn't. It does not:
-//! `IPropertyStore::SetValue` on that window returns `E_ACCESSDENIED`.
-//!
-//! Note the asymmetry, since it is the useful part of the result: `GetValue`
-//! on the same store *succeeds* and reports the AUMID as unset. The window's
-//! properties are readable across the boundary and not writable, so there is
-//! no reading of "the shell had already latched the button's identity" to
-//! chase here — the write never landed at all.
-//!
-//! The window stays in the Alt-Tab list either way, so a prompt that opened
-//! behind something is still reachable.
-//!
-//! # The two halves are coupled
-//!
-//! Deleting the button and getting the prompt to the front look like separate
-//! problems and are not. That button is also how a user *finds* a prompt that
-//! opened behind something, so removing it is only safe when the prompt is
-//! going to be in front — otherwise it hides a modal dialog that is already
-//! hidden, which is a worse bug than the cosmetic one being fixed.
-//!
-//! `allow_broker_foreground` therefore reports whether it actually took the
-//! foreground, and the caller only arms `hide_broker_taskbar_button` when it
-//! did. The clutter stays in exactly the case where it might be load-bearing.
+//! Removing the button is only safe if the prompt is in front; otherwise it
+//! hides a hidden modal. So `allow_broker_foreground` reports whether it took
+//! the foreground, and the caller only hides the button when it did.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -85,23 +26,10 @@ use std::time::{Duration, Instant};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::HWND;
 
-/// Forces `hwnd` to the foreground even though we didn't receive the last
-/// input event (the credential broker did).
-///
-/// A plain `SetForegroundWindow(hwnd)` — tried first — doesn't help: the
-/// prompt is hosted by a separate broker process, so it (not us) received the
-/// last input event, which is exactly the condition Windows' foreground-lock
-/// heuristic checks before honoring an unsolicited `SetForegroundWindow`
-/// call. Denied requests don't error, they just silently no-op (or flash the
-/// taskbar icon), which is why this looked fixed in the code but never
-/// actually took effect.
-///
-/// The standard workaround: temporarily attach our thread's input queue to
-/// the current foreground thread's. Shared input state is one of the
-/// conditions the heuristic *does* accept, so `SetForegroundWindow` starts
-/// working for the duration of the attachment. This is the same trick
-/// Windows Terminal and other apps use to reclaim focus after a native
-/// dialog closes.
+/// Forces `hwnd` to the foreground although the broker, not us, received the
+/// last input event (so a plain `SetForegroundWindow` is silently refused).
+/// Attaches our input queue to the foreground thread's for the duration, which
+/// the foreground lock accepts; Windows Terminal uses the same trick.
 fn force_foreground(hwnd: HWND) {
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -117,15 +45,8 @@ fn force_foreground(hwnd: HWND) {
 
         let _ = SetForegroundWindow(hwnd);
         let _ = BringWindowToTop(hwnd);
-        // SetForegroundWindow activates the top-level window, but that's a
-        // different thing from keyboard focus actually landing back inside
-        // it — WebView2 is a child control, and reactivating its parent
-        // doesn't reliably re-establish which child/element had focus once
-        // that tracking was blown away by a separate process's window
-        // taking over. An explicit SetFocus (only meaningful now, while
-        // still attached to the foreground thread's input queue) targets
-        // keyboard focus directly instead of relying on activation to
-        // imply it.
+        // Activation doesn't restore keyboard focus inside the WebView2 child;
+        // set it explicitly while still attached.
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hwnd));
 
         if attached {
@@ -134,39 +55,13 @@ fn force_foreground(hwnd: HWND) {
     }
 }
 
-/// Call immediately *before* raising a broker-hosted prompt that we cannot
-/// parent to our own window.
+/// Call immediately before raising a broker prompt we can't parent. Grants the
+/// next process the right to take the foreground (`AllowSetForegroundWindow`),
+/// which is only honored if we hold the foreground, so we take it first.
 ///
-/// `KeyCredentialManager` has no interop interface for supplying an owner
-/// HWND — unlike `IUserConsentVerifierInterop`, which is why the consent
-/// dialog behaves and this one doesn't. Left alone, the broker's window
-/// opens *behind* the app: Windows' foreground lock stops a process that
-/// didn't receive the last input event from taking foreground, and the
-/// broker didn't — we did, when the user clicked.
-///
-/// `AllowSetForegroundWindow(ASFW_ANY)` is the documented way to hand that
-/// right over: the current foreground process voluntarily grants the next
-/// process to ask permission to steal it. The `SetForegroundWindow` first is
-/// not redundant: the grant is only honored when the process making it
-/// actually holds foreground, which may have lapsed if a prompt from an
-/// earlier attempt is still on screen. A grant made without it fails
-/// silently, which is the whole intermittent bug.
-///
-/// # If we don't already hold the foreground, nothing here rescues it
-///
-/// It is tempting to reach for `force_foreground` below instead, on the
-/// theory that its `AttachThreadInput` trick would satisfy the lock where a
-/// bare call cannot. Measured, it does not: from a process that is not the
-/// foreground process, both the bare call and the attach version fail to take
-/// the foreground from an ordinary, same-integrity window. This is not the
-/// UIPI boundary that blocks everything else in this module — it is the
-/// foreground lock itself doing exactly its job, and modern Windows no longer
-/// falls for the classic workaround.
-///
-/// So this call is best-effort and always was. What changed is that it now
-/// says so: it reports whether we ended up holding the foreground, which is
-/// the difference between a grant that will be honored and one that will be
-/// ignored, and the caller adapts rather than assuming success.
+/// Best-effort: if we don't hold the foreground already, nothing here can take
+/// it (the foreground lock defeats the `AttachThreadInput` workaround too).
+/// Returns whether we hold it, so the caller can adapt.
 #[must_use]
 pub(crate) fn allow_broker_foreground(hwnd: HWND) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -175,25 +70,19 @@ pub(crate) fn allow_broker_foreground(hwnd: HWND) -> bool {
     };
 
     unsafe {
-        // A minimized window cannot be activated into the foreground, and an
-        // unlock that runs at startup is exactly when we might be minimized.
+        // A minimized window can't take the foreground (e.g. an unlock at startup).
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
 
         let _ = SetForegroundWindow(hwnd);
 
-        // Checked rather than assumed: a denied `SetForegroundWindow` does
-        // not report failure usefully, so the only trustworthy answer is to
-        // ask who holds the foreground now.
+        // A denied `SetForegroundWindow` doesn't report failure; check directly.
         let held = GetForegroundWindow() == hwnd;
         let _ = AllowSetForegroundWindow(ASFW_ANY);
 
         if !held {
-            // Worth a log line rather than silence: this is the precondition
-            // for the prompt appearing in front, and when it is false the
-            // prompt will probably open behind something. Without this there
-            // is nothing to correlate against a user reporting exactly that.
+            // Logged so a "prompt opened behind" report has something to match.
             log::warn!(
                 "could not take foreground before the Windows Hello prompt; \
                  it may open behind other windows"
@@ -203,37 +92,24 @@ pub(crate) fn allow_broker_foreground(hwnd: HWND) -> bool {
     }
 }
 
-/// Window class of the Windows Hello gesture prompt, hosted by
-/// `CredentialUIBroker.exe`. Its title is localized ("Windows Security" in
-/// English), so the class is the identifier to match on.
+/// Window class of the Windows Hello prompt (`CredentialUIBroker.exe`); the
+/// title is localized.
 const BROKER_WINDOW_CLASS: PCWSTR = w!("Credential Dialog Xaml Host");
 
-/// How long to keep looking for the prompt window before giving up.
-///
-/// A bound on the *search*, not on the prompt — the user may take as long as
-/// they like to answer. It exists so that a renamed window class in some
-/// future Windows build degrades to "polls briefly, finds nothing, exits"
-/// rather than spinning for as long as the prompt is open.
+/// How long to look for the prompt window, so a future renamed class degrades
+/// to a brief search rather than polling while the prompt is open.
 const BROKER_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 const BROKER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// How long to keep re-deleting the taskbar button once the prompt is up.
-///
-/// One `DeleteTab` is not enough, for two reasons. We find the window the
-/// moment it becomes visible, which may be *before* Explorer has added its
-/// button — deleting a button that doesn't exist yet accomplishes nothing and
-/// the button then appears anyway. And Explorer re-adds a button when its
-/// window is activated, which happens every time the user clicks back to a
-/// prompt they had clicked away from. Since there is no notification for
-/// either event and no way to read the button back cheaply, the honest
-/// implementation is to keep sweeping for a while.
+/// How long to keep re-deleting the taskbar button: the window may appear
+/// before Explorer adds its button, and Explorer re-adds it whenever the prompt
+/// is activated. Neither event is observable, so keep sweeping.
 const BUTTON_SWEEP_DURATION: Duration = Duration::from_secs(10);
 
 const BUTTON_SWEEP_INTERVAL: Duration = Duration::from_millis(150);
 
-/// Stops the watcher thread when dropped. Nothing is joined — the thread
-/// notices the flag within one poll interval and exits on its own.
+/// Stops the watcher thread when dropped (it exits within one poll).
 pub(crate) struct BrokerEscort {
     stop: Arc<AtomicBool>,
 }
@@ -244,11 +120,8 @@ impl Drop for BrokerEscort {
     }
 }
 
-/// Finds the broker's prompt window, but only once it is actually on screen.
-///
-/// The visibility filter matters: the window exists as soon as the broker
-/// creates it, a moment before it is shown, and Explorer has certainly not
-/// given it a taskbar button yet at that point.
+/// Finds the broker's prompt window once it's visible (Explorer adds the
+/// button only after that).
 fn find_broker_window() -> Option<HWND> {
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindowVisible};
 
@@ -257,8 +130,8 @@ fn find_broker_window() -> Option<HWND> {
         .filter(|hwnd| !hwnd.is_invalid() && unsafe { IsWindowVisible(*hwnd) }.as_bool())
 }
 
-/// Repeatedly asks Explorer to drop `broker`'s taskbar button, until the
-/// prompt closes, the guard is dropped, or the sweep window expires.
+/// Repeatedly removes `broker`'s taskbar button until the prompt closes, the
+/// guard drops, or the sweep window ends.
 fn sweep_taskbar_button(broker: HWND, stop: &AtomicBool) {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
@@ -267,11 +140,8 @@ fn sweep_taskbar_button(broker: HWND, stop: &AtomicBool) {
     use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
 
     unsafe {
-        // Apartment-threaded rather than multi-threaded: `TaskbarList` is an
-        // in-proc shell object registered `ThreadingModel=Apartment`, so an
-        // STA gets it created directly with no proxy in the way. This thread
-        // does nothing else and never blocks on another apartment, which is
-        // what would otherwise make an STA without a message pump a hazard.
+        // STA: `TaskbarList` is apartment-threaded, and this thread never blocks
+        // on another apartment.
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
 
@@ -281,9 +151,7 @@ fn sweep_taskbar_button(broker: HWND, stop: &AtomicBool) {
         if unsafe { taskbar.HrInit() }.is_ok() {
             let deadline = Instant::now() + BUTTON_SWEEP_DURATION;
             while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                // Stop as soon as the prompt is gone: with the window
-                // destroyed there is no button left to chase, and Explorer
-                // has already cleaned up after it.
+                // The prompt is gone, and its button with it.
                 if find_broker_window().is_none() {
                     break;
                 }
@@ -296,28 +164,16 @@ fn sweep_taskbar_button(broker: HWND, stop: &AtomicBool) {
     unsafe { CoUninitialize() };
 }
 
-/// Call immediately *before* raising the Hello prompt, keeping the returned
-/// guard alive until it has closed.
-///
-/// Watches for the prompt's window and, once it appears, keeps its stray
-/// taskbar button deleted for as long as it plausibly matters. See the module
-/// docs for why this is the one lever that works and why the more obvious
-/// ones don't.
-///
-/// Polling rather than `SetWinEventHook`: the hook would need a thread
-/// running a message pump to receive `WINEVENT_OUTOFCONTEXT` callbacks, and
-/// the thread that raises the prompt is blocked inside the WinRT call with no
-/// pump of its own. A 50ms `FindWindowW` on a fixed class is much less
-/// machinery for the same answer.
+/// Call immediately before raising the Hello prompt, keeping the guard alive
+/// until it closes. Watches for the prompt window and keeps its taskbar button
+/// deleted; see the module docs. Polls rather than using `SetWinEventHook`,
+/// which would need a message pump on a thread that's blocked in WinRT.
 pub(crate) fn hide_broker_taskbar_button() -> BrokerEscort {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
 
     std::thread::spawn(move || {
-        // A prompt already on screen when we arm belongs to somebody else —
-        // ours cannot exist yet, since the call that raises it hasn't been
-        // made. Deleting its button would be meddling with another app's
-        // window.
+        // A prompt already on screen belongs to someone else.
         let preexisting = find_broker_window().map(|hwnd| hwnd.0 as isize);
         let deadline = Instant::now() + BROKER_SEARCH_TIMEOUT;
 
@@ -335,20 +191,11 @@ pub(crate) fn hide_broker_taskbar_button() -> BrokerEscort {
     BrokerEscort { stop }
 }
 
-/// Call once a broker-hosted credential prompt has closed, whatever its
-/// outcome — a canceled prompt strands focus just as thoroughly as a
-/// successful one.
+/// Call once a broker prompt has closed, whatever the outcome.
 pub(crate) fn restore_after_broker_prompt(window: &tauri::WebviewWindow, hwnd: HWND) {
     force_foreground(hwnd);
-    // Being the OS foreground window still isn't the same thing as WebView2
-    // actually having keyboard focus on some element inside it — WebView2
-    // keeps its own internal focus manager, and there's no guarantee
-    // reactivating the parent HWND alone reaches into it correctly after a
-    // different process's window (the prompt) held focus. MoveFocus is
-    // WebView2's own API for exactly this: hand focus back in directly,
-    // landing on whichever element had it before (or the default one),
-    // instead of going through Win32 activation and hoping it cascades down
-    // into the webview correctly.
+    // WebView2 has its own focus manager; MoveFocus hands focus back to the
+    // element that had it.
     let _ = window.with_webview(|webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
         unsafe {

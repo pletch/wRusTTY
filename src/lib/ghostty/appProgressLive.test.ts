@@ -9,15 +9,10 @@ import { MODE_BRACKETED_PASTE, type GhosttyWasm } from './wasmBindings'
 import type { CommandActivity } from '../shellIntegration'
 
 /**
- * A program's own progress report reaching the pane, through a real engine and
- * a real core.
- *
- * `appProgress.test.ts` pins the grammar; this pins that the sequences carrying
- * it are actually recognized as OSC by the scanner and dispatched — which is
- * not free of assumptions. OSC 9 is the shortest identifier this app handles
- * and OSC 777 the longest, so between them they cover the digit-run parsing,
- * and progress arrives interleaved with an application's normal screen output
- * rather than on a chunk boundary of its own.
+ * A program's progress report reaching the pane through a real engine and
+ * core. `appProgress.test.ts` pins the grammar; this pins recognition and
+ * dispatch, covering OSC 9 and OSC 777 (shortest and longest idents here)
+ * interleaved with normal screen output.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -96,15 +91,9 @@ describe('an application reporting its own progress over the wire', () => {
   })
 
   /**
-   * The whole path for a report the program never clears: the engine
-   * recognizing `ESC c` in the stream, the tracker's watch being open at that
-   * moment, and the indicator coming down.
-   *
-   * Worth a live test rather than only the unit ones either side of it,
-   * because the two halves have to agree about a cost: the engine hunts for
-   * `ESC c` only while a handler is registered, and the tracker registers one
-   * only while a report is up. Get that backwards in either place and this
-   * still compiles — it just never fires.
+   * A report the program never clears, dropped on `ESC c`. Live because the
+   * two halves must agree: the engine hunts `ESC c` only while a handler is
+   * registered, and the tracker registers one only while a report is up.
    */
   it('drops a report the program abandoned with a full reset', async () => {
     // `boot()` rather than `ready()`: that helper claims OSC 9 for itself, and
@@ -170,13 +159,10 @@ describe('an application reporting its own progress over the wire', () => {
 })
 
 /**
- * The same program on the two hosts it behaves differently on, replayed in the
- * order captured session logs put the sequences in.
- *
- * Claude Code over SSH switches to the alternate screen on one host and never
- * does on the other, and that decides whether the shell's run marker is ever
- * suppressed. Both shapes have to leave the pane quiet between turns, and in
- * the second one only the progress reports can deliver that.
+ * One program on two hosts, in captured order: Claude Code over SSH uses the
+ * alternate screen on one and not the other, which decides whether the
+ * shell's run marker is suppressed. Both must leave the pane quiet between
+ * turns.
  */
 describe('a long-lived program reporting turns inside one shell command', () => {
   beforeEach(() => {

@@ -6,17 +6,13 @@ import { describe, expect, it } from 'vitest'
 import * as abi from './abi'
 
 /**
- * CAN (0x18) and SUB (0x1A) cancel an OSC in progress: the command is dropped,
- * and what follows is ordinary output. Upstream `520d8f55a`; before it the core
- * ran the command as though the OSC had ended normally, so
- * `ESC ] 2 ; title CAN` still set the title. xterm discards it, and the DEC
- * parser says CAN and SUB cancel any control string in progress.
+ * CAN (0x18) and SUB (0x1A) cancel an OSC in progress: the command is
+ * dropped and what follows is ordinary output (upstream `520d8f55a`; xterm
+ * and the DEC parser agree). `oscScanner.test.ts` holds our scanner to the
+ * same rule.
  *
- * `oscScanner.test.ts` holds our own scanner to the same rule, since the app
- * acts on several OSCs from the scanner rather than from the core.
- *
- * Against the shipped binary, so it runs on CI. `GHOSTTY_VT_WASM` points it at
- * another build.
+ * Against the shipped binary, so it runs on CI. `GHOSTTY_VT_WASM` points it
+ * at another build.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

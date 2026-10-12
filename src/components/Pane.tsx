@@ -16,42 +16,31 @@ import { startDirFor } from '../lib/fileActions'
 interface Props {
   node: PaneNode
   tabId: string
-  /** Whether the tab this pane belongs to currently has more than one pane
-   * — the drag/close grip is only offered then, matching the toolbar's
-   * existing "move to new tab"/"close pane" buttons (a single, unsplit pane
-   * has nowhere more useful to go and nothing to close it back down to). */
+  /** Whether this pane's tab is split; the drag/close grip is offered only
+   * then. */
   tabHasSplit: boolean
-  /** The id of the pane that currently holds focus within this tab. Used to
-   * draw the active-pane focus ring (and, on the others, a faint scrim) so
-   * which pane input goes to reads at a glance in a split. */
+  /** The focused pane in this tab, for the focus ring (and others' scrim). */
   activePaneId: string
   onClosePane: (paneId: string) => void
   vaultUnlocked: boolean
   forwardsOpenByPane: Record<string, boolean>
-  /** Each pane's connection status. Passed down for the forward panel, which
-   *  has to re-read its list when a pane reconnects — the forwards are
-   *  re-established behind it and some may not have come back. */
+  /** Each pane's connection status, so the forward panel re-reads its list
+   *  after a reconnect. */
   statusByPane: Record<string, string>
   filesOpenByPane: Record<string, boolean>
   /** Where a Ctrl+clicked path asked each pane's files panel to go. */
   filesRevealByPane: Record<string, FilesReveal>
-  /** The directory each pane's host last *reported*, where it reported one.
-   *  The Files panel opens there rather than at the remote home — the same
-   *  place a file dropped on that pane would land. */
+  /** The directory each pane's host last reported, where the Files panel
+   *  opens. */
   cwdByPane: Record<string, string | null>
-  /** What each host set as its window title. Used here only to *guess* a
-   *  directory when nothing reported one — see `startDirFor`. */
+  /** Each host's window title, used only to guess a directory (`startDirFor`). */
   titleByPane: Record<string, string | null>
   /** The `externalEditor` setting, for the Files panel's edit route. */
   editorCommand: string
-  /** Whether Settings names an outbound proxy — the connect form offers a
-   * way past it only when there is one. */
+  /** Whether Settings names an outbound proxy, so the form can offer a bypass. */
   proxyAvailable: boolean
-  /** The color a connected terminal paints itself, ready to use as a CSS
-   * background. A pane still waiting for a connection paints it too, so the
-   * pane doesn't change tone the moment a session opens — and so that it
-   * matches its own tab, which is painted from the same value. Only the
-   * connect dialog floating on top of it is a lighter shade. */
+  /** The connected terminal's background as CSS. A waiting pane paints it too,
+   * so it matches its tab and doesn't change tone on connect. */
   paneBackground: string
   sessionIdByPane: Record<string, string | null>
   sessions: SessionProfile[]
@@ -87,10 +76,9 @@ interface Props {
   onDropTab: (targetPaneId: string, draggedTabId: string) => void
 }
 
-/** Recursive dispatcher only — no hooks here, since a pane can flip between
- * split and leaf across renders (splitting/closing) and a leaf view's hooks
- * must belong to a component that actually mounts/unmounts on that change,
- * not one that conditionally skips them. */
+/** Recursive dispatcher only, with no hooks: a pane can flip between split
+ * and leaf, and a leaf's hooks must belong to a component that mounts and
+ * unmounts with it. */
 export function Pane(props: Props) {
   const { node } = props
 
@@ -156,25 +144,19 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
     onDropTab,
   } = props
   const sessionId = sessionIdByPane[node.id] ?? null
-  // Stable across re-renders of this same leaf — an inline `(el) =>
-  // onSlotRef(node.id, el)` would be a brand-new function every render,
-  // which makes React treat the ref as "changed" every time, perpetually
-  // detaching and reattaching it (each of which calls onSlotRef, which
-  // updates state, which triggers another render — infinite loop).
+  // Stable across renders: an inline ref callback would detach and reattach
+  // every render, and each call updates state, looping forever.
   const slotRef = useCallback(
     (el: HTMLDivElement | null) => onSlotRef(node.id, el),
     [node.id, onSlotRef],
   )
   const [dragOver, setDragOver] = useState(false)
   const [gripHover, setGripHover] = useState(false)
-  // A restored administrator pane asks one question instead of showing the
-  // form — see ElevatedRestore. Its "change settings" link sets this, and the
-  // form then shows as it would for any other blank pane.
+  // A restored administrator pane asks one question instead of showing the form
+  // (see ElevatedRestore); "change settings" sets this.
   const [showElevatedForm, setShowElevatedForm] = useState(false)
   const elevatedShellId = node.initial?.local?.elevated ? node.initial.local.shellId : null
-  // Only meaningful once the tab is actually split — a lone pane is trivially
-  // "the active one" and needs no highlight (matches how the grip/close
-  // hotzone is gated on tabHasSplit too).
+  // Only once split: a lone pane needs no highlight.
   const isActive = tabHasSplit && node.id === activePaneId
 
   return (
@@ -184,20 +166,12 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
       onMouseDown={() => onFocusPane(node.id)}
     >
       {tabHasSplit && (
-        // A small dedicated hotzone in the corner, not the whole pane —
-        // hovering over the terminal's actual content shouldn't reveal
-        // anything, only being right up in this corner should. Overlays
-        // directly on the content's own (already correctly themed)
-        // background rather than reserving separate space for it, so
-        // there's no color seam or lost vertical room to account for.
+        // A small corner hotzone rather than the whole pane, overlaid on the
+        // content's own background.
         <div
-          // Shifted left to roughly clear the terminal's custom scrollbar
-          // (index.css's .term-scrollbar, which sizes itself dynamically to
-          // the terminal's actual rendered width — see updateScrollbarGeometry
-          // in Terminal.tsx — so this offset is an approximation, not exact).
-          // z-30 (above the scrollbar's z-20) is what actually guarantees the
-          // grip/close icons stay clickable/visible on top even if that
-          // dynamic width ends up wider than this offset assumes.
+          // Offset to roughly clear the custom scrollbar, which sizes itself
+          // dynamically (see updateScrollbarGeometry in Terminal.tsx); z-30, above
+          // the scrollbar's z-20, keeps the icons clickable regardless.
           className="absolute right-3 top-0 z-30 flex h-6 w-14 items-start justify-end gap-0.5 p-1"
           onMouseEnter={() => setGripHover(true)}
           onMouseLeave={() => setGripHover(false)}
@@ -233,32 +207,21 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         </div>
       )}
       {node.source ? (
-        // The actual <Terminal> lives in a single flat pool rendered once at
-        // the App root (see App.tsx) and is portaled in here — not mounted
-        // directly in this tree — so that dragging a connection between
-        // tabs/panes moves data, not a React component. If this div were
-        // the terminal's real home, moving it between tabs (a totally
-        // separate React subtree per tab) would force an unmount/remount,
-        // tearing down the live session to move it.
+        // The <Terminal> lives in a flat pool at the App root and is portaled
+        // here, so moving a connection between tabs moves data rather than
+        // remounting (and tearing down) the session.
         <div ref={slotRef} className="relative h-full w-full" />
       ) : (
         <div
-          // Painted rather than left to show the window's own background: at
-          // less than full background opacity those are not the same color,
-          // since the terminal paints this over the window rather than
-          // instead of it. Left bare, a pane lightened while it waited for a
-          // connection and settled a shade darker the moment one opened.
+          // Painted explicitly: below full opacity the terminal paints over the
+          // window, so the window's own background is a different color.
           style={{ background: paneBackground }}
           className={`h-full w-full min-w-0 transition-colors duration-100 ${dragOver ? 'bg-sky-400/10' : ''}`}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes(DRAG_TAB_MIME)) return
             e.preventDefault()
-            // Chromium (WebView2 on Windows) is stricter than WebKitGTK
-            // here — without an explicit dropEffect matching what dragstart
-            // declared as effectAllowed, it shows the "not allowed" cursor
-            // over this drop target even though preventDefault() was
-            // called, which is technically enough on some engines but not
-            // this one.
+            // WebView2 shows "not allowed" over the drop target unless dropEffect
+            // matches dragstart's effectAllowed, even after preventDefault().
             e.dataTransfer.dropEffect = 'move'
             setDragOver(true)
           }}
@@ -282,7 +245,7 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
                     backspaceSendsCtrlH: null,
                     autoReconnect: false,
                     label: node.initial?.label ?? null,
-                    // Kept, so closing wRusTTY again brings back this same card.
+                    // Kept, so closing wRusTTY again restores this card.
                     form: node.initial ?? null,
                   },
                 )
@@ -292,11 +255,8 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
             />
           ) : (
           <ConnectDialog
-            // Remounts fresh (with the newly-selected profile's data already
-            // baked into its initial useState() calls) whenever a different
-            // saved session is picked from the sidebar — simpler than
-            // syncing every field from `initial` via an effect, and it's
-            // exactly the "start fresh" semantics we want here anyway.
+            // Remounts fresh when a different saved session is picked, rather than
+            // syncing every field from `initial` in an effect.
             key={node.initial?.id ?? 'blank'}
             initial={node.initial}
             vaultUnlocked={vaultUnlocked}
@@ -328,15 +288,10 @@ function PaneLeafView(props: Omit<Props, 'node'> & { node: PaneLeaf }) {
         </div>
       )}
       {tabHasSplit && (
-        // Focus affordance for splits, drawn as a single pointer-events-none
-        // overlay *above* the terminal rather than a ring on the wrapper:
-        // the terminal is a WebGL canvas that fills the pane, so an inset
-        // box-shadow on the wrapper would be painted underneath it. Always
-        // mounted (color/scrim toggled, never unmounted) so moving focus
-        // between panes cross-fades via the shared motion tokens instead of
-        // popping. z-20 keeps it clear of the z-30 grip hotzone. The inactive
-        // scrim is deliberately faint — enough to recede, not so much it
-        // hurts reading a second pane you're only watching.
+        // Focus affordance for splits: one pointer-events-none overlay above the
+        // WebGL canvas (an inset shadow on the wrapper would be underneath it).
+        // Always mounted so focus changes cross-fade. z-20, below the grip's z-30.
+        // The inactive scrim is faint enough to keep a watched pane readable.
         <div
           aria-hidden
           className={`pointer-events-none absolute inset-0 z-20 ring-1 ring-inset transition-[box-shadow,background-color] duration-base ease-swift ${

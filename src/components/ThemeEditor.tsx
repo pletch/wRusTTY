@@ -24,15 +24,10 @@ const buttonClass =
   'flex items-center gap-1.5 rounded-md px-2 py-1 text-chrome/85 transition-colors duration-100 hover:bg-chrome/5'
 
 /**
- * The theme picker, and — when what is picked is one of the user's own — the
- * palette editor for it.
- *
- * Presets are never editable in place. Editing one would have to either fork
- * it silently (leaving two things called "Dracula", only one of which is
- * Dracula) or redefine it for every session that named it; duplicating first
- * makes the fork the explicit step it is. It also keeps Campbell honest,
- * whose whole reason for being in the list is that it matches the Windows
- * console exactly.
+ * The theme picker and, for the user's own themes, the palette editor.
+ * Presets are never edited in place (that would silently fork or redefine
+ * them; Campbell must match the Windows console); duplicating first makes the
+ * fork explicit.
  */
 export function ThemeEditor({
   settings,
@@ -66,12 +61,8 @@ export function ThemeEditor({
   }
 
   /**
-   * Reads a scheme written for iTerm2 or VS Code and adds it as a custom
-   * theme. See `parseThemeFile` for what the two formats give up on the way.
-   *
-   * Lands as a custom theme like any other rather than as a mode of its own:
-   * an imported palette is exactly what the editor below already edits, and
-   * nothing downstream needs to know where a theme came from.
+   * Reads an iTerm2 or VS Code scheme and adds it as an ordinary custom theme
+   * (see `parseThemeFile`).
    */
   async function importFile() {
     const picked = await open({
@@ -224,14 +215,9 @@ export function ThemeEditor({
 }
 
 /**
- * The name field, which commits on blur rather than per keystroke.
- *
- * Per keystroke is what every other field in this dialog does, and it is
- * wrong here: the name is the identity. Typing "Mine" would rename the theme
- * once per letter, and each rename has to move `themeName` with it, so the
- * intermediate "M" would be a real theme with a real settings write behind
- * it. Deduplication then compounds it — "M" is taken by the time you get
- * back to it.
+ * The name field, committed on blur: the name is the theme's identity, so
+ * committing per keystroke would create a real theme (and settings write)
+ * for each intermediate name.
  */
 function ThemeNameField({
   theme,
@@ -274,18 +260,10 @@ function ThemeNameField({
 }
 
 /**
- * One color: a swatch that opens the OS picker, and the hex beside it for
- * anyone transcribing a palette from somewhere else.
- *
- * Carries no visible label — which one this is comes from where it sits in
- * the grid — but each input still names itself for a screen reader, since
- * position is not something that survives being read aloud.
- *
- * The text half keeps a draft because a hex is invalid for most of the time
- * it takes to type one — committing per keystroke would repaint every pane
- * with `#f`, then `#f3`, and land on whatever those parsed to. It commits
- * only once the draft is a full six-digit color, which is also what makes
- * pasting one work.
+ * One color: a swatch opening the OS picker and a hex field beside it. No
+ * visible label (the grid position says which), but each input names itself
+ * for screen readers. The hex keeps a draft and commits only a full six-digit
+ * color, which also makes pasting work.
  */
 function ColorField({
   label,

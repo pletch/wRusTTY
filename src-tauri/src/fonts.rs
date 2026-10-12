@@ -1,28 +1,15 @@
-//! Enumerating the fonts installed on this machine.
-//!
-//! The generalizable point, and the reason this lives in Rust rather than in
-//! the webview: the webview constrains where glyphs are *rasterized*, not what
-//! the application is allowed to *know* about fonts. Local Font Access is
-//! Chromium-only and permission-gated, and asking for a permission prompt to
-//! populate a settings dropdown is a poor trade. Any font question that is
-//! metadata rather than pixels can cross the IPC boundary cheaply and be
-//! answered natively — so it is.
-//!
-//! DirectWrite rather than a crate: it is already in the process, it is the
-//! same system font collection the webview itself resolves against, and it
-//! answers the monospace question directly via `IDWriteFont1::IsMonospacedFont`
-//! instead of leaving us to infer it from PANOSE bytes.
+//! Enumerating installed fonts. In Rust because Local Font Access is
+//! Chromium-only and permission-gated; font metadata crosses IPC cheaply.
+//! DirectWrite, since it's already loaded, is the collection the webview
+//! resolves against, and answers monospace directly
+//! (`IDWriteFont1::IsMonospacedFont`).
 
 use serde::Serialize;
 
-/// One installed family, and whether it is fixed-pitch.
-///
-/// The flag is carried rather than filtered on here because the caller wants
-/// both answers: the picker lists the monospaced families, and a *warning*
-/// needs to know that the family someone typed or imported is not one. The
-/// engine measures a single glyph and assumes the rest match, so a proportional
-/// face renders with visibly wrong column alignment — a failure that looks like
-/// a rendering bug rather than like a font choice.
+/// One installed family and whether it's fixed-pitch. Not filtered here: the
+/// picker lists monospaced families, and a warning needs to know when a typed
+/// or imported family isn't one (the engine measures one glyph, so a
+/// proportional face misaligns columns).
 #[derive(Serialize, Clone, Debug)]
 pub struct FontFamily {
     pub name: String,
@@ -40,16 +27,13 @@ mod imp {
     };
 
     pub fn list() -> Result<Vec<FontFamily>, String> {
-        // Every call below is a read against the system font collection; none
-        // of it hands out an interface we keep past this function.
+        // Reads against the system collection; no interface outlives this function.
         unsafe {
             let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)
                 .map_err(|e| format!("DWriteCreateFactory failed: {e}"))?;
 
             let mut collection: Option<IDWriteFontCollection> = None;
-            // `false`: we want whatever the collection already holds, not a
-            // rescan of the font directories. A settings dialog opening is not
-            // a reason to make the font cache go to disk.
+            // `false`: use the collection as held, without rescanning font directories.
             factory
                 .GetSystemFontCollection(&mut collection, false)
                 .map_err(|e| format!("GetSystemFontCollection failed: {e}"))?;
@@ -65,10 +49,8 @@ mod imp {
                     continue;
                 };
 
-                // A family carries its name in every locale it was authored
-                // for. en-us if it has one, otherwise index 0 — which is what
-                // DirectWrite's own samples do, and is the name the webview
-                // will match against when this string is put in a CSS stack.
+                // en-us if present, otherwise index 0, as DirectWrite's samples do and the
+                // name the webview matches in a CSS stack.
                 let mut index = 0u32;
                 let mut exists = windows::core::BOOL(0);
                 let locale: Vec<u16> = "en-us\0".encode_utf16().collect();
@@ -84,8 +66,7 @@ mod imp {
                 let Ok(len) = names.GetStringLength(index) else {
                     continue;
                 };
-                // GetString writes a terminating null, so the buffer is one
-                // longer than the length it just reported.
+                // GetString writes a terminating null, so one extra slot.
                 let mut buf = vec![0u16; len as usize + 1];
                 if names.GetString(index, &mut buf).is_err() {
                     continue;
@@ -95,8 +76,7 @@ mod imp {
                     continue;
                 }
 
-                // Asked of the regular face: a family is monospaced or not as a
-                // whole, and the regular weight is the one that always exists.
+                // Asked of the regular face, which always exists.
                 let monospace = family
                     .GetFirstMatchingFont(
                         DWRITE_FONT_WEIGHT_NORMAL,
@@ -105,9 +85,8 @@ mod imp {
                     )
                     .ok()
                     .and_then(|font| font.cast::<IDWriteFont1>().ok())
-                    // IDWriteFont1 is DirectWrite 1.1, i.e. Windows 7 with the
-                    // platform update. Older than that answers "not monospaced"
-                    // rather than failing the whole enumeration.
+                    // IDWriteFont1 is DirectWrite 1.1; older systems answer "not monospaced"
+                    // rather than failing.
                     .map(|font1| font1.IsMonospacedFont().as_bool())
                     .unwrap_or(false);
 
@@ -125,9 +104,7 @@ mod imp {
 mod imp {
     use super::FontFamily;
 
-    /// No enumeration off Windows. The command still exists so the settings
-    /// dialog has one code path: an empty list means "offer the curated stacks
-    /// only", which is what it did before this existed.
+    /// No enumeration off Windows; an empty list means "curated stacks only".
     pub fn list() -> Result<Vec<FontFamily>, String> {
         Ok(Vec::new())
     }

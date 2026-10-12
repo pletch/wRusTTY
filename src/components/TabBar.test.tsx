@@ -18,16 +18,9 @@ vi.stubGlobal('ResizeObserver', NoopResizeObserver)
 afterEach(cleanup)
 
 /**
- * The close button.
- *
- * Hover-gating it on every tab made it intermittently impossible to click, and
- * not for the reason it looks like: an `opacity-0` button still takes clicks.
- * You cannot *aim* at what you cannot see. The reproducible case is canceling
- * a confirmation — while the dialog is up its overlay owns the pointer, so the
- * tab beneath is not hovered, and the browser does not re-evaluate `:hover`
- * until the pointer moves. Go straight back to the ✕ and it is invisible: hit
- * it and the tab closes, miss by a few pixels and you land on the tab body,
- * which re-selects an already-active tab and looks like nothing happened.
+ * The close button stays visible: an invisible one still takes clicks but
+ * can't be aimed at. After canceling a confirmation, `:hover` isn't
+ * re-evaluated until the pointer moves.
  */
 
 function tab(id: string, title: string): Tab {
@@ -96,13 +89,8 @@ describe('TabBar close button', () => {
 })
 
 /**
- * The badge a program sets for itself.
- *
- * There is no icon protocol that survives SSH, so a program that wants to mark
- * itself in the strip writes a symbol at the front of its title (OSC 0/2) and
- * lets the font draw it. wRusTTY already had these titles — they reached the
- * tooltip and the status bar — so this is only about the strip finally showing
- * one. See lib/titleBadge.ts for which characters qualify and why.
+ * The badge a program sets by leading its title with a symbol (no icon
+ * protocol survives SSH). See lib/titleBadge.ts.
  */
 describe('TabBar remote title badge', () => {
   it('shows the symbol a program leads its title with', () => {

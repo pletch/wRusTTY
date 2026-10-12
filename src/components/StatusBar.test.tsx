@@ -6,14 +6,9 @@ import { StatusBar } from './StatusBar'
 afterEach(cleanup)
 
 /**
- * The terminal-size readout.
- *
- * Pinned because the interesting cases are the ones that render *nothing* —
- * a pane that hasn't fitted yet has no honest size to show, and a placeholder
- * there ("--x--", or worse "0x0") would read as a real measurement of a broken
- * pane. The bar is also the only place the column count is visible, and column
- * count decides scrollback depth (see `estimateScrollbackRows`), so a wrong or
- * absent number here is not merely cosmetic.
+ * The terminal-size readout. A pane that hasn't fitted shows nothing, since
+ * a placeholder ("0x0") would read as a real measurement. Column count also
+ * decides scrollback depth (see `estimateScrollbackRows`).
  */
 
 const base = {
@@ -71,13 +66,9 @@ describe('StatusBar dimensions readout', () => {
 })
 
 /**
- * The scrollback-depth estimate that rides alongside the size.
- *
- * It exists because the setting is memory, not rows: the same budget is worth
- * ~34,000 rows at 80 columns and ~6,800 at 400, and this is where that becomes
- * visible instead of being a fact buried in a code comment. (Both numbers went
- * up with the port to ghostty `main`, whose rows cost less — the estimate is
- * `SCROLLBACK_BYTES_PER_CELL`, a measurement of the core, not a constant.)
+ * The scrollback-depth estimate beside the size: the setting is memory, so
+ * depth varies with width. Derived from `SCROLLBACK_BYTES_PER_CELL`, a
+ * measurement of the core.
  */
 describe('StatusBar scrollback estimate', () => {
   const dims = { cols: 80, rows: 24 }
@@ -120,12 +111,8 @@ describe('StatusBar scrollback estimate', () => {
 })
 
 /**
- * What the far end says about itself.
- *
- * The cases worth pinning are the absent ones and the precedence one: this is
- * remote-supplied text sitting in the same bar as the fields that say what you
- * are actually connected to, so it must never displace them or appear when the
- * host never sent it.
+ * Remote-supplied title and directory never displace the connection's own
+ * fields, and never appear unless the host sent them.
  */
 describe('StatusBar remote title and directory', () => {
   it('shows neither until the host reports them', () => {

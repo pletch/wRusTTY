@@ -378,8 +378,7 @@ describe('surfaceRgb', () => {
   })
 
   it('steps away from the background in the direction that has somewhere to go', () => {
-    // The bug this fixes: a fixed dark surface under text that flips to
-    // black. On a light theme the surface has to go darker, not lighter.
+    // On a light theme the surface goes darker, under text flipped to black.
     for (const theme of PRESET_THEMES) {
       const [r] = surfaceRgb(theme).split(' ').map(Number)
       const [bgR] = hexToRgb(theme.background)

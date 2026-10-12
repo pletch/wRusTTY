@@ -5,38 +5,22 @@ import type { RowText } from './rowText'
 import type { Point } from './SelectionController'
 
 /**
- * Which cells are a link, and what they point at.
- *
- * The third controller of this shape, after `SelectionController` and
- * `MarkModeController`: a narrow host interface, no DOM of its own, and its
- * own tests. It answers two questions — what is under this cell, and what is
- * on screen — and both the pointer path (Ctrl+click) and the keyboard path
- * (hint mode) are built on those answers rather than on detection of their
- * own.
+ * Which cells are a link, and what they point at. Answers what's under a cell
+ * and what's on screen; Ctrl+click and hint mode are both built on that.
  */
 
 /**
- * Where a link came from.
- *
- * Only `'detected'` is ever produced today. It is carried from the start
- * because OSC 8 — a program declaring a URI for a run of cells — belongs as a
- * second *producer* feeding this same hit-testing, hover and activation path,
- * not as a parallel system beside it. The distinction is load-bearing rather
- * than decorative: an OSC 8 link's display text is arbitrary and may read
- * `https://your-bank.com` while pointing elsewhere, so it has to disclose its
- * true target before opening, while a detected link is its own text and needs
- * no such disclosure.
+ * Where a link came from. Only `'detected'` is produced today; OSC 8 would be
+ * a second producer for this same path. The distinction matters: an OSC 8
+ * link's text is arbitrary, so it must disclose its real target before
+ * opening.
  */
 export type LinkSource = 'detected' | 'osc8'
 
 /**
- * What a link points at, which decides who acts on it.
- *
- * A `'url'` goes to the platform opener, behind `isOpenableUrl`. A `'path'` is
- * a file on the remote host, and never reaches the opener at all: the pane
- * resolves it against its own directory and shows it in the files panel. Kept
- * apart at the type rather than by prefixing the string, so no path can be
- * mistaken for a URL on its way out — or the other way round.
+ * What a link points at. A `'url'` goes to the platform opener behind
+ * `isOpenableUrl`; a `'path'` never reaches the opener and is shown in the
+ * files panel. Separate at the type so neither can pass for the other.
  */
 export type LinkKind = 'url' | 'path'
 
@@ -63,25 +47,17 @@ export interface LinkHost {
   totalRows(): number
   /** Bumped on every write; part of the cache key. */
   bufferGen(): number
-  /** Live read — a value snapshotted at construction is wrong after a resize,
-   *  and a resize reflows every row. */
+  /** A call, since a resize reflows every row. */
   cols(): number
-  /** Whether to look for file paths as well as URLs, and in which syntax.
-   *  Only a pane with somewhere to send one — a files panel, or this machine's
-   *  file associations — asks; everywhere else a path is just text. Absent or
-   *  null means no. */
+  /** Whether to detect file paths too, and in which syntax. Only panes with
+   *  somewhere to send one ask; absent or null means no. */
   pathLinks?(): PathFlavor | null
 }
 
 /**
- * How far outside the viewport a logical line is chased.
- *
- * A URL can begin on the row above the viewport's first, or run onto the row
- * below its last, and a line cut at the viewport edge would detect half a URL
- * — worse than none, since half a URL still opens. Bounded because "join
- * until the wrapping stops" is unbounded in principle: a program that never
- * emits a newline makes the whole scrollback one logical line, and chasing
- * that on hover is the one way this feature becomes expensive.
+ * How far outside the viewport a logical line is chased, so a URL crossing
+ * the edge isn't cut in half (half a URL still opens). Bounded, since output
+ * without newlines can make the whole scrollback one line.
  */
 const WRAP_CHASE_ROWS = 32
 
@@ -90,9 +66,7 @@ export class LinkController {
 
   /** Links for the cached window, or null when nothing has been parsed. */
   private cached: Link[] | null = null
-  /** What the cache was built against: buffer generation, viewport top and
-   *  width. A scroll changes which rows are in the window, a write changes
-   *  what they hold, and a resize reflows every one of them. */
+  /** Buffer generation, viewport top and width at build time. */
   private cacheKey = ''
 
   constructor(host: LinkHost) {
@@ -114,8 +88,8 @@ export class LinkController {
     return this.links()
   }
 
-  /** Drops the cache. For teardown and for anything that changes the buffer
-   *  without bumping the generation the key is built from. */
+  /** Drops the cache, for teardown or a buffer change that doesn't bump the
+   *  generation. */
   invalidate(): void {
     this.cached = null
     this.cacheKey = ''
@@ -123,13 +97,8 @@ export class LinkController {
 
   /**
    * The links in the current window, parsed at most once per
-   * viewport/generation.
-   *
-   * Deliberately **not** over the whole buffer. Search reads `0..total-1`
-   * because a search is *for* the scrollback; a link is only ever activated
-   * where the pointer is or where a label is painted, both of which are on
-   * screen. Reading ten thousand rows to answer "what is under the cursor" is
-   * the one change that would make this expensive.
+   * viewport/generation. Not the whole buffer: links are only activated on
+   * screen.
    */
   private links(): Link[] {
     const top = this.host.viewportY()
@@ -149,16 +118,13 @@ export class LinkController {
     const viewTop = Math.max(0, Math.min(top, total - 1))
     const viewBottom = Math.min(total - 1, viewTop + this.host.rows() - 1)
 
-    // Widen far enough to hold whole logical lines, then read the flags once
-    // for the widened range so both ends can be resolved from the same read.
+    // Widen to hold whole logical lines, reading the flags once.
     const lo = Math.max(0, viewTop - WRAP_CHASE_ROWS)
     const hi = Math.min(total - 1, viewBottom + WRAP_CHASE_ROWS)
     const flags = this.host.readWrapFlags(lo, hi)
 
-    // Back to the start of the line the viewport's first row belongs to. If the
-    // chase runs out, the window simply starts mid-line — `logicalLines` does
-    // not honor a leading continuation flag, so the partial line is treated as
-    // its own, which is the same thing the user can see.
+    // Back to the start of the first row's line. If the chase runs out, the
+    // partial line is treated as its own, as the user sees it.
     let from = viewTop
     while (from > lo && flags[from - lo]) from--
     // Forward to the end of the line the viewport's last row belongs to.
@@ -176,21 +142,18 @@ export class LinkController {
       if (paths) {
         const urls = found.slice()
         for (const m of findPaths(line.text, paths)) {
-          // A URL has a path in it, and the URL wins: `https://x/a/b` is one
-          // link, not a link with a second one inside its tail.
+          // The URL wins over a path inside it.
           if (urls.some((u) => m.start < u.end && m.end > u.start)) continue
           found.push({ start: m.start, end: m.end, url: m.path, kind: 'path' })
         }
-        // In reading order, which is the order hint mode hands out labels in.
+        // Reading order, which is how hint mode assigns labels.
         found.sort((a, b) => a.start - b.start)
       }
       for (const match of found) {
         // `end` is half-open; `segmentsFor` takes an inclusive last character.
         const segments = segmentsFor(line, match.start, match.end - 1)
         if (segments.length === 0) continue
-        // A link chased in from outside the window is only interesting if some
-        // of it is on screen — nothing can point at or label a row nobody can
-        // see, and hint mode would otherwise hand out labels for them.
+        // A chased-in link must have some cell on screen.
         if (!segments.some((s) => s.row >= viewTop && s.row <= viewBottom)) continue
         out.push({ url: match.url, kind: match.kind, segments, source: 'detected' })
       }

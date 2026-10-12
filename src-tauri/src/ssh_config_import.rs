@@ -1,25 +1,13 @@
-//! One-time import of OpenSSH's `~/.ssh/config`.
+//! One-time import of OpenSSH's `~/.ssh/config`, the counterpart to
+//! [`crate::putty_import`] for people whose session list is a config file.
 //!
-//! The counterpart to [`crate::putty_import`], for the other half of the
-//! audience: someone arriving from a terminal `ssh` habit rather than from
-//! PuTTY has no registry full of sessions, but they very often have a config
-//! file with thirty `Host` blocks in it, and that file *is* their session list.
+//! Only connection-shape keywords are read (`HostName`, `Port`, `User`,
+//! `IdentityFile`, `ProxyJump`, `ServerAliveInterval`); everything else is
+//! ignored rather than half-translated. Read-only: nothing writes to `~/.ssh`,
+//! and an import never removes or overwrites an existing profile.
 //!
-//! Only the connection-shape keywords are read — `HostName`, `Port`, `User`,
-//! `IdentityFile`, `ProxyJump`, `ServerAliveInterval`. Everything else OpenSSH
-//! understands is deliberately ignored rather than half-translated: ciphers,
-//! `ControlMaster`, `LocalForward` and the rest either have no equivalent here
-//! or belong to a different part of the app, and importing a session that
-//! silently drops half its config is worse than importing the part that maps
-//! cleanly and saying so.
-//!
-//! Read-only, like the PuTTY importer. Nothing here writes to `~/.ssh`, and an
-//! import never removes or overwrites an existing wRusTTY profile.
-//!
-//! The split mirrors `putty_import`: [`parse_config`] and [`to_profiles`] are
-//! pure functions over text, and the filesystem appears only in
-//! [`read_config_text`]. Every rule that matters is therefore testable without
-//! a home directory to plant files in.
+//! As in `putty_import`, [`parse_config`] and [`to_profiles`] are pure over
+//! text; only [`read_config_text`] touches the filesystem.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,34 +17,27 @@ use tauri::AppHandle;
 use crate::profiles::SessionProfile;
 use crate::session_import::{merge_into, next_id, ImportSummary};
 
-/// Where imported sessions land, so forty new entries don't appear unsorted
-/// among the user's own.
+/// Where imported sessions land, so they don't mix unsorted with the user's
+/// own.
 const IMPORT_FOLDER: &str = "Imported from SSH config";
 
-/// `Include` can nest. OpenSSH's own limit is 16; this is a guard against a
-/// file that includes itself, which is a typo away and would otherwise be an
-/// infinite loop in the UI thread's future.
+/// `Include` nesting limit (OpenSSH's is 16); guards against a file that
+/// includes itself.
 const MAX_INCLUDE_DEPTH: usize = 8;
 
-/// One `Host` block, reduced to the keywords this app can act on.
-///
-/// A block naming several aliases (`Host web1 web2`) produces one of these per
-/// alias, each with the same settings — which is what OpenSSH means by it, and
-/// what the user would have to type by hand otherwise.
+/// One `Host` block, reduced to the keywords this app can act on. `Host web1
+/// web2` produces one entry per alias with the same settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostEntry {
-    /// The alias as written — what the user types after `ssh`, and so the
-    /// label they will look for in the session list.
+    /// The alias as written: what the user types after `ssh`.
     pub alias: String,
-    /// `HostName` when set. `None` means the alias is itself the hostname,
-    /// which is how a bare `Host build-box` block works.
+    /// `HostName` when set; `None` means the alias is the hostname.
     pub hostname: Option<String>,
     pub port: Option<u16>,
     pub user: Option<String>,
     pub identity_file: Option<String>,
-    /// Still the raw value: `bastion`, `jump.example.net`, `me@jump:2222`, or
-    /// a comma-separated chain. Resolved against the session list in
-    /// [`to_profiles`], which is the only place that knows what profiles exist.
+    /// The raw value (`bastion`, `me@jump:2222`, or a chain), resolved against
+    /// the session list in [`to_profiles`].
     pub proxy_jump: Option<String>,
     pub server_alive_interval: Option<u64>,
 }
@@ -75,11 +56,9 @@ impl HostEntry {
     }
 }
 
-/// Splits a config line into its keyword and value.
-///
-/// OpenSSH accepts `Port 2222`, `Port=2222` and `Port = 2222` alike, and
-/// allows the value to be quoted when it contains spaces. Returns `None` for a
-/// comment or a blank line.
+/// Splits a config line into keyword and value. Accepts `Port 2222`,
+/// `Port=2222` and `Port = 2222`, and quoted values. `None` for a comment or
+/// blank line.
 fn split_line(line: &str) -> Option<(String, String)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -100,30 +79,20 @@ fn split_line(line: &str) -> Option<(String, String)> {
     Some((keyword.to_ascii_lowercase(), value.to_string()))
 }
 
-/// A `Host` pattern that names exactly one host, rather than matching a family
-/// of them.
-///
-/// `Host *`, `Host *.internal` and `Host !prod` are rules about how to connect
-/// to hosts, not hosts themselves — there is nothing to put in a session list
-/// for them, and a profile called `*.internal` would connect to a machine of
-/// that literal name, i.e. nothing.
+/// A `Host` pattern naming exactly one host. `Host *`, `*.internal` and
+/// `!prod` are rules about connecting, not hosts.
 fn is_literal_alias(pattern: &str) -> bool {
     !pattern.is_empty() && !pattern.contains(['*', '?', '!'])
 }
 
-/// Reads the `Host` blocks out of an already-assembled config.
+/// Reads the `Host` blocks out of an assembled config.
 ///
-/// First value wins, per keyword per block — OpenSSH's own rule, and the one
-/// that makes a trailing `Host *` block of defaults harmless here.
-///
-/// `Match` blocks are skipped entirely: their settings apply conditionally (on
-/// the destination, the local user, the output of a command) and a session list
-/// has nowhere to put a condition. Ignoring them means a `Match` block's
-/// keywords don't leak into the `Host` block above it.
+/// First value wins per keyword per block (OpenSSH's rule, which makes a
+/// trailing `Host *` block harmless). `Match` blocks are skipped: their
+/// settings are conditional, and they mustn't leak into the block above.
 pub fn parse_config(text: &str) -> Vec<HostEntry> {
     let mut entries: Vec<HostEntry> = Vec::new();
-    // Indices into `entries` for the aliases of the block being read — plural
-    // because `Host web1 web2` sets both at once.
+    // Indices into `entries` for the block's aliases (`Host web1 web2` sets both).
     let mut current: Vec<usize> = Vec::new();
 
     for line in text.lines() {
@@ -138,10 +107,8 @@ pub fn parse_config(text: &str) -> Vec<HostEntry> {
                     if !is_literal_alias(pattern) {
                         continue;
                     }
-                    // A repeated alias continues the earlier block rather than
-                    // starting a second profile with the same name — splitting
-                    // a host's settings across two blocks is legal and not
-                    // especially rare.
+                    // A repeated alias continues the earlier block rather than starting a
+                    // second profile with the same name.
                     match entries.iter().position(|e| e.alias == pattern) {
                         Some(index) => current.push(index),
                         None => {
@@ -160,8 +127,7 @@ pub fn parse_config(text: &str) -> Vec<HostEntry> {
                         "hostname" => set_once(&mut entry.hostname, || Some(value.clone())),
                         "port" => set_once(&mut entry.port, || value.parse().ok()),
                         "user" => set_once(&mut entry.user, || Some(value.clone())),
-                        // OpenSSH tries multiple IdentityFiles in order; this
-                        // app offers one, so the first is the honest pick.
+                        // OpenSSH tries several in order; this app takes one, so the first.
                         "identityfile" => {
                             set_once(&mut entry.identity_file, || Some(value.clone()))
                         }
@@ -179,29 +145,24 @@ pub fn parse_config(text: &str) -> Vec<HostEntry> {
     entries
 }
 
-/// Applies OpenSSH's first-value-wins rule, and treats a value this app can't
-/// parse (`Port banana`) as absent rather than as a reason to drop the host.
+/// OpenSSH's first-value-wins rule. An unparseable value (`Port banana`) is
+/// treated as absent rather than dropping the host.
 fn set_once<T>(slot: &mut Option<T>, value: impl FnOnce() -> Option<T>) {
     if slot.is_none() {
         *slot = value();
     }
 }
 
-/// The alias half of a `ProxyJump` value.
-///
-/// The value is a comma-separated chain (`edge,bastion`) of `[user@]host[:port]`
-/// hops. Only the first is used: this app's `jump_profile_id` points at one
-/// profile, and that profile may itself have a jump, so a chain is expressible
-/// — but only if every hop in it is a saved session, which is not something an
-/// import can conjure. The first hop is the one the connection actually makes
-/// from here, so it is the one worth keeping.
+/// The alias of a `ProxyJump` value's first hop. The value is a chain
+/// (`edge,bastion`) of `[user@]host[:port]` hops; `jump_profile_id` names one
+/// profile, and the first hop is the one made from here.
 fn jump_alias(value: &str) -> Option<&str> {
     let first = value.split(',').next()?.trim();
     if first.is_empty() || first.eq_ignore_ascii_case("none") {
         return None;
     }
     let without_user = first.rsplit('@').next().unwrap_or(first);
-    // `host:port` — but not an IPv6 literal, where the colons are the address.
+    // `host:port`, but not an IPv6 literal.
     let host = match without_user.rsplit_once(':') {
         Some((host, _)) if !host.contains(':') => host,
         _ => without_user,
@@ -210,13 +171,10 @@ fn jump_alias(value: &str) -> Option<&str> {
 }
 
 /// Turns parsed `Host` blocks into profiles, ids and jumps included.
-///
-/// `existing` is the current session list, and is read for two things: minting
-/// ids that don't collide, and resolving `ProxyJump` against sessions the user
-/// already has. Nothing in it is modified.
+/// `existing` is read (not modified) to mint unique ids and resolve
+/// `ProxyJump` against saved sessions.
 pub fn to_profiles(entries: &[HostEntry], existing: &[SessionProfile]) -> Vec<SessionProfile> {
-    // Ids have to exist before jumps can be linked, so this is two passes:
-    // build every profile, then point them at each other.
+    // Two passes: ids must exist before jumps can be linked.
     let mut minted = existing.to_vec();
     let mut profiles: Vec<SessionProfile> = Vec::new();
     for entry in entries {
@@ -226,10 +184,8 @@ pub fn to_profiles(entries: &[HostEntry], existing: &[SessionProfile]) -> Vec<Se
         profiles.push(profile);
     }
 
-    // Where each alias ended up. The new profiles are added second so that a
-    // host being imported wins over an unrelated saved profile of the same
-    // name: within one import, `ProxyJump bastion` means the `bastion` in this
-    // file.
+    // New profiles are added second, so within one import `ProxyJump bastion`
+    // means the `bastion` in this file.
     let mut by_label: HashMap<&str, &str> = HashMap::new();
     for p in existing {
         by_label.insert(p.label.as_str(), p.id.as_str());
@@ -242,16 +198,13 @@ pub fn to_profiles(entries: &[HostEntry], existing: &[SessionProfile]) -> Vec<Se
         .iter()
         .map(|entry| {
             let alias = jump_alias(entry.proxy_jump.as_deref()?)?;
-            // An unresolvable jump is dropped rather than invented. The host
-            // may be reachable directly, and a `jumpProfileId` pointing at
-            // nothing would fail at connect time with a confusing error.
+            // An unresolvable jump is dropped rather than invented; a dangling
+            // `jumpProfileId` would fail at connect time.
             by_label.get(alias).map(|id| (*id).to_string())
         })
         .collect();
     for (profile, jump) in profiles.iter_mut().zip(jumps) {
-        // Never itself: `Host bastion` with `ProxyJump bastion` in an inherited
-        // `Host *` block is a real thing to find in a config file, and a
-        // profile that jumps through itself cannot connect.
+        // Never itself (an inherited `Host *` `ProxyJump` can do this).
         if jump.as_deref() == Some(profile.id.as_str()) {
             continue;
         }
@@ -266,8 +219,7 @@ fn to_profile(entry: &HostEntry, id: String) -> SessionProfile {
         id,
         label: entry.alias.clone(),
         folder: Some(IMPORT_FOLDER.to_string()),
-        // A bare `Host build-box` block means the alias *is* the hostname —
-        // that is how most people's first few entries are written.
+        // A bare `Host build-box` block: the alias is the hostname.
         host: entry
             .hostname
             .clone()
@@ -275,36 +227,28 @@ fn to_profile(entry: &HostEntry, id: String) -> SessionProfile {
         port: entry.port.filter(|p| *p != 0).unwrap_or(22),
         protocol: "ssh".to_string(),
         username: entry.user.clone().unwrap_or_default(),
-        // Same reasoning as the PuTTY importer: a named key means key auth,
-        // otherwise agent — which is what `ssh` does by default and what
-        // someone with a config file is overwhelmingly already using. Never
-        // "password", since there is no password in the file to import and a
-        // profile claiming one would fail at connect time.
+        // As in the PuTTY importer: a named key means key auth, otherwise agent
+        // (what `ssh` does by default). Never password; there's none to import.
         auth_type: if entry.identity_file.is_some() {
             "public_key".to_string()
         } else {
             "agent".to_string()
         },
-        // Left as written, `~` and all: this app expands a tilde at connect
-        // time (`wr_ssh::expand_tilde`), and a path resolved now would be
-        // wrong for a home directory that moves.
+        // Left as written: the tilde is expanded at connect time
+        // (`wr_ssh::expand_tilde`).
         key_path: entry.identity_file.clone(),
         has_credential: false,
         jump_profile_id: None,
-        // `SetEnv TERM=…` exists but is rare and conditional; the ordinary way
-        // to change TERM for a host isn't in this file at all.
+        // `SetEnv TERM=` is rare and conditional; not imported.
         term_type: None,
         backspace_sends_ctrl_h: None,
-        // `ServerAliveInterval` is exactly this app's keepalive, seconds and
-        // all, including `0` for off. Someone who set it did so because a
-        // firewall on the path to *that host* kept dropping their session.
+        // `ServerAliveInterval` maps exactly, `0` (off) included.
         keepalive_seconds: entry.server_alive_interval,
         // Nothing in an SSH config describes waking a machine.
         wake_on_lan: None,
         // No equivalent setting, so an import follows the global one.
         auto_reconnect: None,
-        // An import says nothing about whether this host's shell history may be
-        // read; that is the user's call, made per host or globally.
+        // Whether history may be read is the user's call.
         import_remote_history: None,
         use_proxy: None,
         log_session: None,
@@ -313,18 +257,14 @@ fn to_profile(entry: &HostEntry, id: String) -> SessionProfile {
     }
 }
 
-/// The config file, with every `Include` spliced in where it appeared.
-///
-/// Splicing rather than parsing per-file because that is what OpenSSH does:
-/// an included file's keywords take effect at the point of inclusion, and can
-/// continue a `Host` block that started in the parent. Assembling one text
-/// keeps [`parse_config`] a pure function over a single string.
+/// The config file with every `Include` spliced in where it appeared, as
+/// OpenSSH does: an included file can continue a `Host` block started in the
+/// parent.
 fn read_config_text(path: &Path, depth: usize) -> String {
     if depth > MAX_INCLUDE_DEPTH {
         return String::new();
     }
-    // A missing config is the ordinary case on a machine that has never run
-    // `ssh`, not an error to put on screen.
+    // A missing config is ordinary (never ran `ssh`), not an error.
     let Ok(contents) = std::fs::read_to_string(path) else {
         return String::new();
     };
@@ -349,13 +289,9 @@ fn read_config_text(path: &Path, depth: usize) -> String {
     out
 }
 
-/// The files one `Include` pattern names.
-///
-/// A relative path is relative to `~/.ssh` (OpenSSH's rule for a user config),
-/// and the pattern may end in a wildcard — `Include config.d/*` is the common
-/// shape, and the whole reason someone splits their config up. Only the final
-/// path component may contain the wildcard, which covers every real-world use
-/// of it and keeps this from becoming a directory walker.
+/// The files one `Include` pattern names. Relative paths are relative to
+/// `~/.ssh` (OpenSSH's rule for a user config). Only the final component may
+/// contain a wildcard (`Include config.d/*`), which avoids a directory walker.
 fn resolve_include(pattern: &str, parent: &Path) -> Vec<PathBuf> {
     let expanded = wr_ssh::expand_tilde(pattern);
     let base = if expanded.is_absolute() {
@@ -388,9 +324,7 @@ fn resolve_include(pattern: &str, parent: &Path) -> Vec<PathBuf> {
         })
         .map(|e| e.path())
         .collect();
-    // Directory order is not defined, and an import that produces a different
-    // jump chain depending on how the filesystem felt would be miserable to
-    // support.
+    // Directory order is undefined; keep the import deterministic.
     matches.sort();
     matches
 }
@@ -398,8 +332,7 @@ fn resolve_include(pattern: &str, parent: &Path) -> Vec<PathBuf> {
 /// `*` (any run, including empty) and `?` (exactly one), over one filename.
 fn glob_matches(pattern: &str, candidate: &str) -> bool {
     let (p, c): (Vec<char>, Vec<char>) = (pattern.chars().collect(), candidate.chars().collect());
-    // Backtracking on `*` only — the alternative is a table, and a filename is
-    // never long enough for that to matter.
+    // Backtracking on `*` only; filenames are short.
     let (mut pi, mut ci) = (0usize, 0usize);
     let (mut star, mut resume) = (None, 0usize);
     while ci < c.len() {
@@ -433,11 +366,8 @@ fn read_entries() -> Vec<HostEntry> {
     }
 }
 
-/// How many sessions `~/.ssh/config` would contribute, so the UI can say what
-/// the button would do — or that there is nothing to do.
-///
-/// Counts literal `Host` aliases, which is what would import: a config that is
-/// nothing but a `Host *` block of defaults reports 0 rather than 1.
+/// How many sessions `~/.ssh/config` would contribute: literal `Host` aliases
+/// only, so a config that's just `Host *` reports 0.
 #[tauri::command]
 pub async fn ssh_config_sessions_available() -> Result<usize, String> {
     Ok(read_entries().len())
@@ -448,8 +378,8 @@ pub async fn ssh_config_import_sessions(
     app: AppHandle,
     profile_state: tauri::State<'_, crate::profiles::ProfileState>,
 ) -> Result<ImportSummary, String> {
-    // Reading `~/.ssh` stays outside the lock: it touches nothing this app
-    // writes, and it is the slow half.
+    // Reading `~/.ssh` stays outside the lock: it's the slow half and touches
+    // nothing this app writes.
     let entries = read_entries();
     profile_state
         .with_profiles(&app, |path| {
@@ -496,8 +426,7 @@ mod tests {
         assert_eq!(e.server_alive_interval, Some(30));
     }
 
-    /// `Key=value` and `Key = value` are both legal, and a quoted value is how
-    /// anything with a space in it is written.
+    /// `Key=value`, `Key = value`, and quoted values with spaces.
     #[test]
     fn accepts_openssh_s_separator_and_quoting_forms() {
         let entries =
@@ -514,8 +443,7 @@ mod tests {
         assert_eq!(entry(&entries, "a").hostname.as_deref(), Some("H"));
     }
 
-    /// A block naming several aliases sets all of them — that is what OpenSSH
-    /// means by it, and the user would otherwise retype the settings.
+    /// A block naming several aliases sets all of them.
     #[test]
     fn one_block_naming_several_aliases_becomes_several_sessions() {
         let entries = parse_config("Host web1 web2\n  User deploy\n  Port 2200\n");
@@ -527,8 +455,7 @@ mod tests {
         }
     }
 
-    /// `Host *` is a rule about connecting, not a host. Importing it would
-    /// produce a session that connects to a machine literally named `*`.
+    /// `Host *` is a rule about connecting, not a host.
     #[test]
     fn wildcard_and_negated_patterns_are_not_sessions() {
         let entries = parse_config(
@@ -538,17 +465,14 @@ mod tests {
         assert_eq!(entries[0].alias, "real");
     }
 
-    /// OpenSSH's first-value-wins rule, which is also what makes a trailing
-    /// `Host *` block of defaults harmless.
+    /// First value wins, which makes a trailing `Host *` harmless.
     #[test]
     fn the_first_value_for_a_keyword_wins() {
         let entries = parse_config("Host a\n  Port 22\n  Port 2222\n");
         assert_eq!(entry(&entries, "a").port, Some(22));
     }
 
-    /// A `Match` block's settings are conditional and a session list has
-    /// nowhere to put a condition — so they must not leak into the `Host`
-    /// block above.
+    /// A `Match` block's settings don't leak into the `Host` block above.
     #[test]
     fn match_block_settings_do_not_leak_into_the_previous_host() {
         let entries = parse_config("Host a\n  HostName real\nMatch host b\n  User sneaky\n");
@@ -557,8 +481,7 @@ mod tests {
         assert!(e.user.is_none());
     }
 
-    /// Splitting one host's settings across two blocks is legal, and produced
-    /// two profiles of the same name before.
+    /// One host's settings split across two blocks make one profile.
     #[test]
     fn a_repeated_alias_continues_the_same_session() {
         let entries = parse_config("Host a\n  HostName h\nHost b\n  User x\nHost a\n  Port 2222\n");
@@ -568,7 +491,7 @@ mod tests {
         assert_eq!(e.port, Some(2222));
     }
 
-    /// A `Port banana` shouldn't cost the user the host it was written under.
+    /// A `Port banana` doesn't cost the user the host.
     #[test]
     fn an_unparseable_value_is_ignored_rather_than_losing_the_host() {
         let entries = parse_config("Host a\n  HostName h\n  Port banana\n");
@@ -586,8 +509,7 @@ mod tests {
         assert_eq!(profiles[0].port, 22);
     }
 
-    /// Not "password": there is no password in the file, so a profile claiming
-    /// one would fail at connect time for a secret that was never importable.
+    /// Never "password": there's no password in the file.
     #[test]
     fn auth_is_key_when_a_key_is_named_and_agent_otherwise() {
         let profiles = to_profiles(
@@ -596,7 +518,7 @@ mod tests {
         );
         let keyed = profiles.iter().find(|p| p.label == "k").unwrap();
         assert_eq!(keyed.auth_type, "public_key");
-        // Left unexpanded — a path resolved now is wrong for a home that moves.
+        // Left unexpanded.
         assert_eq!(keyed.key_path.as_deref(), Some("~/.ssh/id_ed25519"));
         assert_eq!(
             profiles.iter().find(|p| p.label == "a").unwrap().auth_type,
@@ -610,8 +532,7 @@ mod tests {
         assert_eq!(profiles[0].folder.as_deref(), Some(IMPORT_FOLDER));
     }
 
-    /// The point of importing a jump: `ssh prod` going through the bastion is
-    /// the whole reason the config file said so.
+    /// `ssh prod` going through the bastion carries over.
     #[test]
     fn proxy_jump_links_to_the_session_it_names() {
         let profiles = to_profiles(
@@ -623,8 +544,7 @@ mod tests {
         let bastion = profiles.iter().find(|p| p.label == "bastion").unwrap();
         let prod = profiles.iter().find(|p| p.label == "prod").unwrap();
         assert_eq!(prod.jump_profile_id.as_deref(), Some(bastion.id.as_str()));
-        // Order in the file doesn't matter: a jump named before it is defined
-        // still resolves.
+        // A jump named before its target is defined still resolves.
         let reversed = to_profiles(
             &parse_config("Host prod\n  ProxyJump bastion\nHost bastion\n"),
             &[],
@@ -637,8 +557,7 @@ mod tests {
             .is_some());
     }
 
-    /// The hop's own user and port live on that hop's profile, so only the
-    /// alias is needed to find it.
+    /// The hop's user and port live on its own profile; only the alias matters.
     #[test]
     fn a_jump_written_with_a_user_and_port_still_finds_its_session() {
         let profiles = to_profiles(
@@ -657,37 +576,32 @@ mod tests {
         );
     }
 
-    /// Only the first hop: `jump_profile_id` points at one profile, and the
-    /// rest of the chain would have to be sessions this import can't invent.
+    /// Only the first hop of a chain.
     #[test]
     fn only_the_first_hop_of_a_chain_is_used() {
         assert_eq!(jump_alias("edge,bastion"), Some("edge"));
         assert_eq!(jump_alias("me@edge:2222"), Some("edge"));
         assert_eq!(jump_alias("none"), None);
         assert_eq!(jump_alias(""), None);
-        // An IPv6 literal's colons are the address, not a port.
+        // An IPv6 literal's colons are the address.
         assert_eq!(jump_alias("2001:db8::1"), Some("2001:db8::1"));
     }
 
-    /// A jump naming a host that isn't in the file (and isn't already saved)
-    /// would otherwise leave a `jumpProfileId` pointing at nothing, which
-    /// fails at connect time with a confusing error.
+    /// A jump to an unknown host is dropped, not left dangling.
     #[test]
     fn an_unresolvable_jump_is_dropped_rather_than_invented() {
         let profiles = to_profiles(&parse_config("Host prod\n  ProxyJump ghost\n"), &[]);
         assert!(profiles[0].jump_profile_id.is_none());
     }
 
-    /// A profile that jumps through itself cannot connect, and inheriting a
-    /// `ProxyJump` from a `Host *` block is how it happens.
+    /// A profile never jumps through itself.
     #[test]
     fn a_session_is_never_linked_as_its_own_jump() {
         let profiles = to_profiles(&parse_config("Host bastion\n  ProxyJump bastion\n"), &[]);
         assert!(profiles[0].jump_profile_id.is_none());
     }
 
-    /// The user's existing sessions are fair game as jump targets — someone
-    /// who already saved their bastion by hand shouldn't get a broken import.
+    /// Existing sessions are valid jump targets.
     #[test]
     fn a_jump_can_resolve_to_a_session_the_user_already_had() {
         let existing = vec![SessionProfile {
@@ -707,8 +621,6 @@ mod tests {
             keepalive_seconds: None,
             wake_on_lan: None,
             auto_reconnect: None,
-            // An import says nothing about whether this host's shell history may be
-            // read; that is the user's call, made per host or globally.
             import_remote_history: None,
             use_proxy: None,
             log_session: None,
@@ -719,8 +631,8 @@ mod tests {
         assert_eq!(profiles[0].jump_profile_id.as_deref(), Some("mine"));
     }
 
-    /// `ServerAliveInterval` is this app's keepalive exactly, `0` (off)
-    /// included — and `0` is a real choice, not the same as unset.
+    /// `ServerAliveInterval` maps to keepalive, `0` (off) included and distinct
+    /// from unset.
     #[test]
     fn carries_the_keepalive_across_including_an_explicit_zero() {
         let profiles = to_profiles(
@@ -741,8 +653,7 @@ mod tests {
         assert_eq!(of("c"), None);
     }
 
-    /// Everything else OpenSSH understands is ignored rather than
-    /// half-translated.
+    /// Everything else is ignored rather than half-translated.
     #[test]
     fn unknown_keywords_are_ignored_without_disturbing_the_block() {
         let entries = parse_config(
@@ -752,9 +663,8 @@ mod tests {
         assert_eq!(entry(&entries, "a").hostname.as_deref(), Some("h"));
     }
 
-    /// An included file's keywords take effect where the `Include` was, which
-    /// is what lets it continue a `Host` block the parent started — so the
-    /// files are spliced, not parsed one at a time.
+    /// Included files are spliced in place, so they can continue a parent's
+    /// `Host` block.
     #[test]
     fn an_include_is_read_where_it_appears() {
         let dir = tempfile::tempdir().unwrap();
@@ -771,9 +681,7 @@ mod tests {
         assert_eq!(e.port, Some(2222));
     }
 
-    /// `Include config.d/*` is the shape someone splits a config into, and the
-    /// order has to be the same every run — a jump chain that depends on how
-    /// the filesystem felt would be miserable to support.
+    /// `Include config.d/*` resolves in a stable order.
     #[test]
     fn a_wildcard_include_reads_every_match_in_a_stable_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -790,8 +698,7 @@ mod tests {
         );
     }
 
-    /// A file that includes itself is a typo away, and would otherwise be an
-    /// infinite loop behind a button in the settings dialog.
+    /// A file that includes itself terminates.
     #[test]
     fn a_self_including_config_terminates() {
         let dir = tempfile::tempdir().unwrap();
@@ -803,8 +710,7 @@ mod tests {
         assert_eq!(entry(&entries, "a").hostname.as_deref(), Some("h"));
     }
 
-    /// A machine that has never run `ssh` is the common case, not an error to
-    /// put on screen.
+    /// A missing config is not an error.
     #[test]
     fn a_missing_config_is_no_sessions_rather_than_a_failure() {
         let dir = tempfile::tempdir().unwrap();

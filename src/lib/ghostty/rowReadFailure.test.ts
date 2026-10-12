@@ -19,16 +19,10 @@ interface Internals {
 
 /**
  * What copy does when the core declines to hand back a row.
- *
- * `ghostty_terminal_get_scrollback_line` answers 0 when `grid_ref` will not
- * resolve the row, and leaves the caller's buffer untouched when it does.
- * `readRows` used to discard that answer, so the miss reached copy as content:
- * spaces on a fresh buffer, the previous row's text on a reused one.
- *
- * The first test is the one that matters for the reported fault -- a wrapped
- * line whose continuation row misses comes back cut at exactly the pane width,
- * with the line break intact. That is the signature seen in the wild, and it
- * is reproduced here from nothing but a refused read.
+ * `ghostty_terminal_get_scrollback_line` returns 0 and leaves the buffer
+ * untouched when `grid_ref` won't resolve, so `readRows` must not treat the
+ * buffer as content. The first test reproduces the signature seen in the
+ * wild: a wrapped line cut at exactly the pane width.
  */
 describe('a scrollback row the core will not hand back', () => {
   beforeEach(() => {
@@ -67,11 +61,11 @@ describe('a scrollback row the core will not hand back', () => {
       rows.includes(off) ? 0 : real(term, off, out, cells)
   }
 
-  /** Enough to push the lines above it out of the active screen and into
-   *  scrollback, which is the only place `get_scrollback_line` is consulted. */
+  /** Pushes earlier lines into scrollback, the only place
+   *  `get_scrollback_line` is consulted. */
   const FILLER = 'filler\r\n'.repeat(20)
 
-  // 79 characters: at 66 columns that is a row of 66 and a row of 13.
+  // 79 characters: at 66 columns, a row of 66 and a row of 13.
   const logical =
     'The 4:2:0 inconsistency is back, and I am not dismissing it, a session can go'.padEnd(79, '.')
 
@@ -81,7 +75,7 @@ describe('a scrollback row the core will not hand back', () => {
     inner.wasm!.exports.ghostty_render_state_update(inner.termPtr)
     ;(e as unknown as { syncReadState(): void }).syncReadState()
 
-    // Row 1 is the continuation of the line that began on row 0.
+    // Row 1 continues the line that began on row 0.
     refuse(inner, [1])
     inner.renderer.selection = { start: { x: 0, y: 0 }, end: { x: COLS - 1, y: 2 } }
     const got = e.getSelection()
@@ -89,17 +83,13 @@ describe('a scrollback row the core will not hand back', () => {
     const firstLine = got.split('\n')[0]
     expect(firstLine.length).toBe(COLS)
     expect(firstLine).toBe(logical.slice(0, COLS))
-    // The break survives, which is why this reads as a short line rather than
-    // as an obviously missing row.
+    // The break survives, so it reads as a short line, not a missing row.
     expect(got.split('\n')[1]).toBe('tail line')
   })
 
   /**
-   * The other shape the same fault takes, and the one that explains the long
-   * runs of spaces in a real report. When the row that *starts* a wrapped line
-   * misses, the flag still says the next row continues it -- so the blank is
-   * kept untrimmed, on purpose, as mid-line content. A pane's width of spaces
-   * is spliced into the middle of the text where the words used to be.
+   * When the row that starts a wrapped line misses, its wrap flag keeps the
+   * blank untrimmed, splicing a pane's width of spaces into the text.
    */
   it('splices a pane-width run of spaces in when the first row misses', async () => {
     const { e, inner } = await pane()
@@ -114,10 +104,9 @@ describe('a scrollback row the core will not hand back', () => {
 
     const out = got.split('\n')
     expect(out[0]).toBe('before')
-    // The lost row is not omitted -- it is kept as its full width in spaces,
-    // because the wrap flag still says it runs into the row after it.
+    // The lost row is kept as its full width in spaces, per the wrap flag.
     expect(out[1]).toBe(' '.repeat(COLS) + logical.slice(COLS))
-    // And the words that were on it are gone without a mark.
+    // The words on it are gone without a mark.
     expect(got).not.toContain(logical.slice(0, COLS))
   })
 
@@ -131,44 +120,36 @@ describe('a scrollback row the core will not hand back', () => {
 
     const dump = e.dumpState()
     expect(dump).toContain('row reads: 1 FAILED and read as blank')
-    // Named, because a blank from a refused read and a blank from a row the
-    // snapshot cannot answer for call for different fixes.
+    // Named, since a refused read and an out-of-snapshot row need different
+    // fixes.
     expect(dump).toContain('refused by the core: 1 (rows 1)')
   })
 
   /**
-   * The other way a blank is invented, and one nothing had to stub: output
-   * landing after the last drawn frame. `readRows` maps absolute rows through
-   * the snapshot's scrollback depth, so once the live buffer has grown past it
-   * the rows at the bottom of the selection fall outside the snapshot's screen
-   * and come back blank. Copy between frames is exactly when this happens.
-   *
-   * Asserted through `getSelection` rather than the dump on purpose: the dump
-   * re-syncs before it reads, so it can never see this through its own rows.
-   * What it reports instead is the live/snapshot gap on its header line, which
-   * it samples before syncing -- see `dumpState`.
+   * Output after the last drawn frame: rows past the snapshot's screen read as
+   * blank. Asserted through `getSelection`, since the dump re-syncs before
+   * reading and reports the live/snapshot gap on its header instead (see
+   * `dumpState`).
    */
   it('refreshes for copy, and names the lost rows for anyone who does not', async () => {
     const { e, inner } = await pane()
     e.write(new TextEncoder().encode('line one\r\ntwo\r\nthree\r\n' + FILLER))
     inner.wasm!.exports.ghostty_render_state_update(inner.termPtr)
     ;(e as unknown as { syncReadState(): void }).syncReadState()
-    // A frame drew; now more output arrives before anyone copies.
+    // A frame drew; more output arrives before the copy.
     e.write(new TextEncoder().encode('late\r\n'.repeat(4)))
 
     const total = inner.scrollbackLength
     inner.renderer.selection = { start: { x: 0, y: 0 }, end: { x: COLS - 1, y: total - 1 } }
     const failuresOf = (e as unknown as { rowReadFailures: { row: number; why: string }[] })
 
-    // A caller that reads without refreshing first loses the tail, and now
-    // says which rows and why instead of returning spaces.
+    // Reading without refreshing loses the tail, and says which rows and why.
     ;(e as unknown as { readRowText(a: number, b: number): unknown }).readRowText(0, total - 1)
     expect(failuresOf.rowReadFailures.length).toBeGreaterThan(0)
     expect(failuresOf.rowReadFailures.every((f) => f.why === 'past the snapshot screen')).toBe(true)
     expect(Math.max(...failuresOf.rowReadFailures.map((f) => f.row))).toBe(total - 1)
 
-    // Copy refreshes, so it keeps its tail: the last thing written is in it,
-    // and nothing was invented along the way.
+    // Copy refreshes, so it keeps its tail and invents nothing.
     const got = e.getSelection()
     expect(failuresOf.rowReadFailures).toEqual([])
     expect(got).toContain('late')
@@ -184,7 +165,7 @@ describe('a scrollback row the core will not hand back', () => {
 
     const dump = e.dumpState()
     expect(dump).toContain('row reads: all rows above came back from the core')
-    // And the line is whole, which is what makes the test above meaningful.
+    // The line is whole, which makes the test above meaningful.
     expect(e.getSelection().split('\n')[0]).toBe(logical)
   })
 })

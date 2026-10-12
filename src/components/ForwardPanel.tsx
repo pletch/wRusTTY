@@ -9,20 +9,14 @@ import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
   sessionId: string
-  /** The pane's connection status. Watched rather than displayed: a reconnect
-   *  re-establishes this session's forwards in the backend, and one that could
-   *  not be re-established is exactly what this panel now has to show. Without
-   *  this the list would keep claiming a forward was live until the panel
-   *  happened to be closed and reopened. */
+  /** The pane's connection status, watched rather than shown: a forward a
+   *  reconnect couldn't restore must show as down. */
   status?: string
   onClose: () => void
 }
 
-// Deliberately excludes `flex-1`/`flex-none` — baking `flex-1` in here and
-// overriding it with `flex-none` on port fields relies on Tailwind's
-// generated-CSS order to resolve the conflicting `flex` shorthand, which
-// isn't guaranteed to match className order (see ConnectDialog's inputClass
-// for the same issue with `w-full`/`w-16`, caught via manual testing).
+// No `flex-1`/`flex-none` here: Tailwind resolves conflicting utilities by
+// stylesheet order, not class order (as with ConnectDialog's inputClass).
 const inputClass =
   'min-w-0 rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
@@ -53,14 +47,9 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
     }
   }, [sessionId])
 
-  // On open, and again on every status change.
-  //
-  // The status change alone is *not* enough, and relying on it was a real bug:
-  // `connected` is emitted from inside the SSH handshake, before the backend
-  // has re-established anything, so refetching on it reads the list as it stood
-  // a moment before the reconnect touched it — and nothing afterward said to
-  // look again. Kept anyway because it costs one cheap call and covers first
-  // mount; the event below is what makes the answer right.
+  // On open and on every status change. Not sufficient alone: `connected`
+  // arrives from inside the handshake, before forwards are restored, so the
+  // event below is what makes the answer right.
   useEffect(() => {
     void refresh()
   }, [refresh, status])

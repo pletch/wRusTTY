@@ -6,50 +6,25 @@ import * as abi from './main/abi'
 /**
  * Find-in-scrollback done by the core, through `ghostty_search_*`.
  *
- * ## Why this exists next to `SearchController` rather than replacing it
+ * Unlike the JS `SearchController`, the core tracks matches against the live
+ * screens, so resizes, alternate-screen round trips and scrollback pruning
+ * don't leave stale results. But it can't do regex or case-sensitive matching,
+ * so those queries stay on the JS path. See `docs/NATIVE_SEARCH_PLAN.md`.
  *
- * The JS controller reads the whole scrollback out of WASM on every query and
- * matches it here. That works, and it is wrong in ways it cannot fix: its
- * match list is keyed on a buffer generation, so a resize invalidates nothing
- * and leaves stale rows highlighted, an alternate-screen round trip (opening
- * and leaving `vim`) restarts it from nothing, and scrollback pruning silently
- * shifts every row index it is holding.
+ * Rules this API imposes:
  *
- * The core has none of those problems — it tracks the matches against the live
- * screens and reconciles them on every feed — but it cannot do regex and has
- * no case-sensitive mode: `search.h` says matching is "byte-exact except ASCII
- * letters, which compare case-insensitively", and there is no option to change
- * that. Both of those are shipped toggles on our find bar.
- *
- * So the engine routes: plain case-insensitive queries come here, and the two
- * toggles keep the JS path. `docs/NATIVE_SEARCH_PLAN.md` is the long form of
- * that decision, including the alternative (drop the toggles) and why it is a
- * product call rather than a refactor.
- *
- * ## The three rules this API imposes that the JS one never had
- *
- * 1. **Matches are snapshots with a lifetime.** A returned `GhosttySelection`
- *    holds untracked grid refs, valid only until the next terminal write. So
- *    nothing here is cached across frames: every read is feed, read, use, and
- *    the row numbers that come out of it are converted to plain integers
- *    before anything else can write. Caching the match list — exactly what
- *    `SearchController` does — is not available.
- * 2. **Feeding is not optional.** The search only learns the terminal changed
- *    when it is fed, so an un-fed search reports stale counts while output
- *    keeps arriving. `onFrame` feeds while a query is live, which is also what
- *    refreshes `VIEWPORT_MATCHES` after the user scrolls.
- * 3. **We are single-threaded.** The tick/feed split exists so ghostty can
- *    tick on a background thread; we get from it only the ability to bound
- *    work per frame. `ghostty_search_run` would block until the whole
- *    scrollback is searched, so it is used by tests and probes and never here.
+ * 1. **Matches are snapshots.** Returned selections hold untracked grid refs,
+ *    valid only until the next terminal write, so nothing is cached across
+ *    frames: feed, read, convert to plain row numbers.
+ * 2. **Feeding is required.** The search only sees changes when fed; `onFrame`
+ *    feeds while a query is live.
+ * 3. **Single-threaded.** Work is bounded per frame by ticking;
+ *    `ghostty_search_run` (blocking) is for tests and probes only.
  */
 
-/** What the controller needs from the engine — the same shape of favor the JS
- *  controller asks for, minus everything to do with reading rows, which is now
- *  the core's job. */
+/** What the controller needs from the engine. */
 export interface NativeSearchHost {
-  /** Hand the renderer the highlights to draw, or `null` for none. Also
-   *  responsible for marking the view dirty. */
+  /** Hand the renderer the highlights (or `null`) and mark the view dirty. */
   setHighlights(byRow: Map<number, SearchHighlight[]> | null): void
   /** Scroll the least amount that brings absolute `row` into view. */
   revealRow(row: number): void
@@ -61,33 +36,25 @@ export interface NativeSearchHost {
   bufferGen(): number
   /** Grid width, for the rows a multi-row match covers in full. */
   cols(): number
-  /** Grid height. Only used to notice a resize, which is one of the things a
-   *  feed exists to reconcile and the one thing that changes nothing else the
-   *  gate below watches. */
+  /** Grid height, to notice a resize (which a feed must reconcile). */
   rows(): number
 }
 
-/** How long one frame may spend ticking before giving the frame back. Ticks are
- *  bounded internally too; this bounds how many of them run at once. A search
- *  that needs longer continues on the next frame — the count in the find bar
- *  climbs rather than the pane freezing. */
+/** How long one frame may spend ticking; a long search continues on later
+ *  frames (the count climbs) instead of freezing the pane. */
 const TICK_BUDGET_MS = 3
 
-/** Scratch big enough for the common case; grown on demand from the capacity
- *  the core reports. Viewport matches are page-scoped, so this is normally
- *  plenty and the two-call protocol never runs a second time. */
+/** Initial match buffer size; grown on demand from the reported count. */
 const INITIAL_MATCH_CAPACITY = 64
 
 export class NativeSearchController {
   private readonly ex: abi.GhosttyMainExports
   private readonly host: NativeSearchHost
   private readonly handle: number
-  /** The terminal the search is bound to. The search holds it too, but
-   *  `point_from_grid_ref` is a terminal call and needs it here. */
+  /** The terminal the search is bound to, for `point_from_grid_ref`. */
   private readonly term: number
 
-  /** Scratch, allocated once. Every one of these is a struct-shaped
-   *  out-parameter; `ghostty_wasm_alloc` guarantees the alignment they need. */
+  /** Scratch out-parameters, allocated once (`ghostty_wasm_alloc` aligns them). */
   private readonly statusSlot: number
   private readonly usizeSlot: number
   private readonly selSlot: number
@@ -104,38 +71,24 @@ export class NativeSearchController {
 
   /** The query the core is currently holding. Empty means idle. */
   private query = ''
-  /** Whether anything is selected. The core selects nothing on its own — the
-   *  first `SELECT_NEXT` is ours. */
+  /** Whether anything is selected; the core selects nothing on its own. */
   private selected = false
   /** What the last `refresh` drew, so a still pane does no work. */
   private signature = ''
   /**
-   * What the terminal looked like at the last feed.
-   *
-   * A feed is bounded but not free — measured at 0.7 ms on a 10,000-row
-   * scrollback, and it does not get cheaper with depth (`search.mjs`,
-   * `native-feed`). Feeding on every frame regardless would spend that on a
-   * pane where nothing whatever has happened, so this gates it on the two
-   * things a feed exists to notice here: new output, and a resize.
+   * What the terminal looked like at the last feed. A feed costs ~0.7 ms on a
+   * 10,000-row scrollback, so it's skipped unless there's new output or a
+   * resize.
    */
   private fedAt = ''
   /**
-   * Where the viewport was when the current query was typed, or -1 once the
-   * selection has settled there.
-   *
-   * A fresh query starts from what the user is looking at, but the search
-   * cannot answer where that is on the first frame: it scans newest to oldest
-   * within a frame budget, so the match list is a prefix of itself until the
-   * status goes COMPLETE, and a viewport deep in history is not in that prefix
-   * yet. Holding the row the query was typed at lets each frame step the
-   * selection further back as the list grows, converging on the right match
-   * instead of settling for the oldest one found so far.
+   * Where the viewport was when the query was typed, or -1 once the selection
+   * has settled. The scan runs newest to oldest across frames, so each frame
+   * steps the selection further back toward this row as matches are found.
    */
   private anchorTop = -1
-  /** The status the last tick reported. Anything but COMPLETE means the search
-   *  still has work it cannot do without another feed, so the gate has to let
-   *  one through even on a terminal that has not moved — otherwise a search
-   *  that ran out of frame budget stops half-finished and never resumes. */
+  /** The last tick's status. Anything but COMPLETE forces another feed, or a
+   *  search that ran out of frame budget would never resume. */
   private status = abi.SEARCH_STATUS_COMPLETE
 
   private constructor(
@@ -157,11 +110,8 @@ export class NativeSearchController {
     this.coordSlot = ex.ghostty_wasm_alloc(abi.POINT_COORDINATE_SIZE)
     this.strSlot = ex.ghostty_wasm_alloc(abi.STRING_SIZE)
 
-    // Selecting a match must not move the core's viewport: the offset the
-    // renderer draws from is ours (`_viewportOffset`), and a core-side scroll
-    // would leave the two disagreeing about where the screen is. We do the
-    // scrolling ourselves through `revealRow`, which also parks the hit a third
-    // of the way down the way the JS path always has.
+    // Selecting must not move the core's viewport, since the renderer's offset
+    // is ours; we scroll via `revealRow` (which parks the hit a third down).
     const scroll = ex.ghostty_wasm_alloc(4)
     this.dv().setUint32(scroll, abi.SEARCH_SCROLL_NONE, true)
     ex.ghostty_search_set(handle, abi.SEARCH_OPT_SELECT_SCROLL, scroll)
@@ -170,12 +120,7 @@ export class NativeSearchController {
 
   /**
    * A controller over a live terminal, or null when the binary has no search
-   * API in it.
-   *
-   * Null is not an error: `instantiateGhosttyModule` can still land on the
-   * v1.3.1 build, which predates the whole API. The engine reads it as "use the
-   * JS controller", which it has to be able to do anyway for regex and
-   * case-sensitive queries.
+   * API (v1.3.1); the engine then uses the JS controller.
    */
   static create(wasm: GhosttyWasm, term: number, host: NativeSearchHost): NativeSearchController | null {
     const ex = wasm.instance.exports as unknown as abi.GhosttyMainExports
@@ -189,7 +134,7 @@ export class NativeSearchController {
     return new NativeSearchController(ex, ptr, term, host)
   }
 
-  /** Re-made only when linear memory growth has detached the previous one. */
+  /** Re-created only when memory growth detached the previous one. */
   private dv(): DataView {
     if (this.view.buffer !== this.ex.memory.buffer) {
       this.view = new DataView(this.ex.memory.buffer)
@@ -198,12 +143,8 @@ export class NativeSearchController {
   }
 
   /**
-   * Runs or advances a search.
-   *
-   * Called on every keystroke of an incremental search as well as on
-   * next/previous. Re-submitting the same needle is explicitly cheap in the
-   * core — it keeps the existing results rather than restarting — so the
-   * keystroke case costs a feed and a bounded tick.
+   * Runs or advances a search, on every incremental keystroke and on
+   * next/previous. Re-submitting the same needle keeps existing results.
    */
   search(query: string, options?: SearchOptions): void {
     if (!query) {
@@ -220,28 +161,14 @@ export class NativeSearchController {
     this.pump(true)
 
     if (!this.selected) {
-      // Nothing selected yet, so this is a fresh query, and it starts from
-      // what the user is looking at.
-      //
-      // This used to take the newest match instead — one `SELECT_NEXT`, the
-      // bottom of the buffer — on the reasoning that a search begun at a
-      // prompt wants to work upward from there. That is true only when the
-      // pane is *at* the prompt. Scrolled back, it yanked the viewport to the
-      // bottom the instant the query was typed, and since a term read out of
-      // history usually also appears near the prompt, the result looked like
-      // the search could only see the current screen. The JS path never had
-      // this: it takes the first match at or after the top of the viewport,
-      // and that is now what both do.
+      // A fresh query starts from what the user is looking at: the first match
+      // at or after the top of the viewport (as on the JS path).
       this.anchorTop = this.host.viewportY()
       this.selected = this.stepTowardAnchor()
     } else if (!options?.incremental) {
-      // The user has taken over. Whatever the anchor was still converging on,
-      // it is no longer what they asked for.
+      // The user took over; drop the anchor.
       this.anchorTop = -1
-      // Ours counts oldest-first, so "next" moves toward newer content, which
-      // is the core's SELECT_PREV. Getting this pair the wrong way round makes
-      // the find bar walk backwards, which is why they are named here rather
-      // than passed through.
+      // We count oldest-first, so "next" is the core's SELECT_PREV.
       this.select(options?.back ? abi.SEARCH_OPT_SELECT_NEXT : abi.SEARCH_OPT_SELECT_PREV)
     }
 
@@ -249,21 +176,15 @@ export class NativeSearchController {
   }
 
   /**
-   * One frame's worth of upkeep, called from the render loop while a query is
-   * live.
-   *
-   * This is what rule 2 above buys: output that arrives after the search was
-   * set up still counts, the highlight list follows the viewport when the user
-   * scrolls, and a scrollback deep enough to need several frames of ticking
-   * fills in visibly rather than blocking the first one.
+   * Per-frame upkeep while a query is live: picks up new output, follows the
+   * viewport on scroll, and continues a long scan.
    */
   onFrame(): void {
     if (!this.query) return
     this.pump(false)
     if (this.anchorTop >= 0) {
-      // Still converging on where the query was typed. Forced, because the
-      // signature `refresh` compares on cannot see a selection that moved
-      // without the count changing.
+      // Still converging on the anchor; forced, since the signature can't see a
+      // selection that moved without the count changing.
       this.stepTowardAnchor()
       this.refresh(true)
       return
@@ -271,11 +192,10 @@ export class NativeSearchController {
     this.refresh(false)
   }
 
-  /** Drops the needle and the highlights. The core returns to idle and
-   *  releases the tracked state it was holding inside the terminal. */
+  /** Drops the needle and highlights; the core releases its tracked state. */
   clear(): void {
     if (this.query) {
-      // A NULL value clears the needle; the search keeps its handle.
+      // A NULL value clears the needle.
       this.ex.ghostty_search_set(this.handle, abi.SEARCH_OPT_NEEDLE, 0)
     }
     this.query = ''
@@ -287,9 +207,7 @@ export class NativeSearchController {
     this.host.setHighlights(null)
   }
 
-  /** Frees the search. Safe in either order against the terminal's own free —
-   *  the core detaches rather than dangling — but doing it here first releases
-   *  the state the search holds *inside* the terminal. */
+  /** Frees the search (safe in either order against freeing the terminal). */
   dispose(): void {
     this.ex.ghostty_search_free(this.handle)
   }
@@ -307,8 +225,7 @@ export class NativeSearchController {
     const d = this.dv()
     d.setUint32(this.strSlot + abi.STRING_OFF_PTR, this.needleBuf, true)
     d.setUint32(this.strSlot + abi.STRING_OFF_LEN, bytes.length, true)
-    // The bytes are copied by the callee, so the buffer above is free to be
-    // overwritten by the next keystroke.
+    // The callee copies the bytes.
     abi.expectOk(
       this.ex.ghostty_search_set(this.handle, abi.SEARCH_OPT_NEEDLE, this.strSlot),
       'search_set needle',
@@ -318,13 +235,8 @@ export class NativeSearchController {
   /** Feeds once, then ticks until caught up or out of time. */
   private pump(force: boolean): void {
     const { ex } = this
-    // The feed is what notices new output, a scroll, a resize or a screen
-    // switch — nothing else does. `search()` always forces one, because the
-    // user has just asked a question and a stale answer is worse than the
-    // work.
-    // Not the viewport: nothing read here depends on where the core thinks
-    // the screen is (see `buildHighlights`), so a scroll needs a redraw but
-    // not a feed. Only new output and a resize do.
+    // Feed on new output or a resize (a scroll only needs a redraw; see
+    // `buildHighlights`), and always when `search()` forces it.
     const state = `${this.host.bufferGen()}:${this.host.cols()}x${this.host.rows()}`
     if (force || state !== this.fedAt || this.status !== abi.SEARCH_STATUS_COMPLETE) {
       this.fedAt = state
@@ -335,38 +247,23 @@ export class NativeSearchController {
     for (;;) {
       if (ex.ghostty_search_tick(this.handle, this.statusSlot) !== abi.GHOSTTY_SUCCESS) return
       this.status = this.dv().getUint32(this.statusSlot, true)
-      // FEED_REQUIRED means ticking cannot make progress until the next feed,
-      // which is the next frame. COMPLETE means caught up as of that feed.
+      // FEED_REQUIRED waits for the next frame's feed; COMPLETE is caught up.
       if (this.status !== abi.SEARCH_STATUS_RUNNING) return
       if (performance.now() >= deadline) return
     }
   }
 
-  /** Moves the selection. False when the core says there is nothing to select,
-   *  which is an ordinary answer for a query that matches nothing. */
+  /** Moves the selection; false when there's nothing to select. */
   private select(option: number): boolean {
     return this.ex.ghostty_search_set(this.handle, option, 0) === abi.GHOSTTY_SUCCESS
   }
 
   /**
-   * Walks the selection back toward `anchorTop` — the oldest match at or after
-   * the top of the viewport, which is the topmost hit on screen, or the next
-   * one below it if the screen has none.
-   *
-   * The core has no "select this index": `SELECT_NEXT`/`SELECT_PREV` are the
-   * whole vocabulary, and from nothing selected the first `SELECT_NEXT` lands
-   * on the newest match. So the target is found in the match list — ordered
-   * newest to oldest, hence descending by row — and stepped to. Stepping is
-   * why this reads the list rather than walking and testing as it goes: one
-   * binary search plus N cheap `search_set` calls, against a
-   * `point_from_grid_ref` pair per step.
-   *
-   * Called again each frame while the anchor is live, because the list it
-   * searches only grows: the scan runs newest to oldest, so the target index
-   * moves monotonically away from the newest match and this only ever steps in
-   * one direction. `search()` alone would stop at the oldest match found
-   * inside its first frame budget, which on a deep scrollback is nowhere near
-   * where the user was reading.
+   * Steps the selection back toward `anchorTop`: the oldest match at or after
+   * the top of the viewport. The core only has SELECT_NEXT/PREV (the first NEXT
+   * selects the newest match), so the target index is found by binary search in
+   * the newest-to-oldest match list and stepped to. Re-run each frame while the
+   * anchor is live, since the list grows as the scan proceeds.
    */
   private stepTowardAnchor(): boolean {
     const total = this.queryCapacity(abi.SEARCH_DATA_MATCHES)
@@ -375,9 +272,7 @@ export class NativeSearchController {
     const written = this.fillMatches(abi.SEARCH_DATA_MATCHES, this.matchCap)
     if (written === 0) return this.selected
 
-    // First index whose row is above the anchor. Rows descend with the index,
-    // so everything before it is at or below the anchor and the one just
-    // before it is the oldest of those — the match wanted.
+    // First index whose row is above the anchor; the one before it is wanted.
     let lo = 0
     let hi = written
     while (lo < hi) {
@@ -386,15 +281,11 @@ export class NativeSearchController {
       if (y === null || y >= this.anchorTop) lo = mid + 1
       else hi = mid
     }
-    // lo === 0 means every match found so far is above the anchor, with
-    // nothing at or below it to start from. The JS path falls back to the
-    // newest there, so this does too.
+    // Every match so far is above the anchor: fall back to the newest.
     const target = lo === 0 ? 0 : lo - 1
 
-    // `written` is a prefix of the whole list until the status goes COMPLETE,
-    // so a target at its end is not yet known to be the real one: hold the
-    // anchor and come back next frame. Only a target with older matches beyond
-    // it, or a finished scan, is final.
+    // Until COMPLETE, a target at the end of the list may not be final; keep
+    // the anchor and retry next frame.
     if (this.status === abi.SEARCH_STATUS_COMPLETE || target < written - 1) this.anchorTop = -1
 
     let ok = this.selected
@@ -412,9 +303,8 @@ export class NativeSearchController {
     return this.dv().getUint32(this.usizeSlot, true)
   }
 
-  /** Absolute (screen) coordinates of a grid ref, or null for one the screen
-   *  cannot express — a match evicted by scrollback pruning between the feed
-   *  and this read. */
+  /** Absolute (screen) coordinates of a grid ref, or null if pruned since the
+   *  feed. */
   private toScreen(refPtr: number): { x: number; y: number } | null {
     const rc = this.ex.ghostty_terminal_point_from_grid_ref(
       this.term,
@@ -431,11 +321,8 @@ export class NativeSearchController {
   }
 
   /**
-   * Reads the current state and redraws from it.
-   *
-   * `force` is set by `search()`, which has just moved the selection and must
-   * paint whatever the outcome was. `onFrame` passes false, and the signature
-   * below turns a still pane into a handful of loads.
+   * Reads the current state and redraws. `force` (from `search()`) always
+   * repaints; otherwise an unchanged signature skips the work.
    */
   private refresh(force: boolean): void {
     const count = this.readUsize(abi.SEARCH_DATA_TOTAL_MATCHES) ?? 0
@@ -449,9 +336,7 @@ export class NativeSearchController {
       return
     }
 
-    // Newest-first upstream, oldest-first here. A find bar that renders
-    // "index + 1 of count" would otherwise count down as the user walks
-    // forward.
+    // Newest-first upstream, oldest-first in the find bar.
     const rawIndex = this.readUsize(abi.SEARCH_DATA_SELECTED_INDEX)
     const index = rawIndex === null ? -1 : count - 1 - rawIndex
 
@@ -461,8 +346,7 @@ export class NativeSearchController {
     this.host.emit({ index, count })
   }
 
-  /** The selected match in absolute coordinates, or null when nothing is
-   *  selected or it has been pruned away. */
+  /** The selected match in absolute coordinates, or null. */
   private readSelectedMatch(): { startY: number; startX: number; endY: number; endX: number } | null {
     this.dv().setUint32(this.selSlot + abi.SELECTION_OFF_SIZE, abi.SELECTION_SIZE, true)
     const rc = this.ex.ghostty_search_get(this.handle, abi.SEARCH_DATA_SELECTED_MATCH, this.selSlot)
@@ -474,7 +358,7 @@ export class NativeSearchController {
     const start = this.toScreen(selPtr + abi.SELECTION_OFF_START)
     const end = this.toScreen(selPtr + abi.SELECTION_OFF_END)
     if (!start || !end) return null
-    // The endpoints are documented as being in either order.
+    // Endpoints may be in either order.
     if (end.y < start.y || (end.y === start.y && end.x < start.x)) {
       return { startY: end.y, startX: end.x, endY: start.y, endX: start.x }
     }
@@ -482,22 +366,10 @@ export class NativeSearchController {
   }
 
   /**
-   * The highlights for the rows the pane is actually showing.
-   *
-   * **Not `VIEWPORT_MATCHES`, and that is the whole point of this comment.**
-   * That field is relative to the *core's* viewport, and the core's viewport
-   * never moves here: the offset the renderer draws from is ours, and the
-   * search is set to `SEARCH_SCROLL_NONE` so that selecting a match does not
-   * fight it. The first version of this used `VIEWPORT_MATCHES` and drew
-   * nothing at all whenever the pane was scrolled back — which is precisely
-   * where a search leaves you, so in practice it drew nothing whenever it
-   * mattered. `nativeSearch.test.ts` pins the scrolled case now.
-   *
-   * `MATCHES` is the whole list and is ordered newest to oldest, so it is
-   * sorted descending by row. That makes the visible window a binary search
-   * plus a walk over the handful of matches inside it, rather than converting
-   * every match on the screen's behalf — the conversion is the cost here, one
-   * `point_from_grid_ref` per endpoint.
+   * Highlights for the rows actually on screen. Not `VIEWPORT_MATCHES`, which is
+   * relative to the core's viewport (which never moves here, since our offset
+   * drives the renderer). `MATCHES` is ordered newest to oldest, so the visible
+   * window is a binary search plus a short walk.
    */
   private buildHighlights(
     active: { startY: number; startX: number; endY: number; endX: number } | null,
@@ -514,8 +386,7 @@ export class NativeSearchController {
     const cols = this.host.cols()
     const byRow = new Map<number, SearchHighlight[]>()
 
-    // First entry whose row is at or above the bottom of the screen. Rows
-    // descend with the index, so this is a lower_bound on a reversed order.
+    // First entry at or above the bottom row (rows descend with the index).
     let lo = 0
     let hi = written
     while (lo < hi) {
@@ -525,9 +396,8 @@ export class NativeSearchController {
       else hi = mid
     }
 
-    // Then walk older until the matches drop off the top of the screen. The
-    // slack either side is for a match that wraps across the boundary: its
-    // head can sit outside the window while its tail is on screen.
+    // Walk older until matches leave the top; slack catches matches wrapping
+    // across the window edge.
     const SLACK = 2
     for (let i = Math.max(0, lo - SLACK); i < written; i++) {
       const span = this.spanOf(this.matchBuf + i * abi.SELECTION_SIZE)
@@ -540,9 +410,7 @@ export class NativeSearchController {
         span.startX === active.startX &&
         span.endY === active.endY &&
         span.endX === active.endX
-      // A match that crosses a wrap is one hit on several rows, and each row
-      // gets the part of it that lands there. This is the whole of what
-      // `logicalLines`/`segmentsFor` had to reconstruct on the JS path.
+      // A wrapped match highlights its part of each row.
       for (let y = span.startY; y <= span.endY; y++) {
         const from = y === span.startY ? span.startX : 0
         const to = y === span.endY ? span.endX : cols - 1
@@ -554,15 +422,13 @@ export class NativeSearchController {
     return byRow.size === 0 ? null : byRow
   }
 
-  /** The start row of match `i`, for the search above. One conversion, and
-   *  null for a match the screen can no longer express. */
+  /** The start row of match `i`, or null if the screen can't express it. */
   private startRowOf(i: number): number | null {
     return this.toScreen(this.matchBuf + i * abi.SELECTION_SIZE + abi.SELECTION_OFF_START)?.y ?? null
   }
 
-  /** How many entries a buffer-valued read needs. The query answers
-   *  `GHOSTTY_OUT_OF_SPACE` rather than success, so it deliberately does not
-   *  go through `expectOk`. */
+  /** How many entries a buffer read needs. Returns `GHOSTTY_OUT_OF_SPACE`, so it
+   *  doesn't use `expectOk`. */
   private queryCapacity(data: number): number {
     const d = this.dv()
     d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_PTR, 0, true)
@@ -579,8 +445,7 @@ export class NativeSearchController {
     this.matchBuf = this.ex.ghostty_wasm_alloc(this.matchCap * abi.SELECTION_SIZE)
   }
 
-  /** Fills `matchBuf` and returns how many entries came back. Every element
-   *  carries its own `size` field, which the core reads per element. */
+  /** Fills `matchBuf` and returns the count; each element needs its `size`. */
   private fillMatches(data: number, cap: number): number {
     const d = this.dv()
     for (let i = 0; i < cap; i++) {

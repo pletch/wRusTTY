@@ -1,18 +1,6 @@
-/** Where the session list's context menu opens.
- *
- * Beside the row, never under the cursor — which is what it used to do, and
- * which was wrong in two compounding ways. The menu is taller than a row, so
- * opening it at the click point laid it over the sessions *below* the one it
- * belongs to. A click that missed an item slightly, or one meant only to
- * dismiss the menu, therefore landed on another session: with the vault
- * unlocked that connects to a host nobody asked for, and with it locked the
- * whole browser is replaced by that host's unlock prompt. And once the menu
- * closed, the cursor was left hovering a highlighted row that was not the row
- * being worked on, which reads as the app having selected it.
- *
- * Anchoring to the row's right edge puts the menu over the connect form
- * instead, where the worst a stray click can do is focus a text field.
- */
+/** Where the session list's context menu opens: beside the row, over the
+ * connect form, rather than under the cursor, where it would cover the
+ * sessions below and a stray click could connect to the wrong host. */
 
 /** `w-36` in the markup. */
 const MENU_WIDTH = 144
@@ -30,9 +18,8 @@ export function menuAnchor(
   viewportHeight: number,
 ): { x: number; y: number } {
   return {
-    // Vertically the menu still follows the cursor, so it stays visibly
-    // attached to the row it is about; both axes are clamped so the last
-    // session in a long list, or a narrow window, cannot open one off-screen.
+    // Vertically it follows the cursor to stay attached to its row; both axes
+    // are clamped to the viewport.
     x: Math.min(rowRight + GAP, viewportWidth - MENU_WIDTH - EDGE_MARGIN),
     y: Math.min(clientY, viewportHeight - MENU_MAX_HEIGHT - EDGE_MARGIN),
   }

@@ -5,27 +5,13 @@ import {
   sendNotification,
 } from '@tauri-apps/plugin-notification'
 
-/** Telling the user something happened while they were looking at another
- * window.
- *
- * An in-app toast can't do this job — the whole premise of "your command
- * finished" is that you alt-tabbed away, so the toast appears and expires
- * unseen. Two mechanisms cover it together:
- *
- * - A **native notification**, which lands in the Action Center and stays
- *   until dismissed.
- * - A **flashing taskbar button**, the conventional Windows signal for "this
- *   window wants you".
- *
- * Both, not either. Windows only shows a toast for an app whose
- * AppUserModelID matches an installed Start-menu shortcut: the NSIS bundle
- * creates one, `tauri dev` doesn't. So in a dev build the toast silently does
- * nothing and the flash is the only feedback — which is also why the flash
- * isn't merely a fallback for a denied permission. */
+/** Telling the user something happened while they were in another window,
+ * via a native notification and a flashing taskbar button (see
+ * src-tauri/src/attention.rs). Both, since toasts need an installed
+ * Start-menu shortcut and don't appear in `tauri dev`. */
 
-/** Cached because `isPermissionGranted` is an IPC round trip and this is
- * called from a completion handler that can fire several times in a row.
- * Null means "not yet asked". */
+/** Cached: `isPermissionGranted` is an IPC round trip, and completions can
+ * fire in quick succession. Null means not yet asked. */
 let granted: boolean | null = null
 
 async function ensurePermission(): Promise<boolean> {
@@ -33,8 +19,7 @@ async function ensurePermission(): Promise<boolean> {
   try {
     granted = (await isPermissionGranted()) || (await requestPermission()) === 'granted'
   } catch {
-    // A build with the plugin unavailable (`npm run dev` in a plain browser)
-    // must not turn a completed command into an unhandled rejection.
+    // Without the plugin (a plain browser), a completion mustn't reject.
     granted = false
   }
   return granted
@@ -46,20 +31,16 @@ export function flashWindow(): Promise<void> {
   return invoke<void>('flash_window').catch(() => {})
 }
 
-/** Raises attention for something that finished out of view.
- *
- * Deliberately never focuses the window: stealing focus from whatever the
- * user is doing, because a background command exited, is a worse interruption
- * than the thing being reported. */
+/** Raises attention for something that finished out of view. Never focuses
+ * the window, which would be a worse interruption than the news. */
 export async function notifyInBackground(title: string, body: string): Promise<void> {
-  // Fired first, and not awaited against the notification: it needs no
-  // permission and no registration, so it is the half most likely to work.
+  // First and not awaited: it needs no permission, so it's likeliest to work.
   void flashWindow()
   if (!(await ensurePermission())) return
   try {
     sendNotification({ title, body })
   } catch {
-    // Same reasoning as above — the flash has already happened.
+    // The flash has already happened.
   }
 }
 

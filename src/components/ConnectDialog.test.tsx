@@ -8,14 +8,9 @@ import type { SessionProfile } from '../lib/profiles'
 afterEach(cleanup)
 
 /**
- * The Wake-on-LAN group.
- *
- * Pinned because every interesting case here is a *conditional* — the field is
- * absent for protocols that don't wire waking, absent when a jump host makes
- * waking impossible, and its two qualifying inputs are absent until there's a
- * MAC for them to qualify. A field that appears when it shouldn't is worse
- * than cosmetic in the jump-host case: it would promise a packet the backend
- * deliberately never sends.
+ * The Wake-on-LAN group: absent for protocols without waking, absent with a
+ * jump host (the backend never sends the packet then), and its qualifying
+ * inputs absent until there's a MAC.
  */
 
 const noop = () => {}
@@ -119,12 +114,9 @@ describe('the Wake-on-LAN field', () => {
 })
 
 /**
- * How the auth radios turn into an `AuthMethod`.
- *
- * The interesting case is a blank password field, which carries two different
- * meanings depending on whether a credential is stored — and used to carry a
- * third, useless one (send an empty string and be rejected) when neither
- * applied.
+ * How the auth radios become an `AuthMethod`, notably a blank password
+ * field, which means different things depending on whether a credential is
+ * stored.
  */
 
 /** Submits the form with `host`/`username` filled in, returning the source. */
@@ -144,8 +136,7 @@ async function connectWith(
 
 describe('the auth method a blank password field produces', () => {
   it('asks at connect time when nothing is typed and nothing is stored', async () => {
-    // Used to send `{ type: 'Password', password: '' }`, which the server can
-    // only reject — and each rejection spends one of its limited attempts.
+    // Not an empty password, which would only be rejected.
     const source = await connectWith({})
     expect(source.config?.auth.type).toBe('KeyboardInteractive')
   })
@@ -190,14 +181,8 @@ describe('the "ask each time" auth option', () => {
 })
 
 /**
- * The per-session auto-reconnect opt-out.
- *
- * Both halves are worth pinning because the checkbox is deliberately *not* a
- * mirror of the stored value: ticked stores `null` (follow the global setting)
- * rather than `true`. A stored `true` would read as an override, and it cannot
- * be one — the global switch and the backend's credential rule both still
- * apply — so writing it down would make the profile claim something the app
- * cannot honor.
+ * The auto-reconnect opt-out: ticked stores `null` (follow the global
+ * setting), not `true`, which would claim an override the app can't honor.
  */
 describe('the auto-reconnect opt-out', () => {
   /** Fills in a session, sets the checkbox, saves, and returns the profile. */
@@ -247,14 +232,8 @@ describe('the auto-reconnect opt-out', () => {
 })
 
 /**
- * The auto-reconnect opt-out.
- *
- * A conditional for the same reason the Wake-on-LAN field is: it must not
- * offer a choice the backend cannot act on. Auto-reconnect fires on a
- * transport that died under a live session, and a local shell has no such
- * state — it has either exited or it has not — so the control would change
- * nothing whichever way it were set. See decision 5 in
- * docs/LOCAL_SHELL_PLAN.md.
+ * The auto-reconnect checkbox, hidden for local shells, which never
+ * reconnect (decision 5 in docs/LOCAL_SHELL_PLAN.md).
  */
 function reconnectCheckbox() {
   return screen.queryByLabelText(/Reconnect automatically/i)
@@ -286,12 +265,7 @@ describe('the auto-reconnect opt-out', () => {
 })
 
 /**
- * The vault-credential offer.
- *
- * `storesSecret` asks which *SSH auth type* holds a secret worth vaulting.
- * The other protocols leave `authType` at its default, so the question is
- * meaningless for them and the offer was being made for a credential they
- * never collect.
+ * The vault-credential offer, SSH only: other protocols collect no secret.
  */
 function credentialCheckbox() {
   return screen.queryByLabelText(/save credential to vault/i)

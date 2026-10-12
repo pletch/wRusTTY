@@ -4,21 +4,8 @@ export function newPaneId() {
   return `pane-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-// Ghostty is the only rendering engine as of the Phase 7 A/B (see src/bench):
-// it presents one display frame sooner than the xterm.js WebGL path across
-// typing, streaming and TUI redraws, reaches true background transparency the
-// xterm path could not, and is at feature parity — scrollback, selection,
-// search, bell and mouse/focus reporting all match. The four remaining gaps
-// are upstream ABI limits of the pinned ghostty-web@0.4.0 (overline/curly
-// underline, DECSCUSR cursor shapes, wrapped-line search in scrollback,
-// Primary Device Attributes), not renderer bugs. Parser throughput is at
-// parity and not a factor: the WASM build is scalar, so Ghostty's native SIMD
-// advantage does not apply here.
-//
-// A pane used to carry an `engine` field switchable from the toolbar, as the
-// escape hatch for those four gaps. It is gone — see parity.ts's header for
-// why, and what the choice cost. A leaf restored from a snapshot written
-// before that removal may still have the field on disk; nothing reads it.
+// Leaves restored from older snapshots may carry an `engine` field; nothing
+// reads it.
 export function blankLeaf(): PaneLeaf {
   return {
     type: 'leaf',
@@ -28,11 +15,10 @@ export function blankLeaf(): PaneLeaf {
   }
 }
 
-/** Rebuilds a tree with fresh ids, preserving structure, sources and split
- * sizes. Required when materializing a saved workspace: its stored ids were
- * generated in a previous run and can collide with live panes — including
- * with itself, if the same workspace is opened twice. `generation` resets so
- * the restored panes mount and connect as new sessions. */
+/** Rebuilds a tree with fresh ids, keeping structure, sources and split sizes.
+ * Needed when opening a saved workspace, whose stored ids can collide with
+ * live panes (or itself, if opened twice). `generation` resets so panes
+ * connect as new sessions. */
 export function reidentify(node: PaneNode): PaneNode {
   if (node.type === 'leaf') {
     return { ...node, id: newPaneId(), generation: 0 }
@@ -63,56 +49,36 @@ export function allLeaves(node: PaneNode): PaneLeaf[] {
   return [...allLeaves(node.children[0]), ...allLeaves(node.children[1])]
 }
 
-/** How many rows the tab strip's pane map has to stack for this tree.
- *
- * Vertical splits stack their children, so those add up; horizontal splits
- * sit side by side, so the deepest branch decides. The bar's height is then
- * driven by this rather than by a flat "is the top split vertical", which
- * gave a nested stack the same height as a single row and left its segments
- * sub-pixel — a stacked split inside a 3px segment renders two 0.5px lines,
- * which is simply invisible. */
+/** How many rows the tab strip's pane map stacks for this tree: vertical
+ * splits add their children; horizontal ones take the deepest branch. */
 export function verticalRows(node: PaneNode): number {
   if (node.type === 'leaf') return 1
   const [first, second] = node.children.map(verticalRows)
   return node.direction === 'vertical' ? first + second : Math.max(first, second)
 }
 
-/** The same count the other way round: how many panes the widest band of
- * this tree puts side by side. Only used for the split limits — the pane map
- * doesn't need it, since columns divide the width it already has. */
+/** How many panes the widest band puts side by side, for the split limits. */
 export function horizontalColumns(node: PaneNode): number {
   if (node.type === 'leaf') return 1
   const [first, second] = node.children.map(horizontalColumns)
   return node.direction === 'horizontal' ? first + second : Math.max(first, second)
 }
 
-/** Split limits for one tab. Deliberate ceilings rather than technical ones:
- * past these the panes are too small to work in on a normal window, and
- * anything genuinely needing more wants another tab.
+/** Split limits for one tab: past these, panes are too small to work in.
  *
- * The two axis caps do most of the work — they're what keeps any single pane
- * from being reduced to a sliver, and the row cap is also what the tab
- * strip's pane map is sized for (PANE_MAP_MAX_ROWS in TabBar.tsx). The total
- * is a separate ceiling on top, since the axis caps alone would permit a
- * 4×4 grid.
- *
- * Trees saved by an earlier build may exceed any of these; they still open
- * and render, they just can't be split further. */
+ * The axis caps keep any pane from becoming a sliver (the row cap also sizes
+ * the pane map: PANE_MAP_MAX_ROWS in TabBar.tsx). The total caps what the axis
+ * limits alone would allow (a 4×4 grid). Larger saved trees still open; they
+ * just can't split further. */
 export const MAX_PANES_PER_TAB = 8
 export const MAX_PANE_ROWS = 4
 export const MAX_PANE_COLUMNS = 4
 
 export type SplitLimit = 'panes' | 'rows' | 'columns'
 
-/** Which limit splitting `id` in `direction` would breach, or null if it's
- * allowed. Assumes `id` is a leaf of `root` — see canSplitLeaf.
- *
- * Decided by building the resulting tree and measuring it, rather than by
- * reasoning about the leaf's position: whether a split adds a row, a column
- * or neither depends on where the leaf sits and which way every split above
- * it runs. The tree is at most eight leaves, so producing the candidate is
- * cheaper than getting that reasoning right — and it can't disagree with
- * what the split would actually do, because it *is* the split. */
+/** Which limit splitting `id` in `direction` would breach, or null. Assumes
+ * `id` is a leaf of `root` (see canSplitLeaf). Builds and measures the
+ * resulting tree (at most eight leaves), which can't disagree with the split. */
 export function splitBlocker(
   root: PaneNode,
   id: string,
@@ -151,9 +117,8 @@ export function updateLeaf(
   }
 }
 
-/** Replaces `id`'s leaf with a split containing the original leaf and a new
- * blank one. Splitting always produces a binary split, regardless of the
- * parent's direction — nesting is how you build 3+ pane layouts. */
+/** Replaces `id`'s leaf with a binary split of it and a new blank leaf;
+ * nesting builds 3+ pane layouts. */
 export function splitLeaf(
   node: PaneNode,
   id: string,

@@ -7,22 +7,13 @@ pub enum SftpError {
 }
 
 impl SftpError {
-    /// Whether running the same operation again could plausibly succeed.
+    /// Whether retrying the same operation could plausibly succeed.
     ///
-    /// **Conservative on purpose: anything not recognized is permanent.** The
-    /// cost of the two mistakes is not symmetric. Retrying a permission error
-    /// three times delays the real message by a second and teaches the user
-    /// nothing; failing to retry a genuine hiccup costs one manual click on a
-    /// Retry button that exists anyway. So this only claims the cases the
-    /// protocol itself names as timing, and treats the catch-all `Failure` —
-    /// which servers return for everything from a full disk to a read-only
-    /// mount — as permanent.
-    ///
-    /// Note what is deliberately absent: a dropped *connection*. Nothing here
-    /// can recover from one, because the session holds its SFTP client in a
-    /// `OnceCell` and would hand back the same dead channel on every attempt.
-    /// Surviving a reconnect needs reconnection, which this app does not do
-    /// yet; resuming the transfer afterward is the answer it does have.
+    /// Conservative: only the cases the protocol names as timing count. A wrong
+    /// "permanent" costs a click on Retry; a wrong "transient" delays the real
+    /// message. The catch-all `Failure` (full disk, read-only mount) is permanent.
+    /// A dropped connection is absent too: the session's `OnceCell` client would
+    /// return the same dead channel, so resuming the transfer later is the answer.
     pub fn is_transient(&self) -> bool {
         match self {
             SftpError::Sftp(russh_sftp::client::error::Error::Timeout) => true,

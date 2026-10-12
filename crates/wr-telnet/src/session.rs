@@ -11,11 +11,9 @@ use crate::config::TelnetConfig;
 use crate::error::TelnetError;
 use crate::protocol::{self, Parser};
 
-/// Sends a protocol reply (option negotiation, terminal type, NAWS) back up
-/// the write channel, if the session still exists.
-///
-/// Returns false when it does not — either the session was disconnected, or
-/// the write task is gone. Both mean the read loop should stop.
+/// Sends a protocol reply (option negotiation, terminal type, NAWS) up the
+/// write channel. Returns false if the session or write task is gone, meaning
+/// the read loop should stop.
 async fn send_reply(tx: &mpsc::WeakSender<Vec<u8>>, bytes: Vec<u8>) -> bool {
     match tx.upgrade() {
         Some(tx) => tx.send(bytes).await.is_ok(),
@@ -44,9 +42,7 @@ impl TelnetConnector {
 /// A connected telnet session: the write channel, plus the last size so a
 /// late NAWS negotiation can be answered with the current one.
 pub struct TelnetSession {
-    /// `Option` only so `disconnect` can drop the sender, which is what ends
-    /// the write task. It is always `Some` on a freshly connected session —
-    /// "not connected yet" is no longer a state this type can be in.
+    /// `Option` so `disconnect` can drop the sender, ending the write task.
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     last_size: Arc<Mutex<(u16, u16)>>,
 }
@@ -105,14 +101,10 @@ impl Session for TelnetSession {
     }
 
     async fn disconnect(&mut self) -> Result<(), TelnetError> {
-        // Dropping the sender closes the channel, which ends the write task,
-        // which drops its `OwnedWriteHalf` — and tokio shuts the write side of
-        // the socket down on that drop, so the peer sees EOF. The read task
-        // then ends on its own once its half returns EOF/error.
-        //
-        // This only works because the read task's reply sender is weak; see
-        // `connect_inner`. With a strong clone the channel outlived this and
-        // the connection was never closed at all.
+        // Dropping the sender ends the write task, which drops its
+        // `OwnedWriteHalf`, and tokio shuts down the write side so the peer sees
+        // EOF. The read task then ends on EOF. Relies on the read task's reply
+        // sender being weak (see `connect_inner`).
         self.input_tx = None;
         Ok(())
     }
@@ -141,19 +133,9 @@ impl TelnetConnector {
 
         tokio::spawn(async move {
             while let Some(bytes) = input_rx.recv().await {
-                // Paced rather than written straight through -- see
-                // `wr_core::WRITE_CHUNK`. The far side of a telnet session is a
-                // pty like any other, with the same input buffer and the same
-                // silence when it overruns.
-                //
-                // This channel also carries the protocol replies `send_reply`
-                // queues -- option negotiation, terminal type, NAWS. Every one
-                // of them is a handful of bytes, so they take the single-chunk
-                // path and wait for nothing.
-                //
-                // Chunking after `escape_data` is deliberate and safe: TCP is a
-                // stream, so a doubled IAC split across two writes arrives as
-                // the pair it was sent as.
+                // Paced (see `wr_core::WRITE_CHUNK`): the far side is a pty with the
+                // same input buffer. Protocol replies take the single-chunk path.
+                // Chunking after `escape_data` is safe: TCP keeps a doubled IAC together.
                 if write_paced(&mut write_half, &bytes).await.is_err() {
                     break;
                 }
@@ -162,35 +144,21 @@ impl TelnetConnector {
 
         let output_events = events.clone();
         let last_size = self.last_size.clone();
-        // A *weak* sender, deliberately.
-        //
-        // This was `input_tx.clone()`, which meant the read task kept the
-        // channel alive: `disconnect` dropped the session's sender, but the
-        // clone here held the last strong reference, so `input_rx.recv()`
-        // never returned `None`, the write task never ended, its
-        // `OwnedWriteHalf` was never dropped, and no FIN was ever sent. The
-        // TCP connection stayed ESTABLISHED until the process exited — one
-        // leaked socket per closed telnet tab, and a half-open connection the
-        // server had no reason to clean up either.
-        //
-        // A `WeakSender` can still send while the session holds its strong
-        // one, which is the whole of what the reply path needs, and stops
-        // counting the moment the session lets go.
+        // Weak, so the read task doesn't keep the channel alive after
+        // `disconnect` (which would keep the socket open). It can still send while
+        // the session holds its strong sender.
         let reply_tx = input_tx.downgrade();
-        // Resolved here rather than inside the loop: the reply task outlives
-        // this borrow of `self`, and the answer can't change mid-session
-        // anyway (a server may ask more than once, but our answer is fixed).
+        // Resolved outside the loop: the reply task outlives this borrow, and the
+        // answer is fixed.
         let term_type = self.config.term_type().to_string();
         tokio::spawn(async move {
             let mut parser = Parser::new();
             let mut buf = [0u8; 4096];
-            // Carried out of the loop rather than assumed, because telnet's two
-            // ways of ending read almost identically here and mean opposite
-            // things to auto-reconnect. See `DisconnectKind`.
+            // Telnet's two endings look alike here but mean opposite things to
+            // auto-reconnect (see `DisconnectKind`).
             let kind = 'read: loop {
                 let n = match read_half.read(&mut buf).await {
-                    // A clean FIN: the server hung up, which is what logging
-                    // out of a remote host looks like.
+                    // A clean FIN: the server hung up (a logout).
                     Ok(0) => break 'read DisconnectKind::Closed,
                     // A reset, an unreachable host, an interface going down.
                     Err(_) => break 'read DisconnectKind::Lost,
@@ -199,9 +167,7 @@ impl TelnetConnector {
 
                 let out = parser.feed(&buf[..n]);
 
-                // The remaining exits are all *this* side letting go — the
-                // session was disconnected, or the webview went away — so the
-                // status they report is moot; nothing is left to receive it.
+                // The remaining exits are this side letting go, so the status is moot.
                 if !out.data.is_empty()
                     && output_events
                         .send(ConnectionEvent::Data(out.data))
@@ -244,13 +210,12 @@ impl TelnetConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The lib writes through `write_paced` now; only these tests, driving the
-    // far end of the socket by hand, still need the extension trait.
+    // The lib writes via `write_paced`; only these tests need the trait.
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
-    /// A listener that hands back the accepted socket, so a test can ask what
-    /// the peer actually observed rather than what we hoped it did.
+    /// A listener that returns the accepted socket, so a test can check what the
+    /// peer observed.
     async fn listener() -> (TcpListener, u16) {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = l.local_addr().unwrap().port();
@@ -265,17 +230,7 @@ mod tests {
         }
     }
 
-    /// The regression this exists for.
-    ///
-    /// `disconnect` drops the session's sender, which must close the channel,
-    /// which ends the write task, which drops its `OwnedWriteHalf` and shuts
-    /// the write side of the socket down. The peer sees EOF.
-    ///
-    /// It did not, for a while: the read task held `input_tx.clone()`, so the
-    /// channel never closed and the connection stayed ESTABLISHED until the
-    /// process exited — one leaked socket per closed telnet tab. A smoke test
-    /// caught it because two sockets closed at once on quit when only one
-    /// session was open.
+    /// `disconnect` closes the connection: the peer sees EOF.
     #[tokio::test]
     async fn disconnect_closes_the_connection() {
         let (l, port) = listener().await;
@@ -290,9 +245,7 @@ mod tests {
 
         session.disconnect().await.unwrap();
 
-        // Read to EOF. Whatever negotiation bytes are in flight are drained
-        // first; what matters is that the read *terminates* rather than
-        // blocking forever on a connection nobody closed.
+        // Read to EOF; what matters is that the read terminates.
         let mut sink = Vec::new();
         let eof = tokio::time::timeout(Duration::from_secs(5), peer.read_to_end(&mut sink)).await;
 
@@ -304,9 +257,7 @@ mod tests {
         eof.unwrap().expect("read_to_end failed");
     }
 
-    /// The other half of the same property: while the session is alive, the
-    /// connection must stay open. A fix that closed it eagerly would pass the
-    /// test above and break the app.
+    /// While the session is alive, the connection stays open.
     #[tokio::test]
     async fn the_connection_stays_open_while_the_session_lives() {
         let (l, port) = listener().await;
@@ -324,14 +275,13 @@ mod tests {
         match read {
             // Timed out waiting for more: the connection is open and idle.
             Err(_) => {}
-            // Negotiation bytes are fine; a zero-length read is EOF and is not.
+            // Negotiation bytes are fine; zero-length (EOF) isn't.
             Ok(Ok(n)) => assert!(n > 0, "connection closed while the session was still alive"),
             Ok(Err(e)) => panic!("connection errored while the session was alive: {e}"),
         }
     }
 
-    /// Replies still reach the wire through the weak sender — the negotiation
-    /// path must keep working, or the fix has traded a leak for a mute client.
+    /// Replies still reach the wire through the weak sender.
     #[tokio::test]
     async fn negotiation_replies_still_reach_the_peer() {
         let (l, port) = listener().await;
@@ -344,7 +294,7 @@ mod tests {
             .unwrap();
         let mut peer = accepted.await.unwrap();
 
-        // Ask for the terminal type; the read task answers through `send_reply`.
+        // The read task answers through `send_reply`.
         peer.write_all(&[protocol::IAC, protocol::DO, protocol::OPT_TERMINAL_TYPE])
             .await
             .unwrap();
