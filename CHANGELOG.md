@@ -11,6 +11,26 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Pasting text with a lone carriage return between commands no longer skips
+  the multi-line warning. A carriage return is what the Enter key sends, so on
+  a shell without bracketed paste (serial consoles, telnet to network gear,
+  plain `sh`) a paste like `cd /tmp⏎rm -rf build` ran its commands without
+  asking. Text with CRLF or LF line endings was already caught.
+
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `b3dc3d79`. `Ctrl-L` at a shell
+  prompt now keeps the earlier output in scrollback wherever the prompt is,
+  not only when it's on the last row. Needs shell integration (OSC 133).
+- Releases list SHA-256 checksums for their installers, in the notes and as
+  an attached `SHA256SUMS.txt`.
+
+### Fixed
+
+- A bare `CSI g` now clears the tab stop at the cursor; it was ignored.
+
 ## [0.4.1] - 2026-10-11
 
 ### Changed

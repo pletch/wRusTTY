@@ -68,6 +68,7 @@ import { Channel } from '@tauri-apps/api/core'
 import * as sftp from '../lib/sftp'
 import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
+import { countLines, pasteNeedsNoConfirm, stripTrailingNewline } from '../lib/pasteGuard'
 
 /**
  * Bytes to write before granting the backend more credit: a sixteenth of its
@@ -176,19 +177,6 @@ interface PendingAuthPrompt {
   port: number
   isJump: boolean
 }
-
-/**
- * Removes the one trailing newline that copy buttons on documentation sites
- * add, so a paste doesn't submit the command. Only one is removed.
- */
-function stripTrailingNewline(text: string): string {
-  return text.replace(/(\r\n|\r|\n)$/, '')
-}
-
-function countLines(text: string): number {
-  return text.split(/\r\n|\r|\n/).length
-}
-
 
 export function Terminal({
   source,
@@ -1511,9 +1499,8 @@ export function Terminal({
           const text = stripTrailingNewline(raw)
           if (!text) return
           const lines = countLines(text)
-          // The engine also flags a single line carrying a bracketed-paste
-          // terminator.
-          const safe = term.isPasteSafe?.(text) ?? lines === 1
+          // Both have to agree: see pasteGuard.ts for why ours is not optional.
+          const safe = pasteNeedsNoConfirm(text, term.isPasteSafe?.(text))
           if (safe) {
             term.paste(text)
             return
