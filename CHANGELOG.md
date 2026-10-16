@@ -11,6 +11,8 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-16
+
 ### Security
 
 - Pasting text with a lone carriage return between commands no longer skips
@@ -158,7 +160,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/pletch/wRusTTY/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/pletch/wRusTTY/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/pletch/wRusTTY/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/pletch/wRusTTY/compare/v0.2.0...v0.3.0
