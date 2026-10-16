@@ -34,12 +34,60 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, **190 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, 190, **190 here** — so re-pin only with a reason and re-run
 the checks when you do. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca` and `ghostty_osc_set` at `f9e82709`.
 
-### Moving from `f523504e` (2026-10-02) to this pin
+### Moving from `b1d9492c` (2026-10-11) to this pin
+
+112 commits over four days, a clean fast-forward and **no ABI break**. No export
+was added or removed. One OSC enum value was renamed and kept its number
+(`CONTEXT_SIGNAL` is now `HIERARCHICAL_CONTEXT`, 25); we don't use the OSC
+parser API. The paste header changed only in its documentation.
+
+Taken for one fix above all:
+
+- **`5c9a3d8a9`** — paste protection treats a carriage return like a
+  newline. `ghostty_paste_is_safe` refused only `\n` when unbracketed, so a
+  lone CR passed. A CR is what the Enter key sends: confirmed on the previous
+  binary, `cd /tmp\rrm -rf build\rls` came back safe, and `Terminal.tsx`
+  pastes safe text without asking, so on a shell without bracketed paste that
+  ran both commands. Found by a reporter upstream. `pasteEncode.test.ts`
+  had pinned the old answer on purpose, as a tripwire for exactly this change,
+  and now pins the new one.
+
+  The engine's verdict is no longer the only check. `src/lib/pasteGuard.ts`
+  also requires the paste to be a single line by our own count (CR, LF and
+  CRLF each end one), so a regression in the core's rule can't reopen it.
+
+Also in, both reachable:
+
+- **`ff779564c`** — `Ctrl-L` (ED 2) at a prompt scrolls the screen into
+  scrollback rather than erasing it, keeping the earlier output. That already
+  happened with the prompt on the last row; the search for it stopped at the
+  first blank row below, so a prompt higher up erased the output. It relies on
+  the OSC 133 marks the shell sends.
+- **`d0c0d4008`** — a bare `CSI g` clears the tab stop at the cursor. Its
+  parameter defaults to 0, but with none at all it was dropped as invalid.
+
+`clearAtPromptAndTabStop.test.ts` pins all three against the shipped binary;
+each fails on the previous one (safe=true, 0 scrollback rows, cursor at 8).
+
+Smaller: printing with DECAWM off clears a pending wrap (`42a65647b`), DECSTR
+turns off ISO character protection (`0df8c4868`), `CSI ? 6 n` (DECXCPR) is
+answered (`fbda61b87`), and DECRQM reports unsupported ANSI modes as
+permanently reset, as xterm does (`d432b01a3`).
+
+Inert here: **`65ff54c67`**, a use-after-free when scrollback pruning frees
+the cursor's page, needs a one-row screen *and* a scrollback line limit, and we
+only ever set the byte budget. Also the formatter, selection and copy fixes
+(ours are JS), tmux, kitty image handling and snapshots.
+
+The binary grew **10,411 bytes** (1,181,438 -> 1,191,849). Both parse probes
+sit inside the ranges quoted above.
+
+### Moving from `f523504e` (2026-10-02) to `b1d9492c`
 
 89 commits over nine days, a clean fast-forward and **no ABI break**: the
 headers only add (program status, CSI 8 t window-resize reports, the

@@ -64,10 +64,13 @@ describe('paste encoding', () => {
       expect(pasteIsSafe(wasm, 'one\ntwo')).toBe(false)
     })
 
-    it('accepts a bare carriage return, which upstream does not treat as a line break', () => {
-      // Pinned because it is surprising rather than because it is desirable:
-      // the rule is upstream's, and a change to it should show up here.
-      expect(pasteIsSafe(wasm, 'a\rb')).toBe(true)
+    it('refuses a bare carriage return, which the shell runs like a newline', () => {
+      // This case used to pin the opposite: upstream accepted a lone CR, and
+      // the test existed so a change would show up. It did, in 5c9a3d8a9. A
+      // CR is what the Enter key sends, so on a shell without bracketed paste
+      // `cd /tmp\rrm -rf build` ran both commands without the warning.
+      expect(pasteIsSafe(wasm, 'a\rb')).toBe(false)
+      expect(pasteIsSafe(wasm, 'cd /tmp\rrm -rf build\rls')).toBe(false)
     })
   })
 
