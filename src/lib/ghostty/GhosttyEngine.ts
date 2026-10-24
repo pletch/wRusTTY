@@ -25,7 +25,8 @@ import {
   BLEND_LINEAR,
   BLEND_LINEAR_CORRECTED,
 } from './WebGLRenderer'
-import { scanOsc } from './oscScanner'
+import { OscStream, parseOsc } from './oscStream'
+import type * as mainAbi from './main/abi'
 import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
 import { cursorStyleSequence, type CursorStyleSetting, type TextBlending } from '../settings'
@@ -258,15 +259,17 @@ export class GhosttyEngine implements TerminalEngine {
   /** A Ctrl+press on a link, pending the release that decides click vs drag. */
   private pendingLink: { url: string; kind: LinkKind; at: { x: number; y: number } } | null = null
   private onCopyRequestHandlers = new Set<(text: string) => void>()
-  /** Unterminated OSC bytes from the previous chunk, kept to match across the
-   *  boundary. */
-  private oscPending: Uint8Array | null = null
+  /**
+   * Splits the output at each OSC with the core's own parser, so a handler runs
+   * after its sequence is parsed and before anything after it. Null until the
+   * core loads; see `oscStream.ts`.
+   */
+  private oscStream: OscStream | null = null
   private oscDecoder = new TextDecoder()
   private oscEncoder = new TextEncoder()
   private oscHandlers = new Map<number, ((data: string) => boolean | Promise<boolean>)[]>()
   private onBellHandlers = new Set<() => void>()
-  /** See `registerResetHandler`. Separate because its presence changes what the
-   *  scanner looks for. */
+  /** See `registerResetHandler`. */
   private onResetHandlers = new Set<() => void>()
   private onBufferChangeHandlers = new Set<(isAlternate: boolean) => void>()
   private lastIsAlternate = false
@@ -474,6 +477,11 @@ export class GhosttyEngine implements TerminalEngine {
 
       // Before the buffered writes, which may turn on the Kitty protocol.
       this.keyEncoder = KeyEncoder.create(this.wasm, this.termPtr)
+      // Before the buffered writes too: their OSCs are dispatched as they replay.
+      const raw = this.wasm.instance.exports as unknown as mainAbi.GhosttyMainExports
+      if (typeof raw.ghostty_terminal_vt_write_until === 'function') {
+        this.oscStream = new OscStream(raw, this.termPtr)
+      }
       // Cheap and order-independent to free, so built eagerly.
       this.nativeSearch = NativeSearchController.create(this.wasm, this.termPtr, {
         setHighlights: (byRow) => {
@@ -502,9 +510,11 @@ export class GhosttyEngine implements TerminalEngine {
       ))
 
       // Flush buffered writes synchronously: the parser must see bytes in order.
-      for (const data of this.writeBuffer) {
-        writeBytes(this.wasm, this.termPtr, data)
-      }
+      // Through `feed`, so OSCs that arrived before the core loaded still reach
+      // their handlers, now with a grid to read.
+      const buffered = this.writeBuffer
+      this.writeBuffer = []
+      for (const data of buffered) this.feed(data)
       this.writeBuffer = []
       this.writeBufferBytes = 0
       
@@ -1318,6 +1328,8 @@ export class GhosttyEngine implements TerminalEngine {
       // Frees the search state held inside the terminal.
       this.nativeSearch?.dispose()
       this.nativeSearch = null
+      this.oscStream?.dispose()
+      this.oscStream = null
       this.wasm.exports.ghostty_terminal_free(this.termPtr)
       this.termPtr = 0
     }
@@ -1331,7 +1343,6 @@ export class GhosttyEngine implements TerminalEngine {
     this.onBellHandlers.clear()
     this.onResetHandlers.clear()
     this.oscHandlers.clear()
-    this.oscPending = null
   }
 
   /**
@@ -1399,49 +1410,57 @@ export class GhosttyEngine implements TerminalEngine {
     for (const h of this.onBufferChangeHandlers) h(isAlt)
   }
 
+  /** Whether anything wants OSCs, bells or resets, which decides the write path. */
+  private hasStreamHandlers(): boolean {
+    return this.oscHandlers.size > 0 || this.onBellHandlers.size > 0 || this.onResetHandlers.size > 0
+  }
+
   /**
-   * Parses `bytes` in segments split at each OSC/bell/RIS event, dispatching each
-   * handler once everything before it (including its sequence) has been parsed.
-   * Offsets are byte offsets, so no string round trip is needed. See oscScanner.
+   * Parses `bytes`, running each OSC handler after its sequence is parsed and
+   * before anything after it, and bell and reset handlers in order with them.
+   * Before the core loads the bytes are only buffered; `initWasm` replays them
+   * through here.
    */
-  private parseAndDispatch(bytes: Uint8Array): void {
-    // Timed separately: a full JS pass, only paid when handlers are registered.
-    const { events, pending } = phases.time('scan', () =>
-      scanOsc(bytes, this.oscPending, this.oscDecoder, this.onResetHandlers.size > 0),
-    )
-    this.oscPending = pending
-
-    let cursor = 0 // how much of `bytes` has reached the parser
-    for (const ev of events) {
-      if (ev.segEnd > cursor) {
-        this.parseSegment(bytes.subarray(cursor, ev.segEnd))
-        cursor = ev.segEnd
-      }
-      // Screen state must be current before a handler runs.
-      phases.time('bufferChange', () => this.notifyBufferChange())
-      if (ev.kind === 'bell') {
-        phases.time('handlers', () => {
-          for (const h of this.onBellHandlers) h()
-        })
-        continue
-      }
-      if (ev.kind === 'ris') {
-        phases.time('handlers', () => {
-          for (const h of this.onResetHandlers) h()
-        })
-        continue
-      }
-      const handlers = this.oscHandlers.get(ev.ident)
-      if (!handlers) continue
-      phases.time('handlers', () => {
-        for (const h of handlers) {
-          // Claiming stops other handlers; the core still parses the bytes.
-          if (h(ev.payload) === true) break
-        }
-      })
+  private feed(bytes: Uint8Array): void {
+    const stream = this.oscStream
+    if (!this.wasm || !stream || !this.hasStreamHandlers()) {
+      this.parseSegment(bytes)
+      return
     }
+    const wasm = this.wasm
+    phases.time('parse', () =>
+      stream.write(bytes, {
+        stop: () => this.deliverCoreEvents(wasm),
+        osc: (content) => this.dispatchOsc(content),
+      }),
+    )
+  }
 
-    if (cursor < bytes.length) this.parseSegment(bytes.subarray(cursor))
+  /** Bells and resets the core counted during the write, handed on in order. */
+  private deliverCoreEvents(wasm: GhosttyWasm): void {
+    const bells = wasm.exports.ghostty_terminal_take_bells?.(this.termPtr) ?? 0
+    const resets = wasm.exports.ghostty_terminal_take_resets?.(this.termPtr) ?? 0
+    if (bells === 0 && resets === 0) return
+    phases.time('bufferChange', () => this.notifyBufferChange())
+    phases.time('handlers', () => {
+      for (let i = 0; i < resets; i++) for (const h of this.onResetHandlers) h()
+      for (let i = 0; i < bells; i++) for (const h of this.onBellHandlers) h()
+    })
+  }
+
+  private dispatchOsc(content: Uint8Array): void {
+    const osc = parseOsc(content, this.oscDecoder)
+    if (!osc) return
+    const handlers = this.oscHandlers.get(osc.ident)
+    if (!handlers) return
+    // Screen state must be current before a handler runs.
+    phases.time('bufferChange', () => this.notifyBufferChange())
+    phases.time('handlers', () => {
+      for (const h of handlers) {
+        // Claiming stops other handlers; the core still parses the bytes.
+        if (h(osc.payload) === true) break
+      }
+    })
   }
 
   // Every write must reach the parser synchronously and in call order.
@@ -1458,15 +1477,7 @@ export class GhosttyEngine implements TerminalEngine {
 
     // Caught: the caller is a PTY data callback with nowhere to put an exception.
     try {
-      if (
-        this.oscHandlers.size > 0 ||
-        this.onBellHandlers.size > 0 ||
-        this.onResetHandlers.size > 0
-      ) {
-        this.parseAndDispatch(bytes)
-      } else {
-        this.parseSegment(bytes)
-      }
+      this.feed(bytes)
 
       // Drained per write: a reply must describe the state that provoked it.
       phases.time('drain', () => this.drainResponses())
@@ -1617,9 +1628,9 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /**
-   * `ESC c` (RIS) seen in the stream, for host-side state the core doesn't know
-   * about. Register only while needed: watching for RIS makes the scanner check
-   * every 'c' in the output. See `oscScanner.ts`.
+   * A full reset (RIS, `ESC c`) in the stream, for host-side state the core
+   * doesn't know about. Reported by the core's reset callback and handed on in
+   * order with the OSC handlers; see `oscStream.ts`.
    */
   registerResetHandler(cb: () => void): IDisposable {
     this.onResetHandlers.add(cb)
@@ -1632,8 +1643,8 @@ export class GhosttyEngine implements TerminalEngine {
   }
   
   /**
-   * Subscribe to an OSC ident. Unlike the xterm engine, OSC is recovered by
-   * scanning the byte stream:
+   * Subscribe to an OSC ident. The core's parser finds each OSC
+   * (`oscStream.ts`):
    *
    * - Returning `true` stops the remaining handlers but does not consume the
    *   sequence; the core still parses it. Promises never count as a claim.

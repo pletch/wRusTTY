@@ -8,7 +8,7 @@
  */
 
 /** Phases of `write`. These partition it, so they reconcile against the whole. */
-export const PHASES = ['scan', 'parse', 'drain', 'bufferChange', 'handlers'] as const
+export const PHASES = ['parse', 'drain', 'bufferChange', 'handlers'] as const
 /** Phases within `parse` (`writeBytes`), counted as a subdivision of it. */
 export const SUBPHASES = ['alloc', 'copy', 'coreWrite', 'free'] as const
 
@@ -18,8 +18,7 @@ export type AnyPhase = Phase | Subphase
 
 /** What each phase covers, for the report. */
 const HELP: Record<AnyPhase, string> = {
-  scan: 'scanOsc over every byte, in JS (only when an OSC/bell handler is registered)',
-  parse: 'writeBytes into the WASM core — the parser itself',
+  parse: 'the WASM core parsing the bytes — writeBytes, or vt_write_until when OSC/bell handlers are registered (the sub-phases are only timed on the plain path)',
   drain: 'readResponse loop, replies the core owes the host',
   bufferChange: 'asking the core whether the screen buffer flipped',
   handlers: 'onWriteParsed / OSC / bell callbacks',
@@ -41,7 +40,7 @@ let unparsedBytes = 0
 
 function blank(): Record<AnyPhase, number> {
   return {
-    scan: 0, parse: 0, drain: 0, bufferChange: 0, handlers: 0,
+    parse: 0, drain: 0, bufferChange: 0, handlers: 0,
     alloc: 0, copy: 0, coreWrite: 0, free: 0,
   }
 }

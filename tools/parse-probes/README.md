@@ -41,7 +41,6 @@ worth reading.
 | `diff.mjs` | envelope / handler / style cost, one property varied at a time |
 | `diff2.mjs` | per-byte floor, and whether escapes damage the printable bulk path |
 | `diff3.mjs` | re-runs the suspect rows with an `env.log` counter (see below) |
-| `scan.mjs` | `scanOsc` in ms/MB per content shape |
 | `viewport.mjs` | cost of getting a frame's cells out, and the JS→WASM call floor |
 | `iter.mjs` | the same, driven through ghostty **main**'s row/cell iterator API, including the RAW packed-cell path and a dirty-rows-only frame |
 | `search.mjs` | the **scrollback search** path — today's row-at-a-time read against main's `grid_ref`, the JS matcher on top of it (`gridref-match`), and the core's own search (`native`, `native-feed`). `check` mode gates it |
@@ -53,11 +52,8 @@ worth reading.
 ```sh
 node tools/parse-probes/probe.mjs src/lib/ghostty/vendor/ghostty-vt.wasm all 40
 node tools/parse-probes/diff.mjs  src/lib/ghostty/vendor/ghostty-vt.wasm 30
-node tools/parse-probes/scan.mjs 8
 node tools/parse-probes/names.mjs src/lib/ghostty/vendor/ghostty-vt.wasm style
 ```
-
-`scan.mjs` imports the scanner's `.ts` directly — Node 24 strips the types.
 
 ## Two traps
 

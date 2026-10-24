@@ -3,12 +3,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { parseOsc52 } from '../osc52'
-import { OSC_PENDING_MAX } from './oscScanner'
+import { OSC_PENDING_MAX } from './oscStream'
 
 /**
  * A clipboard write reaching the pane through a real engine and core, across
  * chunk boundaries: OSC 52 payloads are user-sized, so they routinely span
- * deliveries, and the scanner's carried-over buffer must hold them.
+ * deliveries, and `oscStream.ts` must collect them across the split.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

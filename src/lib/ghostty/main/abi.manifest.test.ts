@@ -266,6 +266,19 @@ run('abi.ts against ghostty_type_json', () => {
     expect(field('GhosttyRenderStateColors', 'palette').size).toBe(abi.PALETTE_ENTRIES * rgb)
   })
 
+  it('GhosttyTerminalWriteStop — what vt_write_until reports, read by oscStream', () => {
+    expect(abi.WRITE_STOP_SIZE).toBe(m.GhosttyTerminalWriteStop.size)
+    for (const [name, ours] of [
+      ['size', abi.WRITE_STOP_OFF_SIZE],
+      ['consumed', abi.WRITE_STOP_OFF_CONSUMED],
+      ['reached', abi.WRITE_STOP_OFF_REACHED],
+      ['kind', abi.WRITE_STOP_OFF_KIND],
+      ['end', abi.WRITE_STOP_OFF_END],
+    ] as const) {
+      expect(ours, name).toBe(field('GhosttyTerminalWriteStop', name).offset)
+    }
+  })
+
   it('GhosttyColorRgb is the unit PALETTE_BYTES counts in', () => {
     expect(abi.COLOR_RGB_BYTES).toBe(m.GhosttyColorRgb.size)
     expect(abi.PALETTE_BYTES).toBe(abi.PALETTE_ENTRIES * m.GhosttyColorRgb.size)

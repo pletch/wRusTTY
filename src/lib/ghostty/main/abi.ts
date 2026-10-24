@@ -447,6 +447,38 @@ export const T_OPT_RENDER_HOLD = 41
 export const T_OPT_XT_CHECKSUM_REPORT = 44
 
 /**
+ * `GhosttyTerminalResetFn`: `(terminal, userdata) -> void`, called after a
+ * full reset (RIS). The value is the function pointer itself.
+ */
+export const T_OPT_RESET = 43
+
+/**
+ * `ghostty_terminal_vt_write_until` boundaries (`GhosttyTerminalBoundary`),
+ * bit flags. The call stops right after the first byte that reaches one.
+ */
+export const BOUNDARY_GROUND = 1 << 0
+export const BOUNDARY_OSC_START = 1 << 5
+export const BOUNDARY_OSC_END = 1 << 6
+
+/** `GhosttyTerminalStringEnd`: how a string ended. */
+export const STRING_END_ST_ESC = 0
+export const STRING_END_ST_C1 = 1
+export const STRING_END_CANCELLED = 2
+export const STRING_END_ABORTED = 3
+export const STRING_END_BEL = 4
+
+/**
+ * `GhosttyTerminalWriteStop`, a sized struct the caller provides. Checked
+ * against `ghostty_type_json` by `abi.manifest.test.ts`.
+ */
+export const WRITE_STOP_SIZE = 28
+export const WRITE_STOP_OFF_SIZE = 0
+export const WRITE_STOP_OFF_CONSUMED = 4
+export const WRITE_STOP_OFF_REACHED = 8
+export const WRITE_STOP_OFF_KIND = 12
+export const WRITE_STOP_OFF_END = 20
+
+/**
  * Sets a mode via a `GhosttyTerminalModeConfig*`. Never fires the render-hold
  * callback, so it can end a hold the program never released.
  */
@@ -522,6 +554,13 @@ export interface GhosttyMainExports {
    * `T_DATA_VT_PROCESSING_ERROR`. Don't wrap it in `expectOk`.
    */
   ghostty_terminal_vt_write(term: number, ptr: number, len: number): void
+  /**
+   * Like `vt_write`, but stops right after the first byte that reaches one of
+   * `boundaries` and describes the stop in `stop` (a `GhosttyTerminalWriteStop`
+   * with its size set). `GHOSTTY_SUCCESS` when a boundary was reached,
+   * `GHOSTTY_NO_VALUE` when all input was consumed without one.
+   */
+  ghostty_terminal_vt_write_until(term: number, ptr: number, len: number, boundaries: number, stop: number): number
 
   /* generic accessors */
   ghostty_terminal_get(term: number, key: number, out: number): number

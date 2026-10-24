@@ -61,13 +61,47 @@ two integrity checks that are meant to fail.
 boundary (ground, or the start or end of an APC, DCS or OSC string) and
 reports how much it consumed. Upstream built it for "a high-performance proxy
 that sits between the pty and the terminal emulator in order to implement
-custom handlers". That is what `oscScanner.ts` does by hand, and it is the
-mechanism discussion #14645 asked for: write until an OSC ends, let the
-semantic-prompt or unknown-sequence callback say which one it was, apply the
-leftover-mode reset, then write the rest. Retiring the scanner on it is the
-next step, not part of this pin. Check first when the semantic-prompt callback
-fires relative to the stop for an `ESC \` terminator: the call stops after the
-ESC and the `\` comes with the next call.
+custom handlers", which is what discussion #14645 asked for.
+
+**`oscScanner.ts` is retired on it.** `oscStream.ts` feeds each chunk through
+`vt_write_until(OSC_START | OSC_END)`, takes each OSC's content between the
+two stops (carrying it across chunks when it spans them), and hands it to the
+engine's OSC handlers after the core has parsed it and before anything after
+it. That keeps the contract the scanner gave, so `Terminal.tsx` and shell
+integration are unchanged, and it keeps the one thing a callback can't do: the
+leftover-mode reset at OSC 133 still writes `? 1049 l` back at the marker.
+
+It doesn't use the semantic-prompt or unknown-sequence callbacks. Reading the
+content at the stop covers every OSC the app handles, 633 included, and keeps
+the handlers working on raw payloads as before. Bells and resets, which have
+no boundary, come from the core's `BELL` and `RESET` callbacks. The shim
+counts them, and the engine hands them on before the next OSC's handler, so
+stream order is kept.
+
+Two details mattered:
+
+- **`ESC \`.** The call stops after the ESC, before the `\`. Writing anything
+  there would be parsed as part of the escape, so the stream completes the
+  terminator first, holding the OSC over to the next chunk when the `\` lands
+  there. An ESC followed by anything else ended the OSC without terminating
+  it, and the OSC is dropped, as the scanner did.
+- **Bytes before the core loads.** The scanner dispatched those on arrival,
+  before there was a grid. They're now buffered and dispatched when they replay
+  at load, with a grid for handlers like prompt-input tracking to read.
+
+The core's parser now does what the scanner reimplemented: CAN and SUB, 8-bit
+introducers, and terminators split anywhere. `oscStream.test.ts` holds it to
+the scanner's promises through a real engine: ordering against the grid and
+the screen buffer, bells and resets in stream order, splits after ESC, inside
+ST and three ways, and a handler writing back with both terminators.
+
+Measured against the old path (the scanner, then `vt_write` per segment) on
+the same binary, 4 MB per shape in 16 KB chunks: plain text 1.22x, TUI redraws
+1.17x, bracket-dense JSON 1.18x, SGR-dense about even, and 64 KB OSC 52
+payloads **7.5x**, since the scanner rescanned its carried-over buffer on every
+chunk. The one shape that's slower is four OSC 133 markers on every line,
+0.9x (33 against 36 MB/s): each OSC costs two core calls, about 160 ns each.
+Real shells send those markers per command, not per line.
 
 Also in, small: in origin mode, CHA, VPA, HPR and VPR applied the scroll
 margin twice (`82df0be2c`); backspace and CUB could move past a DECSLRM left

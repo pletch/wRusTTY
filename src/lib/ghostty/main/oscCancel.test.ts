@@ -8,7 +8,7 @@ import * as abi from './abi'
 /**
  * CAN (0x18) and SUB (0x1A) cancel an OSC in progress: the command is
  * dropped and what follows is ordinary output (upstream `520d8f55a`; xterm
- * and the DEC parser agree). `oscScanner.test.ts` holds our scanner to the
+ * and the DEC parser agree). `oscStream.test.ts` holds the engine's OSC handlers to the
  * same rule.
  *
  * Against the shipped binary, so it runs on CI. `GHOSTTY_VT_WASM` points it

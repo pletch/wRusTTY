@@ -116,6 +116,9 @@ interface TerminalState {
   /** Scrollback depth when the render snapshot was last actually rebuilt. */
   snapshotScrollback: number
   hold: RenderHold
+  /** BELs and full resets the core reported since the engine last asked. */
+  bells: number
+  resets: number
 }
 
 /**
@@ -278,13 +281,21 @@ class MainShim {
       scrollback: new MainScrollbackReader({ ex, term }),
       // Installed before any byte is written: `vt_write` ignores queries until
       // then.
-      effects: new MainEffects({ ex, term, onRenderHold: (held) => this.onRenderHold(term, held) }),
+      effects: new MainEffects({
+        ex,
+        term,
+        onRenderHold: (held) => this.onRenderHold(term, held),
+        onBell: () => this.count(term, 'bells'),
+        onReset: () => this.count(term, 'resets'),
+      }),
       pending: [],
       dirtyIter: 0,
       cursorRead: false,
       colorsRead: false,
       snapshotScrollback: 0,
       hold: { active: false, since: 0, fresh: false },
+      bells: 0,
+      resets: 0,
     })
     return term
   }
@@ -410,6 +421,21 @@ class MainShim {
    * Runs inside `vt_write`, where the core allows snapshots and reads but not
    * terminal writes.
    */
+  /** Runs inside `vt_write`; only counts. */
+  private count(term: number, what: 'bells' | 'resets'): void {
+    const st = this.state(term)
+    if (st) st[what]++
+  }
+
+  /** Hands back a count and zeroes it. */
+  private take(term: number, what: 'bells' | 'resets'): number {
+    const st = this.state(term)
+    if (!st) return 0
+    const n = st[what]
+    st[what] = 0
+    return n
+  }
+
   private onRenderHold(term: number, held: boolean): void {
     const st = this.state(term)
     if (!st) return
@@ -508,6 +534,8 @@ class MainShim {
         else this.snapshot(term, st)
         return 0
       },
+      ghostty_terminal_take_bells: (term) => this.take(term, 'bells'),
+      ghostty_terminal_take_resets: (term) => this.take(term, 'resets'),
       ghostty_render_state_is_held: (term) => {
         const st = this.state(term)
         if (!st) return 0

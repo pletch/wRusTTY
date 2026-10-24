@@ -81,17 +81,32 @@ export interface EffectsHandles {
    * 2026 is only a mode bit.
    */
   onRenderHold?: (held: boolean) => void
+  /**
+   * BEL in the output (not one that ends an OSC), and a full reset (RIS).
+   * Called during `vt_write`; `oscStream.ts` hands them on at the next stop,
+   * which keeps them in order with the OSC handlers.
+   */
+  onBell?: () => void
+  onReset?: () => void
 }
 
 export class MainEffects {
   private readonly ex: EffectsHandles['ex']
   private readonly table: WebAssembly.Table
   private readonly slot: number
-  private readonly holdSlot: number | null = null
+  /** Slots for the optional callbacks, released with the main one. */
+  private readonly extraSlots: number[] = []
+
+  /** Installs one optional callback. */
+  private install(term: number, option: number, inst: WebAssembly.Instance, what: string): void {
+    const slot = this.claimSlot(inst)
+    this.extraSlots.push(slot)
+    abi.expectOk(this.ex.ghostty_terminal_set(term, option, slot), what)
+  }
   private pending: Uint8Array[] = []
   private disposed = false
 
-  constructor({ ex, term, onRenderHold }: EffectsHandles) {
+  constructor({ ex, term, onRenderHold, onBell, onReset }: EffectsHandles) {
     const table = ex.__indirect_function_table
     if (!table) {
       throw new Error('ghostty wasm build does not export __indirect_function_table')
@@ -110,10 +125,10 @@ export class MainEffects {
     abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_WRITE_PTY, this.slot), 'set WRITE_PTY')
 
     if (onRenderHold) {
-      const hold = trampoline(3, (_term, _userdata, held) => onRenderHold(held !== 0))
-      this.holdSlot = this.claimSlot(hold)
-      abi.expectOk(ex.ghostty_terminal_set(term, abi.T_OPT_RENDER_HOLD, this.holdSlot), 'set RENDER_HOLD')
+      this.install(term, abi.T_OPT_RENDER_HOLD, trampoline(3, (_t, _u, held) => onRenderHold(held !== 0)), 'set RENDER_HOLD')
     }
+    if (onBell) this.install(term, abi.T_OPT_BELL, trampoline(2, () => onBell()), 'set BELL')
+    if (onReset) this.install(term, abi.T_OPT_RESET, trampoline(2, () => onReset()), 'set RESET')
   }
 
   /** A table entry for `inst`'s export, reusing one a disposed pane gave back. */
@@ -141,8 +156,7 @@ export class MainEffects {
     this.pending = []
     // Cleared so a stale entry traps rather than resolving to a live trampoline.
     const list = freeSlots.get(this.ex) ?? []
-    for (const slot of [this.slot, this.holdSlot]) {
-      if (slot === null) continue
+    for (const slot of [this.slot, ...this.extraSlots]) {
       this.table.set(slot, null)
       list.push(slot)
     }

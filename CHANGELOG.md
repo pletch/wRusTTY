@@ -15,6 +15,11 @@ release job publishes it as the GitHub release notes.
 
 - The terminal engine is re-pinned to Ghostty `8ef0ec12`, now built with
   Zig 0.17. Colored output parses up to about 15% faster.
+- Titles, working directory, clipboard writes, notifications and shell
+  integration are now read from the output by the engine's own parser instead
+  of a separate pass in JavaScript. Most output is about 15-20% faster to
+  process, and large clipboard writes from a remote program several times
+  faster.
 
 ### Fixed
 

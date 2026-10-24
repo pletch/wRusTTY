@@ -137,7 +137,7 @@ export class PromptInputTracker {
         // The prompt finished drawing, so the cursor is exactly where the user's
         // text begins. Measured here in the handler, which runs with every byte
         // before the marker parsed and none after (see
-        // GhosttyEngine.parseAndDispatch).
+        // GhosttyEngine.feed and oscStream.ts).
         this.origin = this.readCursor()
         this.originExact = this.origin !== null
         this.running = false

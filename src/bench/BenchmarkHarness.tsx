@@ -133,10 +133,9 @@ export function BenchmarkHarness() {
       e.setScrollbackBudget(16)
     }
 
-    // The app registers a bell handler, routing writes through
-    // parseAndDispatch's scanOsc pass, so the harness does too. scanOsc is pure
-    // JS over the same bytes, so the `scan` phase doubles as a control for this
-    // thread's JS speed against `coreWrite`'s WASM speed.
+    // The app registers a bell handler, which routes writes through the
+    // OSC-splitting path (`oscStream.ts`, on vt_write_until), so the harness
+    // does too and measures the path the app takes.
     ghostty.onBell(() => {})
 
     xterm.mount(xtermHost.current!)

@@ -37,16 +37,16 @@ describe('writePhases', () => {
     let now = 0
     vi.spyOn(performance, 'now').mockImplementation(() => now)
     phases.start()
-    phases.time('scan', () => { now += 5 })
+    phases.time('handlers', () => { now += 5 })
     phases.time('parse', () => { now += 3 })
     phases.time('parse', () => { now += 2 })
     phases.time('drain', () => { now += 1 })
     const s = phases.snapshot()
-    expect(s.totals.scan).toBe(5)
+    expect(s.totals.handlers).toBe(5)
     expect(s.totals.parse).toBe(5)
     expect(s.totals.drain).toBe(1)
     expect(s.calls.parse).toBe(2)
-    expect(s.calls.handlers).toBe(0)
+    expect(s.calls.bufferChange).toBe(0)
   })
 
   /**
@@ -93,14 +93,14 @@ describe('writePhases', () => {
     vi.spyOn(performance, 'now').mockImplementation(() => now)
     phases.start()
     const started = phases.now()
-    phases.time('scan', () => { now += 6 })
+    phases.time('handlers', () => { now += 6 })
     phases.time('parse', () => { now += 3 })
     now += 1 // work inside write that no phase wraps
     phases.recordWrite(262144, phases.now() - started)
 
     const s = phases.snapshot()
     expect(s.writeMs).toBe(10)
-    expect(s.shares.scan).toBeCloseTo(0.6)
+    expect(s.shares.handlers).toBeCloseTo(0.6)
     expect(s.shares.parse).toBeCloseTo(0.3)
     // The gap is surfaced rather than absorbed into a phase.
     expect(s.unattributedMs).toBe(1)
@@ -124,11 +124,11 @@ describe('writePhases', () => {
     phases.start()
     const started = phases.now()
     phases.time('parse', () => { now += 2 })
-    phases.time('scan', () => { now += 8 })
+    phases.time('drain', () => { now += 8 })
     phases.recordWrite(1000, phases.now() - started)
 
     const report = phases.formatReport()
-    expect(report.indexOf('scan')).toBeLessThan(report.indexOf('parse'))
+    expect(report.indexOf('drain')).toBeLessThan(report.indexOf('parse'))
     expect(report).toContain('80.0%')
   })
 

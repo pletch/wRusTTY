@@ -87,6 +87,12 @@ export interface GhosttyExports {
    */
   ghostty_render_state_is_held?(term: number): number
   /**
+   * BELs (not OSC terminators) and full resets (RIS) seen since the last call,
+   * then zeroed. Counted by the core's callbacks during writes. Main shim only.
+   */
+  ghostty_terminal_take_bells?(term: number): number
+  ghostty_terminal_take_resets?(term: number): number
+  /**
    * Scrollback depth when the snapshot was last rebuilt (which differs from the
    * live count during a hold). `main` shim only; fall back to the live count.
    */

@@ -4,7 +4,7 @@
  *   ESC ] 52 ; <targets> ; <base64> BEL
  *
  * The only clipboard path for a program on the far end of SSH or telnet. The
- * scanner (ghostty/oscScanner) passes everything after `52;`, e.g.
+ * engine's OSC handler (ghostty/oscStream) passes everything after `52;`, e.g.
  * `c;SGVsbG8=`.
  */
 
@@ -17,7 +17,7 @@ const HONOURED = ['c', 's']
 /**
  * A larger copy is refused. OSC 52 has no length limit and the payload comes
  * from an untrusted socket. 768 KB of base64 is ~576 KB of text, and under
- * `oscScanner.OSC_PENDING_MAX`, so it's accepted whole or split.
+ * `oscStream.OSC_PENDING_MAX`, so it's accepted whole or split.
  */
 export const OSC52_MAX_BASE64 = 768 * 1024
 
