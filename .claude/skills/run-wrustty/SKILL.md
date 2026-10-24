@@ -28,7 +28,7 @@ Node 24 (verified on v24.18.0, npm 12.0.1). Nothing else for the paths above.
 npm install
 ```
 
-Rebuilding the WASM core additionally needs WSL and Zig 0.16.0 — see
+Rebuilding the WASM core additionally needs WSL and Zig 0.17.0 — see
 `src/lib/ghostty/vendor/README.md`. You do **not** need it to run or change
 anything in TypeScript; the built core is committed at
 `src/lib/ghostty/vendor/ghostty-vt.wasm`.
@@ -204,18 +204,19 @@ in `src/lib/ghostty/vendor/README.md`. In WSL, under `~` rather than `/mnt/c`:
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin 4540d499ae463ad7b90f28f6f852f64f844c160f
+git fetch -q --depth 1 origin 8ef0ec1238220a5a714be452ed2844f0691fcf83
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
-zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+~/zig-x86_64-linux-0.17.0/zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 ```
 
-Traps, all hit for real: this WSL image has no `xz`, `python3` or `zstd`, so the
-Zig tarball has to be unpacked from the Windows side — and files written over the
-9p bridge lose the exec bit, so `chmod +x zig` afterward. Building natively on
+Traps, all hit for real: files written over the 9p bridge lose the exec bit, so
+a Zig unpacked from the Windows side needs `chmod +x zig` afterward. (The WSL
+image has `xz` now, so unpacking inside WSL works.) Building natively on
 Windows hits a Zig `ftruncate`/`FileTooBig` bug in the unicode table generator.
-`main` wants Zig **0.16.0**; the old v1.3.1 build wanted 0.15.2 — they are not
-interchangeable. `src/lib/ghostty/vendor-131/` still holds that older build,
+`main` wants Zig **0.17.0**, which renamed the optimize modes: the flag is
+`-Doptimize=fast` (the old `ReleaseFast` is still accepted as an alias). The old v1.3.1 build wanted
+0.15.2. They are not interchangeable. `src/lib/ghostty/vendor-131/` still holds that older build,
 which is the comparison oracle the port's parity suites read and is not shipped.
 
 **A rebuild is supposed to fail `vendorIntegrity.test.ts`** — update

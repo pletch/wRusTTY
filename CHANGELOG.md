@@ -11,6 +11,19 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `8ef0ec12`, now built with
+  Zig 0.17. Colored output parses up to about 15% faster.
+
+### Fixed
+
+- In a program that sets a scroll region with origin mode on, moving the
+  cursor to a column (CHA) no longer also moves it down by the size of the
+  top margin.
+- Backspace and cursor-left stop at a left margin set by the program instead
+  of moving past it.
+
 ## [0.4.2] - 2026-10-16
 
 ### Security

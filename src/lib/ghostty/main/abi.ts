@@ -2,7 +2,7 @@
  * The ghostty `main` C ABI, as constants and types; see
  * `docs/PORT_GHOSTTY_MAIN.md`.
  *
- * Pinned to ghostty-org/ghostty @ b3dc3d794513c11633e7c3347935693957744e83.
+ * Pinned to ghostty-org/ghostty @ 8ef0ec1238220a5a714be452ed2844f0691fcf83.
  * Values are transcribed from that commit's headers, exercised against its
  * binary by `main/abi.parity.test.ts`, and struct layouts are checked against
  * the binary by `main/abi.manifest.test.ts`. Re-pinning means re-checking; a

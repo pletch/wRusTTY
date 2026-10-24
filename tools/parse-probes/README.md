@@ -84,13 +84,13 @@ V8 to Liftoff and costs ~2.75x, which is its own long story.
 builds with different toolchains:
 
 - our vendored binary: ghostty-web's fork, **Zig 0.15.2**, `zig build lib-vt`
-- main: **Zig 0.16.0** (`minimum_zig_version` in `build.zig.zon`), and the flag
+- main: **Zig 0.17.0** (`minimum_zig_version` in `build.zig.zon`), and the flag
   is `-Demit-lib-vt`, not a `lib-vt` step
 
 ```sh
 git clone --depth 1 --branch main https://github.com/ghostty-org/ghostty.git
 cd ghostty
-zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm   (201 exports at 6b22215c, 202 at 48d85eae,
 #    187 when first measured, 84 in the vendored build — still moving, and it
 #    can move down: 48d85eae -> 6b22215c removed mode_get/mode_set)

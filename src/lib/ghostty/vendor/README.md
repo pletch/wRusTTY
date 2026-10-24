@@ -11,11 +11,11 @@ comparison oracle.
 ## The expected artifact
 
 ```text
-SHA-256  a3a6da12ed85f7d77c86d80be1786c9897abba93366a840b15f803a7b51bf8ae
-Size     1,191,849 bytes
-Source   ghostty-org/ghostty @ b3dc3d794513c11633e7c3347935693957744e83
+SHA-256  49bc71eff6ffaa2e030873c7625b7a221d47f2239832028c70d368b02d066a21
+Size     1,273,729 bytes
+Source   ghostty-org/ghostty @ 8ef0ec1238220a5a714be452ed2844f0691fcf83
          + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+Built    Zig 0.17.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
 ```
 
@@ -43,7 +43,7 @@ what the check catches is the binary moving when nobody rebuilt it.
 
 ## Rebuilding
 
-Needs **Zig 0.16.0 on Linux or WSL** — 0.16 is `main`'s `minimum_zig_version`,
+Needs **Zig 0.17.0 on Linux or WSL** — 0.17 is `main`'s `minimum_zig_version`,
 and building natively on Windows hits a Zig `ftruncate`/`FileTooBig` bug in the
 unicode table generator. Build under `~`, not `/mnt/c`.
 
@@ -51,10 +51,10 @@ unicode table generator. Build under `~`, not `/mnt/c`.
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin b3dc3d794513c11633e7c3347935693957744e83
+git fetch -q --depth 1 origin 8ef0ec1238220a5a714be452ed2844f0691fcf83
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
-zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 node tools/strip-wasm-debug.mjs zig-out/bin/ghostty-vt.wasm <here>/ghostty-vt.wasm
 ```
 

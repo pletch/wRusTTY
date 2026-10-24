@@ -11,12 +11,12 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ b3dc3d794513c11633e7c3347935693957744e83
+ghostty-org/ghostty @ 8ef0ec1238220a5a714be452ed2844f0691fcf83
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  dd3e9f6cd11ca57913176eb11a668fa521cd3b64972575331cd5bbb5bc1daad4
-Size     4,862,404 bytes
-Built    Zig 0.16.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
-Exports  190 (188 functions) — the patch adds none
+SHA-256  f9385fd3dcfb3b716c10fc1312e42b09bca7d3ee8ac10216e3a160a6858705a4
+Size     5,260,042 bytes
+Built    Zig 0.17.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
+Exports  196 (193 functions) — the patch adds none
 ```
 
 **This build is patched.** The unpatched build was not re-measured at this pin;
@@ -40,7 +40,7 @@ not what these headers read as. See `docs/PORT_GHOSTTY_MAIN.md`.
 
 ## Replacing it
 
-Rebuilding needs **Zig 0.16.0 on Linux or WSL** (native Windows hits a Zig
+Rebuilding needs **Zig 0.17.0 on Linux or WSL** (native Windows hits a Zig
 `ftruncate`/`FileTooBig` bug in the unicode table generator):
 
 ```sh
@@ -48,11 +48,11 @@ Rebuilding needs **Zig 0.16.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin b3dc3d794513c11633e7c3347935693957744e83
+git fetch -q --depth 1 origin 8ef0ec1238220a5a714be452ed2844f0691fcf83
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch
-zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 cp zig-out/bin/ghostty-vt.wasm <here>/ghostty-vt.wasm
 cp include/ghostty/vt/{render,terminal,screen}.h <here>/
 ```

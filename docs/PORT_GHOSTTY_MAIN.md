@@ -30,16 +30,67 @@ ghostty-org/ghostty @ b1d9492cfa5d0d22c534a00e81bea623957113e7
 Chosen deliberately, not merely "what was current":
 
 - It is the commit every ABI fact below was verified against.
-- It is the commit we hold a **built binary** for. Rebuilding needs Zig 0.16.0
+- It is the commit we hold a **built binary** for. Rebuilding needs Zig 0.17.0
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, 190, **190 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, 190, 190, **196 here** — so re-pin only with a reason and re-run
 the checks when you do. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
-search API at `492300ca` and `ghostty_osc_set` at `f9e82709`.
+search API at `492300ca`, `ghostty_osc_set` at `f9e82709`, and Kitty graphics
+image iteration at `8ef0ec12`.
 
-### Moving from `b1d9492c` (2026-10-11) to this pin
+### Moving from `b3dc3d79` (2026-10-16) to this pin
+
+148 commits over eight days. Most are upstream's port to **Zig 0.17**, which
+is now `minimum_zig_version`, plus Kitty graphics in the render state and
+snapshot work. 0.17.0 is a proper release (2026-10-01) and is installed in WSL
+at `~/zig-x86_64-linux-0.17.0`, beside 0.16.0. Zig 0.17 renamed the optimize
+modes, so the recorded flag is now `-Doptimize=fast`; `ReleaseFast` still
+works as an alias and built a byte-identical binary.
+
+**One ABI break, and it doesn't touch us.** `ghostty_terminal_vt_write_until_ground`
+is gone, replaced by `ghostty_terminal_vt_write_until` (PR #14802). We never
+called the old one. Everything else is additive: Kitty graphics animation and
+render-state image iteration, six new exports in all (190 -> 196). The whole
+suite passed against the new binary before anything here was touched, bar the
+two integrity checks that are meant to fail.
+
+**`vt_write_until` is the reason this pin matters.** It writes like
+`vt_write` but stops right after the first byte that reaches a requested
+boundary (ground, or the start or end of an APC, DCS or OSC string) and
+reports how much it consumed. Upstream built it for "a high-performance proxy
+that sits between the pty and the terminal emulator in order to implement
+custom handlers". That is what `oscScanner.ts` does by hand, and it is the
+mechanism discussion #14645 asked for: write until an OSC ends, let the
+semantic-prompt or unknown-sequence callback say which one it was, apply the
+leftover-mode reset, then write the rest. Retiring the scanner on it is the
+next step, not part of this pin. Check first when the semantic-prompt callback
+fires relative to the stop for an `ESC \` terminator: the call stops after the
+ESC and the `\` comes with the next call.
+
+Also in, small: in origin mode, CHA, VPA, HPR and VPR applied the scroll
+margin twice (`82df0be2c`); backspace and CUB could move past a DECSLRM left
+margin with reverse wrap off (`53fb05c6e`). Both are mostly esctest cases.
+`originModeAndLeftMargin.test.ts` pins both against the shipped binary; on the
+previous one CHA moved the cursor from row 3 to row 5, and CUB went to column 0.
+
+Inert here: Kitty graphics (render-state images, animation tick, shm names,
+chunked transmissions), snapshots, APC cancel/abort (`75a7606c3`, APC is
+Kitty's), continuation export after C1 introducers (`e07a6f0eb`, we don't
+export continuations), OSC 7501 id validation, and formatter fixes.
+
+**Size and speed, with a new compiler.** The stripped binary grew **81,880
+bytes** (1,191,849 -> 1,273,729), nearly all code. `vt_write_until` itself is
+about 19 kB, a second parser loop specialized for boundary stops. The rest is
+spread across the stream handler and can't be split cleanly between new
+source and Zig 0.17's codegen, since this source only builds with 0.17.
+Parse speed didn't regress, measured against the previous binary at 200x60:
+plain text and TUI redraws within a few percent, SGR on every word 13-19%
+faster, wide characters unchanged. The search probe improved (`native` 3.0x
+and 2.2x, from 4.1x and 3.1x); the iterator probe sits inside its range.
+
+### Moving from `b1d9492c` (2026-10-11) to `b3dc3d79`
 
 112 commits over four days, a clean fast-forward and **no ABI break**. No export
 was added or removed. One OSC enum value was renamed and kept its number
@@ -522,14 +573,16 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout b1d9492cfa5d0d22c534a00e81bea623957113e7
+cd ghostty && git checkout 8ef0ec1238220a5a714be452ed2844f0691fcf83
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
-zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm
 ```
 
-Requires **Zig 0.16.0** (`minimum_zig_version` in `build.zig.zon`), against
-0.15.2 for the v1.3.1 build. Linux or WSL — building natively on Windows hits a
+Requires **Zig 0.17.0** (`minimum_zig_version` in `build.zig.zon`), against
+0.15.2 for the v1.3.1 build. Zig 0.17 renamed the optimize modes, so the flag
+is `-Doptimize=fast`. The old `ReleaseFast` is still accepted as an alias and
+builds a byte-identical binary. Linux or WSL — building natively on Windows hits a
 Zig `ftruncate`/`FileTooBig` bug in the unicode table generator.
 
 ## ABI facts that cost time to find
@@ -894,7 +947,8 @@ sending, and whether to ask before pasting.
 
 ### Rebuilding
 
-Producing the binary needs **Zig 0.16.0 on Linux/WSL** — it is installed in the
-WSL Debian on this machine; drive it with `wsl.exe -e bash -lc`. The recipe,
+Producing the binary needs **Zig 0.17.0 on Linux/WSL**. It is installed in the
+WSL Debian on this machine at `~/zig-x86_64-linux-0.17.0/zig`, next to 0.16.0, which is still
+the one on `PATH`; drive it with `wsl.exe -e bash -lc`. The recipe,
 the strip step and what has to be re-measured afterward are in
 `src/lib/ghostty/vendor/README.md`. Build under `~`, not `/mnt/c`.

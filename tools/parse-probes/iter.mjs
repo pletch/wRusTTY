@@ -23,8 +23,8 @@
  * **The baseline is measured.** `today` runs the vendored 1.3.1 binary in its
  * own child, so machine or Node changes move both sides.
  *
- * Build the wasm with Zig 0.16.0:
- *   zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=ReleaseFast
+ * Build the wasm with Zig 0.17.0:
+ *   zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
  *
  * Run: node tools/parse-probes/iter.mjs <main-ghostty-vt.wasm> [vendored.wasm]
  */
