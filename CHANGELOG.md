@@ -13,6 +13,13 @@ release job publishes it as the GitHub release notes.
 
 ## [0.4.3] - 2026-10-25
 
+### Security
+
+- `crypto-bigint` is updated to 0.7.8 for RUSTSEC-2026-0387 and `ctutils` to
+  0.4.5 for RUSTSEC-2026-0385. Both fix arithmetic meant to run in constant
+  time that could branch on secret values, a timing side channel in the RSA
+  and elliptic-curve code SSH uses.
+
 ### Changed
 
 - The terminal engine is re-pinned to Ghostty `8ef0ec12`, now built with
