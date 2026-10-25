@@ -11,6 +11,8 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-25
+
 ### Changed
 
 - The terminal engine is re-pinned to Ghostty `8ef0ec12`, now built with
@@ -28,6 +30,9 @@ release job publishes it as the GitHub release notes.
   top margin.
 - Backspace and cursor-left stop at a left margin set by the program instead
   of moving past it.
+- Two-finger scrolling on a precision touchpad follows the finger instead of
+  moving a full line for every small movement, and scrolling back a little no
+  longer overshoots. A mouse wheel notch still scrolls five lines.
 
 ## [0.4.2] - 2026-10-16
 
@@ -178,7 +183,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/pletch/wRusTTY/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/pletch/wRusTTY/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/pletch/wRusTTY/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/pletch/wRusTTY/compare/v0.3.0...v0.4.0
