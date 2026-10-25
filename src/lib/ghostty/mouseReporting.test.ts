@@ -240,3 +240,36 @@ describe('mouse reporting, from the canvas to the wire', () => {
     engine.unmount()
   })
 })
+
+describe('the wheel over scrollback', () => {
+  async function scrolledBack() {
+    const m = await mounted()
+    m.engine.write(Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\r\n'))
+    return { ...m, bottom: m.engine.viewportY }
+  }
+
+  it('carries a touchpad swipe of small steps instead of a line per step', async () => {
+    const { engine, wheel, bottom } = await scrolledBack()
+    // Ten 4px steps are 40px, two lines. A line per step would be ten.
+    for (let i = 0; i < 10; i++) wheel(-4)
+    expect(bottom - engine.viewportY).toBe(2)
+    engine.unmount()
+  })
+
+  it('still scrolls a mouse notch five lines', async () => {
+    const { engine, wheel, bottom } = await scrolledBack()
+    wheel(-100)
+    expect(bottom - engine.viewportY).toBe(5)
+    engine.unmount()
+  })
+
+  it('answers a reversal at once rather than paying off the leftover', async () => {
+    const { engine, wheel, bottom } = await scrolledBack()
+    wheel(-100)
+    // 19px up leaves almost a line owed; coming back down must not spend it.
+    wheel(-19)
+    wheel(20)
+    expect(bottom - engine.viewportY).toBe(4)
+    engine.unmount()
+  })
+})

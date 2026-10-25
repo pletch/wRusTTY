@@ -296,6 +296,8 @@ export class GhosttyEngine implements TerminalEngine {
   private readonly mouse: MouseReporter
   /** Scrollback depth as of the last frame, for keeping a scrolled view still. */
   private lastScrollbackCount = 0
+  /** Wheel travel short of a whole line, carried to the next event. */
+  private wheelRemainder = 0
   /**
    * Scrollback depth when the render snapshot was last rebuilt, the only count
    * `readRows` may map absolute rows through: the live count has already grown by
@@ -1187,7 +1189,15 @@ export class GhosttyEngine implements TerminalEngine {
       } else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
         lines = e.deltaY * this._rows
       }
-      this.scrollLines(Math.sign(lines) * Math.max(1, Math.abs(Math.round(lines))))
+      // A precision touchpad sends a stream of few-pixel steps. Rounding each
+      // up to a line scrolled a gentle swipe far faster than the finger moved,
+      // so the fractions are carried instead. A reversal starts afresh, or the
+      // first stretch back would only pay off what was left over.
+      if (Math.sign(lines) !== Math.sign(this.wheelRemainder)) this.wheelRemainder = 0
+      this.wheelRemainder += lines
+      const whole = Math.trunc(this.wheelRemainder)
+      this.wheelRemainder -= whole
+      if (whole !== 0) this.scrollLines(whole)
     }, { passive: false })
 
     window.addEventListener('mouseup', this.onMouseUp)
