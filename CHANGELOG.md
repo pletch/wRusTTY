@@ -35,6 +35,10 @@ release job publishes it as the GitHub release notes.
   snippet from Settings to pick this up.
 - The fish snippet sends a multi-line command as one command, not one per
   line.
+- Link underlines stay on the URL's row in programs that redraw in place,
+  like Claude Code. They were found on the previous frame's screen, so a URL
+  that moved could leave its underline on the wrong line until more output
+  arrived.
 
 ### Security
 

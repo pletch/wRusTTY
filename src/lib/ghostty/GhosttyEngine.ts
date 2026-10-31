@@ -213,6 +213,21 @@ export class GhosttyEngine implements TerminalEngine {
     return Math.max(0, this.scrollbackLength - this._rows - this._viewportOffset)
   }
 
+  /**
+   * Scrollback depth of the grid on screen. The live depth runs ahead of it by
+   * whatever output arrived since the last frame (or during a synchronized
+   * output hold).
+   */
+  private get shownScrollback(): number {
+    if (this.snapshotScrollback >= 0) return this.snapshotScrollback
+    return this.wasm ? this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) : 0
+  }
+
+  /** Absolute row at the top of the grid on screen; see `shownScrollback`. */
+  private get shownViewportY(): number {
+    return Math.max(0, this.shownScrollback - this._viewportOffset)
+  }
+
   private _cols = 80
   private _rows = 24
   /** Per-pane memory tier; resolved to a byte budget when the terminal is built. */
@@ -304,6 +319,9 @@ export class GhosttyEngine implements TerminalEngine {
    * output processed since. -1 before the first snapshot.
    */
   private snapshotScrollback = -1
+  /** Bumped with every snapshot rebuild. Links are read off the snapshot, so
+   *  they're cached on this rather than `bufferGen`. */
+  private snapshotGen = 0
 
   /**
    * Absolute rows `readRows` returned as blanks during its last call, and why
@@ -365,16 +383,17 @@ export class GhosttyEngine implements TerminalEngine {
     this.links = new LinkController({
       readRows: (from, to) => this.readRows(from, to),
       readWrapFlags: (from, to) => this.readWrapFlags(from, to),
-      viewportY: () => this.viewportY,
+      // The rows on screen, not the live ones: link rows must match what's drawn.
+      viewportY: () => this.shownViewportY,
       rows: () => this._rows,
-      totalRows: () => this.scrollbackLength,
-      bufferGen: () => this.bufferGen,
+      totalRows: () => this.shownScrollback + this._rows,
+      bufferGen: () => this.snapshotGen,
       cols: () => this._cols,
       pathLinks: () => this.pathLinks,
     })
     this.hintMode = new HintModeController({
       linksInViewport: () => this.links.linksInViewport(),
-      viewport: () => ({ top: this.viewportY, bottom: this.viewportY + this._rows - 1 }),
+      viewport: () => ({ top: this.shownViewportY, bottom: this.shownViewportY + this._rows - 1 }),
       cols: () => this._cols,
       setHints: (hints) => {
         if (this.renderer) {
@@ -614,8 +633,8 @@ export class GhosttyEngine implements TerminalEngine {
     let y = Math.floor((e.clientY - rect.top) / size.height)
     const clampedX = Math.max(0, Math.min(x, this._cols - 1))
     const clampedY = Math.max(0, Math.min(y, this._rows - 1))
-    const scrollbackCount = this.wasm ? this.wasm.exports.ghostty_terminal_get_scrollback_length(this.termPtr) : 0
-    const absY = scrollbackCount - this._viewportOffset + clampedY
+    // The pointer is over the drawn grid, which may trail the live buffer.
+    const absY = this.shownScrollback - this._viewportOffset + clampedY
     return { x: clampedX, y: absY }
   }
 
@@ -933,7 +952,7 @@ export class GhosttyEngine implements TerminalEngine {
       return
     }
     const cell = this.getCoords(this.hoverPointer as MouseEvent)
-    const sig = `${cell.x},${cell.y},${this.bufferGen},${this.viewportY}`
+    const sig = `${cell.x},${cell.y},${this.snapshotGen},${this.shownViewportY}`
     if (sig === this.hoverSig) return
     this.hoverSig = sig
     this.setHoveredLink(this.links.linkAt(cell))
@@ -945,7 +964,7 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private refreshLinkRanges(): void {
     if (!this.renderer) return
-    const sig = `${this.bufferGen}:${this.viewportY}:${this._cols}`
+    const sig = `${this.snapshotGen}:${this.shownViewportY}:${this._cols}`
     if (sig === this.linkRangesSig) return
     this.linkRangesSig = sig
     // URLs only; paths are links on demand (Ctrl or hint mode), otherwise
@@ -1079,12 +1098,6 @@ export class GhosttyEngine implements TerminalEngine {
     // Keeps the core's search current with new output and scrolling.
     this.nativeSearch?.onFrame()
 
-    // Which cells are links, for the at-rest underline.
-    this.refreshLinkRanges()
-
-    // An underlined link can scroll away under a still pointer.
-    if (this.hoveredLink) this.refreshLinkHover(true)
-
     // Skip with no context (repaints in full when it returns) or while
     // synchronized output holds the frame.
     if (
@@ -1097,7 +1110,14 @@ export class GhosttyEngine implements TerminalEngine {
       const scrollbackCount = this.snapshotScrollbackLength()
       // The depth the snapshot was taken at; see the field.
       this.snapshotScrollback = scrollbackCount
+      this.snapshotGen++
       this.pinViewport(scrollbackCount)
+      // Links are found in this snapshot, at this viewport, so they land on the
+      // rows about to be drawn. Found before the update, they described the last
+      // frame's screen and stayed cached until the next write.
+      this.refreshLinkRanges()
+      // An underlined link can scroll away under a still pointer.
+      if (this.hoveredLink) this.refreshLinkHover(true)
       // Cursor state comes off the same snapshot as the cells.
       const cursorVisible = this.wasm.exports.ghostty_render_state_get_cursor_visible(this.termPtr) !== 0
       const cursorCol = this.wasm.exports.ghostty_render_state_get_cursor_x(this.termPtr)
@@ -1938,6 +1958,7 @@ export class GhosttyEngine implements TerminalEngine {
     this.wasm.exports.ghostty_render_state_update(this.termPtr)
     // Record the snapshot and its depth together; see `snapshotScrollback`.
     this.snapshotScrollback = this.snapshotScrollbackLength()
+    this.snapshotGen++
   }
 
   /**

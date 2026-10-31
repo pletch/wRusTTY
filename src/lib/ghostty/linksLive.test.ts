@@ -97,6 +97,35 @@ describe('links, through a real core', () => {
     expect(inner.links.linksInViewport()).toEqual([])
   })
 
+  /**
+   * A TUI like Claude Code redraws in place, so a URL can move rows between
+   * frames. The underline has to come from the snapshot the frame draws; read
+   * before the frame's snapshot, it described the previous screen and stayed
+   * cached until the next write.
+   */
+  it('underlines a URL on the row the frame draws it on after a redraw moves it', async () => {
+    const { engine, inner } = await engineWith('\x1b[2;1Hsee https://example.com/x')
+    const renderer = {
+      linkHighlight: null,
+      linkRanges: null as { row: number; from: number; to: number }[] | null,
+      cursor: null,
+      isContextLost: false,
+      updateStaticGrid: () => {},
+      getCellSize: () => ({ width: 10, height: 20 }),
+      dispose: () => {},
+    }
+    inner.renderer = renderer
+    const frame = () => (engine as unknown as { renderFrame(): void }).renderFrame()
+
+    frame()
+    expect(renderer.linkRanges?.map((s) => s.row)).toEqual([1])
+
+    // Cleared and redrawn three rows lower, as one write.
+    engine.write(new TextEncoder().encode('\x1b[2J\x1b[5;1Hsee https://example.com/x'))
+    frame()
+    expect(renderer.linkRanges?.map((s) => s.row)).toEqual([4])
+  })
+
   /** Wide characters make a column and a character offset different numbers,
    *  which is exactly what the offset-to-column mapping exists for. */
   it('reports the right columns for a URL after a wide character', async () => {

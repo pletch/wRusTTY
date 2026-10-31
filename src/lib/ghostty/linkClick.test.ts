@@ -22,7 +22,7 @@ interface Internals {
   }
   mouseTracking(): boolean
   refreshLinkRanges(): void
-  bufferGen: number
+  snapshotGen: number
 }
 
 /** How many times the whole viewport has been asked for its links, so a test
@@ -228,7 +228,7 @@ describe('showing where the links are', () => {
     engine.unmount()
   })
 
-  it('re-reads only when the buffer or the view moved', async () => {
+  it('re-reads only when the snapshot or the view moved', async () => {
     const { engine, inner } = await mounted()
     viewportQueries = 0
     inner.refreshLinkRanges()
@@ -238,7 +238,7 @@ describe('showing where the links are', () => {
     // parse per frame.
     expect(viewportQueries).toBe(1)
 
-    inner.bufferGen++
+    inner.snapshotGen++
     inner.refreshLinkRanges()
     expect(viewportQueries).toBe(2)
     engine.unmount()
