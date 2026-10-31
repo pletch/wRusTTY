@@ -11,6 +11,25 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- The VT420 column sequences: DECIC and DECDC insert and delete columns
+  across the scrolling region, and DECBI and DECFI scroll it sideways at the
+  margins.
+
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `ae0dc1b7`, just past the 1.4.0
+  release.
+
+### Fixed
+
+- Clearing the screen at a shell prompt (Ctrl-L with shell integration) once
+  scrollback was full could leave the next text in the wrong style, read from
+  memory the engine had already freed.
+- After scrollback is erased (`clear` or `CSI 3 J`), search no longer reports
+  matches from the erased rows at the top of what remains.
+
 ## [0.4.3] - 2026-10-25
 
 ### Security

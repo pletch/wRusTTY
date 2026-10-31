@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ b1d9492cfa5d0d22c534a00e81bea623957113e7
+ghostty-org/ghostty @ ae0dc1b7136c2baddc3e067663aa041cd555cfda
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,13 +34,56 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, 190, 190, **196 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, 190, 190, 196, **196 here** — so re-pin only with a reason and re-run
 the checks when you do. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca`, `ghostty_osc_set` at `f9e82709`, and Kitty graphics
 image iteration at `8ef0ec12`.
 
-### Moving from `b3dc3d79` (2026-10-16) to this pin
+### Moving from `8ef0ec12` (2026-10-24) to this pin
+
+60 merges over a week, which include Ghostty 1.4.0 (tagged 2026-10-27). A plain
+`git log 8ef0ec12..` counts about 18,000 commits because the release branch was
+merged back; `--first-parent` shows the real range. No ABI change: the public
+headers didn't change, the exports are the same 196, and the whole suite passed
+against the new binary before anything here was touched, except the two
+integrity checks that are meant to fail. Still Zig 0.17.0, and the ESC k patch
+applied cleanly.
+
+Taken for one fix that ordinary use can reach:
+
+- **Clearing into a full scrollback (`1c2ea7222`, #14857).** ED 2 at a prompt
+  (our Ctrl-L at a shell with OSC 133) and ED 22 scroll the screen into
+  scrollback with `Screen.scrollClear`. When scrollback is at its limit, the
+  scroll can delete the page the cursor is on. The cursor pin moves, but its
+  style and hyperlink IDs still referred to the freed page, so the next text
+  came out in the wrong style, and in a ReleaseFast build that's an unchecked
+  read of freed memory. `scrollClearAndColumns.test.ts` reproduces it from VT
+  input. That needs pages of only a few rows, which a 2000-column pane gives
+  (27 rows a page). It loses the bold after 41 lines on the old binary.
+
+Also reachable, and smaller:
+
+- **Erased history drops its pins (`9438bd3e5`, #14838).** After `CSI 3 J`,
+  pins in the erased rows, including the core's search results, were moved to
+  the top-left of what remained instead of being reported gone.
+- **Row capacity is capped (`0af5c9e55`, #14856).** Narrowing a very wide page
+  could compute more rows than a page's 16-bit count holds.
+- **DECIC, DECDC, DECBI and DECFI (`44a4911e9`, #14884).** VT420 column
+  insert and delete in the scrolling region, and back and forward index that
+  scroll it sideways at the margins. They were ignored before. Covered in the
+  same test file.
+- **Zero-capacity circular buffers (`f040f0ab0`).** Clearing one no longer
+  leaves it able to panic on the next append.
+
+Inert here: Kitty placements in erased history (we don't draw Kitty images),
+the formatter's right-margin wrap fix (we don't call the formatter), tmux
+control mode, and the termio, config, GTK, macOS, snap and nix changes.
+
+The stripped binary grew **3,319 bytes** (1,273,729 -> 1,277,048), about what
+the four new sequences account for.
+
+### Moving from `b3dc3d79` (2026-10-16) to `8ef0ec12`
 
 148 commits over eight days. Most are upstream's port to **Zig 0.17**, which
 is now `minimum_zig_version`, plus Kitty graphics in the render state and
@@ -607,7 +650,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 8ef0ec1238220a5a714be452ed2844f0691fcf83
+cd ghostty && git checkout ae0dc1b7136c2baddc3e067663aa041cd555cfda
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm
