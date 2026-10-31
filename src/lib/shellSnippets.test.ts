@@ -58,6 +58,26 @@ describe('shell snippets', () => {
     },
   )
 
+  it.each(SHELL_SNIPPETS)('$id escapes control characters in the command line', ({ id, script }) => {
+    // A raw ESC or BEL in the command would end OSC 633 early and send the
+    // rest of the line to the terminal as output it acts on. Checked by hand
+    // in each shell; this only notices the escaping being taken out.
+    expect(script).toContain(id === 'bash' || id === 'zsh' ? '[[:cntrl:]]' : '[\\x00-\\x1f\\x7f]')
+  })
+
+  it.each(SHELL_SNIPPETS)('$id sends the command line through printf, not print', ({ script }) => {
+    // zsh's `print` expands backslashes, which undoes the escaping: a `;`
+    // went out bare and cut the command short.
+    expect(script).not.toMatch(/print -n "\\e\]633/)
+  })
+
+  it.each(SHELL_SNIPPETS.filter((s) => s.id === 'bash' || s.id === 'zsh'))(
+    '$id strips control characters from the OSC 7 hostname',
+    ({ script }) => {
+      expect(script).toContain('__osc7_host=${__osc7_host//[[:cntrl:]]/}')
+    },
+  )
+
   const powershell = SHELL_SNIPPETS.find((s) => s.id === 'powershell')!
 
   it('PowerShell reads $? before anything can overwrite it', () => {

@@ -29,6 +29,20 @@ release job publishes it as the GitHub release notes.
   memory the engine had already freed.
 - After scrollback is erased (`clear` or `CSI 3 J`), search no longer reports
   matches from the erased rows at the top of what remains.
+- The zsh shell-integration snippet sends the command line escaped. It printed
+  it with `print`, which undid the escaping, so a command with a `;` was
+  recorded in history and notifications only up to the `;`. Re-copy the
+  snippet from Settings to pick this up.
+- The fish snippet sends a multi-line command as one command, not one per
+  line.
+
+### Security
+
+- The shell-integration snippets escape control characters in the command
+  line they report, and drop them from the host name. A raw ESC or BEL in a
+  command could end the report early and have the rest of the line acted on
+  as terminal output, such as a clipboard write. Re-copy the snippet to pick
+  this up.
 
 ## [0.4.3] - 2026-10-25
 

@@ -48,9 +48,40 @@ __osc7_encode() (
 # Resolved once: it cannot change for the life of the shell, and \`hostname\`
 # is a fork. HOSTNAME first for bash, HOST for zsh, the command for neither.
 __osc7_host=\${HOSTNAME:-\${HOST:-$(hostname 2>/dev/null)}}
+# It goes into the sequence as is, so a control character in it is dropped.
+__osc7_host=\${__osc7_host//[[:cntrl:]]/}
 
 __osc7_report() {
   printf '\\e]7;file://%s%s\\a' "$__osc7_host" "$(__osc7_encode "$PWD")"
+}`
+
+// The same in bash and zsh, so one copy. printf rather than zsh's print, which
+// expands backslashes and so undid the escaping.
+const POSIX_OSC633 = `# OSC 633 \`E\`: the command line, escaped so the terminal reads back exactly
+# what you typed. A backslash is doubled, and \`;\` and control characters are
+# written as \\xHH: a bare \`;\` would end the field early, and a raw ESC or BEL
+# would end the whole sequence and send the rest of the line to the terminal
+# as output it acts on.
+__osc633_command() {
+  # Through a variable holding the backslash, rather than written inline:
+  # surviving the quotes and the replacement's own unescaping takes four of
+  # them, and getting it wrong fails quietly.
+  local bs='\\' cmd=$1 out= c i
+  cmd=\${cmd//"$bs"/"$bs$bs"}
+  cmd=\${cmd//;/"\${bs}x3b"}
+  # A command line rarely holds a control character, so it's only walked
+  # character by character when it does.
+  if [[ $cmd == *[[:cntrl:]]* ]]; then
+    for (( i = 0; i < \${#cmd}; i++ )); do
+      # \`$i\`, not \`i\`: zsh reads a bare letter there as a history modifier.
+      c=\${cmd:$i:1}
+      # A leading quote makes printf take the character's numeric value.
+      [[ $c == [[:cntrl:]] ]] && printf -v c '%sx%02X' "$bs" "'$c"
+      out+=$c
+    done
+    cmd=$out
+  fi
+  printf '\\e]633;E;%s\\a' "$cmd"
 }`
 
 /** The bash snippet keeps its whole body inside the interactive guard. */
@@ -70,6 +101,8 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
   __osc133_running=0
 
 ${indent(POSIX_OSC7)}
+
+${indent(POSIX_OSC633)}
 
   __osc133_precmd() {
     local __st=$?
@@ -117,7 +150,7 @@ ${indent(POSIX_OSC7)}
       # The OSC 7 reporter is only ever called from inside precmd, which has
       # disarmed by then, but it is named here so that stays true if it is
       # ever hooked up somewhere else.
-      __osc133_*|__osc7_*) return ;;
+      __osc133_*|__osc633_*|__osc7_*) return ;;
       # Functions bound to a key with \`bind -x\` fire the DEBUG trap too, but
       # they run from readline rather than from a line you typed. systemd's
       # OSC context integration (systemd 257+, /etc/profile.d) binds one to
@@ -131,14 +164,7 @@ ${indent(POSIX_OSC7)}
     (( __osc133_ready )) || return
     __osc133_ready=0
     __osc133_running=1
-    # Escape the command text so a \`;\` in it can't read as a field separator.
-    # Via a variable holding the backslash, rather than writing the escapes
-    # inline: surviving both the double quotes and the replacement's own
-    # unescaping takes four of them, and getting it wrong fails quietly.
-    local bs='\\'
-    local cmd=$BASH_COMMAND
-    cmd=\${cmd//"$bs"/"$bs$bs"}
-    printf '\\e]633;E;%s\\a' "\${cmd//;/"\${bs}x3b"}"
+    __osc633_command "$BASH_COMMAND"
     printf '\\e]133;C\\a'
   }
 
@@ -153,6 +179,8 @@ const ZSH = `${PREAMBLE}
 __osc133_running=0
 
 ${POSIX_OSC7}
+
+${POSIX_OSC633}
 
 __osc133_precmd() {
   # Not \`local status=$?\` — zsh's \`status\` is a special parameter (a synonym
@@ -175,12 +203,7 @@ __osc133_precmd() {
 
 __osc133_preexec() {
   __osc133_running=1
-  # Escaped through a variable holding the backslash — writing the escapes
-  # inline needs four of them to survive, and fails quietly if miscounted.
-  local bs='\\'
-  local cmd=$1
-  cmd=\${cmd//"$bs"/"$bs$bs"}
-  print -n "\\e]633;E;\${cmd//;/"\${bs}x3b"}\\a"
+  __osc633_command "$1"
   print -n "\\e]133;C\\a"
 }
 
@@ -206,9 +229,28 @@ if functions -q fish_prompt; and not functions -q __osc133_prompt_orig
     end
 end
 
+# OSC 633 \`E\`: the command line, escaped so the terminal reads back exactly
+# what you typed. A backslash is doubled, and \`;\` and control characters are
+# written as \\xHH: a bare \`;\` would end the field early, and a raw ESC or BEL
+# would end the whole sequence and send the rest of the line to the terminal
+# as output it acts on.
 function __osc133_preexec --on-event fish_preexec
-    set -l cmd (string replace -a '\\\\' '\\\\\\\\' -- $argv[1])
-    printf '\\e]633;E;%s\\a' (string replace -a ';' '\\\\x3b' -- $cmd)
+    # \`string collect\` keeps a multi-line command as one value. Command
+    # substitution would split it, and each line would go out as a command.
+    set -l cmd (string replace -a '\\\\' '\\\\\\\\' -- $argv[1] | string replace -a ';' '\\\\x3b' | string collect)
+    # A command line rarely holds a control character, so it's only walked
+    # character by character when it does. Newlines first, since splitting
+    # into characters goes through command substitution too.
+    if string match -qr '[\\x00-\\x1f\\x7f]' -- $cmd
+        set -l out
+        for c in (string split '' -- (string replace -a \\n '\\\\x0A' -- $cmd))
+            # A leading quote makes printf take the character's numeric value.
+            string match -qr '[\\x00-\\x1f\\x7f]' -- $c; and set c (printf '%sx%02X' '\\\\' "'$c")
+            set -a out $c
+        end
+        set cmd (string join '' -- $out)
+    end
+    printf '\\e]633;E;%s\\a' $cmd
     printf '\\e]133;C\\a'
 end
 
@@ -270,10 +312,15 @@ if (-not [Console]::IsInputRedirected -and -not $Global:__osc133_installed) {
     [Console]::Write("$__osc133_esc]7;file://$__osc7_host$encoded$__osc133_bel")
   }
 
-  # Escape the command text so a \`;\` in it can't read as a field separator.
+  # OSC 633 \`E\`: the command line, escaped so the terminal reads back exactly
+  # what you typed. A backslash is doubled, and \`;\` and control characters
+  # are written as \\xHH: a bare \`;\` would end the field early, and a raw ESC
+  # or BEL would end the whole sequence and send the rest of the line to the
+  # terminal as output it acts on.
   function Global:__osc133_escape([string] $text) {
     $bs = [string][char]92
-    $text.Replace($bs, $bs + $bs).Replace(';', $bs + 'x3b')
+    $text = $text.Replace($bs, $bs + $bs).Replace(';', $bs + 'x3b')
+    [regex]::Replace($text, '[\\x00-\\x1f\\x7f]', { param($m) '{0}x{1:X2}' -f $bs, [int][char]$m.Value })
   }
 
   # The host calls this to read one line, and it returns exactly when you

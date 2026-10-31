@@ -108,6 +108,20 @@ describe('CommandTracker', () => {
     )
   })
 
+  // The payloads bash, zsh, fish and PowerShell's snippets sent for these
+  // command lines, captured from the real shells (all four agree).
+  it.each([
+    ['cd /tmp\\x3b ls', 'cd /tmp; ls'],
+    ['echo a\\\\x3bb\\\\\\\\c', 'echo a\\x3bb\\\\c'],
+    ['echo \\x1B]52\\x3bc\\x3bSGVsbG8=\\x07', 'echo \x1b]52;c;SGVsbG8=\x07'],
+    ['for i in 1 2\\x0Ado echo $i\\x3b done', 'for i in 1 2\ndo echo $i; done'],
+  ])('reads back the command line the snippets escaped: %s', (payload, command) => {
+    tracker.handleOsc(`E;${payload}`)
+    tracker.handleOsc('C')
+    vi.advanceTimersByTime(400)
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ command }))
+  })
+
   it('drops a stale pendingCommand on the next prompt (B)', () => {
     tracker.handleOsc('E;ls -la;nonce')
     tracker.handleOsc('B')
