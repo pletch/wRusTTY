@@ -331,9 +331,13 @@ rejected `invoke`s for these until M1 and M3 deal with them.
   working on the test phone.
 - **Viewport.** When the keyboard opens, the grid must shrink and the cursor stay
   visible. Debounce the PTY resize so the remote shell doesn't reflow repeatedly.
-- **Layout.** One pane at a time and no splits. Tabs become a switcher. Dialogs
-  (`ConnectDialog`, `SettingsDialog`, `SessionBrowser`) go full screen. Check
-  anything that depends on hover, including the pane controls in `Pane.tsx`.
+- **Layout.** The toolbar is the top row and the tabs the second, with no window
+  controls. The split buttons are hidden, toolbar buttons are finger-sized through
+  `.touch-toolbar` in `index.css`, and its menus anchor to the toolbar so they stay on
+  screen. A menu of rarely used actions wouldn't win back height while the tabs have
+  their own row, so all seven buttons stay out. Not done: dialogs (`ConnectDialog`,
+  `SettingsDialog`, `SessionBrowser`) going full screen, and anything that depends on
+  hover, including the pane controls in `Pane.tsx`.
 - **Keybindings.** Keep them for hardware keyboards and hide the editor.
 - **Performance.** Run the harness in `src/bench` on a mid-range phone.
   `CONTEXT_BUDGET = 8` (`ContextManager.ts:14`) and glyph atlas memory are the

@@ -1112,6 +1112,9 @@ function App() {
   // Away from the theme background (see stripOverlay). Dropped while faded: the
   // translucent active tab would otherwise show the wash through it and look
   // lighter than its terminal.
+  const toolbarGroupClass = isAndroid
+    ? 'touch-toolbar flex shrink-0 items-center'
+    : 'flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5'
   const stripBackground =
     windowFocused || appearance.unfocusedDimPercent <= 0
       ? stripOverlay(findTheme(terminalSettings.themeName))
@@ -1129,11 +1132,11 @@ function App() {
       <div
         // A phone is too narrow for the tabs and the toolbar on one row: the toolbar
         // doesn't shrink, so it squeezes the tabs and their + down to nothing.
-        className={`flex shrink-0 items-stretch ${isAndroid ? 'flex-wrap' : 'h-10'}`}
+        className={`flex shrink-0 items-stretch ${isAndroid ? 'relative flex-wrap' : 'h-10'}`}
         style={{ background: stripBackground }}
       >
         {/* Android: below the toolbar, so the active tab runs into its terminal. */}
-        <div className={isAndroid ? 'order-last flex h-10 w-full min-w-0 items-stretch' : 'contents'}>
+        <div className={isAndroid ? 'touch-tabs order-last flex h-10 w-full min-w-0 items-stretch' : 'contents'}>
         <TabBar
           tabs={tabs}
           activeTabId={activeTabId}
@@ -1178,8 +1181,13 @@ function App() {
             popPaneToNewTab(tabId, paneId)
           }}
         />}
+        {isAndroid && (
+          <div className="flex shrink-0 items-center pl-2.5 pr-1.5 text-[#b7410e]">
+            <TerminalSquare size={18} strokeWidth={2} />
+          </div>
+        )}
         {activeTab && (
-          <div className="flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5">
+          <div className={toolbarGroupClass}>
             {activeLeaf?.source && (
               <button
                 className="flex items-center justify-center rounded p-1.5 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
@@ -1257,8 +1265,9 @@ function App() {
                 <Folder size={15} strokeWidth={2} />
               </button>
             )}
-            {/* Disabled rather than hidden at the split limit, with a tooltip. */}
-            <button
+            {/* Disabled rather than hidden at the split limit, with a tooltip. A phone
+                shows one pane at a time. */}
+            {!isAndroid && <button
               disabled={!!rightBlocked}
               className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
                 rightBlocked
@@ -1269,8 +1278,8 @@ function App() {
               onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'horizontal')}
             >
               <SplitSquareHorizontal size={15} strokeWidth={2} />
-            </button>
-            <button
+            </button>}
+            {!isAndroid && <button
               disabled={!!downBlocked}
               className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
                 downBlocked
@@ -1281,10 +1290,10 @@ function App() {
               onClick={() => activeTab && activePaneId && splitPane(activeTab.id, activePaneId, 'vertical')}
             >
               <SplitSquareVertical size={15} strokeWidth={2} />
-            </button>
+            </button>}
           </div>
         )}
-        <div className="flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5">
+        <div className={`${toolbarGroupClass} ${isAndroid ? 'ml-auto' : ''}`}>
           <WorkspaceMenu
             tabs={tabs}
             saved={savedWorkspaces}

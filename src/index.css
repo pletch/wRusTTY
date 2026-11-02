@@ -213,3 +213,31 @@ body {
 .tab-strip-scroll::-webkit-scrollbar {
   display: none;
 }
+
+/* The Android toolbar and tab strip (App.tsx), sized for a finger. Direct children
+ * only, so items inside a menu stay as they are. */
+.touch-toolbar > button,
+.touch-toolbar > [data-workspace-menu] > button,
+.touch-toolbar > [data-vault-menu] > button {
+  width: 2.75rem;
+  height: 2.375rem;
+}
+.touch-toolbar > button svg,
+.touch-toolbar > [data-workspace-menu] > button svg,
+.touch-toolbar > [data-vault-menu] > button svg {
+  width: 18px;
+  height: 18px;
+}
+/* A menu 18rem wide, anchored to a button that isn't at the screen's edge, can run
+ * off it. Static here, they anchor to the whole toolbar instead. */
+.touch-toolbar > [data-workspace-menu],
+.touch-toolbar > [data-vault-menu] {
+  position: static;
+}
+.touch-tabs [data-tab-close] {
+  padding: 0.5rem;
+}
+/* Only a window drag handle, and a phone has no window to drag. */
+.touch-tabs [data-tauri-drag-region] {
+  display: none;
+}
