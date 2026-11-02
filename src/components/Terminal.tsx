@@ -1549,6 +1549,7 @@ export function Terminal({
       pasteFromClipboard()
     }
     container.addEventListener('contextmenu', onContextMenu)
+    const pasteRequestListener = term.onPasteRequest?.(pasteFromClipboard)
 
     const onKeyDown = (e: KeyboardEvent) => {
       // Autocomplete only claims keys while a suggestion is showing; Tab is never
@@ -1686,6 +1687,7 @@ export function Terminal({
       resizeObserver.disconnect()
       canvasObserver.disconnect()
       container.removeEventListener('contextmenu', onContextMenu)
+      pasteRequestListener?.dispose()
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()
       copyListener?.dispose()

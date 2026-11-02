@@ -137,8 +137,14 @@ arrows on the alternate screen as DEC 1007 asks, so `less` and `man` scroll too.
 last one goes beyond the desktop wheel, which does nothing there. Neither of those
 two gets momentum, since each row is input to a program.
 
-Still needed: long-press selection with handles, tap to open links, and a look at the
-scrollbar, which only handles the mouse.
+Long-press is in `TouchSelection.ts` and `GhosttyEngine.touchLongPress`, and selection
+was reported working on the test phone. On a word it selects, with handles and a Copy/Paste bar, and dragging
+without lifting extends. On a URL it opens the existing link menu. On nothing it offers
+Paste, through the same guard as every other paste. Android's own long-press
+`contextmenu` is blocked on the canvas, because the terminal reads that as a right click,
+which would paste the clipboard into the shell with no prompt for a single line.
+
+Still needed: a look at the scrollbar, which only handles the mouse.
 
 ### 4. Build
 

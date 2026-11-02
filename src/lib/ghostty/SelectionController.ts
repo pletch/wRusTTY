@@ -151,6 +151,17 @@ export class SelectionController {
     this.host.emitChange()
   }
 
+  /**
+   * Continues a selection as a drag from one of its ends, for a touch handle.
+   * `drag` then follows the pointer, with the usual scrolling past the edges.
+   */
+  resumeFrom(fixed: Point): void {
+    this.selecting = true
+    this.start = fixed
+    this.anchor = fixed
+    this.rectangular = false
+  }
+
   /** A fresh drag. Alt makes a column selection. */
   begin(e: MouseEvent): void {
     this.selecting = true

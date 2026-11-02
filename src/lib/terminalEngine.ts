@@ -171,6 +171,8 @@ export interface TerminalEngine {
    * The engine asks for text to be copied (mark mode). The clipboard is the
    * platform's, so the frontend does it.
    */
+  /** The touch selection's Paste, which goes through the host's paste guard. */
+  onPasteRequest?(cb: () => void): IDisposable
   onCopyRequest?(cb: (text: string) => void): IDisposable
 
   /**

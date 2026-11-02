@@ -55,6 +55,7 @@ import {
 } from './wasmBindings'
 import { isAndroid } from '../platform'
 import { TouchScroller } from './TouchScroller'
+import { TouchSelection } from './TouchSelection'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
 import { KeyEncoder } from './KeyEncoder'
 import { NativeSearchController } from './NativeSearchController'
@@ -317,6 +318,10 @@ export class GhosttyEngine implements TerminalEngine {
   /** Wheel travel short of a whole line, carried to the next event. */
   private wheelRemainder = 0
   private touchScroller: TouchScroller | null = null
+  private touchSelection: TouchSelection | null = null
+  private onPasteRequestHandlers = new Set<() => void>()
+  /** Where a long press's word began, until the finger drags from it. */
+  private touchPressStart: { x: number; y: number } | null = null
   /**
    * Scrollback depth when the render snapshot was last rebuilt, the only count
    * `readRows` may map absolute rows through: the live count has already grown by
@@ -1145,6 +1150,7 @@ export class GhosttyEngine implements TerminalEngine {
         this.inputHandler.setCursorPosition(cursorCol * cell.width, cursorRow * cell.height)
       }
       this.renderer.updateStaticGrid(this.wasm, this.termPtr, this._viewportOffset, scrollbackCount)
+      this.touchSelection?.update()
       this.wasm.exports.ghostty_render_state_mark_clean(this.termPtr)
       // Stay pending while held, so the next frame re-checks `is_held` (which is
       // where the hold timeout is enforced).
@@ -1231,6 +1237,39 @@ export class GhosttyEngine implements TerminalEngine {
         rowHeight: () => this.renderer?.getCellSize().height ?? 0,
         scroll: (rows, x, y) => this.touchScroll(rows, x, y),
         canFling: () => !this.mouse.tracking() && !this.onAlternateScreen(),
+        longPress: (x, y) => this.touchLongPress(x, y),
+        longPressMove: (x, y) => this.touchDragSelection(x, y),
+        longPressEnd: () => this.touchEndSelectionDrag(),
+        consumeTap: () => {
+          if (!this.touchSelection?.showing()) return false
+          this.touchSelection.dismiss()
+          return true
+        },
+      })
+      this.touchSelection = new TouchSelection(this.container, {
+        cellSize: () => this.renderer?.getCellSize() ?? { width: 1, height: 1 },
+        rows: () => this._rows,
+        topRow: () => this.shownScrollback - this._viewportOffset,
+        selection: () => this.renderer?.selection ?? null,
+        dragFrom: (fixed) => this.selection.resumeFrom(fixed),
+        dragTo: (x, y) => this.touchDragSelection(x, y),
+        dragEnd: () => this.touchEndSelectionDrag(),
+        copy: () => {
+          const text = this.getSelection()
+          if (text) for (const h of this.onCopyRequestHandlers) h(text)
+        },
+        paste: () => {
+          for (const h of this.onPasteRequestHandlers) h()
+        },
+        clear: () => this.clearSelection(),
+      })
+      // Android long-presses fire this, and the terminal reads it as a right
+      // click, which pastes. `touchLongPress` decides what a press means instead,
+      // and sends its own event for a link.
+      this.canvas.addEventListener('contextmenu', (e) => {
+        if (!e.isTrusted) return
+        e.preventDefault()
+        e.stopPropagation()
       })
     }
 
@@ -1348,6 +1387,8 @@ export class GhosttyEngine implements TerminalEngine {
     this.selection.dispose()
     this.touchScroller?.dispose()
     this.touchScroller = null
+    this.touchSelection?.dispose()
+    this.touchSelection = null
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)
       this.cursorBlinkTimer = null
@@ -1779,6 +1820,50 @@ export class GhosttyEngine implements TerminalEngine {
     }
   }
 
+  /**
+   * A long press. On a link, the terminal's menu for it, which is how a phone
+   * opens one. On a word, selects it. On nothing, offers Paste. Selection is ours
+   * here even under mouse reporting, the way Shift is with a mouse, since a press
+   * has no other meaning to a program.
+   *
+   * Always claims the gesture: unclaimed, lifting the finger would count as a tap,
+   * and a tap dismisses what the press just put up.
+   */
+  private touchLongPress(x: number, y: number): boolean {
+    const at = { clientX: x, clientY: y } as MouseEvent
+    if (this.linkAtPointer(at)) {
+      this.canvas?.dispatchEvent(
+        new MouseEvent('contextmenu', { clientX: x, clientY: y, bubbles: true, cancelable: true }),
+      )
+      return true
+    }
+    this.selection.selectWordAt(this.getCoords(at))
+    const selected = this.renderer?.selection ?? null
+    if (selected) {
+      this.touchPressStart = selected.start
+      this.touchSelection?.update()
+    } else {
+      this.touchSelection?.offerPaste(x, y)
+    }
+    return true
+  }
+
+  /** The drag of a handle, or of the finger still down after a long press. */
+  private touchDragSelection(x: number, y: number): void {
+    if (this.touchPressStart) {
+      this.selection.resumeFrom(this.touchPressStart)
+      this.touchPressStart = null
+    }
+    this.selection.drag({ clientX: x, clientY: y } as MouseEvent)
+  }
+
+  private touchEndSelectionDrag(): void {
+    this.touchPressStart = null
+    this.selection.cancel()
+    for (const h of this.onSelectionChangeHandlers) h()
+    this.touchSelection?.update()
+  }
+
   scrollLines(amount: number): void {
     const maxOffset = Math.max(0, this.scrollbackLength - this._rows)
     let offset = this._viewportOffset - amount
@@ -2076,6 +2161,11 @@ export class GhosttyEngine implements TerminalEngine {
   onHintModeChange(cb: (active: boolean) => void): IDisposable {
     this.onHintModeHandlers.add(cb)
     return { dispose: () => this.onHintModeHandlers.delete(cb) }
+  }
+
+  onPasteRequest(cb: () => void): IDisposable {
+    this.onPasteRequestHandlers.add(cb)
+    return { dispose: () => this.onPasteRequestHandlers.delete(cb) }
   }
 
   onCopyRequest(cb: (text: string) => void): IDisposable {

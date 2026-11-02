@@ -18,6 +18,8 @@ const MAX_FLING_SPEED = 6
 const STOP_FLING_SPEED = 0.03
 /** How quickly a flick loses speed: the time to fall to about a third. */
 const FLING_DECAY_MS = 325
+/** How long a finger has to stay put to be a long press. */
+const LONG_PRESS_MS = 450
 
 export interface TouchScrollerHost {
   /** Pixels in a row, or 0 before the terminal has a size. */
@@ -26,6 +28,13 @@ export interface TouchScrollerHost {
   scroll(rows: number, x: number, y: number): void
   /** Whether a flick should carry on after release. */
   canFling(): boolean
+  /** The finger stayed put. True claims the rest of the gesture for the press. */
+  longPress?(x: number, y: number): boolean
+  /** A claimed press moved, without lifting. */
+  longPressMove?(x: number, y: number): void
+  longPressEnd?(): void
+  /** A tap, before it reaches the terminal. True swallows it. */
+  consumeTap?(): boolean
   /** Injected so tests can run a flick without waiting for one. */
   now?(): number
 }
@@ -40,6 +49,9 @@ export class TouchScroller {
   private flingFrame: number | null = null
   /** The touch that stopped a flick, whose tap shouldn't also reach the terminal. */
   private swallowTap = false
+  private pressTimer: ReturnType<typeof setTimeout> | null = null
+  /** A long press has claimed this gesture. */
+  private pressing = false
 
   constructor(target: HTMLElement, host: TouchScrollerHost) {
     this.target = target
@@ -53,6 +65,7 @@ export class TouchScroller {
 
   dispose(): void {
     this.stopFling()
+    this.stopPressTimer()
     this.target.removeEventListener('touchstart', this.onStart)
     this.target.removeEventListener('touchmove', this.onMove)
     this.target.removeEventListener('touchend', this.onEnd)
@@ -66,6 +79,8 @@ export class TouchScroller {
   private onStart = (e: TouchEvent) => {
     this.swallowTap = this.flingFrame !== null
     this.stopFling()
+    this.stopPressTimer()
+    this.pressing = false
     this.remainder = 0
     // Two fingers aren't a scroll.
     if (e.touches.length !== 1) {
@@ -75,18 +90,32 @@ export class TouchScroller {
     const t = e.touches[0]
     this.drag = { startY: t.clientY, lastY: t.clientY, x: t.clientX, y: t.clientY, scrolling: false }
     this.samples = [{ t: this.now(), y: t.clientY }]
+    if (this.host.longPress) {
+      const { clientX: x, clientY: y } = t
+      this.pressTimer = setTimeout(() => {
+        this.pressTimer = null
+        if (this.drag && this.host.longPress?.(x, y)) this.pressing = true
+      }, LONG_PRESS_MS)
+    }
   }
 
   private onMove = (e: TouchEvent) => {
     const drag = this.drag
     if (!drag) return
     if (e.touches.length !== 1) {
+      this.stopPressTimer()
       this.drag = null
       return
     }
     const y = e.touches[0].clientY
+    if (this.pressing) {
+      if (e.cancelable) e.preventDefault()
+      this.host.longPressMove?.(e.touches[0].clientX, y)
+      return
+    }
     if (!drag.scrolling) {
       if (Math.abs(y - drag.startY) < SLOP_PX) return
+      this.stopPressTimer()
       drag.scrolling = true
       // From here, not the start, or the row of slack lands as a jump.
       drag.lastY = y
@@ -102,7 +131,18 @@ export class TouchScroller {
   private onEnd = (e: TouchEvent) => {
     const drag = this.drag
     this.drag = null
-    if (this.swallowTap && !drag?.scrolling && e.cancelable) e.preventDefault()
+    this.stopPressTimer()
+    if (this.pressing) {
+      this.pressing = false
+      // Otherwise the lift synthesizes a click on what was just selected.
+      if (e.cancelable) e.preventDefault()
+      this.host.longPressEnd?.()
+      return
+    }
+    const tap = !drag?.scrolling
+    // Asked even for the tap that stopped a flick, but only for a real tap.
+    const consumed = tap && drag !== null && this.host.consumeTap?.() === true
+    if ((consumed || (this.swallowTap && tap)) && e.cancelable) e.preventDefault()
     this.swallowTap = false
     if (!drag?.scrolling || !this.host.canFling()) return
     const first = this.samples[0]
@@ -119,8 +159,16 @@ export class TouchScroller {
   }
 
   private onCancel = () => {
+    this.stopPressTimer()
+    if (this.pressing) this.host.longPressEnd?.()
+    this.pressing = false
     this.drag = null
     this.swallowTap = false
+  }
+
+  private stopPressTimer(): void {
+    if (this.pressTimer !== null) clearTimeout(this.pressTimer)
+    this.pressTimer = null
   }
 
   private apply(pixels: number, x = this.drag?.x ?? 0, y = this.drag?.y ?? 0): void {
