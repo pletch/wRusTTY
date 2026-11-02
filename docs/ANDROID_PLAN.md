@@ -129,9 +129,16 @@ desktops in mind.
 mouse and wheel events. The input textarea is `pointer-events: none`
 (`GhosttyInputHandler.ts:62`), so a tap can't open the keyboard by itself.
 
-Needed: tap to focus, one-finger scroll (scrollback, or wheel reports to
-mouse-tracking apps through `MouseReporter`), long-press selection with handles,
-and tap to open links. Set `touch-action: none` on the canvas.
+Tap to focus already works, through the mouse events a tap synthesizes.
+
+One-finger scrolling is in `TouchScroller.ts`, reported working on the test phone. A drag moves
+scrollback with momentum, sends wheel reports to mouse-tracking programs, and sends
+arrows on the alternate screen as DEC 1007 asks, so `less` and `man` scroll too. That
+last one goes beyond the desktop wheel, which does nothing there. Neither of those
+two gets momentum, since each row is input to a program.
+
+Still needed: long-press selection with handles, tap to open links, and a look at the
+scrollbar, which only handles the mouse.
 
 ### 4. Build
 

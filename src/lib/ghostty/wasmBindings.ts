@@ -62,6 +62,9 @@ export const MODE_MOUSE_SGR_PIXELS = 1016
 /** DEC 1004: report CSI I / CSI O when the terminal gains or loses focus. */
 export const MODE_FOCUS_REPORTING = 1004
 
+/** DEC 1007: on the alternate screen, scrolling sends arrow keys. */
+export const MODE_ALTERNATE_SCROLL = 1007
+
 export interface GhosttyExports {
   memory: WebAssembly.Memory
 

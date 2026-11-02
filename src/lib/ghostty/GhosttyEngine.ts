@@ -51,7 +51,10 @@ import {
   CURSOR_STYLE_BLOCK,
   CURSOR_STYLE_BAR,
   CURSOR_STYLE_UNDERLINE,
+  MODE_ALTERNATE_SCROLL,
 } from './wasmBindings'
+import { isAndroid } from '../platform'
+import { TouchScroller } from './TouchScroller'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
 import { KeyEncoder } from './KeyEncoder'
 import { NativeSearchController } from './NativeSearchController'
@@ -313,6 +316,7 @@ export class GhosttyEngine implements TerminalEngine {
   private lastScrollbackCount = 0
   /** Wheel travel short of a whole line, carried to the next event. */
   private wheelRemainder = 0
+  private touchScroller: TouchScroller | null = null
   /**
    * Scrollback depth when the render snapshot was last rebuilt, the only count
    * `readRows` may map absolute rows through: the live count has already grown by
@@ -1220,6 +1224,16 @@ export class GhosttyEngine implements TerminalEngine {
       if (whole !== 0) this.scrollLines(whole)
     }, { passive: false })
 
+    if (isAndroid) {
+      // The gesture is ours; the browser has nothing to pan here anyway.
+      this.canvas.style.touchAction = 'none'
+      this.touchScroller = new TouchScroller(this.canvas, {
+        rowHeight: () => this.renderer?.getCellSize().height ?? 0,
+        scroll: (rows, x, y) => this.touchScroll(rows, x, y),
+        canFling: () => !this.mouse.tracking() && !this.onAlternateScreen(),
+      })
+    }
+
     window.addEventListener('mouseup', this.onMouseUp)
 
     // Capture phase, so mark mode sees keys before they're encoded.
@@ -1332,6 +1346,8 @@ export class GhosttyEngine implements TerminalEngine {
     this.markMode.cancel()
     this.hintMode.cancel()
     this.selection.dispose()
+    this.touchScroller?.dispose()
+    this.touchScroller = null
     if (this.cursorBlinkTimer !== null) {
       clearInterval(this.cursorBlinkTimer)
       this.cursorBlinkTimer = null
@@ -1729,6 +1745,40 @@ export class GhosttyEngine implements TerminalEngine {
   }
   
   refresh(_start: number, _end: number): void {}
+
+  private onAlternateScreen(): boolean {
+    return !!this.wasm && this.wasm.exports.ghostty_terminal_is_alternate_screen(this.termPtr) !== 0
+  }
+
+  /**
+   * A finger dragging the terminal, positive when it moved down. Follows the
+   * wheel where it can: a program reporting the mouse gets wheel reports, and
+   * otherwise it's scrollback. The alternate screen has none, and there the wheel
+   * does nothing, but a phone has no other way through `less` or `man`, so it
+   * sends arrows as DEC 1007 (alternate scroll) asks. They go through the input so
+   * the encoder picks the sequence the program's modes call for.
+   */
+  private touchScroll(rows: number, x: number, y: number): void {
+    const up = rows > 0
+    const count = Math.abs(rows)
+    if (this.mouse.tracking()) {
+      const at = new WheelEvent('wheel', { clientX: x, clientY: y })
+      for (let i = 0; i < count; i++) this.mouse.reportWheel(at, up)
+      return
+    }
+    if (!this.onAlternateScreen()) {
+      this.scrollLines(-rows)
+      return
+    }
+    if (this.wasm?.exports.ghostty_terminal_get_mode(this.termPtr, MODE_ALTERNATE_SCROLL, 0) === 0) return
+    const key = up ? 'ArrowUp' : 'ArrowDown'
+    for (let i = 0; i < count; i++) {
+      this.inputHandler?.element.dispatchEvent(
+        new KeyboardEvent('keydown', { key, code: key, cancelable: true }),
+      )
+    }
+  }
+
   scrollLines(amount: number): void {
     const maxOffset = Math.max(0, this.scrollbackLength - this._rows)
     let offset = this._viewportOffset - amount
