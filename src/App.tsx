@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { createPortal } from 'react-dom'
 import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
 import { isAndroid } from './lib/platform'
+import { KeyRow } from './components/KeyRow'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
 import { TabBar } from './components/TabBar'
@@ -1529,6 +1530,7 @@ function App() {
           />
         )}
       </div>
+      {isAndroid && tabs.length > 0 && <KeyRow />}
       {tabs.length > 0 && (
         <StatusBar
           protocol={statusBarConn?.protocol ?? null}

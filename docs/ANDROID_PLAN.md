@@ -309,9 +309,13 @@ rejected `invoke`s for these until M1 and M3 deal with them.
   (`toggleMaximize`, `startDragging`, `onCloseRequested`) and all of `windowFit.ts`
   and `WindowControls.tsx` are desktop-only. `show()` at `App.tsx:300` and
   `onFocusChanged` at `:347` need checking on Android.
-- **Key row.** Esc, Tab, sticky Ctrl and Alt, arrows, and the symbols that are
-  awkward on a phone keyboard. It should go through `KeyEncoder`, so modes such as
-  application cursor keys and Kitty stay correct.
+- **Key row.** `KeyRow.tsx` has Esc, Tab, one-shot Ctrl and Alt, arrows that repeat
+  while held, and `|`, `~`, `/` and `-`. Keys are dispatched to the focused terminal's
+  input, so they pass through `KeyEncoder` and modes such as application cursor keys
+  and Kitty stay correct. An armed modifier applies to the next key from the row or
+  the keyboard (`lib/softModifiers.ts`), without waiting for a composing keyboard to
+  finish its word, which ends that composition by refocusing the input. Reported
+  working on the test phone.
 - **Viewport.** When the keyboard opens, the grid must shrink and the cursor stay
   visible. Debounce the PTY resize so the remote shell doesn't reflow repeatedly.
 - **Layout.** One pane at a time and no splits. Tabs become a switcher. Dialogs

@@ -9,7 +9,16 @@
  * keydown produces no input event. The encoder's null for a key with no
  * sequence is what lets the text path deliver it.
  */
+import {
+  legacyModifiedBytes,
+  softModifierArmed,
+  takeSoftModifiers,
+  type SoftModifiers,
+} from '../softModifiers'
 import type { KeyEncoder } from './KeyEncoder'
+
+/** The input's accessible name, which is how the key row finds the focused one. */
+export const TERMINAL_INPUT_LABEL = 'Terminal input'
 
 export class GhosttyInputHandler {
   private container: HTMLElement
@@ -23,6 +32,8 @@ export class GhosttyInputHandler {
    */
   private keyEncoder: () => KeyEncoder | null
   private composing = false
+  /** A key-row modifier took this composition's text; its result is stale. */
+  private dropComposition = false
 
   constructor(
     container: HTMLElement,
@@ -34,7 +45,7 @@ export class GhosttyInputHandler {
     this.keyEncoder = keyEncoder
 
     const ta = document.createElement('textarea')
-    ta.setAttribute('aria-label', 'Terminal input')
+    ta.setAttribute('aria-label', TERMINAL_INPUT_LABEL)
     ta.setAttribute('autocorrect', 'off')
     ta.setAttribute('autocapitalize', 'off')
     ta.spellcheck = false
@@ -136,12 +147,37 @@ export class GhosttyInputHandler {
 
   private handleCompositionEnd = (e: CompositionEvent) => {
     this.composing = false
-    this.send(e.data)
+    if (!this.dropComposition) this.send(e.data)
     this.element.value = ''
+  }
+
+  /**
+   * The key after an armed Ctrl or Alt, typed on the soft keyboard. It can't wait
+   * for the composition to finish: a keyboard composing a word wouldn't deliver
+   * the `c` of Ctrl+C until the next space.
+   */
+  private sendModified(char: string, mods: SoftModifiers, composing: boolean) {
+    const key = /^[A-Z]$/.test(char) ? char.toLowerCase() : char
+    const event = new KeyboardEvent('keydown', { key, ctrlKey: mods.ctrl, altKey: mods.alt })
+    this.onData(this.keyEncoder()?.encode(event) ?? legacyModifiedBytes(key, mods))
+    this.element.value = ''
+    if (!composing) return
+    // End the composition, or the keyboard keeps building on the character just
+    // sent and everything typed next is lost with it.
+    this.dropComposition = true
+    this.resetForRefocus()
+    requestAnimationFrame(() => {
+      this.dropComposition = false
+    })
   }
 
   private handleInput = (e: Event) => {
     const ie = e as InputEvent
+    if (softModifierArmed() && ie.data) {
+      const char = [...ie.data].pop()!
+      this.sendModified(char, takeSoftModifiers(), this.composing || ie.isComposing)
+      return
+    }
     // Mid-composition input is the preedit being revised, not text to send.
     if (this.composing || ie.isComposing) return
     // The composed result arrives via compositionend and again here; skip this
@@ -175,7 +211,7 @@ export class GhosttyInputHandler {
 
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.isOurs(e)) return
-    const bytes = this.keyEncoder()?.encode(e)
+    const bytes = this.keyEncoder()?.encode(softModifierArmed() ? withSoftModifiers(e) : e)
     // No sequence: a bare modifier, or a character the browser is about to
     // deliver as text. Leave the event alone so that text arrives.
     if (!bytes) return
@@ -194,4 +230,18 @@ export class GhosttyInputHandler {
     const bytes = this.keyEncoder()?.encode(e)
     if (bytes) this.onData(bytes)
   }
+}
+
+/** A key event with the armed key-row modifiers added, disarming them. */
+function withSoftModifiers(e: KeyboardEvent): KeyboardEvent {
+  const mods = takeSoftModifiers()
+  return new KeyboardEvent(e.type, {
+    key: e.key,
+    code: e.code,
+    repeat: e.repeat,
+    shiftKey: e.shiftKey,
+    metaKey: e.metaKey,
+    ctrlKey: e.ctrlKey || mods.ctrl,
+    altKey: e.altKey || mods.alt,
+  })
 }
