@@ -1109,6 +1109,13 @@ function App() {
     : configuredTheme
   const rootBackground = backgroundWithOpacity(backgroundTheme, backgroundLayers.root)
   const paneBackground = backgroundWithOpacity(backgroundTheme, backgroundLayers.overRoot)
+  // Away from the theme background (see stripOverlay). Dropped while faded: the
+  // translucent active tab would otherwise show the wash through it and look
+  // lighter than its terminal.
+  const stripBackground =
+    windowFocused || appearance.unfocusedDimPercent <= 0
+      ? stripOverlay(findTheme(terminalSettings.themeName))
+      : 'transparent'
 
   return (
     <div
@@ -1123,15 +1130,7 @@ function App() {
         // A phone is too narrow for the tabs and the toolbar on one row: the toolbar
         // doesn't shrink, so it squeezes the tabs and their + down to nothing.
         className={`flex shrink-0 items-stretch ${isAndroid ? 'flex-wrap' : 'h-10'}`}
-        // Away from the theme background (see stripOverlay). Dropped while faded:
-        // the translucent active tab would otherwise show the wash through it and
-        // look lighter than its terminal.
-        style={{
-          background:
-            windowFocused || appearance.unfocusedDimPercent <= 0
-              ? stripOverlay(findTheme(terminalSettings.themeName))
-              : 'transparent',
-        }}
+        style={{ background: stripBackground }}
       >
         {/* Android: below the toolbar, so the active tab runs into its terminal. */}
         <div className={isAndroid ? 'order-last flex h-10 w-full min-w-0 items-stretch' : 'contents'}>
@@ -1530,7 +1529,7 @@ function App() {
           />
         )}
       </div>
-      {isAndroid && tabs.length > 0 && <KeyRow />}
+      {isAndroid && tabs.length > 0 && <KeyRow background={stripBackground} />}
       {tabs.length > 0 && (
         <StatusBar
           protocol={statusBarConn?.protocol ?? null}

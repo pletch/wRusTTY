@@ -4,10 +4,13 @@ import './index.css'
 import App from './App.tsx'
 import { ConfirmProvider } from './components/ConfirmProvider'
 import { registerBundledFonts } from './lib/bundledFonts'
+import { isAndroid, relaxTextEntry } from './lib/platform'
 
 // Before anything renders, so the settings dialog and the atlas find the
 // shipped families declared. Bytes are fetched only for a family in use.
 registerBundledFonts()
+
+if (isAndroid) relaxTextEntry()
 
 // The measurement instruments, behind a build flag. They're on screen rather
 // than console-only because attaching DevTools puts V8's WebAssembly in a

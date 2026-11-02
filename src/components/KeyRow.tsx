@@ -50,7 +50,7 @@ function dispatchKey(type: 'keydown' | 'keyup', key: string, repeat = false) {
  * as if a keyboard sent them, so the encoder and the app's modes treat them like
  * physical keys. A press never takes focus, which would close the keyboard.
  */
-export function KeyRow() {
+export function KeyRow({ background }: { background?: string }) {
   const mods = useSyncExternalStore(subscribeSoftModifiers, softModifiers)
   const repeat = useRef<{ timer: number; key: string } | null>(null)
 
@@ -85,7 +85,10 @@ export function KeyRow() {
   }
 
   return (
-    <div className="flex h-10 shrink-0 select-none items-stretch border-t border-chrome/10">
+    <div
+      className="flex h-10 shrink-0 select-none items-stretch border-t border-chrome/10"
+      style={{ background }}
+    >
       {KEYS.map((k) => {
         const armed = 'modifier' in k && mods[k.modifier]
         return (

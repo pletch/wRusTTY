@@ -4,6 +4,7 @@ import { Terminal as TerminalIcon, Radio, Cable, Save, Plug, FolderOpen, Laptop 
 import type { AuthMethod } from '../lib/ssh'
 import type { SessionProfile, SerialProfile, LocalProfile, WakeOnLan } from '../lib/profiles'
 import { serialProfileFrom } from '../lib/profiles'
+import { isAndroid } from '../lib/platform'
 import type { PortInfo } from '../lib/serial'
 import type { Workspace } from '../lib/workspaces'
 import type { VaultSecret } from '../lib/vault'
@@ -640,7 +641,7 @@ export function ConnectDialog({
           overflow-hidden with no way to reach the rest of it. */}
       <form onSubmit={submit} className="w-80 space-y-3 overflow-y-auto p-5">
         <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
-          {(['ssh', 'telnet', 'serial', 'local'] as const).map((p) => {
+          {(isAndroid ? (['ssh', 'telnet'] as const) : (['ssh', 'telnet', 'serial', 'local'] as const)).map((p) => {
             const Icon = protocolIcons[p]
             return (
               <button
