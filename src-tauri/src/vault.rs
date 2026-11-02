@@ -390,6 +390,9 @@ const PASSWORDLESS_METHODS: [WrapperKind; 2] = [WrapperKind::Hello, WrapperKind:
 fn usable_on_this_platform(kind: WrapperKind) -> bool {
     match kind {
         WrapperKind::Hello => cfg!(target_os = "windows"),
+        // `keyring` has no store on mobile and falls back to its mock, which
+        // forgets the key: enrolling would look fine until the next launch.
+        WrapperKind::OsKeyring => cfg!(desktop),
         _ => true,
     }
 }
@@ -478,6 +481,9 @@ pub async fn vault_enable_os_unlock(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
+    if !usable_on_this_platform(WrapperKind::OsKeyring) {
+        return Err("passwordless unlock isn't available on this platform yet".to_string());
+    }
     // Enroll with no lock held: a Hello prompt can take a while, and holding
     // the vault mutex would block every other vault command (and queue up a
     // prompt per impatient click).

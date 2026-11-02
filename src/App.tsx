@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
+import { isAndroid } from './lib/platform'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
 import { TabBar } from './components/TabBar'
@@ -180,6 +182,9 @@ function App() {
   // the same object when nothing changed.
   const [paneRuntime, dispatchPaneRuntime] = useReducer(paneRuntimeReducer, {})
   const statusByPane = useMemo(() => statusByPaneOf(paneRuntime), [paneRuntime])
+  // Android: keep the process alive while any session is open.
+  const liveSessions = liveSessionCount(Object.values(statusByPane))
+  useEffect(() => syncKeepAlive(liveSessions), [liveSessions])
   const connectedAtByPane = useMemo(() => connectedAtByPaneOf(paneRuntime), [paneRuntime])
   const loggingByPane = useMemo(() => loggingByPaneOf(paneRuntime), [paneRuntime])
   const forwardsOpenByPane = useMemo(() => forwardsOpenByPaneOf(paneRuntime), [paneRuntime])
@@ -1107,14 +1112,16 @@ function App() {
   return (
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden ${
-        maximized ? '' : 'rounded-lg border border-chrome/10'
+        maximized || isAndroid ? '' : 'rounded-lg border border-chrome/10'
       }`}
       style={{ background: rootBackground }}
     >
       {/* No bottom hairline: the active tab runs straight down into the
           terminal, and the strip's wash separates it by tone. */}
       <div
-        className="flex h-10 shrink-0 items-stretch"
+        // A phone is too narrow for the tabs and the toolbar on one row: the toolbar
+        // doesn't shrink, so it squeezes the tabs and their + down to nothing.
+        className={`flex shrink-0 items-stretch ${isAndroid ? 'flex-wrap' : 'h-10'}`}
         // Away from the theme background (see stripOverlay). Dropped while faded:
         // the translucent active tab would otherwise show the wash through it and
         // look lighter than its terminal.
@@ -1125,6 +1132,8 @@ function App() {
               : 'transparent',
         }}
       >
+        {/* Android: below the toolbar, so the active tab runs into its terminal. */}
+        <div className={isAndroid ? 'order-last flex h-10 w-full min-w-0 items-stretch' : 'contents'}>
         <TabBar
           tabs={tabs}
           activeTabId={activeTabId}
@@ -1144,7 +1153,8 @@ function App() {
           onReorder={reorderTabs}
           onDropPaneAsNewTab={popPaneToNewTab}
         />
-        <div
+        </div>
+        {!isAndroid && <div
           data-tauri-drag-region
           // Keeps a minimum width as a window drag handle.
           className={`min-w-12 flex-1 transition-colors duration-100 ${
@@ -1167,7 +1177,7 @@ function App() {
             const { tabId, paneId } = JSON.parse(raw) as { tabId: string; paneId: string }
             popPaneToNewTab(tabId, paneId)
           }}
-        />
+        />}
         {activeTab && (
           <div className="flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5">
             {activeLeaf?.source && (
@@ -1291,7 +1301,7 @@ function App() {
             onVaultChanged={refreshVaultStatus}
           />
         </div>
-        <WindowControls maximized={maximized} />
+        {!isAndroid && <WindowControls maximized={maximized} />}
       </div>
       <div className="relative flex min-h-0 flex-1">
         <main className="relative min-h-0 flex-1">

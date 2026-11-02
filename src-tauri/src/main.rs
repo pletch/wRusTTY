@@ -5,6 +5,7 @@ fn main() {
     // Before anything else — before Tauri, and above all before the
     // single-instance plugin, which would hand an elevated host's arguments to
     // the running window and exit. See `elevation::elevated_entry_point`.
+    #[cfg(desktop)]
     if let Some(code) = wrustty_lib::elevated_entry_point() {
         std::process::exit(code);
     }
