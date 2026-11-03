@@ -82,6 +82,13 @@ function join(dir: string, name: string): string {
 
 /** The last path segment, with either separator (picked local paths may be
  *  Windows-shaped). */
+/** A finger needs a much larger target than a pointer. */
+const TOOL_ICON = isAndroid ? 22 : 12
+const TOOL_PADDING = isAndroid ? 'p-2' : 'p-1'
+const ROW_ICON = isAndroid ? 18 : 12
+const ROW_PADDING = isAndroid ? 'py-2.5' : 'py-1.5'
+const MENU_ICON = isAndroid ? 18 : 13
+
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path
 }
@@ -809,7 +816,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
   }
 
   const menuItem =
-    'flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 hover:bg-chrome/10 disabled:opacity-30 disabled:hover:bg-transparent'
+    `flex w-full items-center gap-2 px-3 ${ROW_PADDING} text-left transition-colors duration-100 hover:bg-chrome/10 disabled:opacity-30 disabled:hover:bg-transparent`
 
   /** The inline name field for rename and mkdir. Auto-focused; blur commits
    * rather than cancels. */
@@ -846,9 +853,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         </h2>
         <button
           onClick={onClose}
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
+          className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80`}
         >
-          <X size={13} />
+          <X size={TOOL_ICON} />
         </button>
       </div>
 
@@ -857,43 +864,43 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
           onClick={() => cwd && load(parentOf(cwd))}
           disabled={!cwd || cwd === '/'}
           title="Up one directory"
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
+          className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30`}
         >
-          <ArrowUp size={13} />
+          <ArrowUp size={TOOL_ICON} />
         </button>
         <span className="min-w-0 flex-1 truncate text-chrome/60">{cwd ?? '…'}</span>
         <button
           onClick={() => setNaming({ kind: 'mkdir', draft: '' })}
           disabled={!cwd}
           title="New folder"
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
+          className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30`}
         >
-          <FolderPlus size={12} />
+          <FolderPlus size={TOOL_ICON} />
         </button>
         <button
           onClick={() => uploadHere(false)}
           disabled={!cwd}
           title="Upload a file into this directory"
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
+          className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30`}
         >
-          <Upload size={12} />
+          <Upload size={TOOL_ICON} />
         </button>
         {!isAndroid && (
           <button
             onClick={() => uploadHere(true)}
             disabled={!cwd}
             title="Upload a folder into this directory"
-            className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
+            className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30`}
           >
-            <FolderUp size={12} />
+            <FolderUp size={TOOL_ICON} />
           </button>
         )}
         <button
           onClick={() => cwd && load(cwd)}
           title="Refresh"
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
+          className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80`}
         >
-          <RefreshCw size={12} />
+          <RefreshCw size={TOOL_ICON} />
         </button>
       </div>
 
@@ -907,7 +914,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         {naming?.kind === 'mkdir' && (
           // At the top, where directories sort anyway.
           <li className="flex items-center gap-1.5 rounded px-2 py-1.5">
-            <Folder size={12} className="shrink-0 text-sky-400/80" />
+            <Folder size={ROW_ICON} className="shrink-0 text-sky-400/80" />
             {nameField(naming.draft, (draft) => setNaming({ kind: 'mkdir', draft }))}
           </li>
         )}
@@ -924,15 +931,15 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 e.preventDefault()
                 setMenu({ entry, x: e.clientX, y: e.clientY })
               }}
-              className={`flex cursor-default items-center justify-between gap-2 rounded px-2 py-1.5 ${
+              className={`flex cursor-default items-center justify-between gap-2 rounded px-2 ${ROW_PADDING} ${
                 entry.name === selected ? 'bg-sky-400/15' : 'hover:bg-chrome/5'
               }`}
             >
               <span className="flex min-w-0 flex-1 items-center gap-1.5 text-chrome/80">
                 {entry.isDir ? (
-                  <Folder size={12} className="shrink-0 text-sky-400/80" />
+                  <Folder size={ROW_ICON} className="shrink-0 text-sky-400/80" />
                 ) : (
-                  <FileText size={12} className="shrink-0 text-chrome/40" />
+                  <FileText size={ROW_ICON} className="shrink-0 text-chrome/40" />
                 )}
                 {naming?.kind === 'rename' && naming.original === entry.name ? (
                   nameField(naming.draft, (draft) =>
@@ -1017,9 +1024,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
             <div key={t.key} className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
                 {t.direction === 'down' ? (
-                  <Download size={13} className="shrink-0 text-sky-400" />
+                  <Download size={ROW_ICON} className="shrink-0 text-sky-400" />
                 ) : (
-                  <Upload size={13} className="shrink-0 text-sky-400" />
+                  <Upload size={ROW_ICON} className="shrink-0 text-sky-400" />
                 )}
                 <span className="min-w-0 flex-1 truncate text-chrome/80">{t.name}</span>
                 {t.failed && (
@@ -1049,7 +1056,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                   title={t.failed ? 'Dismiss' : 'Cancel this transfer'}
                   className="flex items-center justify-center rounded p-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
                 >
-                  <X size={12} />
+                  <X size={TOOL_ICON} />
                 </button>
               </div>
               <div className="h-1 overflow-hidden rounded-full bg-chrome/10">
@@ -1100,7 +1107,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         >
           {(menu.entry.isDir || !isAndroid) && (
             <button className={menuItem} onClick={() => open(menu.entry)}>
-              {menu.entry.isDir ? <FolderOpen size={13} /> : <FileText size={13} />}
+              {menu.entry.isDir ? <FolderOpen size={MENU_ICON} /> : <FileText size={MENU_ICON} />}
               {menu.entry.isDir ? 'Open' : 'Edit'}
             </button>
           )}
@@ -1117,7 +1124,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                   : 'This session cannot write it. Edit as root runs sudo on the host, and asks for the sudo password there.'
               }
             >
-              <ShieldAlert size={13} /> Edit as root…
+              <ShieldAlert size={MENU_ICON} /> Edit as root…
             </button>
           )}
           {!(isAndroid && menu.entry.isDir) && (
@@ -1130,11 +1137,11 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                   : 'Save this file to a local path'
               }
             >
-              <Download size={13} /> Download…
+              <Download size={MENU_ICON} /> Download…
             </button>
           )}
           <button className={menuItem} onClick={() => copyPath(menu.entry)}>
-            <ClipboardCopy size={13} /> Copy path
+            <ClipboardCopy size={MENU_ICON} /> Copy path
           </button>
 
           <div className="my-1 border-t border-chrome/10" />
@@ -1152,7 +1159,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 : 'Rename within this directory'
             }
           >
-            <FilePen size={13} /> Rename
+            <FilePen size={MENU_ICON} /> Rename
           </button>
           <button
             className={menuItem}
@@ -1171,7 +1178,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 : 'Change the permission bits'
             }
           >
-            <KeyRound size={13} /> Permissions…
+            <KeyRound size={MENU_ICON} /> Permissions…
           </button>
           <button
             className={`${menuItem} text-red-300`}
@@ -1183,7 +1190,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 : 'Delete on the remote host'
             }
           >
-            <Trash2 size={13} /> Delete
+            <Trash2 size={MENU_ICON} /> Delete
           </button>
         </div>
       )}
