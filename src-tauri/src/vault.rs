@@ -241,6 +241,8 @@ pub struct VaultState {
     pub(crate) vault: TokioMutex<Option<Vault>>,
     /// When ownership was last proven for a master password reset.
     reset_granted: std::sync::Mutex<Option<Instant>>,
+    /// A picked bundle waiting for its master password.
+    pending_import: std::sync::Mutex<Option<PendingImport>>,
 }
 
 #[derive(Serialize)]
@@ -295,12 +297,20 @@ pub async fn vault_unlock(
     state: State<'_, VaultState>,
     profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<(), String> {
-    let mut vault =
-        Vault::unlock(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
+    unlock_with_password(&app, &master_password, &state, &profile_state).await
+}
+
+async fn unlock_with_password(
+    app: &AppHandle,
+    master_password: &str,
+    state: &VaultState,
+    profile_state: &crate::profiles::ProfileState,
+) -> Result<(), String> {
+    let mut vault = Vault::unlock(vault_path(app)?, master_password).map_err(|e| e.to_string())?;
     if !vault.has_unlock_method(WrapperKind::OsKeyring) {
         let _ = forget_os_unlock_kek();
     }
-    prune_orphaned_credentials(&app, &profile_state, &mut vault).await;
+    prune_orphaned_credentials(app, profile_state, &mut vault).await;
     *state.vault.lock().await = Some(vault);
     Ok(())
 }
@@ -804,20 +814,114 @@ pub async fn vault_has_credential(
     Ok(guard.as_ref().is_some_and(|v| v.has(&session_id)))
 }
 
-/// The export bundle: vault, session profiles and workspaces, which reference
-/// each other and are useless apart. The already-encrypted vault file is
-/// nested as JSON.
+/// What a bundle holds besides the vault: session profiles and workspaces, which
+/// reference it and each other and are useless apart.
 #[derive(Serialize, serde::Deserialize)]
-struct ExportBundle {
-    format: String,
-    vault: serde_json::Value,
+struct BundleDetails {
     sessions: Vec<crate::profiles::SessionProfile>,
     /// Defaulted so bundles from before workspaces existed still import.
     #[serde(default)]
     workspaces: Vec<crate::workspaces::Workspace>,
 }
 
-const EXPORT_FORMAT: &str = "wr-shell-export-v1";
+/// The export bundle. The already-encrypted vault file is nested as JSON, and everything
+/// else is sealed with that vault's key, so opening the file takes its master password.
+#[derive(Serialize, serde::Deserialize)]
+struct ExportBundle {
+    format: String,
+    vault: serde_json::Value,
+    details: wr_vault::Sealed,
+}
+
+/// The format from before the details were encrypted, still readable so old backups
+/// can be restored.
+#[derive(serde::Deserialize)]
+struct PlainExportBundle {
+    vault: serde_json::Value,
+    #[serde(flatten)]
+    details: BundleDetails,
+}
+
+const EXPORT_FORMAT: &str = "wr-shell-export-v2";
+const PLAIN_EXPORT_FORMAT: &str = "wr-shell-export-v1";
+
+/// A parsed bundle whose vault is known to be usable, before its password is known.
+enum PendingImport {
+    Sealed {
+        vault: serde_json::Value,
+        details: wr_vault::Sealed,
+    },
+    Plain(PlainExportBundle),
+}
+
+fn parse_bundle(contents: &str) -> Result<PendingImport, String> {
+    let invalid = || "not a valid vault export file".to_string();
+    let value: serde_json::Value = serde_json::from_str(contents).map_err(|_| invalid())?;
+    let format = value
+        .get("format")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(invalid)?;
+    let pending = match format {
+        EXPORT_FORMAT => {
+            let bundle: ExportBundle = serde_json::from_value(value).map_err(|_| invalid())?;
+            PendingImport::Sealed {
+                vault: bundle.vault,
+                details: bundle.details,
+            }
+        }
+        PLAIN_EXPORT_FORMAT => {
+            let bundle: PlainExportBundle = serde_json::from_value(value).map_err(|_| invalid())?;
+            validate_sessions(&bundle.details.sessions)?;
+            PendingImport::Plain(bundle)
+        }
+        other => return Err(format!("unsupported export format: {other}")),
+    };
+    // Before anything is torn down: an invalid vault, or one without a master-password
+    // wrapper, would lock the user out.
+    let vault = match &pending {
+        PendingImport::Sealed { vault, .. } => vault,
+        PendingImport::Plain(bundle) => &bundle.vault,
+    };
+    wr_vault::validate(vault).map_err(|e| format!("not a valid vault file: {e}"))?;
+    Ok(pending)
+}
+
+/// The bundle's vault and details, if `password` opens it.
+fn open_bundle(
+    pending: &PendingImport,
+    password: &str,
+) -> Result<(serde_json::Value, BundleDetails), wr_vault::VaultError> {
+    match pending {
+        PendingImport::Sealed { vault, details } => {
+            let plaintext = wr_vault::open_sealed(vault, password, details)?;
+            let details = serde_json::from_slice(&plaintext)
+                .map_err(|e| wr_vault::VaultError::Corrupt(e.to_string()))?;
+            Ok((vault.clone(), details))
+        }
+        PendingImport::Plain(bundle) => {
+            wr_vault::verify_master_password(&bundle.vault, password)?;
+            let details = BundleDetails {
+                sessions: bundle.details.sessions.clone(),
+                workspaces: bundle.details.workspaces.clone(),
+            };
+            Ok((bundle.vault.clone(), details))
+        }
+    }
+}
+
+/// Seals the details with the unlocked vault. `vault_file` is the same vault on disk.
+fn seal_bundle(
+    vault: &Vault,
+    vault_file: serde_json::Value,
+    details: &BundleDetails,
+) -> Result<ExportBundle, String> {
+    let plaintext = serde_json::to_vec(details).map_err(|e| e.to_string())?;
+    Ok(ExportBundle {
+        format: EXPORT_FORMAT.to_string(),
+        vault: vault_file,
+        details: vault.seal(&plaintext).map_err(|e| e.to_string())?,
+    })
+}
 
 /// Runs the file dialog here rather than accepting a path from the webview,
 /// since import replaces the live vault and a forged path could plant one.
@@ -885,15 +989,18 @@ async fn write_picked<T: Serialize>(
     crate::atomic_file::write_json_atomic(&path, value)
 }
 
-/// Exports the bundle; the vault doesn't need to be unlocked. Only the vault is
-/// encrypted: sessions and workspaces (hosts, usernames, key paths, jump
-/// topology) are plaintext JSON, so a locked vault can still be backed up. The
-/// UI says so at export. Returns `false` if the dialog was dismissed.
+/// Exports the bundle. The vault has to be unlocked, since its key seals the sessions
+/// and workspaces. Returns `false` if the dialog was dismissed.
 #[tauri::command]
 pub async fn vault_export(
     app: AppHandle,
+    state: State<'_, VaultState>,
     profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<bool, String> {
+    const LOCKED: &str = "unlock the vault before exporting";
+    if state.vault.lock().await.is_none() {
+        return Err(LOCKED.to_string());
+    }
     let Some(dest) = pick_bundle(&app, true).await else {
         return Ok(false);
     };
@@ -906,17 +1013,21 @@ pub async fn vault_export(
         .await?;
     let workspaces =
         crate::workspaces::read_workspaces(&crate::workspaces::workspaces_path(&app)?)?;
-    let bundle = ExportBundle {
-        format: EXPORT_FORMAT.to_string(),
-        vault,
+    let details = BundleDetails {
         sessions,
         workspaces,
+    };
+    let bundle = {
+        let guard = state.vault.lock().await;
+        // It may have locked during the dialog.
+        let unlocked = guard.as_ref().ok_or(LOCKED)?;
+        seal_bundle(unlocked, vault, &details)?
     };
     write_picked(&app, dest, &bundle).await?;
     Ok(true)
 }
 
-/// Validates the parts of the bundle's plaintext sessions the app would act on
+/// Validates the parts of the bundle's sessions the app would act on
 /// by itself, currently `wake_on_lan` (outbound UDP on connect). The whole
 /// bundle is refused rather than repaired, before anything is torn down. New
 /// self-acting profile fields should be checked here too.
@@ -934,40 +1045,69 @@ fn validate_sessions(sessions: &[crate::profiles::SessionProfile]) -> Result<(),
     Ok(())
 }
 
-/// Imports a bundle, replacing the vault file, session profiles and workspaces,
-/// and re-locking (the caller unlocks with the imported password). The stored
-/// OS-unlock key is cleared, since it wrapped the old data key.
-///
-/// Everything is parsed and validated before anything is torn down, so a bad or
-/// abandoned import leaves the current unlock intact. Each write is atomic, but
-/// not all three together; after a crash, re-run the import.
-///
-/// Sessions are untrusted: a planted bundle could point a `key_path` at any
-/// host. The import UI makes the replacement obvious so the user notices
-/// unfamiliar entries; signing can't help, since only the master password
-/// travels with a backup.
-///
-/// Returns `false` if the dialog was dismissed.
+fn pending_import(state: &VaultState) -> std::sync::MutexGuard<'_, Option<PendingImport>> {
+    state
+        .pending_import
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// First half of an import: picks a bundle and checks its form. Nothing changes until
+/// [`vault_import_finish`]. Returns `false` if the dialog was dismissed.
 #[tauri::command]
-pub async fn vault_import(
+pub async fn vault_import_pick(
     app: AppHandle,
     state: State<'_, VaultState>,
-    workspace_state: State<'_, crate::workspaces::WorkspaceState>,
-    profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<bool, String> {
+    *pending_import(&state) = None;
     let Some(picked) = pick_bundle(&app, false).await else {
         return Ok(false);
     };
     let contents = read_picked(&app, picked).await?;
-    let bundle: ExportBundle =
-        serde_json::from_str(&contents).map_err(|_| "not a valid vault export file".to_string())?;
-    if bundle.format != EXPORT_FORMAT {
-        return Err(format!("unsupported export format: {}", bundle.format));
-    }
-    // Validate the vault before tearing anything down: an invalid one (or one
-    // without a master-password wrapper) would lock the user out.
-    wr_vault::validate(&bundle.vault).map_err(|e| format!("not a valid vault file: {e}"))?;
-    validate_sessions(&bundle.sessions)?;
+    *pending_import(&state) = Some(parse_bundle(&contents)?);
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn vault_import_cancel(state: State<'_, VaultState>) -> Result<(), String> {
+    *pending_import(&state) = None;
+    Ok(())
+}
+
+/// Replaces the vault file, session profiles and workspaces with the picked bundle's,
+/// then unlocks with the password that opened it. The stored OS-unlock key is cleared,
+/// since it wrapped the old data key.
+///
+/// Everything is opened and validated before anything is torn down, so a bad or
+/// abandoned import leaves the current unlock intact, and a wrong password can be tried
+/// again. Each write is atomic, but not all three together; after a crash, re-run the
+/// import.
+///
+/// Sessions are untrusted: a planted bundle, sealed under its author's own password,
+/// could point a `key_path` at any host. The import UI makes the replacement obvious so
+/// the user notices unfamiliar entries; signing can't help, since only the master
+/// password travels with a backup.
+#[tauri::command]
+pub async fn vault_import_finish(
+    app: AppHandle,
+    master_password: String,
+    state: State<'_, VaultState>,
+    workspace_state: State<'_, crate::workspaces::WorkspaceState>,
+    profile_state: State<'_, crate::profiles::ProfileState>,
+) -> Result<(), String> {
+    let pending = pending_import(&state)
+        .take()
+        .ok_or("no backup is waiting to be imported")?;
+    let opened = open_bundle(&pending, &master_password);
+    let (vault_file, details) = match opened {
+        Ok(opened) => opened,
+        Err(wrong @ wr_vault::VaultError::WrongPassword) => {
+            *pending_import(&state) = Some(pending);
+            return Err(wrong.to_string());
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    validate_sessions(&details.sessions)?;
 
     // Now drop the current unlock and the old OS-unlock key.
     *state.vault.lock().await = None;
@@ -976,17 +1116,17 @@ pub async fn vault_import(
     crate::android_biometric::forget(&app).await;
 
     // Atomic: the vault has no other copy.
-    crate::atomic_file::write_json_atomic(&vault_path(&app)?, &bundle.vault)?;
+    crate::atomic_file::write_json_atomic(&vault_path(&app)?, &vault_file)?;
 
     profile_state
         .with_profiles(&app, |path| {
-            crate::profiles::write_profiles(path, &bundle.sessions)
+            crate::profiles::write_profiles(path, &details.sessions)
         })
         .await?;
 
-    crate::workspaces::replace_all(&app, &workspace_state, &bundle.workspaces).await?;
+    crate::workspaces::replace_all(&app, &workspace_state, &details.workspaces).await?;
 
-    Ok(true)
+    unlock_with_password(&app, &master_password, &state, &profile_state).await
 }
 
 #[cfg(test)]
@@ -1035,6 +1175,69 @@ mod tests {
             }}"#
         ))
         .unwrap()
+    }
+
+    /// An unlocked vault with `password`, and the same vault as a file holds it.
+    fn vault_and_file(
+        dir: &tempfile::TempDir,
+        password: &str,
+    ) -> (wr_vault::Vault, serde_json::Value) {
+        let path = dir.path().join("vault.wrv");
+        let vault = wr_vault::Vault::create(&path, password).unwrap();
+        let file = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        (vault, file)
+    }
+
+    fn details() -> BundleDetails {
+        BundleDetails {
+            sessions: vec![session_with_wake("null")],
+            workspaces: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_export_reveals_no_session_details_without_the_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let (vault, file) = vault_and_file(&dir, "correct horse");
+        let bundle = seal_bundle(&vault, file, &details()).unwrap();
+        let written = serde_json::to_string(&bundle).unwrap();
+        for detail in ["desktop.lan", "tim", "the one in the study"] {
+            assert!(!written.contains(detail), "{detail} is readable");
+        }
+
+        let pending = parse_bundle(&written).unwrap();
+        let wrong = open_bundle(&pending, "wrong");
+        assert!(matches!(wrong, Err(wr_vault::VaultError::WrongPassword)));
+        let (_, opened) = open_bundle(&pending, "correct horse").unwrap();
+        assert_eq!(opened.sessions[0].host, "desktop.lan");
+        assert_eq!(opened.sessions[0].username, "tim");
+    }
+
+    #[test]
+    fn an_old_plain_backup_still_restores_with_its_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_vault, file) = vault_and_file(&dir, "correct horse");
+        let old = serde_json::json!({
+            "format": PLAIN_EXPORT_FORMAT,
+            "vault": file,
+            "sessions": [serde_json::to_value(session_with_wake("null")).unwrap()],
+        });
+
+        let pending = parse_bundle(&old.to_string()).unwrap();
+        assert!(open_bundle(&pending, "wrong").is_err());
+        let (_, opened) = open_bundle(&pending, "correct horse").unwrap();
+        assert_eq!(opened.sessions[0].host, "desktop.lan");
+        assert!(opened.workspaces.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_or_malformed_bundle_is_refused() {
+        let unknown = parse_bundle(r#"{"format": "wr-shell-export-v9"}"#)
+            .err()
+            .unwrap();
+        assert!(unknown.contains("wr-shell-export-v9"), "{unknown}");
+        assert!(parse_bundle("not json").is_err());
+        assert!(parse_bundle(r#"{"format": "wr-shell-export-v2"}"#).is_err());
     }
 
     #[test]

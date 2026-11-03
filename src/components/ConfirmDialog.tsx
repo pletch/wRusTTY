@@ -1,13 +1,16 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle } from 'lucide-react'
 import { useDismissable } from '../hooks/useDismissable'
+import { PasswordField } from './PasswordField'
 import { WindowDragStrip } from './WindowDragStrip'
 
 interface Props {
   title: string
   body: string
   confirmLabel: string
+  /** Asks for a password, and only confirms once this resolves to null. */
+  checkPassword?: (password: string) => Promise<string | null>
   onConfirm: () => void
   onCancel: () => void
 }
@@ -17,12 +20,36 @@ interface Props {
  * Cancel is the default focus and Escape cancels, so the safe answer is the
  * one you get by reflex — this exists precisely because the destructive
  * action was too easy to trigger by reflex in the first place. */
-export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }: Props) {
+export function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  checkPassword,
+  onConfirm,
+  onCancel,
+}: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
-    cancelRef.current?.focus()
-  }, [])
+    // A password has to be typed, so that's no reflex to guard against.
+    if (!checkPassword) cancelRef.current?.focus()
+  }, [checkPassword])
+
+  async function confirm() {
+    if (!checkPassword) {
+      onConfirm()
+      return
+    }
+    setChecking(true)
+    setError(null)
+    const problem = await checkPassword(password)
+    setChecking(false)
+    if (problem === null) onConfirm()
+    else setError(problem)
+  }
 
   // Rendered only while asking, so it is always the surface Escape should
   // reach — and being registered last, it sits above whatever raised it.
@@ -52,6 +79,23 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
           <span className="font-medium">{title}</span>
         </div>
         <p className="text-xs leading-relaxed text-chrome/50">{body}</p>
+        {checkPassword && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (password && !checking) void confirm()
+            }}
+          >
+            <PasswordField
+              value={password}
+              onChange={setPassword}
+              placeholder="Master password"
+              autoFocus
+              className="w-full rounded border border-chrome/10 bg-chrome/5 px-2 py-1.5 text-xs text-chrome/90 outline-none focus:border-chrome/30"
+            />
+            {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
+          </form>
+        )}
         <div className="flex justify-end gap-2 pt-1">
           <button
             ref={cancelRef}
@@ -61,7 +105,8 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
             Cancel
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => void confirm()}
+            disabled={checkPassword ? !password || checking : false}
             className="rounded bg-red-500/90 px-3 py-1.5 text-xs font-medium text-white transition-colors duration-100 hover:bg-red-500"
           >
             {confirmLabel}

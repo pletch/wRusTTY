@@ -21,7 +21,10 @@ pub use error::VaultError;
 pub use key::Kek;
 pub use provider::{KeyProvider, PasswordProvider, ProviderError};
 pub use secret::VaultSecret;
-pub use vault::{exists, unlock_methods_at, validate, wrappers_at, Vault};
+pub use vault::{
+    exists, open_sealed, unlock_methods_at, validate, verify_master_password, wrappers_at, Sealed,
+    Vault,
+};
 pub use wrapper::{WrapperKind, WrapperMeta, WrapperParams};
 
 /// Re-exported so out-of-crate `KeyProvider`s needn't depend on

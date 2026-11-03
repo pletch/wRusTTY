@@ -559,8 +559,9 @@ unchanged.
   identity to a relying party, it isn't a secret) — it could only ever gate
   access to a key already stored some other way, the same architectural
   role the Hello wrapper plays now.
-- Import/export = an encrypted `.wrb` bundle **(shipped — `vault_export` /
-  `vault_import`)**. The plaintext JSON/CSV export behind an "I understand"
+- Import/export = an encrypted `.wrb` bundle, including hostnames and usernames
+  **(shipped — `vault_export` / `vault_import_finish`)**. Backups from before that
+  still restore. The plaintext JSON/CSV export behind an "I understand"
   warning is **not built**.
 - Importers: PuTTY registry sessions **(shipped — `putty_import.rs`; no
   passwords are stored there, so it is structure only)**. Tabby config YAML is

@@ -6,6 +6,9 @@ export interface ConfirmRequest {
   title: string
   body: string
   confirmLabel?: string
+  /** Asks for a password as well. Resolves to null to accept it, or to what to show
+   * while asking again. */
+  checkPassword?: (password: string) => Promise<string | null>
 }
 
 export type Ask = (request: ConfirmRequest) => Promise<boolean>

@@ -17,11 +17,9 @@ import type { Ask } from '../components/confirmContext'
 /** Writes the encrypted bundle to a file the user picks. Returns whether one
  * was written. */
 export async function exportVaultBundle(confirm: Ask): Promise<boolean> {
-  // Stated before the file dialog: only credentials are encrypted; hostnames,
-  // usernames, ports, key paths and jump topology are readable JSON.
   const ok = await confirm({
     title: 'Export vault and sessions',
-    body: "The export protects your saved credentials with the vault's master password. Session details — hostnames, usernames, ports, key file paths — are stored in the file as plain text. Keep it somewhere you would keep that list.",
+    body: "The whole file is encrypted, including hostnames and usernames. Opening it takes this vault's master password as it is now, and nothing can recover a lost one.",
     confirmLabel: 'Export',
   })
   if (!ok) return false
@@ -43,15 +41,30 @@ export async function importVaultBundle(confirm: Ask): Promise<boolean> {
   // server. Only the user can recognize a session they didn't create.
   const ok = await confirm({
     title: 'Replace vault and sessions?',
-    body: "Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file's master password to unlock it. Only import a file you created yourself: imported sessions can point at any host and any private key file on this machine, so connecting to one you don't recognize can expose that key to whoever wrote the file.",
+    body: "Importing replaces the current vault, saved sessions, and workspaces. You will need the imported file's master password. Only import a file you created yourself: imported sessions can point at any host and any private key file on this machine, so connecting to one you don't recognize can expose that key to whoever wrote the file.",
     confirmLabel: 'Import and replace',
   })
   if (!ok) return false
   try {
-    if (!(await vault.importVault())) return false
-    toast.info(
-      'Vault, saved sessions, and workspaces imported — unlock the vault with its master password',
-    )
+    if (!(await vault.pickImport())) return false
+    const imported = await confirm({
+      title: 'Enter the master password',
+      body: 'The master password this backup was exported with.',
+      confirmLabel: 'Import',
+      checkPassword: async (password) => {
+        try {
+          await vault.finishImport(password)
+          return null
+        } catch (err) {
+          return String(err)
+        }
+      },
+    })
+    if (!imported) {
+      await vault.cancelImport()
+      return false
+    }
+    toast.success('Vault, saved sessions, and workspaces imported')
     return true
   } catch (err) {
     toast.error(String(err))

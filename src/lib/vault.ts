@@ -105,8 +105,18 @@ export function exportVault() {
   return invoke<boolean>('vault_export')
 }
 
-/** As `exportVault`: the path is chosen Rust-side. Resolves `false` if the
- * user dismissed the dialog, in which case nothing was replaced. */
-export function importVault() {
-  return invoke<boolean>('vault_import')
+/** As `exportVault`: the path is chosen Rust-side. Nothing is replaced until
+ * `finishImport`. Resolves `false` if the user dismissed the dialog. */
+export function pickImport() {
+  return invoke<boolean>('vault_import_pick')
+}
+
+/** Replaces everything with the picked backup and unlocks it. Rejects without changing
+ * anything on a wrong password, which can be tried again. */
+export function finishImport(masterPassword: string) {
+  return invoke<void>('vault_import_finish', { masterPassword })
+}
+
+export function cancelImport() {
+  return invoke<void>('vault_import_cancel')
 }

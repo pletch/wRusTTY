@@ -14,6 +14,10 @@ pub const SALT_LEN: usize = 16;
 /// into a future format.
 pub(crate) const ENTRIES_AAD: &[u8] = b"wrustty-vault-v2-entries";
 
+/// Bound into a [`crate::Sealed`] blob's tag, and the HKDF info for its key, which
+/// keeps it from being passed off as vault entries or the reverse.
+pub(crate) const SEALED_AAD: &[u8] = b"wrustty-vault-v2-sealed";
+
 /// Stronger than the argon2 crate's `Params::default()` (19 MiB, t=2, p=1, the
 /// RFC 9106 low-memory floor). New password wrappers use these; existing ones
 /// keep their stored params (`WrapperParams::Password`), so raising these

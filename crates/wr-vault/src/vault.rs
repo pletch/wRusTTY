@@ -154,6 +154,71 @@ pub fn validate(value: &serde_json::Value) -> Result<(), VaultError> {
     Ok(())
 }
 
+/// Data encrypted under a vault's key, to travel with a copy of that vault. Opened with
+/// [`open_sealed`], which needs only the copy and its master password.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Sealed {
+    nonce: String,
+    ciphertext: String,
+}
+
+fn sealing_key(dek: &Dek) -> Kek {
+    crypto::derive_kek_from_ikm(dek.as_bytes(), b"", crypto::SEALED_AAD)
+}
+
+fn dek_from_password(file: &V2File, provider: &PasswordProvider) -> Result<Dek, VaultError> {
+    let index = wrapper_index(&file.wrappers, WrapperKind::Password)
+        .ok_or(VaultError::NoSuchUnlockMethod(WrapperKind::Password))?;
+    let WrapperParams::Password {
+        salt,
+        m_cost,
+        t_cost,
+        p_cost,
+    } = &file.wrappers[index].params
+    else {
+        unreachable!("wrapper_index matched on kind");
+    };
+    let kek = provider.derive(salt, *m_cost, *t_cost, *p_cost)?;
+    wrapper::unwrap_dek(&kek, &file.wrappers[index])
+}
+
+/// Whether `password` opens a vault held as JSON, without touching the filesystem. For
+/// an import to ask before it replaces the live vault.
+pub fn verify_master_password(value: &serde_json::Value, password: &str) -> Result<(), VaultError> {
+    let provider = PasswordProvider::new(password);
+    match parse_any(value.clone())? {
+        AnyFile::V2(file) => dek_from_password(&file, &provider).map(|_| ()),
+        AnyFile::V1(file) => {
+            let kek = provider.derive(&file.salt, file.m_cost, file.t_cost, file.p_cost)?;
+            Vault::v1_entries(&file, &kek).map(|_| ())
+        }
+    }
+}
+
+/// Reverses [`Vault::seal`], given the vault it was sealed with as JSON. A wrong
+/// password is [`VaultError::WrongPassword`]. Past that, failure means damage.
+pub fn open_sealed(
+    value: &serde_json::Value,
+    password: &str,
+    sealed: &Sealed,
+) -> Result<Vec<u8>, VaultError> {
+    let AnyFile::V2(file) = parse_any(value.clone())? else {
+        return Err(VaultError::Corrupt(
+            "sealed data needs a current-format vault".into(),
+        ));
+    };
+    let dek = dek_from_password(&file, &PasswordProvider::new(password))?;
+    let nonce = decode_b64("sealed nonce", &sealed.nonce)?;
+    let ciphertext = decode_b64("sealed ciphertext", &sealed.ciphertext)?;
+    crypto::decrypt(
+        sealing_key(&dek).as_bytes(),
+        &nonce,
+        &ciphertext,
+        crypto::SEALED_AAD,
+    )
+    .ok_or_else(|| VaultError::Corrupt("the sealed data could not be decrypted".into()))
+}
+
 /// Short random identifier, distinct from the wrapper's kind so a method can
 /// be removed and re-enrolled without the new wrapper inheriting the old
 /// one's AEAD binding.
@@ -235,6 +300,20 @@ impl Vault {
         let vault = Self::with_single_wrapper(path, Dek::random(), HashMap::new(), params, &kek)?;
         vault.persist()?;
         Ok(vault)
+    }
+
+    /// Encrypts `plaintext` to travel with a copy of this vault. Under a key derived from
+    /// the DEK, so changing an unlock method leaves it readable.
+    pub fn seal(&self, plaintext: &[u8]) -> Result<Sealed, VaultError> {
+        let (nonce, ciphertext) = crypto::encrypt(
+            sealing_key(&self.dek).as_bytes(),
+            plaintext,
+            crypto::SEALED_AAD,
+        )?;
+        Ok(Sealed {
+            nonce: BASE64.encode(nonce),
+            ciphertext: BASE64.encode(ciphertext),
+        })
     }
 
     /// Unlocks with the master password, migrating a v1 file to v2 in the
@@ -557,6 +636,78 @@ mod tests {
 
     fn vault_path(dir: &tempfile::TempDir) -> PathBuf {
         dir.path().join("vault.wrv")
+    }
+
+    fn file_as_json(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn sealed_data_opens_with_the_vault_copy_and_its_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let vault = Vault::create(&path, "correct horse").unwrap();
+        let sealed = vault.seal(b"desktop.lan").unwrap();
+        let copy = file_as_json(&path);
+
+        assert_eq!(
+            open_sealed(&copy, "correct horse", &sealed).unwrap(),
+            b"desktop.lan"
+        );
+        assert!(matches!(
+            open_sealed(&copy, "wrong", &sealed),
+            Err(VaultError::WrongPassword)
+        ));
+    }
+
+    #[tokio::test]
+    async fn sealed_data_survives_a_master_password_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        let mut vault = Vault::create(&path, "old").unwrap();
+        let sealed = vault.seal(b"desktop.lan").unwrap();
+        vault.change_master_password("new").await.unwrap();
+
+        let copy = file_as_json(&path);
+        assert_eq!(open_sealed(&copy, "new", &sealed).unwrap(), b"desktop.lan");
+        assert!(open_sealed(&copy, "old", &sealed).is_err());
+    }
+
+    #[test]
+    fn sealed_data_from_another_vault_or_altered_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (dir.path().join("one"), dir.path().join("two"));
+        let vault = Vault::create(&one, "same").unwrap();
+        Vault::create(&two, "same").unwrap();
+        let sealed = vault.seal(b"desktop.lan").unwrap();
+        assert!(matches!(
+            open_sealed(&file_as_json(&two), "same", &sealed),
+            Err(VaultError::Corrupt(_))
+        ));
+
+        let mut altered = BASE64.decode(&sealed.ciphertext).unwrap();
+        altered[0] ^= 1;
+        let altered = Sealed {
+            nonce: sealed.nonce.clone(),
+            ciphertext: BASE64.encode(altered),
+        };
+        assert!(matches!(
+            open_sealed(&file_as_json(&one), "same", &altered),
+            Err(VaultError::Corrupt(_))
+        ));
+    }
+
+    #[test]
+    fn a_vault_copys_password_can_be_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_path(&dir);
+        Vault::create(&path, "correct horse").unwrap();
+        let copy = file_as_json(&path);
+        assert!(verify_master_password(&copy, "correct horse").is_ok());
+        assert!(matches!(
+            verify_master_password(&copy, "wrong"),
+            Err(VaultError::WrongPassword)
+        ));
     }
 
     /// Stands in for Windows Hello / the OS keyring: a provider whose KEK

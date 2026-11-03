@@ -1641,8 +1641,8 @@ export function SettingsDialog({
                       <div className="px-2 py-1.5">
                         <p className="text-chrome/40">
                           Your saved credentials, sessions and workspaces move as one bundle —
-                          each is meaningless without the others, so a backup carries all three.
-                          Only the credentials are encrypted.
+                          each is meaningless without the others, so a backup carries all three,
+                          encrypted with the vault&apos;s master password.
                         </p>
                       </div>
                       <button
@@ -1657,10 +1657,9 @@ export function SettingsDialog({
                           <span className="mt-0.5 block text-chrome/40">
                             {vaultStatus === 'unlocked'
                               ? 'Vault, saved sessions and workspaces, in one file.'
-                              : // Not a limitation worth hiding: an export has to
-                                // read the credentials it re-encrypts, so it
-                                // genuinely cannot run against a locked vault.
-                                'Unlock the vault first — an export has to read the credentials it protects.'}
+                              : // Not a limitation worth hiding: the vault's key is what
+                                // encrypts the sessions, so a locked vault can't.
+                                'Unlock the vault first — its key is what encrypts the backup.'}
                           </span>
                         </span>
                       </button>
