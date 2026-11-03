@@ -1,7 +1,26 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { osUnlockButtonLabel, relaxTextEntry } from './platform'
+import { isCompactHeight, osUnlockButtonLabel, relaxTextEntry } from './platform'
+
+describe('isCompactHeight', () => {
+  it('is compact on a phone in landscape with its keyboard open', () => {
+    expect(isCompactHeight(108, true)).toBe(true)
+  })
+
+  it('leaves the chrome alone with the keyboard closed, or in portrait with it open', () => {
+    expect(isCompactHeight(360, true)).toBe(false)
+    expect(isCompactHeight(450, true)).toBe(false)
+  })
+
+  it('never applies on desktop, however short the window', () => {
+    expect(isCompactHeight(108, false)).toBe(false)
+  })
+
+  it('ignores a window with no size yet', () => {
+    expect(isCompactHeight(0, true)).toBe(false)
+  })
+})
 
 describe('osUnlockButtonLabel', () => {
   it('names what the platform actually uses', () => {

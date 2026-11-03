@@ -1,6 +1,18 @@
 /** Running in the Android build's webview. */
 export const isAndroid = typeof navigator !== 'undefined' && /\bAndroid\b/.test(navigator.userAgent)
 
+/**
+ * Below this window height, in CSS pixels, the app's chrome leaves the terminal too
+ * little room. A phone in landscape with its keyboard open has about 110, of which the
+ * toolbar, tabs and key row take 120. Well above that, and below the shortest window
+ * with no keyboard, about 360.
+ */
+const COMPACT_HEIGHT_PX = 240
+
+export function isCompactHeight(height: number, android = isAndroid): boolean {
+  return android && height > 0 && height < COMPACT_HEIGHT_PX
+}
+
 /** The button for unlocking the vault without its password, where a prompt doesn't
  * know which method is enrolled. */
 export function osUnlockButtonLabel(android = isAndroid): string {

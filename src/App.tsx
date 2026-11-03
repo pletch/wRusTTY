@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
-import { isAndroid } from './lib/platform'
+import { isAndroid, isCompactHeight } from './lib/platform'
 import { tabForKept } from './lib/sessionReattach'
 import { KeyRow } from './components/KeyRow'
 import { Pane } from './components/Pane'
@@ -189,6 +189,13 @@ function App() {
   // Not before checking for sessions a previous webview left running: at zero, the
   // service holding them up would stop.
   const [keptChecked, setKeptChecked] = useState(!isAndroid)
+  const [compactHeight, setCompactHeight] = useState(() => isCompactHeight(window.innerHeight))
+  useEffect(() => {
+    if (!isAndroid) return
+    const update = () => setCompactHeight(isCompactHeight(window.innerHeight))
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
   // Nor while a pane brought back from one hasn't said how it stands, when it would look
   // like zero as well. On a timer, since a pane that fails to attach never says.
   const [attachingPanes, setAttachingPanes] = useState<string[]>([])
@@ -1157,6 +1164,8 @@ function App() {
   const toolbarGroupClass = isAndroid
     ? 'touch-toolbar flex shrink-0 items-center'
     : 'flex shrink-0 items-center gap-0.5 border-l border-chrome/10 px-1.5'
+  // Hidden rather than removed, so the tab strip and its menus keep their state.
+  const chromeHidden = compactHeight ? 'hidden' : ''
   const stripBackground =
     windowFocused || appearance.unfocusedDimPercent <= 0
       ? stripOverlay(findTheme(terminalSettings.themeName))
@@ -1174,7 +1183,7 @@ function App() {
       <div
         // A phone is too narrow for the tabs and the toolbar on one row: the toolbar
         // doesn't shrink, so it squeezes the tabs and their + down to nothing.
-        className={`flex shrink-0 items-stretch ${isAndroid ? 'relative flex-wrap' : 'h-10'}`}
+        className={`flex shrink-0 items-stretch ${isAndroid ? 'relative flex-wrap' : 'h-10'} ${chromeHidden}`}
         style={{ background: stripBackground }}
       >
         {/* Android: below the toolbar, so the active tab runs into its terminal. */}
@@ -1582,7 +1591,7 @@ function App() {
         )}
       </div>
       {isAndroid && <KeyRow background={stripBackground} />}
-      {tabs.length > 0 && (
+      {tabs.length > 0 && !compactHeight && (
         <StatusBar
           protocol={statusBarConn?.protocol ?? null}
           target={statusBarConn?.target ?? null}

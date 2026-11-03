@@ -11,6 +11,12 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Android, the terminal no longer disappears with the keyboard open in landscape.
+  The toolbar, tabs and key row left it no room, so the line being typed couldn't be
+  seen. The toolbar, tabs and status bar now hide until the keyboard closes.
+
 ## [0.5.0] - 2026-11-03
 
 ### Added
