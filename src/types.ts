@@ -18,6 +18,9 @@ export interface PaneLeaf {
    * global setting. Combined by `reconnectPolicy` and sent with the connect
    * command; nothing reads it afterward. */
   autoReconnect?: boolean | null
+  /** Android: a running session to attach to rather than connect. Only for the
+   * webview that found it; see `session_attach.rs`. */
+  attachTo?: string
 }
 
 /** Always exactly 2 children; nesting builds arbitrary layouts. */

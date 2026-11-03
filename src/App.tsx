@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { createPortal } from 'react-dom'
 import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
 import { isAndroid } from './lib/platform'
+import { tabForKept } from './lib/sessionReattach'
 import { KeyRow } from './components/KeyRow'
 import { Pane } from './components/Pane'
 import { Terminal } from './components/Terminal'
@@ -42,7 +43,7 @@ import type { SessionProfile } from './lib/profiles'
 import * as vault from './lib/vault'
 import type { VaultStatus, VaultSecret } from './lib/vault'
 import { transportOf, type ConnectionSource } from './lib/connection'
-import { parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/connection'
+import { listKeptSessions, parseReconnecting, shouldAutoClosePane, sourceLabel } from './lib/connection'
 import {
   loadSettings,
   saveSettings,
@@ -185,7 +186,12 @@ function App() {
   const statusByPane = useMemo(() => statusByPaneOf(paneRuntime), [paneRuntime])
   // Android: keep the process alive while any session is open.
   const liveSessions = liveSessionCount(Object.values(statusByPane))
-  useEffect(() => syncKeepAlive(liveSessions), [liveSessions])
+  // Not before checking for sessions a previous webview left running: at zero, the
+  // service holding them up would stop.
+  const [keptChecked, setKeptChecked] = useState(!isAndroid)
+  useEffect(() => {
+    if (keptChecked) syncKeepAlive(liveSessions)
+  }, [liveSessions, keptChecked])
   const connectedAtByPane = useMemo(() => connectedAtByPaneOf(paneRuntime), [paneRuntime])
   const loggingByPane = useMemo(() => loggingByPaneOf(paneRuntime), [paneRuntime])
   const forwardsOpenByPane = useMemo(() => forwardsOpenByPaneOf(paneRuntime), [paneRuntime])
@@ -286,6 +292,24 @@ function App() {
     return { kind: 'none' }
   })
   const closeModal = () => setModal({ kind: 'none' })
+  // Android: a new webview brings back any sessions the last one left running, which
+  // beats offering to reconnect them.
+  useEffect(() => {
+    if (!isAndroid) return
+    listKeptSessions()
+      .then((kept) => {
+        const restored = kept
+          .map((k) => tabForKept(k, () => blankTab().id))
+          .filter((tab) => tab !== null)
+        if (restored.length > 0) {
+          dispatchTabs({ type: 'restored', tabs: restored, activeTabId: restored[0].id })
+          closeModal()
+        }
+      })
+      .catch(() => {})
+      .finally(() => setKeptChecked(true))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // True unless the restore prompt is still up.
   const restoreDecided = modal.kind !== 'restorePrompt'
   // Every pane with a source, across all tabs: the pool Terminals are
@@ -1390,6 +1414,7 @@ function App() {
                 <Terminal
                   key={`${leaf.id}-${leaf.generation}`}
                   source={leaf.source}
+                  attachTo={leaf.attachTo}
                   savedProfile={
                     leaf.initial?.id ? (sessions.find((p) => p.id === leaf.initial?.id) ?? null) : null
                   }

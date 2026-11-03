@@ -4,6 +4,8 @@ import type { TelnetConfig } from './telnet'
 import type { SerialConfig } from './serial'
 import { localTitle, shellDisplayName, type LocalConfig } from './local'
 import type { WakeOnLan } from './profiles'
+import { isAndroid } from './platform'
+import { decodeBase64 } from './sessionReattach'
 
 export type ConnectionSource =
   | {
@@ -241,7 +243,47 @@ export function resize(source: ConnectionSource, sessionId: string, cols: number
 }
 
 export function disconnect(source: ConnectionSource, sessionId: string) {
+  // The pane closed, so what Rust kept of its screen goes too.
+  if (isAndroid) invoke('session_kept_forget', { sessionId }).catch(() => {})
   return invoke<void>(`${transportOf(source)}_disconnect`, { sessionId })
+}
+
+/** Android: connects this webview to a session; see `session_attach.rs`. A session
+ * attached for the first time passes a descriptor, for the next webview to rebuild it. */
+export async function attachSession(
+  sessionId: string,
+  descriptor: string | null,
+  onEvent: (event: ConnEvent) => void,
+  onData: (bytes: Uint8Array) => void,
+): Promise<{ replay: Uint8Array; gap: boolean; position: number }> {
+  const events = new Channel<ConnEvent>()
+  events.onmessage = onEvent
+  const data = new Channel<ArrayBuffer>()
+  data.onmessage = (buf) => onData(new Uint8Array(buf))
+  const reply = await invoke<{ replay: string; gap: boolean; position: number }>('session_attach', {
+    sessionId,
+    descriptor,
+    events,
+    data,
+  })
+  return { ...reply, replay: decodeBase64(reply.replay) }
+}
+
+export function listKeptSessions() {
+  return invoke<{ sessionId: string; descriptor: string }[]>('session_kept_list')
+}
+
+export function keptSnapshot(sessionId: string): Promise<Uint8Array | null> {
+  return invoke<ArrayBuffer>('session_kept_snapshot', { sessionId }).then((buf) =>
+    buf.byteLength > 0 ? new Uint8Array(buf) : null,
+  )
+}
+
+/** Raw bytes rather than JSON: a snapshot can be tens of megabytes. */
+export function putKeptSnapshot(sessionId: string, position: number, bytes: Uint8Array) {
+  return invoke<boolean>('session_kept_put_snapshot', bytes, {
+    headers: { 'x-session-id': sessionId, 'x-position': String(position) },
+  })
 }
 
 export function respondHostKey(requestId: string, accept: boolean) {

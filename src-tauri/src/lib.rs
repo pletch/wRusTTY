@@ -35,8 +35,13 @@ mod profiles;
 mod putty_import;
 #[cfg(desktop)]
 mod serial;
+#[cfg(any(target_os = "android", test))]
+// In a desktop test build the commands have no caller.
+#[cfg_attr(test, allow(dead_code))]
+mod session_attach;
 #[cfg(desktop)]
 mod session_import;
+#[cfg(any(target_os = "android", test))]
 #[cfg_attr(not(test), allow(dead_code))]
 mod session_keep;
 mod session_lock;
@@ -89,6 +94,7 @@ pub fn run() {
 
     #[cfg(target_os = "android")]
     let builder = builder
+        .manage(session_attach::SessionAttachState::default())
         .plugin(keep_alive::init())
         .plugin(android_files::init())
         .plugin(android_biometric::init());
@@ -241,6 +247,16 @@ pub fn run() {
             window_effects::set_window_vibrancy,
             #[cfg(target_os = "android")]
             keep_alive::keep_alive_set_sessions,
+            #[cfg(target_os = "android")]
+            session_attach::session_attach,
+            #[cfg(target_os = "android")]
+            session_attach::session_kept_list,
+            #[cfg(target_os = "android")]
+            session_attach::session_kept_forget,
+            #[cfg(target_os = "android")]
+            session_attach::session_kept_put_snapshot,
+            #[cfg(target_os = "android")]
+            session_attach::session_kept_snapshot,
             coalesce::delivery_stats,
             coalesce::reset_delivery_stats,
             coalesce::ack_delivery,
@@ -271,8 +287,12 @@ pub fn run() {
             session_lock::register(app.handle());
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            #[cfg(target_os = "android")]
+            session_attach::on_run_event(_app, _event);
+        });
 }
 
 /// One-time migration for the `sh.wrshell.app` to `sh.wrustty.app` rename:

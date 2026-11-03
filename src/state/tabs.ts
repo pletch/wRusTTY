@@ -110,6 +110,7 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
             // fresh from disk on connect.
             source: l.initial?.id ? { protocol: 'sshProfile', profileId: l.initial.id } : l.source,
             generation: l.generation + 1,
+            attachTo: undefined,
           })),
         })),
       }

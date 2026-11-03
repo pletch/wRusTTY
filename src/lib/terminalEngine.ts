@@ -171,6 +171,13 @@ export interface TerminalEngine {
    * The engine asks for text to be copied (mark mode). The clipboard is the
    * platform's, so the frontend does it.
    */
+  /** Android, for bringing a terminal back in a new webview. See
+   * `session_attach.rs`. Whether a write would parse now rather than be buffered: */
+  readonly coreReady?: boolean
+  /** Whether this terminal started from a snapshot. */
+  readonly isRestored?: boolean
+  /** Streams a snapshot. Nonzero means there isn't one. */
+  snapshot?(onChunk: (chunk: Uint8Array) => boolean): number
   /** The touch selection's Paste, which goes through the host's paste guard. */
   onPasteRequest?(cb: () => void): IDisposable
   onCopyRequest?(cb: (text: string) => void): IDisposable

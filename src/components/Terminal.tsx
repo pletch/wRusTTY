@@ -41,6 +41,11 @@ import { useDismissable } from '../hooks/useDismissable'
 import { LineEditor, parseHexLine } from '../lib/lineEditor'
 import * as deliveryStats from '../lib/deliveryStats'
 import { createWriteScheduler } from '../lib/writeScheduler'
+import { isAndroid } from '../lib/platform'
+import { describeForKeeping } from '../lib/sessionReattach'
+
+/** How often a visible pane hands Rust a snapshot, when there's anything new. */
+const SNAPSHOT_EVERY_MS = 30_000
 import { pathFlavorFor } from '../lib/localOpen'
 import { CommandTracker, IDLE } from '../lib/shellIntegration'
 import {
@@ -94,6 +99,8 @@ function reportEngineFailure(message: string) {
 
 interface Props {
   source: ConnectionSource
+  /** Android: attach to this running session rather than connecting. */
+  attachTo?: string
   /** The saved session this pane was opened from, if any, so history files under
    * it; see `historyKeyForSource`. */
   savedProfile?: SessionProfile | null
@@ -193,6 +200,7 @@ export function Terminal({
   broadcastGroupId,
   broadcasting,
   searchRequest,
+  attachTo,
   onStatus,
   onSessionId,
   onDimensions,
@@ -340,6 +348,8 @@ export function Terminal({
 
   // Lets applyLogging act on the live session from outside the connect effect.
   const sessionIdRef = useRef<string | null>(null)
+  // Fixed for this mount: Reconnect remounts with it cleared.
+  const attachToRef = useRef(attachTo)
   // Whether a log file is open for this session; prevents double start/stop.
   const loggingActiveRef = useRef(false)
   // Feeds the log filename.
@@ -729,8 +739,17 @@ export function Terminal({
 
     let disposed = false
     let sessionId: string | null = null
+    // Output a previous webview already acted on, parsing again to rebuild the screen.
+    // What it asks for was answered then, and answering again is stray input.
+    let replaying = false
+    let writtenBytes = 0
+    let snapshotAt = 0
+    let snapshotTimer: ReturnType<typeof setInterval> | null = null
+    let onVisibilityChange: (() => void) | null = null
+    const reattachId = attachToRef.current
+    const restoreFrom = reattachId ? conn.keptSnapshot(reattachId).catch(() => null) : undefined
 
-    termRef.current = new GhosttyEngine()
+    termRef.current = new GhosttyEngine(isAndroid ? { tracksSnapshots: true, restoreFrom } : {})
     const term = termRef.current
 
     // The settings effects above ran before the engine existed, and only fire on
@@ -1193,7 +1212,7 @@ export function Terminal({
     oscListeners.push(
       term.registerOscHandler(52, (data) =>
         applyOsc52(data, {
-          allowWrite: settingsRef.current.clipboardWriteFromRemote,
+          allowWrite: settingsRef.current.clipboardWriteFromRemote && !replaying,
           writeText,
           // Toast on every write: silent writes are what make clipboard poisoning
           // work.
@@ -1211,7 +1230,7 @@ export function Terminal({
       tracker.setAltScreen(isAlternate)
     })
     const bellListener = term.onBell(() => {
-      if (!disposed) onBellRef.current?.()
+      if (!disposed && !replaying) onBellRef.current?.()
     })
 
     const onEvent = (event: ConnEvent) => {
@@ -1289,6 +1308,7 @@ export function Terminal({
       (bytes) => {
         // Measurable in a live session; see lib/deliveryStats.ts.
         deliveryStats.record(bytes.length, () => term.write(bytes))
+        writtenBytes += bytes.length
         unacked += bytes.length
         // Also ack when the queue drains, so credit isn't stranded.
         if (unacked >= ACK_THRESHOLD_BYTES || scheduler.pending === 0) {
@@ -1366,8 +1386,98 @@ export function Terminal({
     }
     awaitSize()
 
+    /** Hands Rust the terminal's state, so the output before it can be let go. */
+    const saveSnapshot = () => {
+      const id = sessionId
+      if (!id || disposed || writtenBytes === snapshotAt) return
+      const at = writtenBytes
+      const chunks: Uint8Array[] = []
+      const result = term.snapshot?.((chunk) => {
+        chunks.push(chunk)
+        return true
+      })
+      if (result !== 0) return
+      const bytes = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
+      let offset = 0
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.length
+      }
+      conn
+        .putKeptSnapshot(id, at, bytes)
+        .then((kept) => {
+          if (kept) snapshotAt = at
+        })
+        .catch(() => {})
+    }
+
+    /**
+     * Android: connects this webview to the session, which Rust is holding either way.
+     * Live output waits until the catch-up has been written, since that comes back as
+     * the reply and could otherwise land after output newer than it.
+     */
+    async function attachToSession(id: string) {
+      const reattaching = reattachId !== undefined
+      let held: Uint8Array[] | null = []
+      const liveData = (bytes: Uint8Array) => {
+        if (held) held.push(bytes)
+        else onData(bytes)
+      }
+      try {
+        const reply = await conn.attachSession(
+          id,
+          reattaching ? null : describeForKeeping(source, labelRef.current),
+          onEvent,
+          liveData,
+        )
+        // A write before the core is up is parsed later, outside `replaying`.
+        const waitedFrom = performance.now()
+        while (!term.coreReady && !disposed && performance.now() - waitedFrom < 5000) {
+          await new Promise((resolve) => requestAnimationFrame(resolve))
+        }
+        if (disposed) return
+        if (reattaching) {
+          replaying = true
+          term.write(reply.replay)
+          replaying = false
+          // Whatever the old webview had in flight is never coming back as credit.
+          conn.ackDelivery(id, Number.MAX_SAFE_INTEGER).catch(() => {})
+        } else if (reply.replay.length > 0) {
+          term.write(reply.replay)
+        }
+        writtenBytes = reply.position
+        // So the next chance saves one, whatever the last one covered.
+        if (reattaching) snapshotAt = -1
+        const lostScreen = reattaching && !reply.gap && !term.isRestored && (await restoreFrom) !== null
+        if (reply.gap || lostScreen) {
+          term.writeln('\r\n[earlier output was lost while the app was closed]')
+          // Full-screen programs repaint when their size changes.
+          const { cols, rows } = term
+          conn.resize(source, id, Math.max(cols - 1, 1), rows).catch(() => {})
+          setTimeout(() => {
+            if (!disposed) conn.resize(source, id, term.cols, term.rows).catch(() => {})
+          }, 200)
+        }
+        const pending = held
+        held = null
+        for (const bytes of pending) onData(bytes)
+
+        snapshotTimer = setInterval(saveSnapshot, SNAPSHOT_EVERY_MS)
+        onVisibilityChange = () => {
+          if (document.visibilityState === 'hidden') saveSnapshot()
+        }
+        document.addEventListener('visibilitychange', onVisibilityChange)
+      } catch (err) {
+        replaying = false
+        held = null
+        if (!disposed) term.writeln(`\r\n[could not reattach: ${String(err)}]`)
+      }
+    }
+
     function connectWith(cols: number, rows: number) {
-    conn
+    ;(reattachId
+      ? Promise.resolve(reattachId)
+      : conn
       .connect(
         source,
         onEvent,
@@ -1376,7 +1486,7 @@ export function Terminal({
         rows,
         conn.reconnectPolicy(settingsRef.current, autoReconnectRef.current),
         proxyConfigFrom(settingsRef.current),
-      )
+      ))
       .then((id) => {
         if (disposed) {
           conn.disconnect(source, id).catch(() => {})
@@ -1407,6 +1517,7 @@ export function Terminal({
         const wantLog = loggingRef.current || autoLogRef.current === true
         applyLogging(id, wantLog)
         if (wantLog && !loggingRef.current) onAutoLogRef.current?.()
+        if (isAndroid) void attachToSession(id)
       })
       .catch((err) => {
         if (!disposed) {
@@ -1418,6 +1529,7 @@ export function Terminal({
     }
 
     const dataListener = term.onData((data) => {
+      if (replaying) return
       if (lineEditor) {
         // The line editor works in characters and edits on the engine's ^?; this
         // path only carries typing.
@@ -1722,6 +1834,8 @@ export function Terminal({
       if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
       if (dragUpHandler) window.removeEventListener('mouseup', dragUpHandler)
       scrollbarEl.remove()
+      if (snapshotTimer !== null) clearInterval(snapshotTimer)
+      if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange)
       if (sessionId) {
         conn.disconnect(source, sessionId).catch(() => {})
         if (loggingActiveRef.current) sessionLog.stop(sessionId).catch(() => {})

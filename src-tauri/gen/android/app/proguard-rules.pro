@@ -19,3 +19,12 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# PluginActivityHandover finds these by name.
+-keepclassmembers class app.tauri.plugin.PluginManager {
+    ** activity;
+    ** plugins;
+}
+-keepclassmembers class * extends app.tauri.plugin.Plugin {
+    <init>(android.app.Activity);
+}

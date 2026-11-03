@@ -578,6 +578,14 @@ where
 {
     let session_id = state.sessions.next_session_id();
 
+    // The frontend attaches for real once it has the id; see session_attach.rs.
+    #[cfg(target_os = "android")]
+    let (channel, data_channel) = {
+        let _ = (channel, data_channel);
+        app.state::<crate::session_attach::SessionAttachState>()
+            .wrap::<SshEvent>(&session_id)
+    };
+
     // A magic packet only reaches the local segment, never a host behind a
     // jump. Skip it rather than wait on a host we can't route to.
     let wake = match wake {

@@ -319,6 +319,9 @@ export class GhosttyEngine implements TerminalEngine {
   private wheelRemainder = 0
   private touchScroller: TouchScroller | null = null
   private touchSelection: TouchSelection | null = null
+  private readonly tracksSnapshots: boolean
+  private readonly restoreFrom: Promise<Uint8Array | null> | null
+  private restoredFromSnapshot = false
   private onPasteRequestHandlers = new Set<() => void>()
   /** Where a long press's word began, until the finger drags from it. */
   private touchPressStart: { x: number; y: number } | null = null
@@ -339,7 +342,14 @@ export class GhosttyEngine implements TerminalEngine {
    */
   private rowReadFailures: { row: number; why: string }[] = []
 
-  constructor() {
+  /**
+   * `tracksSnapshots` prepares a new terminal for being snapshotted, which has to
+   * happen before its first byte. `restoreFrom` starts from a snapshot instead, if it
+   * resolves to one. Android only: see `session_attach.rs`.
+   */
+  constructor(options: { tracksSnapshots?: boolean; restoreFrom?: Promise<Uint8Array | null> } = {}) {
+    this.tracksSnapshots = options.tracksSnapshots ?? false
+    this.restoreFrom = options.restoreFrom ?? null
     // Narrow by design: reads of buffer state plus requests to move or repaint.
     this.mouse = new MouseReporter({
       tracking: () => this.mouseTracking(),
@@ -490,14 +500,29 @@ export class GhosttyEngine implements TerminalEngine {
       // Compiled once for the app, instantiated per pane; see compileGhosttyWasm.
       this.wasm = await instantiateGhosttyModule(await compileGhosttyWasm(ghosttyWasmUrl))
 
+      const snapshot = this.restoreFrom ? await this.restoreFrom.catch(() => null) : null
+      // A damaged one comes back as 0, and the session carries on from a new terminal.
+      const restored = snapshot?.length
+        ? (this.wasm.exports.ghostty_terminal_restore?.(snapshot) ?? 0)
+        : 0
+      this.restoredFromSnapshot = restored !== 0
+
       // Colors go in at construction so the core resolves every cell to RGB.
-      this.termPtr = createTerminal(this.wasm, this._cols, this._rows, {
-        scrollbackLimit: this.scrollbackBudgetBytes,
-        ...this.themeConfigColors(),
-        // The cursor a RIS returns to. Only the `main` ABI acts on it.
-        cursorStyle: CONFIG_CURSOR_STYLE[this._cursorStyle],
-        cursorBlink: this._cursorBlink,
-      })
+      this.termPtr =
+        restored ||
+        createTerminal(this.wasm, this._cols, this._rows, {
+          scrollbackLimit: this.scrollbackBudgetBytes,
+          ...this.themeConfigColors(),
+          // The cursor a RIS returns to. Only the `main` ABI acts on it.
+          cursorStyle: CONFIG_CURSOR_STYLE[this._cursorStyle],
+          cursorBlink: this._cursorBlink,
+        })
+      if (this.termPtr !== 0) {
+        if (restored) this.wasm.exports.ghostty_terminal_resize(restored, this._cols, this._rows)
+        else if (this.tracksSnapshots) {
+          this.wasm.exports.ghostty_terminal_track_continuation?.(this.termPtr)
+        }
+      }
       if (this.termPtr === 0) {
         this.failInit('Ghostty could not allocate a terminal.')
         return
@@ -535,9 +560,12 @@ export class GhosttyEngine implements TerminalEngine {
       // Before the buffered writes, so a cursor shape set by the connection's first
       // bytes wins. Written unconditionally: a fresh core has DEC mode 12 off (steady
       // cursor), not a blinking block.
-      writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
-        cursorStyleSequence(this._cursorStyle, this._cursorBlink),
-      ))
+      // Not over a restored terminal, whose program may have chosen its own.
+      if (!restored) {
+        writeBytes(this.wasm, this.termPtr, this.oscEncoder.encode(
+          cursorStyleSequence(this._cursorStyle, this._cursorBlink),
+        ))
+      }
 
       // Flush buffered writes synchronously: the parser must see bytes in order.
       // Through `feed`, so OSCs that arrived before the core loaded still reach
@@ -2161,6 +2189,21 @@ export class GhosttyEngine implements TerminalEngine {
   onHintModeChange(cb: (active: boolean) => void): IDisposable {
     this.onHintModeHandlers.add(cb)
     return { dispose: () => this.onHintModeHandlers.delete(cb) }
+  }
+
+  /** Whether the core is up, so a write parses now rather than being buffered. */
+  get coreReady(): boolean {
+    return !!this.wasm && this.termPtr !== 0
+  }
+
+  get isRestored(): boolean {
+    return this.restoredFromSnapshot
+  }
+
+  /** Streams a snapshot; see `ghostty_terminal_snapshot`. Nonzero means no snapshot. */
+  snapshot(onChunk: (chunk: Uint8Array) => boolean): number {
+    if (!this.coreReady) return -1
+    return this.wasm!.exports.ghostty_terminal_snapshot?.(this.termPtr, onChunk) ?? -1
   }
 
   onPasteRequest(cb: () => void): IDisposable {

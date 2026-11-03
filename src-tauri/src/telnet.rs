@@ -49,6 +49,14 @@ pub async fn telnet_connect(
 ) -> Result<String, String> {
     let policy = reconnect.unwrap_or_default().sanitized();
     let session_id = state.sessions.next_session_id();
+    // The frontend attaches for real once it has the id; see session_attach.rs.
+    #[cfg(target_os = "android")]
+    let (channel, data_channel) = {
+        use tauri::Manager as _;
+        let _ = (channel, data_channel);
+        app.state::<crate::session_attach::SessionAttachState>()
+            .wrap::<TelnetEvent>(&session_id)
+    };
     // Nothing to re-resolve and nothing secret to hold: a telnet connection is
     // a host and a port, both of which are already here. The config is cloned
     // per attempt only because `TelnetConnector::new` consumes one.

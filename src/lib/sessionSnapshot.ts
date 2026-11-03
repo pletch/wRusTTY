@@ -47,7 +47,8 @@ function keepsBlank(source: ConnectionSource | null): boolean {
 
 function sanitizeNode(node: PaneNode, opts: SanitizeOptions): PaneNode {
   if (node.type === 'leaf') {
-    return { ...node, source: restorableSource(node.source, opts) }
+    // A session id means nothing to the next launch.
+    return { ...node, source: restorableSource(node.source, opts), attachTo: undefined }
   }
   return {
     ...node,

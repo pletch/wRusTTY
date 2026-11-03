@@ -175,14 +175,32 @@ snapshot.** The pinned core and the shipped WASM already export
 - `session_keep.rs` holds the snapshot and the output and resizes since it, by stream
   position, with a size cap and wiping on release.
 
-**Still to build:** when to take snapshots, wrapping each session's channels, the
-reattach command, and the frontend adopting a restored terminal. The channels can
-probably be wrapped without touching `coalesce.rs` or `session_registry.rs`: a
-`Channel::new` closure can tee into `SessionKeep` and forward to whichever webview is
-attached, and it keeps returning `Ok` with none attached, so the forwarder doesn't take
-a dead webview as the end of the session. **This all depends on what Tauri does when
-Android destroys the Activity while the process lives, which hasn't been observed
-yet.** Test with the developer option "Don't keep activities".
+**Reattaching is built, not yet tested on a phone.** `session_attach.rs` wraps each
+session's channels when it starts, without touching `coalesce.rs` or
+`session_registry.rs`: a `Channel::new` closure tees into `SessionKeep` and forwards to
+whichever webview is attached, and returns `Ok` with none attached, so the forwarder
+doesn't take a dead webview as the end of the session. `Terminal.tsx` saves a snapshot
+when hidden and every 30 seconds if anything's new. A new webview lists what's running
+and starts each pane from its snapshot, then replays the rest with replies, bells and
+clipboard writes muted.
+
+**Known limits:** a resize isn't recorded, so output since the snapshot replays at the
+current size. A prompt raised while no webview was attached is lost. Replayed output can
+still trigger a "command finished" notification, and an OSC cut by the snapshot isn't
+dispatched. A reattached one-off SSH session holds no credentials, so Reconnect on it
+needs them again.
+
+**Observed with the developer option "Don't keep activities":** destroying the Activity
+ended the whole process, with exit reason `EXIT_SELF`, status 0. Tauri exits when its
+last window closes, and tao's Android window closes with the Activity. So the process
+now refuses that exit while sessions are kept (`session_attach::on_run_event`) and builds
+a new webview on the next Activity's resume. The option has to be set in the phone's
+settings: `adb shell settings put global always_finish_activities 1` stores the value
+but doesn't take effect.
+
+Tauri's Android side assumes one Activity per process. `PluginManager` is a process-wide
+object that keeps the first Activity, and each plugin keeps the one it was built with,
+so `PluginActivityHandover` moves them over by reflection. Check it when updating Tauri.
 
 A snapshot covers both screens, scrollback and an unfinished
 escape sequence, which replaying output from a limited buffer can't do.
