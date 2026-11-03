@@ -1,3 +1,4 @@
+import { isAndroid } from './platform'
 import type { VibrancyMode } from './windowEffects'
 import { resolveRangeOverlaps } from './fontStack'
 import { sanitizeCustomThemes, setCustomThemes, type TerminalTheme } from './theme'
@@ -544,7 +545,23 @@ export function effectiveBackgroundLayers(
   return { root, overRoot: stackedOpacity(terminal, 2), terminal }
 }
 
+/**
+ * What a phone has no control for, at the value that changes nothing. Otherwise a
+ * first run's translucent default, or an earlier choice, would stay in force with no
+ * way to change it. Copy on select is off because the touch selection's popup has its
+ * own Copy, and a stray selection shouldn't replace the clipboard.
+ */
+export function settingsForPlatform(settings: TerminalSettings, android = isAndroid): TerminalSettings {
+  return android
+    ? { ...settings, backgroundOpacity: 1, unfocusedDimPercent: 0, copyOnSelect: false }
+    : settings
+}
+
 export function loadSettings(): TerminalSettings {
+  return settingsForPlatform(readSettings())
+}
+
+function readSettings(): TerminalSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(PREVIOUS_STORAGE_KEY)
     if (!raw) return { ...defaults, ...firstRunAppearance }

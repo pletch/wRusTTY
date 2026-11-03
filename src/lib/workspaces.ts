@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { Tab } from '../types'
+import { transportOf } from './connection'
+import { allLeaves } from './paneTree'
 import { sanitizeTabs, countUnsaveable } from './sessionSnapshot'
 
 /** Serial panes are excluded from workspaces: reopened later, a moved USB
@@ -24,6 +26,32 @@ export function saveWorkspace(workspace: Workspace) {
 
 export function deleteWorkspace(id: string) {
   return invoke<void>('delete_workspace', { id })
+}
+
+/**
+ * A workspace as a phone opens it: one pane to a tab, since a phone has no room for
+ * splits, in the saved order. `skipped` counts panes a phone can't open, like a local
+ * shell. An empty pane is left out without being counted, as there's nothing to lose.
+ * The saved workspace isn't touched, so it keeps its layout on a desktop.
+ */
+export function flattenForPhone(tabs: Tab[]): { tabs: Tab[]; skipped: number } {
+  const flat: Tab[] = []
+  let skipped = 0
+  for (const tab of tabs) {
+    for (const leaf of allLeaves(tab.root)) {
+      if (leaf.source) {
+        const transport = transportOf(leaf.source)
+        if (transport !== 'ssh' && transport !== 'telnet') {
+          skipped++
+          continue
+        }
+      } else if (!leaf.initial) {
+        continue
+      }
+      flat.push({ ...tab, root: leaf, activePaneId: leaf.id })
+    }
+  }
+  return { tabs: flat, skipped }
 }
 
 /** Everything a workspace can safely carry. Panes using a password typed at

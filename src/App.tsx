@@ -609,7 +609,18 @@ function App() {
     vaultUsable: boolean,
     originTabId?: string | null,
   ) {
-    const restored: Tab[] = refreshTabs(workspace.tabs, sessions, vaultUsable).map((t) => {
+    let tabs = workspace.tabs
+    if (isAndroid) {
+      const flat = workspaceApi.flattenForPhone(tabs)
+      tabs = flat.tabs
+      if (flat.skipped > 0) {
+        toast.info(
+          `${flat.skipped} ${flat.skipped === 1 ? "pane can't" : "panes can't"} open on Android`,
+        )
+      }
+      if (tabs.length === 0) return
+    }
+    const restored: Tab[] = refreshTabs(tabs, sessions, vaultUsable).map((t) => {
       // reidentify() invalidates activePaneId; use the first pane, and title it
       // from that pane.
       const root = reidentify(t.root)
@@ -1270,7 +1281,8 @@ function App() {
                 <Radio size={15} strokeWidth={2} />
               </button>
             )}
-            {activeLeaf?.source && (
+            {/* A phone's logs would land where they can't be reached. */}
+            {!isAndroid && activeLeaf?.source && (
               <button
                 className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
                   activePaneId && loggingByPane[activePaneId]
@@ -1450,7 +1462,9 @@ function App() {
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   autoReconnect={leaf.autoReconnect}
                   logging={loggingByPane[leaf.id] ?? false}
-                  autoLog={terminalSettings.autoLogSessions || profileLogsSession(leaf.source)}
+                  autoLog={
+                    !isAndroid && (terminalSettings.autoLogSessions || profileLogsSession(leaf.source))
+                  }
                   onAutoLog={() =>
                     dispatchPaneRuntime({ type: 'loggingSet', paneId: leaf.id, logging: true })
                   }

@@ -59,6 +59,7 @@ import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty
 import { APP_VERSION } from '../lib/version'
 import { GHOSTTY_PIN, GHOSTTY_COMMIT_SHORT } from '../lib/ghostty/vendorPin'
 import { revealLogs } from '../lib/logging'
+import { isAndroid } from '../lib/platform'
 import { toast } from '../lib/toast'
 import { SHELL_SNIPPETS } from '../lib/shellSnippets'
 import { puttySessionCount, sshConfigSessionCount } from '../lib/profiles'
@@ -106,6 +107,11 @@ const SECTIONS = [
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]['id']
+
+/** What has no use on a phone: shortcuts need a physical keyboard, remote files only
+ * sets a desktop editor, and logs would land where they can't be reached. */
+const HIDDEN_ON_ANDROID: ReadonlySet<SectionId> = new Set(['keyboard', 'files', 'logging'])
+const VISIBLE_SECTIONS = SECTIONS.filter((s) => !isAndroid || !HIDDEN_ON_ANDROID.has(s.id))
 
 const selectClass =
   'rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
@@ -818,7 +824,8 @@ export function SettingsDialog({
   const [installedFonts, setInstalledFonts] = useState<InstalledFont[] | null>(null)
 
   useEffect(() => {
-    if (!open || installedFonts !== null) return
+    // A phone only offers the bundled fonts.
+    if (isAndroid || !open || installedFonts !== null) return
     let cancelled = false
     listInstalledFonts().then((fonts) => {
       if (!cancelled) setInstalledFonts(fonts)
@@ -836,6 +843,7 @@ export function SettingsDialog({
     if (!open || section !== 'import') return
     setPuttyCount(null)
     setSshConfigCount(null)
+    if (isAndroid) return
     puttySessionCount()
       .then(setPuttyCount)
       .catch(() => setPuttyCount(0))
@@ -895,7 +903,7 @@ export function SettingsDialog({
               onClick={(e) => e.stopPropagation()}
             >
               <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2">
-                {SECTIONS.map(({ id, label, icon: Icon }) => (
+                {VISIBLE_SECTIONS.map(({ id, label, icon: Icon }) => (
                   <button
                     key={id}
                     onClick={() => setSection(id)}
@@ -1077,23 +1085,27 @@ export function SettingsDialog({
                           character.
                         </p>
                       </div>
-                      <Toggle
-                        checked={settings.copyOnSelect}
-                        onChange={(v) => onChange({ ...settings, copyOnSelect: v })}
-                        label="Copy on select"
-                        hint={`Selecting text in the terminal copies it automatically. ${
-                          bindingsFor(settings.keybindings, 'copy')[0] ?? 'The copy shortcut'
-                        } copies the selection either way, and ${
-                          bindingsFor(settings.keybindings, 'markMode')[0] ??
-                          'the mark-mode shortcut'
-                        } selects with the keyboard.`}
-                      />
-                      <Toggle
-                        checked={settings.rightClickPaste}
-                        onChange={(v) => onChange({ ...settings, rightClickPaste: v })}
-                        label="Right-click to paste"
-                        hint="PuTTY-style: right mouse button pastes the clipboard."
-                      />
+                      {!isAndroid && (
+                        <Toggle
+                          checked={settings.copyOnSelect}
+                          onChange={(v) => onChange({ ...settings, copyOnSelect: v })}
+                          label="Copy on select"
+                          hint={`Selecting text in the terminal copies it automatically. ${
+                            bindingsFor(settings.keybindings, 'copy')[0] ?? 'The copy shortcut'
+                          } copies the selection either way, and ${
+                            bindingsFor(settings.keybindings, 'markMode')[0] ??
+                            'the mark-mode shortcut'
+                          } selects with the keyboard.`}
+                        />
+                      )}
+                      {!isAndroid && (
+                        <Toggle
+                          checked={settings.rightClickPaste}
+                          onChange={(v) => onChange({ ...settings, rightClickPaste: v })}
+                          label="Right-click to paste"
+                          hint="PuTTY-style: right mouse button pastes the clipboard."
+                        />
+                      )}
                       <Toggle
                         checked={settings.clipboardWriteFromRemote}
                         onChange={(v) => onChange({ ...settings, clipboardWriteFromRemote: v })}
@@ -1106,6 +1118,7 @@ export function SettingsDialog({
                   {section === 'appearance' && (
                     <div className="space-y-4 px-2 py-1.5">
                       <ThemeEditor settings={settings} onChange={onChange} />
+                      {!isAndroid && (
                       <div>
                         <label className="flex items-center justify-between gap-2 text-chrome/85">
                           <span>Background opacity</span>
@@ -1125,6 +1138,9 @@ export function SettingsDialog({
                           }
                         />
                       </div>
+                      )}
+                      {!isAndroid && (
+                      <>
                       <div>
                         <span className="text-chrome/85">When unfocused</span>
                         <div className="mt-1.5 flex gap-1 rounded-md bg-black/20 p-1">
@@ -1237,6 +1253,8 @@ export function SettingsDialog({
                                 : 'Opacity below 100% still applies as plain unblurred glass, with no OS effect layered under it.'}
                         </p>
                       </div>
+                      </>
+                      )}
                       {/* Three modes rather than a switch and a slider: the
                           correction has no constant in it, so there is
                           nothing left to tune once it is on. Names and
@@ -1683,6 +1701,8 @@ export function SettingsDialog({
                         </span>
                       </button>
 
+                      {!isAndroid && (
+                      <>
                       <div className="mt-2 border-t border-chrome/10 px-2 pb-1.5 pt-3">
                         <p className="text-chrome/40">
                           Migrating from another client. Additive — a session already saved here
@@ -1729,6 +1749,8 @@ export function SettingsDialog({
                           </span>
                         </span>
                       </button>
+                      </>
+                      )}
                     </>
                   )}
 

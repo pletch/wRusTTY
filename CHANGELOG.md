@@ -16,6 +16,16 @@ release job publishes it as the GitHub release notes.
 - On Android, the terminal no longer disappears with the keyboard open in landscape.
   The toolbar, tabs and key row left it no room, so the line being typed couldn't be
   seen. The toolbar, tabs and status bar now hide until the keyboard closes.
+- On Android, settings that do nothing on a phone are hidden: keyboard shortcuts, the
+  remote file editor, background opacity, window effects, unfocused appearance,
+  right-click paste, installed fonts, and the PuTTY and SSH config imports. Copy on select
+  is gone too and always off, since the selection popup has its own Copy. So is session
+  logging, in settings and on the toolbar, because its logs couldn't be reached there, and
+  a saved session set to log no longer does so on a phone.
+- On Android, a workspace saved on a desktop opens with each pane in its own tab rather
+  than in splits too narrow to use. Panes a phone can't open, like local shells, are
+  skipped with a message instead of failing to connect. The saved workspace keeps its
+  layout.
 
 ## [0.5.0] - 2026-11-03
 

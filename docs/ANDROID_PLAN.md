@@ -429,6 +429,9 @@ providers, so an Android provider fits the existing shape.
   `DeviceFilesPlugin.open` gets from `ContentResolver`. A download goes to a private
   cache directory and is copied to the link when whole, so retries and staging work as
   on desktop, at the cost of holding the file twice for a moment.
+- A workspace from a desktop opens flattened, one pane to a tab, skipping what a phone
+  can't open (`flattenForPhone`). Splits aren't offered on a phone, and a reattached
+  session comes back as its own tab anyway.
 - Not on Android yet: folder transfers, which need a tree picker, and remote editing, since
   there's no external editor to launch. Tapping a file downloads it. A transfer keeps
   running if the screen is rebuilt, but its row in the panel doesn't come back.

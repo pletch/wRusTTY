@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
+  settingsForPlatform,
   loadSettings,
   saveSettings,
   cursorStyleSequence,
@@ -18,6 +19,26 @@ import {
   UNFOCUSED_OPACITY_FLOOR,
   UNFOCUSED_DIM_RANGE,
 } from './settings'
+
+describe('settingsForPlatform', () => {
+  const chosen = {
+    ...loadSettings(),
+    backgroundOpacity: 0.6,
+    unfocusedDimPercent: 30,
+    copyOnSelect: true,
+  }
+
+  it('removes what a phone has no control for', () => {
+    const phone = settingsForPlatform(chosen, true)
+    expect(phone.backgroundOpacity).toBe(1)
+    expect(phone.unfocusedDimPercent).toBe(0)
+    expect(phone.copyOnSelect).toBe(false)
+  })
+
+  it('leaves a desktop as it is', () => {
+    expect(settingsForPlatform(chosen, false)).toBe(chosen)
+  })
+})
 import { PRESET_THEMES, findTheme, getCustomThemes, setCustomThemes } from './theme'
 
 const STORAGE_KEY = 'wrustty.terminal-settings'
