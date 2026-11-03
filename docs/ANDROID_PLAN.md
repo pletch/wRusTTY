@@ -5,8 +5,8 @@ phone with a soft keyboard.
 
 **Status: M0 is done and M1 is under way.** A debug APK installed on a phone opens and
 connects over SSH. The first test found two problems: the layout was drawn under the
-system bars, hiding the tabs, and sessions dropped in the background. Both now have
-fixes that haven't been tested on a phone: `MainActivity` insets the content view,
+system bars, hiding the tabs, and sessions dropped in the background. Both are fixed
+and were confirmed on a Pixel 11 Pro: `MainActivity` insets the content view,
 including for the keyboard, and `SessionKeepAliveService` is a `specialUse` foreground
 service with a partial wake lock, started from `lib/keepAlive.ts` through
 `keep_alive.rs`. Until a new WebView can reattach to sessions, `stopWithTask` makes

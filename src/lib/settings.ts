@@ -1,3 +1,4 @@
+import { VAULT_AUTO_LOCK_MINUTES } from './androidSecurity'
 import { isAndroid } from './platform'
 import type { VibrancyMode } from './windowEffects'
 import { resolveRangeOverlaps } from './fontStack'
@@ -157,6 +158,10 @@ export interface TerminalSettings {
   /** Offer to reopen the previous session's tabs and panes on launch. Opt-in:
    * it reconnects live sessions and may need the vault. */
   restoreSessionsOnLaunch: boolean
+  /** Android: minutes after leaving the app before the vault locks. 0 is never. */
+  vaultAutoLockMinutes: number
+  /** Android: keeps the app out of screenshots and screen sharing. */
+  secureScreen: boolean
   /** 1 = fully opaque (default). Below 1 the background is alpha-blended, over
    * the window effect if one is set. */
   backgroundOpacity: number
@@ -362,6 +367,8 @@ const defaults: TerminalSettings = {
   themeName: 'wRusTTY Dark',
   customThemes: [],
   restoreSessionsOnLaunch: false,
+  vaultAutoLockMinutes: 5,
+  secureScreen: false,
   backgroundOpacity: 1,
   // Off by default.
   unfocusedDimPercent: 0,
@@ -650,6 +657,9 @@ function readSettings(): TerminalSettings {
     merged.customThemes = sanitizeCustomThemes(merged.customThemes)
     delete merged.scrollback
     setCustomThemes(merged.customThemes)
+    if (!VAULT_AUTO_LOCK_MINUTES.includes(merged.vaultAutoLockMinutes)) {
+      merged.vaultAutoLockMinutes = defaults.vaultAutoLockMinutes
+    }
     return merged
   } catch {
     // An unreadable blob starts like a first launch.

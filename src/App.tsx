@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
+import { syncSecureScreen, syncVaultAutoLock } from './lib/androidSecurity'
 import { isAndroid, isCompactHeight } from './lib/platform'
 import { tabForKept } from './lib/sessionReattach'
 import { KeyRow } from './components/KeyRow'
@@ -417,6 +418,13 @@ function App() {
       unlisten.then((f) => f())
     }
   }, [])
+
+  useEffect(() => {
+    if (isAndroid) syncVaultAutoLock(terminalSettings.vaultAutoLockMinutes)
+  }, [terminalSettings.vaultAutoLockMinutes])
+  useEffect(() => {
+    if (isAndroid) syncSecureScreen(terminalSettings.secureScreen)
+  }, [terminalSettings.secureScreen])
 
   function updateSettings(next: typeof terminalSettings) {
     setTerminalSettings(next)

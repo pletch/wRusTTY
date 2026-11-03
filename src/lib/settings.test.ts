@@ -20,6 +20,18 @@ import {
   UNFOCUSED_DIM_RANGE,
 } from './settings'
 
+describe('vaultAutoLockMinutes', () => {
+  it('falls back to the default for a value that is not offered', () => {
+    saveSettings({ ...loadSettings(), vaultAutoLockMinutes: 7 })
+    expect(loadSettings().vaultAutoLockMinutes).toBe(5)
+  })
+
+  it('keeps never', () => {
+    saveSettings({ ...loadSettings(), vaultAutoLockMinutes: 0 })
+    expect(loadSettings().vaultAutoLockMinutes).toBe(0)
+  })
+})
+
 describe('settingsForPlatform', () => {
   const chosen = {
     ...loadSettings(),

@@ -5,6 +5,8 @@ import * as forward from '../lib/forward'
 import type { ForwardInfo, ForwardSpec } from '../lib/forward'
 import { toast } from '../lib/toast'
 import { useConfirm } from './confirmContext'
+import { forwardWarningDue, noteForwardWarned } from '../lib/androidSecurity'
+import { isAndroid } from '../lib/platform'
 import { useDismissable } from '../hooks/useDismissable'
 
 interface Props {
@@ -79,6 +81,16 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
             targetHost,
             targetPort: Number(targetPort) || 0,
           }
+    // Loopback feels private on a desktop, but a phone shares it with every installed app.
+    if (isAndroid && spec.type !== 'remote' && forwardWarningDue()) {
+      const ok = await confirm({
+        title: 'Other apps can use this forward',
+        body: 'On Android, any app on this phone can connect to a forward on this phone, with no password, and reach whatever it leads to through your SSH connection. Close forwards when you are done with them, and only use them with apps you trust on this phone.',
+        confirmLabel: 'Create forward',
+      })
+      if (!ok) return
+      noteForwardWarned()
+    }
     try {
       const id = await addForwardConfirmingIfNeeded(spec)
       if (id === null) return

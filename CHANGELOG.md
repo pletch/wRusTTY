@@ -27,6 +27,17 @@ release job publishes it as the GitHub release notes.
   skipped with a message instead of failing to connect. The saved workspace keeps its
   layout.
 
+### Security
+
+- On Android, the vault locks 5 minutes after you leave the app, which you can change or
+  turn off in Settings. Open sessions stay connected. A new setting, off by default, blocks
+  screenshots and screen sharing, and hides the terminal in Recents.
+- On Android, nothing goes into cloud backups or transfers to a new phone. Use an export.
+- On Android, creating a local or SOCKS forward warns once that other apps on the phone can
+  use it.
+- On Android, the biometric key can't be used while the phone is locked. If you already
+  use biometric unlock, turn it off and on again to pick this up.
+
 ## [0.5.0] - 2026-11-03
 
 ### Added

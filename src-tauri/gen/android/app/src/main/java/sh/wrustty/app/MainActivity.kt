@@ -4,6 +4,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
@@ -12,6 +13,11 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 
 class MainActivity : TauriActivity() {
+  companion object {
+    /** Outlives this instance, so a recreated Activity starts protected. */
+    @Volatile var secureScreen = false
+  }
+
   private var webView: WebView? = null
   private var recreateOnResume = false
 
@@ -38,6 +44,7 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge(statusBarStyle = dark, navigationBarStyle = dark)
     super.onCreate(savedInstanceState)
     PluginActivityHandover.adopt(this)
+    if (secureScreen) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
     // Edge to edge, the webview would draw its full height under the status bar,
     // the cutout and the navigation bar, hiding the tab bar and the status strip.
@@ -56,6 +63,19 @@ class MainActivity : TauriActivity() {
       WindowInsetsCompat.CONSUMED
     }
   }
+
+  override fun onStart() {
+    super.onStart()
+    appVisibilityChanged(true)
+  }
+
+  override fun onStop() {
+    appVisibilityChanged(false)
+    super.onStop()
+  }
+
+  /** See vault_autolock.rs. */
+  private external fun appVisibilityChanged(visible: Boolean)
 
   override fun onWebViewCreate(webView: WebView) {
     this.webView = webView

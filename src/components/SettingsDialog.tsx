@@ -59,6 +59,7 @@ import { scrollbackBudgetBytesFor, estimateScrollbackRows } from '../lib/ghostty
 import { APP_VERSION } from '../lib/version'
 import { GHOSTTY_PIN, GHOSTTY_COMMIT_SHORT } from '../lib/ghostty/vendorPin'
 import { revealLogs } from '../lib/logging'
+import { VAULT_AUTO_LOCK_MINUTES } from '../lib/androidSecurity'
 import { isAndroid } from '../lib/platform'
 import { toast } from '../lib/toast'
 import { SHELL_SNIPPETS } from '../lib/shellSnippets'
@@ -1377,6 +1378,45 @@ export function SettingsDialog({
                         label="Restore sessions on launch"
                         hint="Offers to reopen open tabs next time you start wRusTTY."
                       />
+                      {isAndroid && (
+                        <>
+                          <div className="px-2 py-2">
+                            <label className="flex items-center justify-between gap-3 text-chrome/85">
+                              <span>Lock the vault after leaving the app</span>
+                              <select
+                                className={selectClass}
+                                value={settings.vaultAutoLockMinutes}
+                                onChange={(e) =>
+                                  onChange({
+                                    ...settings,
+                                    vaultAutoLockMinutes: Number(e.target.value),
+                                  })
+                                }
+                              >
+                                {VAULT_AUTO_LOCK_MINUTES.map((minutes) => (
+                                  <option key={minutes} value={minutes}>
+                                    {minutes === 0
+                                      ? 'Never'
+                                      : minutes === 60
+                                        ? '1 hour'
+                                        : `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <p className="mt-1 leading-relaxed text-chrome/40">
+                              Open sessions stay connected. One that drops may need the vault
+                              unlocked before it can reconnect.
+                            </p>
+                          </div>
+                          <Toggle
+                            checked={settings.secureScreen}
+                            onChange={(v) => onChange({ ...settings, secureScreen: v })}
+                            label="Block screenshots and screen sharing"
+                            hint="Keeps the terminal out of screenshots, screen recordings and anything sharing your screen."
+                          />
+                        </>
+                      )}
                       <div className="space-y-2 px-2 py-2">
                         <label className="flex items-center justify-between gap-3 text-chrome/85">
                           <span>Outbound proxy for SSH</span>

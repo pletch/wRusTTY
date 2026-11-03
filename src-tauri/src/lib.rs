@@ -2,6 +2,8 @@
 mod android_biometric;
 #[cfg(target_os = "android")]
 mod android_files;
+#[cfg(target_os = "android")]
+mod android_screen;
 mod atomic_file;
 #[cfg(desktop)]
 mod attention;
@@ -55,6 +57,10 @@ mod ssh_config_import;
 mod telnet;
 mod theme_import;
 mod vault;
+#[cfg(any(target_os = "android", test))]
+// In a desktop test build only its timing logic has a caller.
+#[cfg_attr(test, allow(dead_code))]
+mod vault_autolock;
 mod wake;
 #[cfg(target_os = "windows")]
 mod win_focus;
@@ -97,7 +103,8 @@ pub fn run() {
         .manage(session_attach::SessionAttachState::default())
         .plugin(keep_alive::init())
         .plugin(android_files::init())
-        .plugin(android_biometric::init());
+        .plugin(android_biometric::init())
+        .plugin(android_screen::init());
 
     builder
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -252,6 +259,10 @@ pub fn run() {
             #[cfg(target_os = "android")]
             android_files::device_file_name,
             #[cfg(target_os = "android")]
+            android_screen::set_secure_screen,
+            #[cfg(target_os = "android")]
+            vault_autolock::vault_set_auto_lock,
+            #[cfg(target_os = "android")]
             session_attach::session_attach,
             #[cfg(target_os = "android")]
             session_attach::session_kept_list,
@@ -289,6 +300,8 @@ pub fn run() {
             };
             app.handle().plugin(log_builder.build())?;
             session_lock::register(app.handle());
+            #[cfg(target_os = "android")]
+            vault_autolock::start(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

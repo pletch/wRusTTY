@@ -202,8 +202,9 @@ Google Play.
 
 - SSH, SFTP and Telnet, with a key row for what a phone keyboard lacks, touch scrolling
   and selection
-- The vault, with biometric unlock. A desktop backup can be restored on the phone, and
-  session types the phone can't open are kept but not listed
+- The vault, with biometric unlock. It locks itself 5 minutes after you leave the app,
+  which you can change. A desktop backup can be restored on the phone, and session types
+  the phone can't open are kept but not listed
 - File transfers to and from phone storage and Google Drive
 - Sessions keep running in the background, and come back with their history if Android
   destroys the screen or the WebView's renderer dies

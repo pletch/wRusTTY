@@ -152,6 +152,11 @@ class VaultBiometricPlugin(private val activity: Activity) : Plugin(activity) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
       spec.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
     }
+    // Unusable while the phone is locked. A key enrolled before this keeps its old rules
+    // until biometric unlock is turned off and on again.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      spec.setUnlockedDeviceRequired(true)
+    }
     val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
     generator.init(spec.build())
     return generator.generateKey()
