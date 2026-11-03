@@ -21,6 +21,12 @@ import type { PaneRuntimeState } from './paneRuntime'
 const EMPTY: PaneRuntimeState = {}
 
 describe('statusChanged / connectedAt coupling', () => {
+  it("keeps a reattached session's start time when it reports connected", () => {
+    const seeded = paneRuntimeReducer(EMPTY, { type: 'connectedSince', paneId: 'p1', at: 500 })
+    const state = paneRuntimeReducer(seeded, { type: 'statusChanged', paneId: 'p1', status: 'connected', now: 1000 })
+    expect(state.p1.connectedAt).toBe(500)
+  })
+
   it('sets connectedAt on the first transition to connected', () => {
     const state = paneRuntimeReducer(EMPTY, { type: 'statusChanged', paneId: 'p1', status: 'connected', now: 1000 })
     expect(state.p1.status).toBe('connected')

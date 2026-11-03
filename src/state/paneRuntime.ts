@@ -64,6 +64,8 @@ export type PaneRuntimeState = Record<string, PaneRuntime>
 export type PaneRuntimeAction =
   | { type: 'paneClosed'; paneId: string }
   | { type: 'statusChanged'; paneId: string; status: string; now: number }
+  /** A session that started before this webview did. */
+  | { type: 'connectedSince'; paneId: string; at: number }
   | { type: 'sessionIdSet'; paneId: string; sessionId: string | null }
   | { type: 'loggingSet'; paneId: string; logging: boolean }
   | { type: 'loggingToggled'; paneId: string }
@@ -94,6 +96,11 @@ export function paneRuntimeReducer(state: PaneRuntimeState, action: PaneRuntimeA
       const connectedAt =
         action.status === 'connected' ? (current.connectedAt ?? action.now) : null
       return { ...state, [action.paneId]: { ...current, status: action.status, connectedAt } }
+    }
+
+    case 'connectedSince': {
+      const current = state[action.paneId] ?? DEFAULT_RUNTIME
+      return { ...state, [action.paneId]: { ...current, connectedAt: action.at } }
     }
 
     case 'sessionIdSet':

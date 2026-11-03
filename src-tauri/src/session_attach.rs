@@ -116,6 +116,8 @@ struct Kept {
     queued: VecDeque<InvokeResponseBody>,
     /// What a later webview needs in order to know where the session stands.
     last_status: Option<String>,
+    /// Unix milliseconds, so a later webview's connection timer doesn't restart.
+    connected_at_ms: Option<u64>,
     sender: Sender,
 }
 
@@ -197,6 +199,28 @@ fn rebuild_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 pub struct KeptSession {
     session_id: String,
     descriptor: String,
+    connected_at: Option<u64>,
+}
+
+/// The timer's value after a status event, whose JSON is `{"type":"status","status":..}`:
+/// it starts on the first "connected" and any other status clears it, as the frontend's
+/// own clock does, so a reconnect restarts it. `None` for an event that isn't a status.
+fn connected_since(json: &str, current: Option<u64>, now_ms: u64) -> Option<Option<u64>> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    if value.get("type")?.as_str()? != "status" {
+        return None;
+    }
+    Some(if value.get("status")?.as_str()? == "connected" {
+        current.or(Some(now_ms))
+    } else {
+        None
+    })
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -229,6 +253,7 @@ impl SessionAttachState {
             events: None,
             queued: VecDeque::new(),
             last_status: None,
+            connected_at_ms: None,
             sender: sender.clone(),
         }));
         self.all().insert(session_id.to_string(), kept.clone());
@@ -253,8 +278,9 @@ impl SessionAttachState {
             let target = {
                 let mut kept = locked(&kept);
                 if let InvokeResponseBody::Json(json) = &body {
-                    if json.contains(r#""type":"status""#) {
+                    if let Some(since) = connected_since(json, kept.connected_at_ms, unix_ms()) {
                         kept.last_status = Some(json.clone());
+                        kept.connected_at_ms = since;
                     }
                 }
                 let target = kept.events.clone();
@@ -328,13 +354,12 @@ impl SessionAttachState {
             .all()
             .iter()
             .filter_map(|(id, kept)| {
-                locked(kept)
-                    .descriptor
-                    .clone()
-                    .map(|descriptor| KeptSession {
-                        session_id: id.clone(),
-                        descriptor,
-                    })
+                let kept = locked(kept);
+                kept.descriptor.clone().map(|descriptor| KeptSession {
+                    session_id: id.clone(),
+                    descriptor,
+                    connected_at: kept.connected_at_ms,
+                })
             })
             .collect();
         found.sort_by(|a, b| a.session_id.cmp(&b.session_id));
@@ -427,6 +452,32 @@ pub async fn session_kept_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_connection_timer_starts_once_and_clears_on_any_other_status() {
+        let status = |s: &str| format!(r#"{{"type":"status","status":"{s}"}}"#);
+        assert_eq!(
+            connected_since(&status("connected"), None, 5),
+            Some(Some(5))
+        );
+        assert_eq!(
+            connected_since(&status("connected"), Some(5), 9),
+            Some(Some(5))
+        );
+        assert_eq!(
+            connected_since(&status("reconnecting 1/5"), Some(5), 9),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn an_event_that_isnt_a_status_leaves_the_timer_alone() {
+        assert_eq!(
+            connected_since(r#"{"type":"hostKeyPrompt"}"#, Some(5), 9),
+            None
+        );
+        assert_eq!(connected_since("not json", Some(5), 9), None);
+    }
     use std::time::{Duration, Instant};
 
     type Log = Arc<Mutex<Vec<InvokeResponseBody>>>;
@@ -689,6 +740,7 @@ mod tests {
             vec![KeptSession {
                 session_id: "s".to_string(),
                 descriptor: "{}".to_string(),
+                connected_at: None,
             }]
         );
     }

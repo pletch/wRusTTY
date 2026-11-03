@@ -270,7 +270,9 @@ export async function attachSession(
 }
 
 export function listKeptSessions() {
-  return invoke<{ sessionId: string; descriptor: string }[]>('session_kept_list')
+  return invoke<{ sessionId: string; descriptor: string; connectedAt: number | null }[]>(
+    'session_kept_list',
+  )
 }
 
 export function keptSnapshot(sessionId: string): Promise<Uint8Array | null> {

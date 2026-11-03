@@ -189,9 +189,18 @@ function App() {
   // Not before checking for sessions a previous webview left running: at zero, the
   // service holding them up would stop.
   const [keptChecked, setKeptChecked] = useState(!isAndroid)
+  // Nor while a pane brought back from one hasn't said how it stands, when it would look
+  // like zero as well. On a timer, since a pane that fails to attach never says.
+  const [attachingPanes, setAttachingPanes] = useState<string[]>([])
+  const attaching = attachingPanes.some((id) => !statusByPane[id])
   useEffect(() => {
-    if (keptChecked) syncKeepAlive(liveSessions)
-  }, [liveSessions, keptChecked])
+    if (attachingPanes.length === 0) return
+    const timer = setTimeout(() => setAttachingPanes([]), 5000)
+    return () => clearTimeout(timer)
+  }, [attachingPanes])
+  useEffect(() => {
+    if (keptChecked && !attaching) syncKeepAlive(liveSessions)
+  }, [liveSessions, keptChecked, attaching])
   const connectedAtByPane = useMemo(() => connectedAtByPaneOf(paneRuntime), [paneRuntime])
   const loggingByPane = useMemo(() => loggingByPaneOf(paneRuntime), [paneRuntime])
   const forwardsOpenByPane = useMemo(() => forwardsOpenByPaneOf(paneRuntime), [paneRuntime])
@@ -298,10 +307,17 @@ function App() {
     if (!isAndroid) return
     listKeptSessions()
       .then((kept) => {
-        const restored = kept
-          .map((k) => tabForKept(k, () => blankTab().id))
-          .filter((tab) => tab !== null)
+        const restored: Tab[] = []
+        for (const k of kept) {
+          const tab = tabForKept(k, () => blankTab().id)
+          if (!tab) continue
+          restored.push(tab)
+          if (k.connectedAt !== null) {
+            dispatchPaneRuntime({ type: 'connectedSince', paneId: tab.activePaneId, at: k.connectedAt })
+          }
+        }
         if (restored.length > 0) {
+          setAttachingPanes(restored.map((tab) => tab.activePaneId))
           dispatchTabs({ type: 'restored', tabs: restored, activeTabId: restored[0].id })
           closeModal()
         }
@@ -383,6 +399,8 @@ function App() {
   }, [])
 
   useEffect(() => {
+    // A desktop-only call, which rejects on Android.
+    if (isAndroid) return
     const win = getCurrentWindow()
     win.isMaximized().then(setMaximized)
     const unlisten = win.onResized(() => {
