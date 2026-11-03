@@ -1538,7 +1538,7 @@ function App() {
           />
         )}
       </div>
-      {isAndroid && tabs.length > 0 && <KeyRow background={stripBackground} />}
+      {isAndroid && <KeyRow background={stripBackground} />}
       {tabs.length > 0 && (
         <StatusBar
           protocol={statusBarConn?.protocol ?? null}

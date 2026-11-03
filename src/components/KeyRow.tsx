@@ -31,24 +31,75 @@ const KEYS: RowKey[] = [
   { label: '-', aria: 'Dash', text: '-' },
 ]
 
-/** The focused terminal's input, or null when something else has focus. */
-function terminalInput(): HTMLTextAreaElement | null {
-  const el = document.activeElement
-  return el instanceof HTMLTextAreaElement && el.getAttribute('aria-label') === TERMINAL_INPUT_LABEL
-    ? el
-    : null
+type Field = HTMLInputElement | HTMLTextAreaElement
+
+function isTerminal(el: Element | null): boolean {
+  return el?.getAttribute('aria-label') === TERMINAL_INPUT_LABEL
 }
 
-function dispatchKey(type: 'keydown' | 'keyup', key: string, repeat = false) {
-  terminalInput()?.dispatchEvent(
+/** The form field with focus, leaving out the terminal's own hidden input. */
+function focusedField(): Field | null {
+  const el = document.activeElement
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return null
+  return isTerminal(el) ? null : el
+}
+
+/** Returns whether something handled it. A synthetic event has no default action,
+ * so a canceled one is the only sign anything did. */
+function dispatchKey(type: 'keydown' | 'keyup', key: string, repeat = false): boolean {
+  const target = document.activeElement ?? document.body
+  return !target.dispatchEvent(
     new KeyboardEvent(type, { key, code: key, repeat, bubbles: true, cancelable: true }),
   )
 }
 
+/** Types at the caret. React sees this as ordinary typing: `setRangeText` skips the
+ * `value` setter it watches, so the `input` event reports a change. */
+function insertIntoField(field: Field, text: string) {
+  try {
+    const start = field.selectionStart ?? field.value.length
+    const end = field.selectionEnd ?? start
+    field.setRangeText(text, start, end, 'end')
+  } catch {
+    return // A type without a caret, like `number`.
+  }
+  field.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+function moveCaret(field: Field, by: number) {
+  try {
+    const at = field.selectionStart ?? field.value.length
+    const next = Math.max(0, Math.min(field.value.length, at + by))
+    field.setSelectionRange(next, next)
+  } catch {
+    // Likewise.
+  }
+}
+
+/** Tab, among the fields sharing this one's form or dialog. */
+function focusNextField(field: Field) {
+  const scope = field.closest('form, [data-modal]') ?? document.body
+  const fields = [
+    ...scope.querySelectorAll<HTMLElement>(
+      'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled])',
+    ),
+  ].filter((el) => !isTerminal(el) && el.tabIndex !== -1)
+  if (fields.length < 2) return
+  fields[(fields.indexOf(field) + 1) % fields.length].focus()
+}
+
+/** What a key does in a form field, where a synthetic event wouldn't do it. */
+function applyToField(field: Field, key: string) {
+  if (key === 'ArrowLeft') moveCaret(field, -1)
+  else if (key === 'ArrowRight') moveCaret(field, 1)
+  else if (key === 'Tab') focusNextField(field)
+}
+
 /**
- * The keys a phone keyboard lacks, on Android. Events go to the focused terminal
- * as if a keyboard sent them, so the encoder and the app's modes treat them like
- * physical keys. A press never takes focus, which would close the keyboard.
+ * The keys a phone keyboard lacks, on Android. In the terminal, events go to it as if
+ * a keyboard sent them, so the encoder and the app's modes treat them like physical
+ * keys. In a dialog's field they do what they would there, and Esc still reaches
+ * whatever listens for it. A press never takes focus, which would close the keyboard.
  */
 export function KeyRow({ background }: { background?: string }) {
   const mods = useSyncExternalStore(subscribeSoftModifiers, softModifiers)
@@ -64,16 +115,28 @@ export function KeyRow({ background }: { background?: string }) {
 
   const press = (k: RowKey) => {
     if ('modifier' in k) {
-      toggleSoftModifier(k.modifier)
+      // Only the terminal consumes these. Armed from a dialog, one would wait there
+      // and land on the next thing typed in the terminal.
+      if (isTerminal(document.activeElement)) toggleSoftModifier(k.modifier)
     } else if ('text' in k) {
-      terminalInput()?.dispatchEvent(
-        new InputEvent('input', { data: k.text, inputType: 'insertText', bubbles: true }),
-      )
+      const field = focusedField()
+      if (field) {
+        insertIntoField(field, k.text)
+      } else if (isTerminal(document.activeElement)) {
+        document.activeElement!.dispatchEvent(
+          new InputEvent('input', { data: k.text, inputType: 'insertText', bubbles: true }),
+        )
+      }
     } else {
       stopRepeat()
-      dispatchKey('keydown', k.key)
+      const send = (repeating: boolean) => {
+        const handled = dispatchKey('keydown', k.key, repeating)
+        const field = focusedField()
+        if (field && !handled) applyToField(field, k.key)
+      }
+      send(false)
       const tick = () => {
-        dispatchKey('keydown', k.key, true)
+        send(true)
         if (repeat.current) repeat.current.timer = window.setTimeout(tick, REPEAT_EVERY_MS)
       }
       // Non-repeating keys still get a release, on letting go, for Kitty.
@@ -85,8 +148,11 @@ export function KeyRow({ background }: { background?: string }) {
   }
 
   return (
+    // Above every dialog's overlay, which would otherwise cover it. `data-modal` so a
+    // tap here isn't a click away from an open menu (see useDismissable).
     <div
-      className="flex h-10 shrink-0 select-none items-stretch border-t border-chrome/10"
+      data-modal
+      className="relative z-[80] flex h-10 shrink-0 select-none items-stretch border-t border-chrome/10"
       style={{ background }}
     >
       {KEYS.map((k) => {
