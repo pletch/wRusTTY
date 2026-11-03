@@ -68,7 +68,7 @@ class SessionKeepAliveService : Service() {
     )
     val text = if (count == 1) "1 session open" else "$count sessions open"
     return NotificationCompat.Builder(this, CHANNEL_ID)
-      .setSmallIcon(R.mipmap.ic_launcher)
+      .setSmallIcon(R.drawable.ic_notification)
       .setContentTitle("wRusTTY")
       .setContentText(text)
       .setContentIntent(open)
