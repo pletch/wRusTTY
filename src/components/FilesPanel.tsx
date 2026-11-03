@@ -26,6 +26,7 @@ import type { RemoteEntry, SftpEvent } from '../lib/sftp'
 import { toast } from '../lib/toast'
 import { formatBytes } from '../lib/formatBytes'
 import { formatMode, formatOctal, needsRootToEdit, parseOctal } from '../lib/fileMode'
+import { isAndroid } from '../lib/platform'
 import type { RemoteIdentity } from '../lib/fileMode'
 import {
   describeTree,
@@ -472,6 +473,11 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       load(path)
       return
     }
+    // There's no local editor to launch.
+    if (isAndroid) {
+      void download(entry)
+      return
+    }
     // When the mode bits say the edit would definitely be refused, go straight
     // to sudo (see `needsRootToEdit`). Uncertain cases try normally, and the
     // failure paths below offer root for ACLs or read-only mounts.
@@ -563,7 +569,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     if (!localPath) return
 
     // The backend sends the real total (a directory lists as 0).
-    void startDownload(remotePath, localPath, entry.isDir ? 0 : entry.size, false)
+    void startDownload(remotePath, localPath, entry.name, entry.isDir ? 0 : entry.size, false)
   }
 
   /** Starts (or restarts) one download. `resume` is true from the Retry button,
@@ -571,16 +577,17 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
   async function startDownload(
     remotePath: string,
     localPath: string,
+    name: string,
     total: number,
     resume: boolean,
   ) {
     const key = addTransfer({
       id: null,
-      name: basename(localPath),
+      name,
       direction: 'down',
       transferred: 0,
       total,
-      restart: () => void startDownload(remotePath, localPath, total, true),
+      restart: () => void startDownload(remotePath, localPath, name, total, true),
     })
     try {
       const id = await sftp.downloadBegin(sessionId, remotePath, localPath, resume, getChannel())
@@ -604,7 +611,14 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     }
     if (!picked || Array.isArray(picked)) return
 
-    const name = basename(picked)
+    let name: string
+    try {
+      // Android returns a link, whose text doesn't include the name.
+      name = isAndroid ? await sftp.deviceFileName(picked) : basename(picked)
+    } catch (err) {
+      toast.error(`Could not read that file: ${String(err)}`)
+      return
+    }
     const remotePath = join(cwd, name)
     let overwrite = false
     try {
@@ -864,14 +878,16 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         >
           <Upload size={12} />
         </button>
-        <button
-          onClick={() => uploadHere(true)}
-          disabled={!cwd}
-          title="Upload a folder into this directory"
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
-        >
-          <FolderUp size={12} />
-        </button>
+        {!isAndroid && (
+          <button
+            onClick={() => uploadHere(true)}
+            disabled={!cwd}
+            title="Upload a folder into this directory"
+            className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80 disabled:opacity-30"
+          >
+            <FolderUp size={12} />
+          </button>
+        )}
         <button
           onClick={() => cwd && load(cwd)}
           title="Refresh"
@@ -1082,11 +1098,13 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
           className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
           style={{ left: menu.x, top: menu.y }}
         >
-          <button className={menuItem} onClick={() => open(menu.entry)}>
-            {menu.entry.isDir ? <FolderOpen size={13} /> : <FileText size={13} />}
-            {menu.entry.isDir ? 'Open' : 'Edit'}
-          </button>
-          {!menu.entry.isDir && needsRootToEdit(menu.entry, identity) && (
+          {(menu.entry.isDir || !isAndroid) && (
+            <button className={menuItem} onClick={() => open(menu.entry)}>
+              {menu.entry.isDir ? <FolderOpen size={13} /> : <FileText size={13} />}
+              {menu.entry.isDir ? 'Open' : 'Edit'}
+            </button>
+          )}
+          {!isAndroid && !menu.entry.isDir && needsRootToEdit(menu.entry, identity) && (
             // Only when the mode bits and `id` agree the edit would be refused.
             // Double-click already routes there; this names it up front.
             <button
@@ -1102,17 +1120,19 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
               <ShieldAlert size={13} /> Edit as root…
             </button>
           )}
-          <button
-            className={menuItem}
-            onClick={() => download(menu.entry)}
-            title={
-              menu.entry.isDir
-                ? 'Copy this folder and everything in it to a local directory'
-                : 'Save this file to a local path'
-            }
-          >
-            <Download size={13} /> Download…
-          </button>
+          {!(isAndroid && menu.entry.isDir) && (
+            <button
+              className={menuItem}
+              onClick={() => download(menu.entry)}
+              title={
+                menu.entry.isDir
+                  ? 'Copy this folder and everything in it to a local directory'
+                  : 'Save this file to a local path'
+              }
+            >
+              <Download size={13} /> Download…
+            </button>
+          )}
           <button className={menuItem} onClick={() => copyPath(menu.entry)}>
             <ClipboardCopy size={13} /> Copy path
           </button>

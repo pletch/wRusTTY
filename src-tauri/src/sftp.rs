@@ -2,6 +2,9 @@
 //! download-watch-reupload file editing layered on an existing SSH
 //! session's (lazily-opened, connection-lifetime) SFTP subsystem channel.
 
+// Android has no external editor to launch, so the editing half goes unused there.
+#![cfg_attr(target_os = "android", allow(dead_code))]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -1864,6 +1867,27 @@ async fn begin_upload_path(
     channel: Channel<SftpEvent>,
     existing_id: Option<String>,
 ) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    if crate::android_files::is_content_uri(&local_path) {
+        let picked = crate::android_files::describe(&app, &local_path).await?;
+        let file = crate::android_files::open_to_read(&app, &local_path).await?;
+        return start_upload_file(
+            app,
+            ssh_state,
+            sftp_state,
+            session_id,
+            remote_dir,
+            local_path,
+            picked.name,
+            file,
+            picked.size.unwrap_or(0),
+            overwrite,
+            channel,
+            existing_id,
+        )
+        .await;
+    }
+
     let local = PathBuf::from(&local_path);
     let name = local
         .file_name()
@@ -1895,6 +1919,39 @@ async fn begin_upload_path(
         .map_err(|e| format!("could not open {local_path}: {e}"))?;
     let total = file.metadata().await.map(|m| m.len()).unwrap_or(0);
 
+    start_upload_file(
+        app,
+        ssh_state,
+        sftp_state,
+        session_id,
+        remote_dir,
+        local_path,
+        name,
+        file,
+        total,
+        overwrite,
+        channel,
+        existing_id,
+    )
+    .await
+}
+
+/// Registers and launches the upload of one open file.
+#[allow(clippy::too_many_arguments)]
+async fn start_upload_file(
+    app: AppHandle,
+    ssh_state: &State<'_, SshState>,
+    sftp_state: &State<'_, SftpState>,
+    session_id: String,
+    remote_dir: String,
+    local_path: String,
+    name: String,
+    file: tokio::fs::File,
+    total: u64,
+    overwrite: bool,
+    channel: Channel<SftpEvent>,
+    existing_id: Option<String>,
+) -> Result<String, String> {
     let (sftp, remote_path, part_path, exists) =
         prepare_upload(ssh_state, &session_id, &remote_dir, &name, overwrite).await?;
 
@@ -2240,6 +2297,23 @@ async fn begin_download(
     channel: Channel<SftpEvent>,
     existing_id: Option<String>,
 ) -> Result<String, String> {
+    // A save dialog's link can't be staged next to or renamed over, so a download lands
+    // in a private directory first and is copied there when it's whole.
+    #[cfg(target_os = "android")]
+    let device_target = if crate::android_files::is_content_uri(&local_path) {
+        let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+        let parent = cache.join("sftp-downloads");
+        std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+        Some(tempfile::tempdir_in(parent).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    #[cfg(target_os = "android")]
+    let local = match &device_target {
+        Some(staging) => staging.path().join("download"),
+        None => PathBuf::from(&local_path),
+    };
+    #[cfg(not(target_os = "android"))]
     let local = PathBuf::from(&local_path);
     // Validate the destination name before creating anything.
     part_path_for(&local)?;
@@ -2259,6 +2333,11 @@ async fn begin_download(
         None
     };
     let total = plan.as_ref().map_or(stat.size, |p| p.total_bytes);
+
+    #[cfg(target_os = "android")]
+    if plan.is_some() && device_target.is_some() {
+        return Err("folders can't be downloaded on Android yet".to_string());
+    }
 
     let transfer_id = existing_id.unwrap_or_else(|| sftp_state.next_transfer_id());
     let cancel = Arc::new(AtomicBool::new(false));
@@ -2300,7 +2379,24 @@ async fn begin_download(
                 )
                 .await
             }
-            None => run_download(app, sftp, local, remote_path, channel, task_id, cancel).await,
+            None => {
+                #[cfg(target_os = "android")]
+                if let Some(staging) = device_target {
+                    run_device_download(
+                        app,
+                        sftp,
+                        staging,
+                        local_path,
+                        remote_path,
+                        channel,
+                        task_id,
+                        cancel,
+                    )
+                    .await;
+                    return;
+                }
+                run_download(app, sftp, local, remote_path, channel, task_id, cancel).await
+            }
         }
     });
 
@@ -2422,12 +2518,28 @@ async fn run_download(
     transfer_id: String,
     cancel: Arc<AtomicBool>,
 ) {
+    let outcome =
+        download_with_retries(&sftp, &remote_path, &local, &channel, &transfer_id, &cancel).await;
+
+    // A cancel after the last chunk arrives as `Complete`; check the flag.
+    let cancelled = cancel.load(Ordering::Relaxed);
+    finish_transfer(&app, &channel, transfer_id, remote_path, outcome, cancelled).await;
+}
+
+async fn download_with_retries(
+    sftp: &wr_sftp::SftpClient,
+    remote_path: &str,
+    local: &std::path::Path,
+    channel: &Channel<SftpEvent>,
+    transfer_id: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Result<wr_sftp::Transferred, String> {
     // Retries, but no resume: staging means there's never half a file to resume.
-    let outcome = with_retries(|| {
+    with_retries(|| {
         let progress_channel = channel.clone();
-        let progress_id = transfer_id.clone();
+        let progress_id = transfer_id.to_string();
         let progress_cancel = cancel.clone();
-        download_one(&sftp, &remote_path, &local, move |transferred| {
+        download_one(sftp, remote_path, local, move |transferred| {
             let _ = progress_channel.send(SftpEvent::TransferProgress {
                 transfer_id: progress_id.clone(),
                 transferred,
@@ -2435,10 +2547,36 @@ async fn run_download(
             !progress_cancel.load(Ordering::Relaxed)
         })
     })
-    .await;
+    .await
+}
 
-    // A cancel after the last chunk arrives as `Complete`; check the flag.
-    let cancelled = cancel.load(Ordering::Relaxed);
+/// [`run_download`] for a save dialog's link. `staging` is removed when this ends. A
+/// failure leaves the document the dialog made, for Retry to fill; a cancel removes it.
+#[cfg(target_os = "android")]
+#[allow(clippy::too_many_arguments)]
+async fn run_device_download(
+    app: AppHandle,
+    sftp: Arc<wr_sftp::SftpClient>,
+    staging: tempfile::TempDir,
+    uri: String,
+    remote_path: String,
+    channel: Channel<SftpEvent>,
+    transfer_id: String,
+    cancel: Arc<AtomicBool>,
+) {
+    let local = staging.path().join("download");
+    let mut outcome =
+        download_with_retries(&sftp, &remote_path, &local, &channel, &transfer_id, &cancel).await;
+    let mut cancelled = cancel.load(Ordering::Relaxed);
+    if !cancelled && matches!(outcome, Ok(wr_sftp::Transferred::Complete)) {
+        if let Err(e) = crate::android_files::deliver(&app, &local, &uri).await {
+            outcome = Err(e);
+        }
+    }
+    cancelled = cancelled || matches!(outcome, Ok(wr_sftp::Transferred::Cancelled));
+    if cancelled {
+        crate::android_files::remove(&app, &uri).await;
+    }
     finish_transfer(&app, &channel, transfer_id, remote_path, outcome, cancelled).await;
 }
 

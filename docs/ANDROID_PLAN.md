@@ -357,7 +357,7 @@ rejected `invoke`s for these until M1 and M3 deal with them.
 | `window_effects.rs`, `attention.rs` | Gated out. `window-vibrancy` is still a dependency, unused. |
 | `keyring` and `OsKeyringProvider` (`vault.rs`) | Still compiled but refused: `usable_on_this_platform` says no and enrolling returns an error, because the mock store loses the key. M5 replaces this. |
 | `local.rs`, `local_open.rs`, `local_shells.rs`, `shell_icon.rs`, `elevation` | Gated out, since this app renders untrusted output and shouldn't leave a process-spawning command reachable. `wr-local` and its PTY code are out of the APK. |
-| `sftp_edit_file` | Removed from the handler list, because it spawns a command the frontend supplies. That leaves 11 dead-code warnings in `sftp.rs`, which need gating before an Android CI job can deny warnings. |
+| `sftp_edit_file` | Removed from the handler list, because it spawns a command the frontend supplies. The editing code it leaves unused is allowed as dead code in `sftp.rs` on Android. |
 | `serial.rs` | Gated out for the first release. `wr-serial` stays a dependency because `profiles.rs` uses its types in the saved session format, which leaves `to_config` unused. |
 | `putty_import.rs`, `ssh_config_import.rs`, `session_import.rs` | Gated out; there's no PuTTY registry or `~/.ssh/config` to read. |
 | `fonts.rs` | **Not done.** Use bundled fonts plus the system monospace. |
@@ -425,9 +425,13 @@ providers, so an Android provider fits the existing shape.
   Import keys through the document picker into the vault or app-private storage.
 - There's no agent support on Android for the first release.
 - The Android file picker returns `content://` URIs, while `FilesPanel` and
-  `wr-sftp` work with paths. Transfers need to go through a stream from
-  `ContentResolver`, or through an app-private file followed by the share sheet.
-  Drag-and-drop upload doesn't apply.
+  `wr-sftp` work with paths. An upload streams from a file descriptor that
+  `DeviceFilesPlugin.open` gets from `ContentResolver`. A download goes to a private
+  cache directory and is copied to the link when whole, so retries and staging work as
+  on desktop, at the cost of holding the file twice for a moment.
+- Not on Android yet: folder transfers, which need a tree picker, and remote editing, since
+  there's no external editor to launch. Tapping a file downloads it. A transfer keeps
+  running if the screen is rebuilt, but its row in the panel doesn't come back.
 
 ## Milestones
 

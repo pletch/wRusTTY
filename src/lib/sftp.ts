@@ -213,6 +213,11 @@ export function uploadPath(
  * `resume` skips destination files that already look copied (same size, not
  * older); folders only, set by Retry. The total arrives as `transferStarted`.
  */
+/** Android: a picked file's name, which its `content://` link doesn't show. */
+export function deviceFileName(uri: string) {
+  return invoke<string>('device_file_name', { uri })
+}
+
 export function downloadBegin(
   sessionId: string,
   remotePath: string,

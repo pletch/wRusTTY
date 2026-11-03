@@ -250,6 +250,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             keep_alive::keep_alive_set_sessions,
             #[cfg(target_os = "android")]
+            android_files::device_file_name,
+            #[cfg(target_os = "android")]
             session_attach::session_attach,
             #[cfg(target_os = "android")]
             session_attach::session_kept_list,
