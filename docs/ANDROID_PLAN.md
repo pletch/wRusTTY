@@ -358,7 +358,7 @@ rejected `invoke`s for these until M1 and M3 deal with them.
 | `keyring` and `OsKeyringProvider` (`vault.rs`) | Still compiled but refused: `usable_on_this_platform` says no and enrolling returns an error, because the mock store loses the key. M5 replaces this. |
 | `local.rs`, `local_open.rs`, `local_shells.rs`, `shell_icon.rs`, `elevation` | Gated out, since this app renders untrusted output and shouldn't leave a process-spawning command reachable. `wr-local` and its PTY code are out of the APK. |
 | `sftp_edit_file` | Removed from the handler list, because it spawns a command the frontend supplies. The editing code it leaves unused is allowed as dead code in `sftp.rs` on Android. |
-| `serial.rs` | Gated out for the first release. `wr-serial` stays a dependency because `profiles.rs` uses its types in the saved session format, which leaves `to_config` unused. |
+| `serial.rs` | Gated out for the first release. `wr-serial` stays a dependency because `profiles.rs` uses its types in the saved session format, so `to_config` is compiled out. |
 | `putty_import.rs`, `ssh_config_import.rs`, `session_import.rs` | Gated out; there's no PuTTY registry or `~/.ssh/config` to read. |
 | `fonts.rs` | **Not done.** Use bundled fonts plus the system monospace. |
 | `session_lock.rs` | Already a no-op off Windows. **Not done:** lock the vault on Android's own lifecycle events instead. |
@@ -459,8 +459,13 @@ that may need extra binding generation, so **a real `arm64` phone should be the
 main target from M1.** Only `aarch64-linux-android` and `x86_64-linux-android` are
 needed; Tauri's docs also list `armv7` and `i686`, which can wait.
 
-CI needs an Android job running `cargo check` and clippy against the Android
-target. Without it, desktop work will quietly break the gating.
+CI's `android` job runs clippy against the Android target, so desktop work can't quietly
+break the gating. It packages a debug APK only for a tag or a manual run.
+
+A release build reads its key's location and password from
+`src-tauri/gen/android/keystore.properties`, which Git ignores, with `storeFile`,
+`keyAlias` and `password`. Without that file it comes out unsigned. The key has to stay
+the same for an install to accept an update, so it needs a backup.
 
 ## Open questions
 

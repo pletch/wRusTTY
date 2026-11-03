@@ -133,7 +133,8 @@ pub struct SerialProfile {
 
 impl SerialProfile {
     /// Builds the connect-time config with the port the identity just resolved
-    /// to.
+    /// to. Android has no serial sessions, only profiles that came from a desktop.
+    #[cfg(not(target_os = "android"))]
     pub fn to_config(&self, port_name: String) -> wr_serial::SerialConfig {
         wr_serial::SerialConfig {
             port_name,
