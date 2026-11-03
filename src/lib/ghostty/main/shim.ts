@@ -25,7 +25,7 @@
 import * as abi from './abi'
 import { MainViewportReader } from './ViewportReader'
 import { MainScrollbackReader, SPACE_ACTIVE, SPACE_SCREEN } from './ScrollbackReader'
-import { MainEffects } from './effects'
+import { MainEffects, returningTableEntry } from './effects'
 import {
   CURSOR_STYLE_BLOCK,
   CURSOR_STYLE_BAR,
@@ -54,6 +54,13 @@ const CONFIG_OFF_CURSOR_BLINK = 84
  * thousands.
  */
 const DEFAULT_SCROLLBACK_BYTES = 1024 * 1024
+
+/**
+ * The longest unfinished sequence a snapshot can carry. Past it encoding fails
+ * until the sequence ends, and the next attempt gets it. A sequence this long is
+ * a big OSC 52 or image still arriving.
+ */
+const CONTINUATION_MAX_BYTES = 1024 * 1024
 
 /**
  * `scrollbackLimit: 0` means unlimited in our ABI; `main` has no sentinel, so
@@ -150,6 +157,11 @@ class MainShim {
   private readonly terms = new Map<number, TerminalState>()
   private readonly scratch: number
   private readonly slot: number
+  /** Table entries for the snapshot callbacks, made on first use and kept. */
+  private writerSlot: number | null = null
+  private readerSlot: number | null = null
+  private onSnapshotChunk: (chunk: Uint8Array) => boolean = () => false
+  private onSnapshotRead: (buffer: number, capacity: number, outRead: number) => number = () => 0
   private readonly palette: number
   private readonly cursorBuf: number
   private readonly colorsBuf: number
@@ -276,6 +288,13 @@ class MainShim {
     if (configPtr !== 0) this.applyConfig(term, configPtr)
     else this.setUsize(term, abi.T_OPT_SCROLLBACK_MAX_BYTES, DEFAULT_SCROLLBACK_BYTES)
 
+    this.register(term)
+    return term
+  }
+
+  /** Our half of a terminal, new or restored. */
+  private register(term: number): void {
+    const { ex } = this
     this.terms.set(term, {
       reader: new MainViewportReader({ ex, term }),
       scrollback: new MainScrollbackReader({ ex, term }),
@@ -297,6 +316,69 @@ class MainShim {
       bells: 0,
       resets: 0,
     })
+  }
+
+  /* ---------------------------------------------------------- snapshots */
+
+  private snapshotTable(): WebAssembly.Table {
+    const table = this.ex.__indirect_function_table
+    if (!table) throw new Error('ghostty wasm build does not export __indirect_function_table')
+    return table
+  }
+
+  /** Streams a snapshot out, copying each chunk before the core reuses it. */
+  private encodeSnapshot(term: number, onChunk: (chunk: Uint8Array) => boolean): number {
+    const { ex } = this
+    this.writerSlot ??= returningTableEntry(this.snapshotTable(), 3, (_userdata, ptr, len) =>
+      this.onSnapshotChunk(new Uint8Array(ex.memory.buffer, ptr, len).slice()) ? 1 : 0,
+    )
+    this.onSnapshotChunk = onChunk
+    const writer = ex.ghostty_wasm_alloc(8)
+    this.dv().setUint32(writer, this.writerSlot, true)
+    this.dv().setUint32(writer + 4, 0, true)
+    const result = ex.ghostty_snapshot_encode(term, writer)
+    ex.ghostty_wasm_free(writer, 8)
+    this.onSnapshotChunk = () => false
+    return result
+  }
+
+  /**
+   * Rebuilds a terminal, pulling the snapshot in as the core asks so it never all
+   * sits in the heap. Tracking stays on, so this one can be snapshotted again even
+   * if the bytes it was restored with left a sequence unfinished.
+   */
+  private restore(snapshot: Uint8Array): number {
+    const { ex } = this
+    let offset = 0
+    this.readerSlot ??= returningTableEntry(this.snapshotTable(), 4, (_userdata, buffer, capacity, outRead) =>
+      this.onSnapshotRead(buffer, capacity, outRead),
+    )
+    this.onSnapshotRead = (buffer, capacity, outRead) => {
+      const count = Math.min(capacity, snapshot.length - offset)
+      new Uint8Array(ex.memory.buffer).set(snapshot.subarray(offset, offset + count), buffer)
+      this.dv().setUint32(outRead, count, true)
+      offset += count
+      return 1
+    }
+
+    const reader = ex.ghostty_wasm_alloc(8)
+    this.dv().setUint32(reader, this.readerSlot, true)
+    this.dv().setUint32(reader + 4, 0, true)
+    let term = 0
+    if (ex.ghostty_snapshot_decoder_new(0, this.slot, reader) === abi.GHOSTTY_SUCCESS) {
+      const decoder = this.dv().getUint32(this.slot, true)
+      this.dv().setUint32(this.scratch, CONTINUATION_MAX_BYTES, true)
+      ex.ghostty_snapshot_decoder_set(decoder, abi.SNAPSHOT_OPT_MAX_CONTINUATION_BYTES, this.scratch)
+      this.dv().setUint8(this.scratch, 1)
+      ex.ghostty_snapshot_decoder_set(decoder, abi.SNAPSHOT_OPT_RETAIN_CONTINUATION, this.scratch)
+      if (ex.ghostty_snapshot_decoder_decode(decoder, this.slot) === abi.GHOSTTY_SUCCESS) {
+        term = this.dv().getUint32(this.slot, true)
+      }
+      ex.ghostty_snapshot_decoder_free(decoder)
+    }
+    ex.ghostty_wasm_free(reader, 8)
+    this.onSnapshotRead = () => 0
+    if (term !== 0) this.register(term)
     return term
   }
 
@@ -513,6 +595,11 @@ class MainShim {
       ghostty_terminal_new: (cols, rows) => this.newTerminal(cols, rows),
       ghostty_terminal_new_with_config: (cols, rows, config) => this.newTerminal(cols, rows, config),
       ghostty_terminal_free: (term) => this.freeTerminal(term),
+      ghostty_terminal_track_continuation: (term) => {
+        this.setUsize(term, abi.T_OPT_CONTINUATION_MAX_BYTES, CONTINUATION_MAX_BYTES)
+      },
+      ghostty_terminal_snapshot: (term, onChunk) => this.encodeSnapshot(term, onChunk),
+      ghostty_terminal_restore: (snapshot) => this.restore(snapshot),
       ghostty_terminal_resize: (term, cols, rows) => {
         ex.ghostty_terminal_resize(term, cols, rows)
       },

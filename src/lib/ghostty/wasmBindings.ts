@@ -136,6 +136,18 @@ export interface GhosttyExports {
   /** As `ghostty_render_state_get_grapheme`, for a row in scrollback. */
   ghostty_terminal_get_scrollback_grapheme(term: number, offset: number, col: number, out: number, cap: number): number
 
+  /**
+   * Snapshots, for bringing a terminal back in a new webview. `main` shim only.
+   * All streaming: wasm memory never shrinks, and the allocating calls double it.
+   * `track_continuation` has to run before the first byte is written.
+   */
+  ghostty_terminal_track_continuation?(term: number): void
+  /** Hands the snapshot over in chunks; `onChunk` returning false abandons it.
+   *  Returns a `GhosttyResult`. */
+  ghostty_terminal_snapshot?(term: number, onChunk: (chunk: Uint8Array) => boolean): number
+  /** A terminal rebuilt from a snapshot, set up like a new one, or 0. */
+  ghostty_terminal_restore?(snapshot: Uint8Array): number
+
   // Replies (DSR and friends) the terminal owes the host
   ghostty_terminal_has_response(term: number): number
   ghostty_terminal_read_response(term: number, out: number, len: number): number

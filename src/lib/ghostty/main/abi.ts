@@ -426,6 +426,17 @@ export const T_OPT_PROGRESS_REPORT = 30
 export const T_OPT_TITLE_REPORT = 32
 
 /**
+ * `size_t*`: how much of an unfinished sequence to keep. A snapshot needs it,
+ * since one taken mid-sequence has to carry the bytes so far. Zero, the default,
+ * makes encoding fail whenever a write happened to end inside a sequence.
+ */
+export const T_OPT_CONTINUATION_MAX_BYTES = 31
+
+/** `GhosttySnapshotDecoderOption` keys. */
+export const SNAPSHOT_OPT_MAX_CONTINUATION_BYTES = 0
+export const SNAPSHOT_OPT_RETAIN_CONTINUATION = 1
+
+/**
  * Whether growing the rows may pull lines back out of scrollback. `bool*`,
  * default true, kept across a RIS. Off behind a ConPTY, which repaints its own
  * buffer after a resize and would overwrite the pulled rows.
@@ -566,6 +577,13 @@ export interface GhosttyMainExports {
   ghostty_terminal_get(term: number, key: number, out: number): number
   ghostty_terminal_get_multi(term: number, n: number, keys: number, values: number, written: number): number
   ghostty_terminal_set(term: number, key: number, value: number): number
+
+  /* snapshots. `writer` and `reader` are two-word structs, passed by pointer. */
+  ghostty_snapshot_encode(term: number, writer: number): number
+  ghostty_snapshot_decoder_new(alloc: number, slot: number, reader: number): number
+  ghostty_snapshot_decoder_set(decoder: number, option: number, value: number): number
+  ghostty_snapshot_decoder_decode(decoder: number, slot: number): number
+  ghostty_snapshot_decoder_free(decoder: number): void
   // Modes are read and set through the generic accessors with `T_DATA_MODE`
   // (see `shim.ts`). The mode is one `GhosttyMode` with the ANSI bit folded in
   // (`ansiMode`), not a `(mode, is_ansi)` pair.

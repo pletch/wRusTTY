@@ -34,15 +34,16 @@ import * as abi from './abi'
  * (`GhosttyTerminalWritePtyFn` takes four, `GhosttyTerminalRenderHoldFn`
  * three), so only the arity varies.
  */
-function trampolineBytes(arity: number): Uint8Array<ArrayBuffer> {
+function trampolineBytes(arity: number, returnsI32 = false): Uint8Array<ArrayBuffer> {
   const i32s = new Array<number>(arity).fill(0x7f)
+  const results = returnsI32 ? [0x01, 0x7f] : [0x00]
   const gets = Array.from({ length: arity }, (_, i) => [0x20, i]).flat()
   // locals (none), the gets, call 0, end
   const body = [0x00, ...gets, 0x10, 0x00, 0x0b]
   return Uint8Array.from([
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
     // type: one func type, (i32 x arity) -> ()
-    0x01, 4 + arity, 0x01, 0x60, arity, ...i32s, 0x00,
+    0x01, 3 + arity + results.length, 0x01, 0x60, arity, ...i32s, ...results,
     // import: env.cb, func, type 0
     0x02, 0x0a, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x02, 0x63, 0x62, 0x00, 0x00,
     // function: one func, type 0
@@ -69,6 +70,22 @@ function trampoline(arity: number, cb: (...args: number[]) => void): WebAssembly
  * reopened panes reuse slots. Weakly keyed, to die with the instance.
  */
 const freeSlots = new WeakMap<object, number[]>()
+
+/**
+ * A table entry for a JS function `(i32 x arity) -> i32`, for the core's bool
+ * callbacks (`GhosttyWriterFn`, `GhosttyReaderFn`). Held for the instance's life.
+ */
+export function returningTableEntry(
+  table: WebAssembly.Table,
+  arity: number,
+  cb: (...args: number[]) => number,
+): number {
+  const module = new WebAssembly.Module(trampolineBytes(arity, true))
+  const inst = new WebAssembly.Instance(module, { env: { cb } })
+  const slot = table.grow(1)
+  table.set(slot, inst.exports.f as WebAssembly.ExportValue)
+  return slot
+}
 
 export interface EffectsHandles {
   ex: abi.GhosttyMainExports & { __indirect_function_table?: WebAssembly.Table }
