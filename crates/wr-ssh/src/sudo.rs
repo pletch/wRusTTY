@@ -128,7 +128,7 @@ impl ExecOutcome {
 
 /// Runs one command on its own channel with optional stdin, streaming stdout to
 /// `sink` and collecting stderr separately, with the exit status. (Unlike
-/// `SshSession::exec_capture`, which drops stderr and the exit status.)
+/// `SessionChannels::exec_capture`, which drops stderr and the exit status.)
 async fn run_once<W>(
     handle: &Arc<client::Handle<ClientHandler>>,
     command: &str,

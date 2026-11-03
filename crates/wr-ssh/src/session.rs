@@ -49,11 +49,20 @@ pub struct SshSession {
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     resize_tx: Option<mpsc::Sender<(u16, u16)>>,
     remote_forwards: forward::RemoteForwardRegistry,
-    // Opened lazily and reused for the connection's lifetime; a `OnceCell`
-    // keeps this on `&self`.
-    sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
-    // A second channel for bulk transfers; see `get_or_open_transfer_sftp`.
-    transfer_sftp: tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
+    // Opened lazily and reused for the connection's lifetime. Shared with
+    // `SessionChannels`, which fills them outside the session mutex.
+    sftp: Arc<tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>>,
+    // A second channel for bulk transfers; see `SessionChannels::transfer_sftp`.
+    transfer_sftp: Arc<tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>>,
+}
+
+/// Opens extra channels on a live session. Owned so the caller can release the
+/// session mutex first: every keystroke needs that mutex, and a channel takes
+/// as long as the host's PAM stack and shell startup files take.
+pub struct SessionChannels {
+    handle: Arc<client::Handle<ClientHandler>>,
+    sftp: Arc<tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>>,
+    transfer_sftp: Arc<tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>>,
 }
 
 impl SshConnector {
@@ -86,10 +95,14 @@ impl SshSession {
         forward::start(handle, self.remote_forwards.clone(), spec).await
     }
 
-    /// Returns the SFTP client for browsing and editing, opening the subsystem
-    /// channel on first use.
-    pub async fn get_or_open_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
-        Self::get_or_open(&self.sftp, self.handle.clone()).await
+    /// A handle for opening SFTP and `exec` channels on this connection, to use
+    /// after releasing the session mutex. See [`SessionChannels`].
+    pub fn channels(&self) -> Result<SessionChannels, SshError> {
+        Ok(SessionChannels {
+            handle: self.handle.clone().ok_or(SshError::NotConnected)?,
+            sftp: self.sftp.clone(),
+            transfer_sftp: self.transfer_sftp.clone(),
+        })
     }
 
     /// A handle for running things as root on this connection. Returned owned
@@ -98,6 +111,14 @@ impl SshSession {
     pub fn sudo(&self) -> Result<crate::sudo::SudoRunner, SshError> {
         let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
         Ok(crate::sudo::SudoRunner::new(handle))
+    }
+}
+
+impl SessionChannels {
+    /// Returns the SFTP client for browsing and editing, opening the subsystem
+    /// channel on first use.
+    pub async fn sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
+        self.get_or_open(&self.sftp).await
     }
 
     /// Run one command on its own `exec` channel and collect its stdout: one more
@@ -117,9 +138,8 @@ impl SshSession {
         max_bytes: usize,
         timeout: Duration,
     ) -> Result<Vec<u8>, SshError> {
-        let handle = self.handle.clone().ok_or(SshError::NotConnected)?;
         tokio::time::timeout(timeout, async move {
-            let mut channel = handle.channel_open_session().await?;
+            let mut channel = self.handle.channel_open_session().await?;
             channel.exec(true, command).await?;
             let mut out = Vec::new();
             loop {
@@ -150,18 +170,17 @@ impl SshSession {
     /// A second SFTP client on its own channel, for bulk transfers. One client
     /// serializes requests, so a long download would freeze browsing. Lazy, so
     /// sessions that never transfer don't open it.
-    pub async fn get_or_open_transfer_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
-        Self::get_or_open(&self.transfer_sftp, self.handle.clone()).await
+    pub async fn transfer_sftp(&self) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
+        self.get_or_open(&self.transfer_sftp).await
     }
 
     async fn get_or_open(
+        &self,
         cell: &tokio::sync::OnceCell<Arc<wr_sftp::SftpClient>>,
-        handle: Option<Arc<client::Handle<ClientHandler>>>,
     ) -> Result<Arc<wr_sftp::SftpClient>, SshError> {
         cell.get_or_try_init(|| async {
             // A fresh channel on the live connection, requesting the subsystem.
-            let handle = handle.ok_or(SshError::NotConnected)?;
-            let channel = handle.channel_open_session().await?;
+            let channel = self.handle.channel_open_session().await?;
             channel.request_subsystem(true, "sftp").await?;
             let client = wr_sftp::SftpClient::new(channel.into_stream()).await?;
             Ok::<_, SshError>(Arc::new(client))
@@ -251,8 +270,8 @@ impl Session for SshSession {
         self.resize_tx = None;
         // Reset both SFTP cells, so a reconnected session doesn't hand out
         // channels on the dead connection.
-        self.sftp = tokio::sync::OnceCell::new();
-        self.transfer_sftp = tokio::sync::OnceCell::new();
+        self.sftp = Arc::default();
+        self.transfer_sftp = Arc::default();
         if let Some(handle) = self.handle.take() {
             // Dropping the senders stops the pumps; the transport may already be gone.
             let _ = handle
@@ -408,8 +427,8 @@ impl SshConnector {
             input_tx: Some(input_tx),
             resize_tx: Some(resize_tx),
             remote_forwards: self.remote_forwards,
-            sftp: tokio::sync::OnceCell::new(),
-            transfer_sftp: tokio::sync::OnceCell::new(),
+            sftp: Arc::default(),
+            transfer_sftp: Arc::default(),
         })
     }
 }

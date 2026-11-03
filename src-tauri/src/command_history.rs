@@ -851,18 +851,21 @@ pub async fn command_history_harvest(
     }
 
     let session = crate::ssh::lookup(&ssh, &session_id).await?;
-    let output = {
-        let guard = session.lock().await;
-        guard
-            .ready()?
-            .exec_capture(
-                &harvest_command(),
-                HARVEST_MAX_BYTES,
-                std::time::Duration::from_secs(HARVEST_TIMEOUT_SECS),
-            )
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    // The session mutex is released before the wait, so typing isn't held up.
+    let channels = session
+        .lock()
+        .await
+        .ready()?
+        .channels()
+        .map_err(|e| e.to_string())?;
+    let output = channels
+        .exec_capture(
+            &harvest_command(),
+            HARVEST_MAX_BYTES,
+            std::time::Duration::from_secs(HARVEST_TIMEOUT_SECS),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Lossy: one undecodable line mustn't cost the whole import.
     let payload = String::from_utf8_lossy(&output);

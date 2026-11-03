@@ -20,5 +20,5 @@ pub use handler::{HostKeyPrompt, HostKeyVerifier, RejectAll};
 pub use known_hosts::{HostKeyStatus, KnownHostEntry, KnownHostsStore};
 pub use prompt::{AuthPrompt, AuthPromptField, AuthPrompter, DenyAll};
 pub use proxy::{ProxyConfig, ProxyError, ProxyKind};
-pub use session::{expand_tilde, parse_private_key, SshConnector, SshSession};
+pub use session::{expand_tilde, parse_private_key, SessionChannels, SshConnector, SshSession};
 pub use sudo::{SudoError, SudoRunner, SudoWriter};

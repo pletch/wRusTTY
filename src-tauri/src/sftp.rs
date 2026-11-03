@@ -206,14 +206,14 @@ impl Drop for ElevatedEdit {
         let session = self.session.clone();
         let staged = self.staged_path.clone();
         handle.spawn(async move {
-            let sftp = {
-                let guard = session.lock().await;
-                match guard.ready() {
-                    Ok(session) => session.get_or_open_sftp().await.ok(),
-                    Err(_) => None,
-                }
-            };
-            if let Some(sftp) = sftp {
+            let channels = session
+                .lock()
+                .await
+                .ready()
+                .ok()
+                .and_then(|session| session.channels().ok());
+            let Some(channels) = channels else { return };
+            if let Ok(sftp) = channels.sftp().await {
                 let _ = sftp.remove_file(&staged).await;
             }
         });
@@ -256,14 +256,14 @@ async fn browse_client(
     session_id: &str,
 ) -> Result<Arc<wr_sftp::SftpClient>, String> {
     let session = crate::ssh::lookup(ssh_state, session_id).await?;
-    let sftp = session
+    // The session mutex is released before the wait, so typing isn't held up.
+    let channels = session
         .lock()
         .await
         .ready()?
-        .get_or_open_sftp()
-        .await
+        .channels()
         .map_err(|e| e.to_string())?;
-    Ok(sftp)
+    channels.sftp().await.map_err(|e| e.to_string())
 }
 
 /// The SFTP client for bulk transfers, on its own channel so a long download
@@ -273,14 +273,13 @@ async fn transfer_client(
     session_id: &str,
 ) -> Result<Arc<wr_sftp::SftpClient>, String> {
     let session = crate::ssh::lookup(ssh_state, session_id).await?;
-    let sftp = session
+    let channels = session
         .lock()
         .await
         .ready()?
-        .get_or_open_transfer_sftp()
-        .await
+        .channels()
         .map_err(|e| e.to_string())?;
-    Ok(sftp)
+    channels.transfer_sftp().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -561,14 +560,16 @@ pub async fn sftp_remote_identity(
     ssh_state: State<'_, SshState>,
 ) -> Result<RemoteIdentity, String> {
     let session = crate::ssh::lookup(&ssh_state, &session_id).await?;
-    let out = {
-        let guard = session.lock().await;
-        guard
-            .ready()?
-            .exec_capture("env LC_ALL=C id", 4096, Duration::from_secs(10))
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    let channels = session
+        .lock()
+        .await
+        .ready()?
+        .channels()
+        .map_err(|e| e.to_string())?;
+    let out = channels
+        .exec_capture("env LC_ALL=C id", 4096, Duration::from_secs(10))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(parse_id_output(&String::from_utf8_lossy(&out)))
 }
 
@@ -1012,13 +1013,13 @@ async fn save_edit(
         let bytes = tokio::fs::read(&local_path)
             .await
             .map_err(|e| e.to_string())?;
-        let sftp = session
+        let channels = session
             .lock()
             .await
             .ready()?
-            .get_or_open_sftp()
-            .await
+            .channels()
             .map_err(|e| e.to_string())?;
+        let sftp = channels.sftp().await.map_err(|e| e.to_string())?;
 
         if !force {
             let expected = *expected_mtime.lock().await;

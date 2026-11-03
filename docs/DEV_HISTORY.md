@@ -1459,6 +1459,16 @@ See also docs/PORT_GHOSTTY_MAIN.md.
   keeps the old (accidental) queue-and-replay behavior deliberately, since
   failing fast would have been a regression, especially for a pane resized
   while its host-key prompt was up.
+- **Side channels under the session mutex.** The remote history import, the
+  Files panel's `id` check and the first SFTP open each awaited a new channel
+  while holding the session mutex that `write` needs. A host slow to start a
+  channel (PAM, shell startup files) stopped typing in that pane, and the keys
+  all arrived when the channel answered, up to 10 seconds later. It was seen as
+  a rare stall on a LAN host, in a recently opened pane; the import is the likely
+  trigger, since it runs on first output, but the stall was never reproduced
+  against that host. `SshSession::channels` now hands out an owned
+  `SessionChannels` to use after releasing the mutex. `add_forward` still holds
+  the mutex while it waits on the host.
 - **Publish under the map lock.** The map lock used to be held across the
   replay too. Since an SSH `write` into a full window blocks until the remote
   reads, one pane finishing its handshake into a wedged host could stall input
