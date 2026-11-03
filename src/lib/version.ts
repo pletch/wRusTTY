@@ -8,4 +8,4 @@
  * what Add/Remove Programs shows). `npm run release` (tools/version.mjs) sets
  * all five.
  */
-export const APP_VERSION = '0.5.0'
+export const APP_VERSION = '0.5.1'

@@ -11,6 +11,8 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-03
+
 ### Fixed
 
 - On Android, the terminal no longer disappears with the keyboard open in landscape.
@@ -271,7 +273,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/pletch/wRusTTY/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/pletch/wRusTTY/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/pletch/wRusTTY/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/pletch/wRusTTY/compare/v0.4.1...v0.4.2
