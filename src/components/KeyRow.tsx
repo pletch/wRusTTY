@@ -164,7 +164,10 @@ export function KeyRow({ background }: { background?: string }) {
             tabIndex={-1}
             aria-label={k.aria}
             aria-pressed={'modifier' in k ? armed : undefined}
-            className={`min-w-0 flex-1 touch-manipulation text-xs ${
+            // A single glyph reads smaller than a word at the same size.
+            className={`min-w-0 flex-1 touch-manipulation ${
+              k.label.length === 1 ? 'text-lg leading-none' : 'text-xs'
+            } ${
               armed ? 'bg-sky-400/30 text-chrome' : 'text-chrome/70 active:bg-chrome/20'
             }`}
             onPointerDown={(e) => {
