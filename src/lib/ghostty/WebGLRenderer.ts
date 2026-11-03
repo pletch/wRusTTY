@@ -12,6 +12,7 @@ import {
   GLYPH_UL_SHIFT,
   type GlyphRect,
 } from './GlyphAtlas'
+import { warn as logWarn } from '@tauri-apps/plugin-log'
 import { computeRuns, type RunScratch } from './ligatureRuns'
 import type { FontSelection } from '../fontStack'
 import {
@@ -295,6 +296,8 @@ export class WebGLRenderer {
   private dpr: number
 
   private contextLost = false
+  /** When a loss nobody asked for began, for the log. */
+  private unexpectedLossAt: number | null = null
   private loseExt: WEBGL_lose_context | null = null
   // False until the program links; a failed link must not throw every frame.
   private ready = false
@@ -420,9 +423,19 @@ export class WebGLRenderer {
   private onContextLost = (e: Event) => {
     e.preventDefault()
     this.contextLost = true
+    // `releaseContext` clears `ready` first, so this is only an unasked-for loss.
+    if (this.ready) {
+      this.unexpectedLossAt = performance.now()
+      void logWarn('WebGL context lost; the pane stops drawing until it returns').catch(() => {})
+    }
   }
 
   private onContextRestored = () => {
+    if (this.unexpectedLossAt !== null) {
+      const lostFor = Math.round(performance.now() - this.unexpectedLossAt)
+      this.unexpectedLossAt = null
+      void logWarn(`WebGL context restored after ${lostFor} ms`).catch(() => {})
+    }
     this.contextLost = false
     // The old objects are gone; don't try to delete them.
     this.ready = false

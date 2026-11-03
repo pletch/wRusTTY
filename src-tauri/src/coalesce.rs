@@ -161,6 +161,10 @@ pub fn set_inflight_window(bytes: u64) -> u64 {
 /// webview is caught separately (`Channel::send` fails).
 const CREDIT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A credit wait this long gets logged: it backs up into the SSH session loop,
+/// which also carries keystrokes.
+const SLOW_CREDIT_WAIT: Duration = Duration::from_millis(500);
+
 /// Per-session count of bytes sent to the webview but not yet written, and the
 /// gate the forwarder waits on. IPC success only means "queued", so the
 /// frontend reports what it has actually written (`ack_delivery`, from the
@@ -278,7 +282,15 @@ pub(crate) async fn forward_coalesced<E: Serialize + Clone>(
     loop {
         // Awaited before taking more from `rx`: not draining lets `rx` fill, which
         // blocks the transport's read loop (and closes SSH's channel window).
+        let gate_started = Instant::now();
         flow.wait_for_room(CREDIT_TIMEOUT).await;
+        let gate_wait = gate_started.elapsed();
+        if gate_wait >= SLOW_CREDIT_WAIT {
+            log::warn!(
+                "output paused on {session_id} for {} ms: the frontend fell behind",
+                gate_wait.as_millis(),
+            );
+        }
 
         tokio::select! {
             maybe_event = rx.recv() => {

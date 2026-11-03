@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -327,6 +327,10 @@ fn countdown_seconds(delay: Duration) -> u64 {
     (delay.as_secs_f64().round() as u64).max(1)
 }
 
+/// A write taking this long gets logged. Well above anything a person could
+/// mistake for normal echo, and rare enough not to fill the log.
+const SLOW_WRITE: Duration = Duration::from_millis(500);
+
 /// One session id's slot, shared between the command layer and the connect
 /// task that fills it in.
 type SharedSlot<S> = Arc<TokioMutex<Slot<S>>>;
@@ -374,9 +378,24 @@ impl<C: Connector> SessionRegistry<C> {
 
     /// Queues bytes if the handshake is still running, sends them if not.
     pub async fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
+        let started = Instant::now();
         let slot = self.lookup(session_id).await?;
         let mut slot = slot.lock().await;
-        match &mut *slot {
+        let lock_wait = started.elapsed();
+        let result = Self::write_to_slot(&mut slot, data).await;
+        let total = started.elapsed();
+        if total >= SLOW_WRITE {
+            log::warn!(
+                "slow write on {session_id}: {} ms ({} ms waiting for the session lock)",
+                total.as_millis(),
+                lock_wait.as_millis(),
+            );
+        }
+        result
+    }
+
+    async fn write_to_slot(slot: &mut Slot<C::Session>, data: &[u8]) -> Result<(), String> {
+        match slot {
             Slot::Connecting { input, .. } => {
                 // Refused rather than truncated: half a paste is worse than none.
                 if input.len() + data.len() > MAX_PENDING_INPUT {
