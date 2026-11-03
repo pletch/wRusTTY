@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { relaxTextEntry } from './platform'
+import { osUnlockButtonLabel, relaxTextEntry } from './platform'
+
+describe('osUnlockButtonLabel', () => {
+  it('names what the platform actually uses', () => {
+    expect(osUnlockButtonLabel(true)).toBe('Unlock with biometrics')
+    expect(osUnlockButtonLabel(false)).toBe('Unlock with Windows sign-in')
+  })
+})
 
 describe('relaxTextEntry', () => {
   afterEach(() => {

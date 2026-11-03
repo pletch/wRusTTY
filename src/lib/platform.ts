@@ -1,6 +1,12 @@
 /** Running in the Android build's webview. */
 export const isAndroid = typeof navigator !== 'undefined' && /\bAndroid\b/.test(navigator.userAgent)
 
+/** The button for unlocking the vault without its password, where a prompt doesn't
+ * know which method is enrolled. */
+export function osUnlockButtonLabel(android = isAndroid): string {
+  return android ? 'Unlock with biometrics' : 'Unlock with Windows sign-in'
+}
+
 /**
  * Stops a soft keyboard capitalizing and correcting what's typed into any field
  * under `root`. Nearly everything here is a host name, user name, path or command,

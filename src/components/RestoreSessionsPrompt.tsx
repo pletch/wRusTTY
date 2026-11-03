@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Lock, Fingerprint, RotateCcw, ShieldCheck } from 'lucide-react'
+import { osUnlockButtonLabel } from '../lib/platform'
 import { PasswordField } from './PasswordField'
 import { WindowDragStrip } from './WindowDragStrip'
 
@@ -112,7 +113,7 @@ export function RestoreSessionsPrompt({
                   className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Fingerprint size={14} />
-                  Unlock with Windows sign-in
+                  {osUnlockButtonLabel()}
                 </button>
                 <p className="flex items-center gap-2 text-chrome/30">
                   <span className="h-px flex-1 bg-chrome/10" /> or{' '}

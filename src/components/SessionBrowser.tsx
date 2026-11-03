@@ -19,6 +19,7 @@ import { profileSubtitle } from '../lib/profiles'
 import type { Workspace } from '../lib/workspaces'
 import { useDismissable } from '../hooks/useDismissable'
 import { menuAnchor } from '../lib/sessionMenu'
+import { osUnlockButtonLabel } from '../lib/platform'
 import { PasswordField } from './PasswordField'
 
 const inputClass =
@@ -209,7 +210,7 @@ export function SessionBrowser({
                 className="flex w-full items-center justify-center gap-1.5 rounded-md bg-sky-500/90 py-1.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Fingerprint size={14} />
-                Unlock with Windows sign-in
+                {osUnlockButtonLabel()}
               </button>
               <p className="flex items-center gap-2 text-chrome/30">
                 <span className="h-px flex-1 bg-chrome/10" /> or{' '}

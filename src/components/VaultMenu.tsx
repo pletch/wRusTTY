@@ -7,7 +7,7 @@ import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 import { importVaultBundle } from '../lib/vaultTransfer'
 import { PasswordField } from './PasswordField'
-import { isAndroid } from '../lib/platform'
+import { isAndroid, osUnlockButtonLabel } from '../lib/platform'
 
 interface Props {
   status: VaultStatus
@@ -269,9 +269,7 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                     <Fingerprint size={13} />
                     {osUnlockMethod
                       ? `Unlock with ${osUnlockMethod.label}`
-                      : isAndroid
-                        ? 'Unlock with biometrics'
-                        : 'Unlock with Windows sign-in'}
+                      : osUnlockButtonLabel()}
                   </button>
                   <p className="flex items-center gap-2 text-chrome/30">
                     <span className="h-px flex-1 bg-chrome/10" /> or <span className="h-px flex-1 bg-chrome/10" />
