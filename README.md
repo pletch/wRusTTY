@@ -9,6 +9,9 @@ Rust + [Tauri 2](https://v2.tauri.app/) under a React front end. The installer
 is under 10 MB and it runs on the WebView2 that ships with Windows — there is no
 bundled Chromium, no Node runtime, and no ~200 MB of `app.asar` behind it.
 
+There's also a preview for Android phones, for SSH, SFTP and Telnet. See
+[Android](#android).
+
 ![wRusTTY with a live SSH session, showing true color, underline styles, box drawing and ligatures](docs/screenshots/terminal.png)
 
 ## Why this exists
@@ -133,7 +136,10 @@ curly underlines just work.
 - **Windows sign-in** as a fallback where Hello is unavailable (DPAPI via
   Credential Manager)
 - Secrets are decrypted only in the Rust process and never sent to the webview
-- Encrypted `.wrb` export/import
+- Encrypted `.wrb` export/import, covering hostnames, usernames and the rest of
+  your sessions and workspaces as well as credentials. Exporting needs an unlocked
+  vault, and restoring needs the backup's master password. Backups from before 0.5.0
+  still restore, but versions before 0.5.0 can't read newer ones
 - An unlock lasts until the Windows session locks, the app exits, or you lock it
   from the padlock menu
 
@@ -183,9 +189,27 @@ Microsoft. If it happens to you:
 There's no need to exclude the install folder from scanning, and please don't:
 allowing the single detection is enough.
 
-Windows is the target. The Linux and macOS Tauri paths are not maintained, and
+Windows is the main target. The Linux and macOS Tauri paths are not maintained, and
 several features (DirectWrite font enumeration, Windows Hello, PuTTY registry
 import, Mica) are Windows-only by nature.
+
+### Android
+
+A preview for 64-bit ARM phones, tested on one Pixel so far. Download
+`wRusTTY-<version>-arm64.apk` from [**Releases**](https://github.com/pletch/wRusTTY/releases)
+and open it on the phone, allowing installs from that app when asked. It isn't on
+Google Play.
+
+- SSH, SFTP and Telnet, with a key row for what a phone keyboard lacks, touch scrolling
+  and selection
+- The vault, with biometric unlock. A desktop backup can be restored on the phone, and
+  session types the phone can't open are kept but not listed
+- File transfers to and from phone storage and Google Drive
+- Sessions keep running in the background, and come back with their history if Android
+  destroys the screen or the WebView's renderer dies
+
+Not there yet: folder transfers, remote editing, agent authentication, local shells and
+serial. Sessions don't survive the app itself being killed or swiped away.
 
 ## Building
 
@@ -212,6 +236,10 @@ You do **not** need Zig or WSL to build or change anything here; the Ghostty cor
 is committed at `src/lib/ghostty/vendor/ghostty-vt.wasm`. Rebuilding it is only
 needed to move to a different Ghostty commit — see
 [`docs/PORT_GHOSTTY_MAIN.md`](docs/PORT_GHOSTTY_MAIN.md).
+
+For Android, the toolchain and signing setup are in
+[`docs/ANDROID_PLAN.md`](docs/ANDROID_PLAN.md). The build itself is
+`npx tauri android build --target aarch64 --apk`, with `--debug` for a debug build.
 
 ### Checks
 
@@ -282,6 +310,8 @@ manager and front end are protocol-agnostic.
 
 - [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) — architecture, the full feature
   inventory with per-item status, and the phased build plan
+- [`docs/ANDROID_PLAN.md`](docs/ANDROID_PLAN.md) — the Android port: design, toolchain
+  and milestones
 - [`docs/SHELL_INTEGRATION.md`](docs/SHELL_INTEGRATION.md) — OSC 133/633 setup
 - [`docs/AUTOCOMPLETE_PLAN.md`](docs/AUTOCOMPLETE_PLAN.md),
   [`docs/AUTO_RECONNECT_PLAN.md`](docs/AUTO_RECONNECT_PLAN.md),
