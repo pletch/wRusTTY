@@ -1,0 +1,13 @@
+[env]
+# Added to wry's generated Android WebView class, which isn't ours to edit (it's
+# rewritten on every build). Keeps what the keyboard is told in one Kotlin file.
+# Inert on desktop, where wry generates no Kotlin.
+WRY_RUSTWEBVIEW_CLASS_EXTENSION = '''
+    override fun onCreateInputConnection(
+        outAttrs: android.view.inputmethod.EditorInfo,
+    ): android.view.inputmethod.InputConnection? {
+        val connection = super.onCreateInputConnection(outAttrs)
+        TextEntryHints.apply(outAttrs)
+        return connection
+    }
+'''
