@@ -202,6 +202,14 @@ Tauri's Android side assumes one Activity per process. `PluginManager` is a proc
 object that keeps the first Activity, and each plugin keeps the one it was built with,
 so `PluginActivityHandover` moves them over by reflection. Check it when updating Tauri.
 
+A renderer that dies, by crash or to free memory, would take the app with it unless the
+webview client says it's handled. So `MainActivity.onRendererGone` recreates the Activity,
+at once or on the next resume, and wry builds another webview. To test it, send `Page.crash`
+over the debug build's DevTools socket (`webview_devtools_remote_<pid>`).
+
+Still lost: everything, if the process itself dies. Sessions can't outlive it, and
+snapshots are only held in its memory.
+
 A snapshot covers both screens, scrollback and an unfinished
 escape sequence, which replaying output from a limited buffer can't do.
 

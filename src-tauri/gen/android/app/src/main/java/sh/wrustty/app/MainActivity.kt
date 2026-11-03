@@ -9,9 +9,28 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
 
 class MainActivity : TauriActivity() {
   private var webView: WebView? = null
+  private var recreateOnResume = false
+
+  /**
+   * The webview's renderer died, by crash or because Android needed the memory. A
+   * webview can't outlive its renderer. Recreating the Activity has wry build another
+   * one, whose page reattaches to the sessions as after any other loss of the screen.
+   */
+  fun onRendererGone(view: WebView) {
+    (view.parent as? ViewGroup)?.removeView(view)
+    view.destroy()
+    if (view === webView) webView = null
+    // `recreate` is ignored unless the Activity is resumed or paused.
+    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+      recreate()
+    } else {
+      recreateOnResume = true
+    }
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     // Light icons, because the bars sit over the black set below.
@@ -48,6 +67,10 @@ class MainActivity : TauriActivity() {
     // loop to act on that.
     activityResumed()
     Rust.resume()
+    if (recreateOnResume) {
+      recreateOnResume = false
+      recreate()
+    }
   }
 
   private external fun activityResumed()

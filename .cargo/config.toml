@@ -11,3 +11,14 @@ WRY_RUSTWEBVIEW_CLASS_EXTENSION = '''
         return connection
     }
 '''
+# Without this, a renderer that dies takes the whole app with it, and every session.
+WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION = '''
+    override fun onRenderProcessGone(
+        view: WebView,
+        detail: RenderProcessGoneDetail,
+    ): Boolean {
+        val activity = view.context as? MainActivity ?: return false
+        activity.onRendererGone(view)
+        return true
+    }
+'''
