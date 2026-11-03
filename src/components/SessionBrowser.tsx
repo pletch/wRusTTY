@@ -19,6 +19,7 @@ import { profileSubtitle } from '../lib/profiles'
 import type { Workspace } from '../lib/workspaces'
 import { useDismissable } from '../hooks/useDismissable'
 import { menuAnchor } from '../lib/sessionMenu'
+import { PasswordField } from './PasswordField'
 
 const inputClass =
   'rounded border border-chrome/10 bg-black/20 px-2 py-1.5 text-sm text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
@@ -216,12 +217,11 @@ export function SessionBrowser({
               </p>
             </>
           )}
-          <input
-            type="password"
+          <PasswordField
             autoFocus
             placeholder="master password"
             value={unlockPassword}
-            onChange={(e) => setUnlockPassword(e.target.value)}
+            onChange={setUnlockPassword}
             className={`${inputClass} w-full`}
           />
           {unlockError && <p className="text-xs text-red-400">{unlockError}</p>}

@@ -26,6 +26,8 @@ pub enum WrapperKind {
     OsKeyring,
     /// Output of a user-configured command, treated as a passphrase.
     External,
+    /// A random KEK encrypted by an Android Keystore key that needs a biometric.
+    AndroidBiometric,
 }
 
 impl WrapperKind {
@@ -37,6 +39,7 @@ impl WrapperKind {
             Self::Hello => "hello",
             Self::OsKeyring => "os-keyring",
             Self::External => "external",
+            Self::AndroidBiometric => "android-biometric",
         }
     }
 
@@ -47,6 +50,7 @@ impl WrapperKind {
             Self::Hello => "Windows Hello",
             Self::OsKeyring => "Windows sign-in",
             Self::External => "external command",
+            Self::AndroidBiometric => "biometrics",
         }
     }
 }
@@ -113,6 +117,10 @@ pub enum WrapperParams {
         t_cost: u32,
         p_cost: u32,
     },
+    /// `wrapped_kek` is the KEK encrypted by a Keystore key on the phone that made
+    /// it, and `iv` its nonce. Useless without that phone and a biometric, so it
+    /// travels harmlessly in an export. Another device needs the master password.
+    AndroidBiometric { iv: String, wrapped_kek: String },
 }
 
 impl WrapperParams {
@@ -122,6 +130,7 @@ impl WrapperParams {
             Self::Hello { .. } => WrapperKind::Hello,
             Self::OsKeyring {} => WrapperKind::OsKeyring,
             Self::External { .. } => WrapperKind::External,
+            Self::AndroidBiometric { .. } => WrapperKind::AndroidBiometric,
         }
     }
 }
@@ -206,6 +215,30 @@ pub(crate) fn unwrap_dek(kek: &Kek, stored: &StoredWrapper) -> Result<Dek, Vault
         ))
     })?;
     Ok(Dek::from_bytes(bytes))
+}
+
+#[cfg(test)]
+mod android_biometric_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_its_stored_spelling() {
+        // Bound into every wrapper's AEAD tag, so a rename would lock the vault.
+        assert_eq!(WrapperKind::AndroidBiometric.as_str(), "android-biometric");
+    }
+
+    #[test]
+    fn its_params_round_trip_as_the_vault_file_stores_them() {
+        let params = WrapperParams::AndroidBiometric {
+            iv: "aXY=".to_string(),
+            wrapped_kek: "a2Vr".to_string(),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains(r#""kind":"android-biometric""#), "{json}");
+        let back: WrapperParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, params);
+        assert_eq!(back.kind(), WrapperKind::AndroidBiometric);
+    }
 }
 
 #[cfg(test)]

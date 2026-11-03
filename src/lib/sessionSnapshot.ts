@@ -3,6 +3,7 @@ import { authNeedsVault } from './profiles'
 import type { SessionProfile } from './profiles'
 import type { PaneNode, Tab } from '../types'
 import { allLeaves } from './paneTree'
+import { isAndroid } from './platform'
 
 const STORAGE_KEY = 'wrustty.session-snapshot'
 // The pre-rebrand key (wr-shell), read as a fallback; the next save writes
@@ -25,6 +26,8 @@ function restorableSource(
 ): ConnectionSource | null {
   if (!source) return null
   if (source.protocol === 'sshProfile' || source.protocol === 'telnet') return source
+  // Android has only those: a workspace from a desktop may name anything.
+  if (isAndroid) return null
   // A saved local shell needs no credential; it re-resolves its shell id on
   // the way back.
   if (source.protocol === 'localProfile') return source
@@ -39,7 +42,7 @@ function restorableSource(
 /** A pane restored without its connection but kept: an administrator shell
  * reopens as its reopen-or-close card (ElevatedRestore). */
 function keepsBlank(source: ConnectionSource | null): boolean {
-  return source?.protocol === 'elevated'
+  return !isAndroid && source?.protocol === 'elevated'
 }
 
 function sanitizeNode(node: PaneNode, opts: SanitizeOptions): PaneNode {

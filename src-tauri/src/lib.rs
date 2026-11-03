@@ -1,3 +1,7 @@
+#[cfg(target_os = "android")]
+mod android_biometric;
+#[cfg(target_os = "android")]
+mod android_files;
 mod atomic_file;
 #[cfg(desktop)]
 mod attention;
@@ -33,6 +37,8 @@ mod putty_import;
 mod serial;
 #[cfg(desktop)]
 mod session_import;
+#[cfg_attr(not(test), allow(dead_code))]
+mod session_keep;
 mod session_lock;
 mod session_registry;
 mod sftp;
@@ -82,7 +88,10 @@ pub fn run() {
         .manage(serial::SerialState::default());
 
     #[cfg(target_os = "android")]
-    let builder = builder.plugin(keep_alive::init());
+    let builder = builder
+        .plugin(keep_alive::init())
+        .plugin(android_files::init())
+        .plugin(android_biometric::init());
 
     builder
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -222,6 +231,8 @@ pub fn run() {
             vault::vault_enable_os_unlock,
             vault::vault_disable_os_unlock,
             vault::vault_unlock_with_os,
+            vault::vault_begin_master_password_reset,
+            vault::vault_reset_master_password,
             logging::session_log_start,
             logging::session_log_stop,
             logging::reveal_session_logs,

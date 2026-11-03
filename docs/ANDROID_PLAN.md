@@ -84,6 +84,14 @@ tested, typing was reported as working fine**, so the existing path may be enoug
 the design below is on hold. That's one phone and one keyboard, not yet identified.
 Autocorrect, swipe typing, voice input and other keyboards are still untested.
 
+The keyboard used to treat the terminal's input as ordinary text, showing a `sudo`
+password in its suggestion strip and possibly learning it. `TextEntryHints.kt` now
+marks every text field as no-suggestions and "visible password", which keyboards
+honor where HTML attributes only ask, with personalized learning off. It reaches
+`RustWebView` through `WRY_RUSTWEBVIEW_CLASS_EXTENSION` in `.cargo/config.toml`. This
+trades away swipe typing and voice input. It also stops composing, so the composition
+handling behind Ctrl may no longer be reached on most keyboards.
+
 The likely design is a separate Android input path, leaving the desktop handler
 alone:
 
@@ -157,8 +165,26 @@ feature selection so the desktop build doesn't change.
 
 **Decision: Ghostty snapshots plus a Rust-side buffer of the output since the last
 snapshot.** The pinned core and the shipped WASM already export
-`ghostty_snapshot_encode_*` and `ghostty_snapshot_decoder_*`. Nothing in `src/`
-calls them yet. A snapshot covers both screens, scrollback and an unfinished
+`ghostty_snapshot_encode_*` and `ghostty_snapshot_decoder_*`.
+
+**Built so far, neither used by the app yet:**
+
+- `main/shim.ts` has `ghostty_terminal_track_continuation`, `_snapshot` and `_restore`,
+  all streaming. A restored terminal gets the same setup as a new one, so it answers
+  queries and counts bells. `main/snapshotShim.test.ts` covers this.
+- `session_keep.rs` holds the snapshot and the output and resizes since it, by stream
+  position, with a size cap and wiping on release.
+
+**Still to build:** when to take snapshots, wrapping each session's channels, the
+reattach command, and the frontend adopting a restored terminal. The channels can
+probably be wrapped without touching `coalesce.rs` or `session_registry.rs`: a
+`Channel::new` closure can tee into `SessionKeep` and forward to whichever webview is
+attached, and it keeps returning `Ok` with none attached, so the forwarder doesn't take
+a dead webview as the end of the session. **This all depends on what Tauri does when
+Android destroys the Activity while the process lives, which hasn't been observed
+yet.** Test with the developer option "Don't keep activities".
+
+A snapshot covers both screens, scrollback and an unfinished
 escape sequence, which replaying output from a limited buffer can't do.
 
 | What dies | SSH connection | Recovery |
@@ -348,17 +374,23 @@ rejected `invoke`s for these until M1 and M3 deal with them.
 `KeyProvider` in `wr-vault/src/provider.rs` already allows for async, user-gesture
 providers, so an Android provider fits the existing shape.
 
-- **The password stays as the fallback**, and it should work on day one. Biometric
-  unlock can wait until after the first usable build.
-- **Biometric unlock:** keep a KEK wrapped by an Android Keystore key that requires
-  user authentication. A Keystore key invalidated by a new fingerprint enrollment
-  maps to `ProviderError::Invalidated`.
-- **Prefer a small plugin of our own.** The option found so far with Keystore
-  storage, `tauri-plugin-biometry`, is a third-party crate. It would sit directly
-  on the vault's key material, so it would need a full review of its Kotlin first.
-- **File format:** a new `WrapperKind` is a vault format addition. Check how a
-  desktop build reacts to a transferred vault holding an unknown kind before
-  shipping one.
+- **The password stays as the fallback**, and always works.
+- **Biometric unlock is reported working on the test phone.** `VaultBiometricPlugin.kt`
+  and `android_biometric.rs` add a `WrapperKind::AndroidBiometric` provider. A Keystore
+  key that needs a strong biometric for every use, through `CryptoObject`, encrypts a
+  random KEK, and only that ciphertext goes in the vault file. A new fingerprint or face
+  enrollment invalidates the key, which maps to `ProviderError::Invalidated`. It's our
+  own small plugin rather than `tauri-plugin-biometry`, a third-party crate that would
+  sit directly on the vault's key material.
+- **File format:** the new kind is a format addition. A desktop build from before it
+  can't parse a vault file holding one, so export from a phone with biometrics on needs
+  a current desktop build to open. A current build ignores the wrapper and asks for the
+  master password, as a phone does with a Hello wrapper.
+- **Importing:** `read_picked` and `write_picked` in `vault.rs` handle the picker's
+  `content://` links through `DeviceFilesPlugin.kt`. They used to look like a cancel.
+- **Desktop exports:** serial and local sessions stay on disk but aren't listed
+  (`openableHere`), so an export from the phone keeps them. A session with a key path
+  says so when opened, and editing it asks for the key to store in the vault.
 
 ## SSH keys and files
 

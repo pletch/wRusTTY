@@ -4,6 +4,7 @@
 //! webview; `ssh_connect_profile` (in `ssh.rs`) resolves them on the Rust side.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -238,6 +239,8 @@ impl KeyProvider for OsKeyringProvider {
 #[derive(Default)]
 pub struct VaultState {
     pub(crate) vault: TokioMutex<Option<Vault>>,
+    /// When ownership was last proven for a master password reset.
+    reset_granted: std::sync::Mutex<Option<Instant>>,
 }
 
 #[derive(Serialize)]
@@ -339,6 +342,7 @@ async fn prune_orphaned_credentials(
 #[tauri::command]
 pub async fn vault_lock(state: State<'_, VaultState>) -> Result<(), String> {
     *state.vault.lock().await = None;
+    *reset_grant(&state) = None;
     Ok(())
 }
 
@@ -380,7 +384,11 @@ pub async fn vault_delete(
 /// The passwordless unlock methods, strongest first. Only one is enrolled at a
 /// time, but a vault from a machine with only the keyring method still opens,
 /// and one upgraded to Hello never falls back.
-const PASSWORDLESS_METHODS: [WrapperKind; 2] = [WrapperKind::Hello, WrapperKind::OsKeyring];
+const PASSWORDLESS_METHODS: [WrapperKind; 3] = [
+    WrapperKind::AndroidBiometric,
+    WrapperKind::Hello,
+    WrapperKind::OsKeyring,
+];
 
 /// Whether this build can drive a method (a Hello wrapper can't be opened on a
 /// non-Windows build).
@@ -393,6 +401,7 @@ fn usable_on_this_platform(kind: WrapperKind) -> bool {
         // `keyring` has no store on mobile and falls back to its mock, which
         // forgets the key: enrolling would look fine until the next launch.
         WrapperKind::OsKeyring => cfg!(desktop),
+        WrapperKind::AndroidBiometric => cfg!(target_os = "android"),
         _ => true,
     }
 }
@@ -421,6 +430,11 @@ pub async fn vault_os_unlock_available(app: AppHandle) -> Result<bool, String> {
     if kind == WrapperKind::Hello && !crate::hello::credential_exists().await {
         return Ok(false);
     }
+    // Likewise: an imported vault's wrapper may name a key on another phone.
+    #[cfg(target_os = "android")]
+    if kind == WrapperKind::AndroidBiometric && !crate::android_biometric::key_present(&app).await {
+        return Ok(false);
+    }
     let _ = kind;
     Ok(true)
 }
@@ -440,6 +454,8 @@ pub enum OsUnlockProtection {
     /// A random KEK in DPAPI-backed Credential Manager, readable by any process
     /// running as this user.
     CredentialManager,
+    /// A Keystore key that needs a strong biometric for every use.
+    AndroidKeystore,
 }
 
 #[derive(Serialize)]
@@ -464,6 +480,7 @@ pub async fn vault_os_unlock_method(app: AppHandle) -> Result<Option<OsUnlockMet
     {
         Some(WrapperParams::Hello { attested: true, .. }) => OsUnlockProtection::TpmAttested,
         Some(WrapperParams::Hello { .. }) => OsUnlockProtection::HelloUnattested,
+        Some(WrapperParams::AndroidBiometric { .. }) => OsUnlockProtection::AndroidKeystore,
         _ => OsUnlockProtection::CredentialManager,
     };
     Ok(Some(OsUnlockMethod {
@@ -476,11 +493,28 @@ pub async fn vault_os_unlock_method(app: AppHandle) -> Result<Option<OsUnlockMet
 /// Windows Hello, else the OS keyring), wrapping its own copy of the data key.
 /// Enrolling Hello removes any keyring wrapper, which would otherwise keep a
 /// DPAPI-readable path into the vault.
+// Android returns from its own branch, leaving the rest for the other platforms.
+#[cfg_attr(target_os = "android", allow(unreachable_code, unused_variables))]
 #[tauri::command]
 pub async fn vault_enable_os_unlock(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
+    // Enrolled with no lock held, as below: the prompt can take a while.
+    #[cfg(target_os = "android")]
+    {
+        use wr_vault::KeyProvider as _;
+        let (params, kek) = crate::android_biometric::AndroidBiometricProvider { app }
+            .enroll()
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut guard = state.vault.lock().await;
+        let vault = guard.as_mut().ok_or("vault is locked")?;
+        return vault
+            .add_enrolled_unlock_method(params, &kek)
+            .map_err(|e| e.to_string());
+    }
+    #[cfg(not(target_os = "android"))]
     if !usable_on_this_platform(WrapperKind::OsKeyring) {
         return Err("passwordless unlock isn't available on this platform yet".to_string());
     }
@@ -524,7 +558,10 @@ pub async fn vault_enable_os_unlock(
 /// Removes the passwordless methods (needs an unlocked vault) and the stored
 /// key material.
 #[tauri::command]
-pub async fn vault_disable_os_unlock(state: State<'_, VaultState>) -> Result<(), String> {
+pub async fn vault_disable_os_unlock(
+    #[cfg_attr(not(target_os = "android"), allow(unused_variables))] app: AppHandle,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
     let mut guard = state.vault.lock().await;
     let vault = guard.as_mut().ok_or("vault is locked")?;
     for kind in PASSWORDLESS_METHODS {
@@ -539,6 +576,8 @@ pub async fn vault_disable_os_unlock(state: State<'_, VaultState>) -> Result<(),
     // Best-effort cleanup; the user's request already succeeded.
     #[cfg(target_os = "windows")]
     crate::hello::forget_credential().await;
+    #[cfg(target_os = "android")]
+    crate::android_biometric::forget(&app).await;
     forget_os_unlock_kek()
 }
 
@@ -575,6 +614,17 @@ pub async fn vault_unlock_with_os(
         *state.vault.lock().await = Some(vault);
         return Ok(());
     }
+    #[cfg(target_os = "android")]
+    if kind == WrapperKind::AndroidBiometric {
+        let for_prune = app.clone();
+        let provider = crate::android_biometric::AndroidBiometricProvider { app };
+        let mut vault = Vault::unlock_with(path, &provider)
+            .await
+            .map_err(|e| e.to_string())?;
+        prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
+        *state.vault.lock().await = Some(vault);
+        return Ok(());
+    }
     let _ = kind;
 
     let for_prune = app.clone();
@@ -584,6 +634,101 @@ pub async fn vault_unlock_with_os(
     prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
     *state.vault.lock().await = Some(vault);
     Ok(())
+}
+
+/// Proves whoever's asking owns the vault, by the current password or a fresh
+/// passwordless prompt. An unlocked app isn't enough: someone at one could otherwise
+/// set a password of their own, export, and decrypt every secret offline.
+async fn confirm_vault_owner(
+    app: &AppHandle,
+    current_password: Option<&str>,
+) -> Result<(), String> {
+    let path = vault_path(app)?;
+    if let Some(password) = current_password {
+        return Vault::unlock(path, password)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+    let kind = enrolled_passwordless_method(app)?
+        .ok_or("enter your current master password to change it")?;
+    #[cfg(target_os = "windows")]
+    if kind == WrapperKind::Hello {
+        let provider = crate::hello::HelloProvider::new(app.clone());
+        return Vault::unlock_with(path, &provider)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+    #[cfg(target_os = "android")]
+    if kind == WrapperKind::AndroidBiometric {
+        let provider = crate::android_biometric::AndroidBiometricProvider { app: app.clone() };
+        return Vault::unlock_with(path, &provider)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+    let _ = kind;
+    Vault::unlock_with(path, &OsKeyringProvider { app: app.clone() })
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// How long proving ownership lets a reset go ahead: long enough to think of and type
+/// a new password, short enough that a walked-away-from app doesn't stay open to one.
+const RESET_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+fn reset_grant_valid(granted: Option<Instant>, now: Instant) -> bool {
+    granted.is_some_and(|at| now.duration_since(at) < RESET_WINDOW)
+}
+
+fn reset_grant(state: &VaultState) -> std::sync::MutexGuard<'_, Option<Instant>> {
+    state
+        .reset_granted
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The first step of a reset: proves ownership, which `vault_reset_master_password`
+/// then requires, so the order is enforced here and not only by the screen.
+/// `current_password` of `None` asks for the passwordless prompt instead.
+#[tauri::command]
+pub async fn vault_begin_master_password_reset(
+    app: AppHandle,
+    current_password: Option<String>,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    if state.vault.lock().await.is_none() {
+        return Err("vault is locked".to_string());
+    }
+    // With no lock held: the prompt can take a while.
+    confirm_vault_owner(&app, current_password.as_deref()).await?;
+    *reset_grant(&state) = Some(Instant::now());
+    Ok(())
+}
+
+/// Replaces the master password. It only wraps the vault's key, so saved credentials
+/// and any passwordless method carry on as they were. Copies of the vault exported
+/// earlier still open with the old password.
+#[tauri::command]
+pub async fn vault_reset_master_password(
+    new_password: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    if new_password.is_empty() {
+        return Err("the new password can't be empty".to_string());
+    }
+    // Used up either way: one proof, one reset.
+    let granted = reset_grant(&state).take();
+    if !reset_grant_valid(granted, Instant::now()) {
+        return Err("confirm it's you again to reset the master password".to_string());
+    }
+    let mut guard = state.vault.lock().await;
+    let vault = guard.as_mut().ok_or("vault is locked")?;
+    vault
+        .change_master_password(&new_password)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -601,15 +746,24 @@ pub async fn vault_set_credential(
 /// then vaults the whole key without it ever reaching the webview.
 #[tauri::command]
 pub async fn vault_import_key(
+    #[cfg_attr(not(target_os = "android"), allow(unused_variables))] app: AppHandle,
     profile_id: String,
     key_path: String,
     passphrase: Option<String>,
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
-    let expanded = wr_ssh::expand_tilde(&key_path);
-    let mut key_material = std::fs::read_to_string(&expanded)
-        .map_err(|_| format!("could not read key file: {key_path}"))?
-        .replace("\r\n", "\n");
+    #[cfg(target_os = "android")]
+    let contents = if crate::android_files::is_content_uri(&key_path) {
+        String::from_utf8(crate::android_files::read(&app, &key_path).await?)
+            .map_err(|_| "that file isn't a text SSH key".to_string())?
+    } else {
+        std::fs::read_to_string(wr_ssh::expand_tilde(&key_path))
+            .map_err(|_| format!("could not read key file: {key_path}"))?
+    };
+    #[cfg(not(target_os = "android"))]
+    let contents = std::fs::read_to_string(wr_ssh::expand_tilde(&key_path))
+        .map_err(|_| format!("could not read key file: {key_path}"))?;
+    let mut key_material = contents.replace("\r\n", "\n");
 
     if let Err(e) = wr_ssh::parse_private_key(&key_material, passphrase.as_deref()) {
         key_material.zeroize();
@@ -669,7 +823,7 @@ const EXPORT_FORMAT: &str = "wr-shell-export-v1";
 /// since import replaces the live vault and a forged path could plant one.
 /// Uses the callback form: the blocking variants are unsafe on the event-loop
 /// thread.
-async fn pick_bundle_path(app: &AppHandle, saving: bool) -> Option<std::path::PathBuf> {
+async fn pick_bundle(app: &AppHandle, saving: bool) -> Option<tauri_plugin_dialog::FilePath> {
     use tauri_plugin_dialog::DialogExt;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -690,7 +844,45 @@ async fn pick_bundle_path(app: &AppHandle, saving: bool) -> Option<std::path::Pa
     }
 
     // A dropped sender is a cancel.
-    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+    rx.await.ok().flatten()
+}
+
+/// A picked file's text. On Android the picker returns a `content://` link, which
+/// can't become a path, so it has to be told apart here. Treating it as a cancel made
+/// an import silently do nothing.
+async fn read_picked(
+    #[cfg_attr(not(target_os = "android"), allow(unused_variables))] app: &AppHandle,
+    picked: tauri_plugin_dialog::FilePath,
+) -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    {
+        let uri = picked.to_string();
+        if crate::android_files::is_content_uri(&uri) {
+            let bytes = crate::android_files::read(app, &uri).await?;
+            return String::from_utf8(bytes)
+                .map_err(|_| "not a valid vault export file".to_string());
+        }
+    }
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+async fn write_picked<T: Serialize>(
+    #[cfg_attr(not(target_os = "android"), allow(unused_variables))] app: &AppHandle,
+    picked: tauri_plugin_dialog::FilePath,
+    value: &T,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let uri = picked.to_string();
+        if crate::android_files::is_content_uri(&uri) {
+            let contents = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+            return crate::android_files::write(app, &uri, contents.as_bytes()).await;
+        }
+    }
+    // Atomic, so a crash can't destroy the previous backup.
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    crate::atomic_file::write_json_atomic(&path, value)
 }
 
 /// Exports the bundle; the vault doesn't need to be unlocked. Only the vault is
@@ -702,7 +894,7 @@ pub async fn vault_export(
     app: AppHandle,
     profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<bool, String> {
-    let Some(dest_path) = pick_bundle_path(&app, true).await else {
+    let Some(dest) = pick_bundle(&app, true).await else {
         return Ok(false);
     };
     let vault_contents = std::fs::read_to_string(vault_path(&app)?).map_err(|e| e.to_string())?;
@@ -720,8 +912,7 @@ pub async fn vault_export(
         sessions,
         workspaces,
     };
-    // Atomic, so a crash can't destroy the previous backup.
-    crate::atomic_file::write_json_atomic(&dest_path, &bundle)?;
+    write_picked(&app, dest, &bundle).await?;
     Ok(true)
 }
 
@@ -764,10 +955,10 @@ pub async fn vault_import(
     workspace_state: State<'_, crate::workspaces::WorkspaceState>,
     profile_state: State<'_, crate::profiles::ProfileState>,
 ) -> Result<bool, String> {
-    let Some(src_path) = pick_bundle_path(&app, false).await else {
+    let Some(picked) = pick_bundle(&app, false).await else {
         return Ok(false);
     };
-    let contents = std::fs::read_to_string(&src_path).map_err(|e| e.to_string())?;
+    let contents = read_picked(&app, picked).await?;
     let bundle: ExportBundle =
         serde_json::from_str(&contents).map_err(|_| "not a valid vault export file".to_string())?;
     if bundle.format != EXPORT_FORMAT {
@@ -781,6 +972,8 @@ pub async fn vault_import(
     // Now drop the current unlock and the old OS-unlock key.
     *state.vault.lock().await = None;
     forget_os_unlock_kek()?;
+    #[cfg(target_os = "android")]
+    crate::android_biometric::forget(&app).await;
 
     // Atomic: the vault has no other copy.
     crate::atomic_file::write_json_atomic(&vault_path(&app)?, &bundle.vault)?;
@@ -799,6 +992,30 @@ pub async fn vault_import(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reset_needs_a_recent_proof_of_ownership() {
+        let now = Instant::now();
+        assert!(!reset_grant_valid(None, now));
+        assert!(reset_grant_valid(Some(now), now));
+        let just_inside = now + RESET_WINDOW - Duration::from_secs(1);
+        assert!(reset_grant_valid(Some(now), just_inside));
+        assert!(!reset_grant_valid(Some(now), now + RESET_WINDOW));
+    }
+
+    #[test]
+    fn a_proof_of_ownership_is_good_for_one_reset() {
+        let state = VaultState::default();
+        *reset_grant(&state) = Some(Instant::now());
+        assert!(reset_grant_valid(
+            reset_grant(&state).take(),
+            Instant::now()
+        ));
+        assert!(!reset_grant_valid(
+            reset_grant(&state).take(),
+            Instant::now()
+        ));
+    }
 
     /// Built by deserializing, as a bundle's sessions are, so `serde(default)`
     /// applies.

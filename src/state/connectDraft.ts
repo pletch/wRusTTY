@@ -1,3 +1,4 @@
+import { isAndroid } from '../lib/platform'
 import { defaultSerialConfig } from '../lib/serial'
 import { serialConfigFrom } from '../lib/profiles'
 import type { SerialConfig } from '../lib/serial'
@@ -138,8 +139,10 @@ export function initialConnectDraft(initial: ConnectDialogInitial | undefined): 
     port: String(initial?.port ?? (protocol === 'telnet' ? 23 : 22)),
     username: initial?.username ?? '',
     authType: initial?.authType ?? 'Password',
-    keyPath: initial?.keyPath ?? (vaulted ? '' : '~/.ssh/id_ed25519'),
-    keyStorage: vaulted ? 'vault' : 'path',
+    // A phone has nowhere to keep a key file, and a path from a desktop export means
+    // nothing here, so a key is always picked and stored in the vault.
+    keyPath: isAndroid ? '' : (initial?.keyPath ?? (vaulted ? '' : '~/.ssh/id_ed25519')),
+    keyStorage: vaulted || isAndroid ? 'vault' : 'path',
     passphrase: '',
     password: '',
     // The protocol's default, set here so there's no post-mount flash.

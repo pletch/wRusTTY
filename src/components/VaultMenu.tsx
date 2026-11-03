@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Lock, Unlock, Upload, Fingerprint, Trash2 } from 'lucide-react'
+import { KeyRound, Lock, Unlock, Upload, Fingerprint, Trash2 } from 'lucide-react'
 import * as vault from '../lib/vault'
 import type { VaultStatus } from '../lib/vault'
 import { toast } from '../lib/toast'
 import { useDismissable } from '../hooks/useDismissable'
 import { useConfirm } from './confirmContext'
 import { importVaultBundle } from '../lib/vaultTransfer'
+import { PasswordField } from './PasswordField'
+import { isAndroid } from '../lib/platform'
 
 interface Props {
   status: VaultStatus
@@ -31,11 +33,16 @@ export function VaultMenu({ status, onStatusChange }: Props) {
   // stays driven by `osUnlockOn` and this only ever adds detail.
   const [osUnlockMethod, setOsUnlockMethod] = useState<vault.OsUnlockMethod | null>(null)
   const [osUnlockBusy, setOsUnlockBusy] = useState(false)
+  // A reset first proves it's you, then chooses the new password.
+  const [resetStep, setResetStep] = useState<'verify' | 'choose' | null>(null)
+  const [currentPassword, setCurrentPassword] = useState('')
 
   useEffect(() => {
     if (!open_) return
     setPassword('')
     setConfirmPassword('')
+    setCurrentPassword('')
+    setResetStep(null)
     setError(null)
     vault.osUnlockAvailable().then(setOsUnlockOn).catch(() => {})
     vault.osUnlockMethod().then(setOsUnlockMethod).catch(() => {})
@@ -119,6 +126,52 @@ export function VaultMenu({ status, onStatusChange }: Props) {
     }
   }
 
+  function endReset() {
+    setResetStep(null)
+    setCurrentPassword('')
+    setPassword('')
+    setConfirmPassword('')
+    setError(null)
+  }
+
+  /** `current` null is the Windows Hello or biometric route. */
+  async function proveOwnership(current: string | null) {
+    setError(null)
+    setBusy(true)
+    try {
+      await vault.beginMasterPasswordReset(current)
+      setCurrentPassword('')
+      setResetStep('choose')
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitReset(e: React.FormEvent) {
+    e.preventDefault()
+    if (!password) {
+      setError('Enter a new master password')
+      return
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match')
+      return
+    }
+    setError(null)
+    setBusy(true)
+    try {
+      await vault.resetMasterPassword(password)
+      endReset()
+      toast.success('Master password reset')
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function doLock() {
     await vault.lock().catch(() => {})
     onStatusChange()
@@ -177,19 +230,17 @@ export function VaultMenu({ status, onStatusChange }: Props) {
               <p className="text-chrome/60">
                 Create a master password to encrypt saved credentials.
               </p>
-              <input
-                type="password"
+              <PasswordField
                 autoFocus
                 placeholder="master password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={setPassword}
                 className={fieldClass}
               />
-              <input
-                type="password"
+              <PasswordField
                 placeholder="confirm password"
                 value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
+                onChange={setConfirmPassword}
                 className={fieldClass}
               />
               {error && <p className="text-red-400">{error}</p>}
@@ -216,7 +267,11 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                     className={`${primaryButton} flex items-center justify-center gap-1.5`}
                   >
                     <Fingerprint size={13} />
-                    {osUnlockMethod ? `Unlock with ${osUnlockMethod.label}` : 'Unlock with Windows sign-in'}
+                    {osUnlockMethod
+                      ? `Unlock with ${osUnlockMethod.label}`
+                      : isAndroid
+                        ? 'Unlock with biometrics'
+                        : 'Unlock with Windows sign-in'}
                   </button>
                   <p className="flex items-center gap-2 text-chrome/30">
                     <span className="h-px flex-1 bg-chrome/10" /> or <span className="h-px flex-1 bg-chrome/10" />
@@ -224,12 +279,11 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                 </>
               )}
               <p className="text-chrome/60">Enter your master password to unlock.</p>
-              <input
-                type="password"
+              <PasswordField
                 autoFocus
                 placeholder="master password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={setPassword}
                 className={fieldClass}
               />
               {error && <p className="text-red-400">{error}</p>}
@@ -276,8 +330,9 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                       would hide exactly the thing worth knowing. */}
                   {osUnlockBusy ? (
                     <span className="block text-sky-300/70">
-                      Waiting for Windows Hello — answer the prompt to continue. It may open
-                      behind this window.
+                      {isAndroid
+                        ? 'Confirm with your fingerprint or face to continue.'
+                        : 'Waiting for Windows Hello — answer the prompt to continue. It may open behind this window.'}
                     </span>
                   ) : osUnlockOn && osUnlockMethod ? (
                     <span className="block text-chrome/40">
@@ -287,6 +342,12 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                           the user nothing they can act on. What isn't obvious
                           is that the key is machine-bound, which is what they
                           actually hit when they move the vault. */}
+                      {osUnlockMethod.protection === 'android-keystore' && (
+                        <span className="text-emerald-400/70">
+                          Protected by this phone&apos;s secure hardware. Other devices need your
+                          master password, and so does this one if its fingerprints or face change.
+                        </span>
+                      )}
                       {osUnlockMethod.protection === 'tpm-attested' && (
                         <span className="text-emerald-400/70">
                           Backed by this machine&apos;s TPM. Set up per machine — other devices need
@@ -307,12 +368,91 @@ export function VaultMenu({ status, onStatusChange }: Props) {
                     </span>
                   ) : (
                     <span className="block text-chrome/40">
-                      Skips the master password, using Windows Hello where this machine supports it.
+                      {isAndroid
+                        ? 'Skips the master password, using your fingerprint or face.'
+                        : 'Skips the master password, using Windows Hello where this machine supports it.'}
                     </span>
                   )}
                 </span>
               </label>
-              {error && <p className="text-red-400">{error}</p>}
+              {error && !resetStep && <p className="text-red-400">{error}</p>}
+              {resetStep === 'verify' && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    if (currentPassword) void proveOwnership(currentPassword)
+                    else setError('Enter your current master password')
+                  }}
+                  className="space-y-2 border-t border-chrome/10 pt-2"
+                >
+                  <p className="text-chrome/60">Confirm it&apos;s you to reset the master password.</p>
+                  <PasswordField
+                    autoFocus
+                    placeholder="current master password"
+                    value={currentPassword}
+                    onChange={setCurrentPassword}
+                    className={fieldClass}
+                  />
+                  {error && <p className="text-red-400">{error}</p>}
+                  <button type="submit" disabled={busy} className={primaryButton}>
+                    Continue
+                  </button>
+                  {osUnlockOn && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => proveOwnership(null)}
+                      className={secondaryButton}
+                    >
+                      <Fingerprint size={13} /> Use {osUnlockMethod?.label ?? 'device unlock'} instead
+                    </button>
+                  )}
+                  <button type="button" onClick={endReset} className={secondaryButton}>
+                    Cancel
+                  </button>
+                </form>
+              )}
+              {resetStep === 'choose' && (
+                <form onSubmit={submitReset} className="space-y-2 border-t border-chrome/10 pt-2">
+                  <p className="text-chrome/60">Choose a new master password.</p>
+                  <PasswordField
+                    autoFocus
+                    placeholder="new master password"
+                    value={password}
+                    onChange={setPassword}
+                    className={fieldClass}
+                  />
+                  <PasswordField
+                    placeholder="confirm new password"
+                    value={confirmPassword}
+                    onChange={setConfirmPassword}
+                    className={fieldClass}
+                  />
+                  <p className="text-chrome/40">
+                    Can&apos;t be recovered if forgotten. Exports you already made keep the old
+                    password.
+                  </p>
+                  {error && <p className="text-red-400">{error}</p>}
+                  <button type="submit" disabled={busy} className={primaryButton}>
+                    Reset master password
+                  </button>
+                  <button type="button" onClick={endReset} className={secondaryButton}>
+                    Cancel
+                  </button>
+                </form>
+              )}
+              {!resetStep && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null)
+                    setResetStep('verify')
+                  }}
+                  className={secondaryButton}
+                >
+                  <KeyRound size={13} /> Reset master password...
+                </button>
+              )}
               <button onClick={doLock} className={primaryButton}>
                 Lock now
               </button>

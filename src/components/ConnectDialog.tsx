@@ -811,6 +811,12 @@ export function ConnectDialog({
                         Key is stored in the vault — browse above to replace it.
                       </p>
                     )}
+                    {isAndroid && initial?.keyPath && !keyPath && (
+                      <p className="text-xs text-amber-400/70">
+                        This session&apos;s key file was on another device ({initial.keyPath}).
+                        Browse above for a copy of it to store in the vault.
+                      </p>
+                    )}
                   </>
                 )}
 
@@ -1143,7 +1149,12 @@ export function ConnectDialog({
                       : 'Unlock the vault to also save the credential'}
                   </label>
                 )}
-                {authType === 'PublicKey' && onImportKeyToVault && (
+                {isAndroid && authType === 'PublicKey' && saveProfile && !vaultUnlocked && (
+                  <p className="text-xs text-amber-400/70">
+                    Unlock the vault to store this session&apos;s key.
+                  </p>
+                )}
+                {!isAndroid && authType === 'PublicKey' && onImportKeyToVault && (
                   <div className="flex gap-3 text-xs text-chrome/70">
                     <label className="flex items-center gap-1.5">
                       <input

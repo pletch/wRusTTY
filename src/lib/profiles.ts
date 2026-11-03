@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { isAndroid } from './platform'
 import type { InputMode, SerialConfig } from './serial'
 
 export interface SessionProfile {
@@ -170,8 +171,16 @@ export function serialConfigFrom(profile: SerialProfile): SerialConfig {
   }
 }
 
+/**
+ * Sessions this build can open. Android has no local shells or serial, but those
+ * stay on disk rather than being deleted: an export from the phone still has them.
+ */
+export function openableHere(profile: Pick<SessionProfile, 'protocol'>): boolean {
+  return !isAndroid || (profile.protocol !== 'serial' && profile.protocol !== 'local')
+}
+
 export function listSessions() {
-  return invoke<SessionProfile[]>('list_sessions')
+  return invoke<SessionProfile[]>('list_sessions').then((all) => all.filter(openableHere))
 }
 
 /** Sends this session's magic packet without probing or connecting. Rejects if

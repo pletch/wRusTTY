@@ -305,6 +305,8 @@ pub async fn ssh_connect(
     vault_state: State<'_, VaultState>,
 ) -> Result<String, String> {
     config.proxy = proxy;
+    #[cfg(target_os = "android")]
+    crate::android_files::inline_picked_key(&app, &mut config.auth).await?;
     // A one-off connection can still jump through a saved profile, resolved
     // here so the jump credential never reaches the webview.
     if let Some(jump_id) = &jump_profile_id {
@@ -492,6 +494,12 @@ async fn resolve_auth(
             ),
         },
         "public_key" => match &profile.key_path {
+            // A path from a desktop export, in a session that wasn't edited since.
+            Some(_) if cfg!(target_os = "android") => Err(
+                "This session's key file is on another device. Edit the session and browse \
+                 for the key to store it in the vault."
+                    .to_string(),
+            ),
             Some(key_path) => {
                 let passphrase = match vault.get(&profile.id) {
                     Some(VaultSecret::Passphrase { passphrase }) => Some(passphrase.clone()),

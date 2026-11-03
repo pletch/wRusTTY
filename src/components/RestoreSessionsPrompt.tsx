@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Lock, Fingerprint, RotateCcw, ShieldCheck } from 'lucide-react'
+import { PasswordField } from './PasswordField'
 import { WindowDragStrip } from './WindowDragStrip'
 
 interface Props {
@@ -119,12 +120,11 @@ export function RestoreSessionsPrompt({
                 </p>
               </>
             )}
-            <input
-              type="password"
+            <PasswordField
               autoFocus
               placeholder="master password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={setPassword}
               className={`${inputClass} w-full`}
             />
             {error && <p className="text-xs text-red-400">{error}</p>}

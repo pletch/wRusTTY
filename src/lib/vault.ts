@@ -37,7 +37,11 @@ export function deleteVault() {
  * key is still held by Windows Hello and still non-exportable, only the TPM
  * attestation is missing — which usually means Windows hasn't provisioned an
  * attestation key rather than that anything is unprotected. */
-export type OsUnlockProtection = 'tpm-attested' | 'hello-unattested' | 'credential-manager'
+export type OsUnlockProtection =
+  | 'tpm-attested'
+  | 'hello-unattested'
+  | 'credential-manager'
+  | 'android-keystore'
 
 export interface OsUnlockMethod {
   label: string
@@ -60,6 +64,16 @@ export function enableOsUnlock() {
 
 export function disableOsUnlock() {
   return invoke<void>('vault_disable_os_unlock')
+}
+
+/** Proves ownership, which a reset then requires. `currentPassword` null asks for
+ * the passwordless prompt instead. */
+export function beginMasterPasswordReset(currentPassword: string | null) {
+  return invoke<void>('vault_begin_master_password_reset', { currentPassword })
+}
+
+export function resetMasterPassword(newPassword: string) {
+  return invoke<void>('vault_reset_master_password', { newPassword })
 }
 
 export function unlockWithOs() {
