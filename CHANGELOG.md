@@ -11,19 +11,36 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-03
+
 ### Added
 
+- A preview of wRusTTY for Android, for SSH, SFTP and telnet on a phone. It has a key row
+  for what a phone keyboard lacks, touch scrolling and selection, the vault with
+  biometric unlock, and transfers to and from phone storage and Google Drive. Sessions
+  keep running in the background and come back if Android destroys the screen, or if the
+  WebView's renderer dies. They don't survive the app itself being killed. Folder
+  transfers and remote editing aren't available on the phone yet, and neither are local
+  shells or serial.
 - The VT420 column sequences: DECIC and DECDC insert and delete columns
   across the scrolling region, and DECBI and DECFI scroll it sideways at the
   margins.
 
 ### Changed
 
+- Exported backups now encrypt hostnames, usernames and everything else about your
+  sessions and workspaces, not just the credentials. Exporting needs an unlocked vault.
+  Restoring asks for the backup's master password right after you pick the file, lets you
+  retry a wrong one without changing anything, and leaves the vault unlocked. Older
+  backups still restore, but older versions of wRusTTY can't read new ones.
 - The terminal engine is re-pinned to Ghostty `ae0dc1b7`, just past the 1.4.0
   release.
 
 ### Fixed
 
+- Typing no longer stalls for up to 10 seconds on a host slow to open a channel. The
+  command history import, the Files panel's identity check and the first SFTP open each
+  held up the pane's input while they waited.
 - Clearing the screen at a shell prompt (Ctrl-L with shell integration) once
   scrollback was full could leave the next text in the wrong style, read from
   memory the engine had already freed.
@@ -227,7 +244,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/pletch/wRusTTY/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/pletch/wRusTTY/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/pletch/wRusTTY/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/pletch/wRusTTY/compare/v0.4.0...v0.4.1
