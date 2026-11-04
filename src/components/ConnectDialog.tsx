@@ -623,6 +623,7 @@ export function ConnectDialog({
 
   return (
     <SessionBrowser
+      startOnForm={Boolean(initial)}
       sessions={sessions}
       workspaces={workspaces}
       onOpenWorkspace={onOpenWorkspace}
@@ -639,7 +640,10 @@ export function ConnectDialog({
       {/* Scrolls in its own right now that the card is capped — without
           this a form taller than the cap would be clipped by the card's
           overflow-hidden with no way to reach the rest of it. */}
-      <form onSubmit={submit} className="w-80 space-y-3 overflow-y-auto p-5">
+      <form
+        onSubmit={submit}
+        className={`space-y-3 overflow-y-auto ${isAndroid ? 'w-full p-4' : 'w-80 p-5'}`}
+      >
         <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
           {(isAndroid ? (['ssh', 'telnet'] as const) : (['ssh', 'telnet', 'serial', 'local'] as const)).map((p) => {
             const Icon = protocolIcons[p]
@@ -1186,15 +1190,17 @@ export function ConnectDialog({
 
         {error && <p className="text-xs text-red-400">{error}</p>}
 
-        <label className="flex cursor-pointer items-center gap-2 text-xs text-chrome/70">
-          <input
-            type="checkbox"
-            className="accent-sky-400"
-            checked={logSession}
-            onChange={(e) => setLogSession(e.target.checked)}
-          />
-          Log this session to a file (from connect)
-        </label>
+        {!isAndroid && (
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-chrome/70">
+            <input
+              type="checkbox"
+              className="accent-sky-400"
+              checked={logSession}
+              onChange={(e) => setLogSession(e.target.checked)}
+            />
+            Log this session to a file (from connect)
+          </label>
+        )}
 
         <button
           type="submit"

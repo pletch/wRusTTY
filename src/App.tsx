@@ -688,7 +688,8 @@ function App() {
     },
   ) {
     // Arm logging before the source so the log captures the first byte.
-    dispatchPaneRuntime({ type: 'loggingSet', paneId, logging: logSession })
+    // A session saved on a desktop can ask for this, but a phone's logs can't be reached.
+    dispatchPaneRuntime({ type: 'loggingSet', paneId, logging: !isAndroid && logSession })
     dispatchTabs({
       type: 'paneConnected',
       tabId,

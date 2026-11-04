@@ -19,7 +19,7 @@ import { profileSubtitle } from '../lib/profiles'
 import type { Workspace } from '../lib/workspaces'
 import { useDismissable } from '../hooks/useDismissable'
 import { menuAnchor } from '../lib/sessionMenu'
-import { osUnlockButtonLabel } from '../lib/platform'
+import { isAndroid, osUnlockButtonLabel } from '../lib/platform'
 import { PasswordField } from './PasswordField'
 
 const inputClass =
@@ -51,7 +51,16 @@ function saveCollapsedFolders(folders: Set<string>) {
   }
 }
 
+/** A phone is too narrow for the list beside the form, so they take turns on the whole
+ * pane, with rows sized for a finger. */
+const ROW_PADDING = isAndroid ? 'py-3' : 'py-1.5'
+const ROW_ICON = isAndroid ? 16 : 11
+const LOCK_ICON = isAndroid ? 14 : 10
+const FOLDER_ICON = isAndroid ? 14 : 10
+
 interface Props {
+  /** A phone opens on the form rather than the list, as when editing a session. */
+  startOnForm?: boolean
   /** Saved sessions shown in a sidebar alongside the connect form — picking
    * one calls onSelectSession instead of prefilling anything here directly,
    * since the parent may skip its form entirely (e.g. a stored vault
@@ -98,6 +107,7 @@ interface Props {
  * filled in alongside them, which is why this is a separate component
  * rather than more of ConnectDialog's own state. */
 export function SessionBrowser({
+  startOnForm,
   sessions,
   workspaces,
   onOpenWorkspace,
@@ -113,6 +123,10 @@ export function SessionBrowser({
   children,
 }: Props) {
   const [menu, setMenu] = useState<{ profile: SessionProfile; x: number; y: number } | null>(null)
+  const [phoneView, setPhoneView] = useState<'saved' | 'form'>(startOnForm ? 'form' : 'saved')
+  const hasSaved = Boolean(sessions && sessions.length > 0)
+  const showList = !isAndroid || phoneView === 'saved'
+  const showForm = !isAndroid || phoneView === 'form' || !hasSaved
   const [pendingUnlock, setPendingUnlock] = useState<SessionProfile | null>(null)
   const [unlockPassword, setUnlockPassword] = useState('')
   const [unlockError, setUnlockError] = useState<string | null>(null)
@@ -257,17 +271,51 @@ export function SessionBrowser({
   return (
     // See the pendingUnlock branch above for why this is overflow-auto +
     // m-auto on the card rather than items-center/justify-center here.
-    <div className="flex h-full w-full overflow-auto p-4">
+    <div className={isAndroid ? 'flex h-full w-full flex-col' : 'flex h-full w-full overflow-auto p-4'}>
+      {isAndroid && hasSaved && (
+        <div className="flex shrink-0 gap-1 border-b border-chrome/10 p-2 text-sm">
+          {(
+            [
+              ['saved', 'Saved'],
+              ['form', 'New connection'],
+            ] as const
+          ).map(([view, label]) => (
+            <button
+              key={view}
+              type="button"
+              aria-pressed={phoneView === view}
+              onClick={() => setPhoneView(view)}
+              className={`flex-1 rounded-md py-2 transition-colors duration-100 ${
+                phoneView === view ? 'bg-chrome/10 text-chrome' : 'text-chrome/50'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {/* shrink-0: the card's `overflow-hidden` zeroes its flex min-width, so
           without it a narrow pane would shrink and clip the card rather than
           let the parent scroll. The height is capped by the pane (minus the
           wrapper's p-4), so it scrolls only when it must. */}
-      <div className="animate-in fade-in zoom-in-95 m-auto flex max-h-[calc(100%-2rem)] shrink-0 overflow-hidden rounded-xl border border-chrome/10 bg-chrome/[0.04] shadow-2xl duration-150">
-        {sessions && sessions.length > 0 && (
+      <div
+        className={
+          isAndroid
+            ? 'flex min-h-0 flex-1 flex-col'
+            : 'animate-in fade-in zoom-in-95 m-auto flex max-h-[calc(100%-2rem)] shrink-0 overflow-hidden rounded-xl border border-chrome/10 bg-chrome/[0.04] shadow-2xl duration-150'
+        }
+      >
+        {sessions && sessions.length > 0 && showList && (
           // Fixed width, scrolling independently, so any number of sessions never
           // pushes the connect form out of view. Stretches full height, so opening
           // folders fills the column rather than resizing it.
-          <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2 text-xs">
+          <div
+            className={
+              isAndroid
+                ? 'min-h-0 flex-1 overflow-y-auto py-2 text-sm'
+                : 'w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2 text-xs'
+            }
+          >
             {/* Above the session folders, because a workspace is the larger
                 unit — "open all of this" rather than "open one of these" —
                 and because arriving at a blank tab and having to leave the
@@ -279,10 +327,10 @@ export function SessionBrowser({
                   <div
                     key={w.id}
                     onClick={() => onOpenWorkspace(w)}
-                    className="mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06]"
+                    className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 ${ROW_PADDING} text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06]`}
                     title={`Open ${w.name}`}
                   >
-                    <LayoutGrid size={11} className="mt-0.5 shrink-0 text-sky-400/40" />
+                    <LayoutGrid size={ROW_ICON} className="mt-0.5 shrink-0 text-sky-400/40" />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-chrome/90">{w.name}</div>
                       <div className="truncate text-chrome/40">
@@ -300,17 +348,20 @@ export function SessionBrowser({
                   <button
                     type="button"
                     onClick={() => toggleFolder(folderName)}
-                    className="flex w-full items-center gap-1 px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-chrome/60 transition-colors duration-100 hover:text-chrome/90"
+                    className={`flex w-full items-center gap-1 px-2 uppercase tracking-wide text-chrome/60 transition-colors duration-100 hover:text-chrome/90 ${
+                      isAndroid ? 'py-2.5 text-xs' : 'pb-1 pt-1.5 text-[10px]'
+                    }`}
                   >
-                    {collapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
-                    <Folder size={10} />
+                    {collapsed ? <ChevronRight size={FOLDER_ICON} /> : <ChevronDown size={FOLDER_ICON} />}
+                    <Folder size={FOLDER_ICON} />
                     {folderName}
                   </button>
                   {!collapsed &&
                     items.map((s) => (
                       <div
                         key={s.id}
-                        draggable
+                        // Long press is for the menu on a phone.
+                        draggable={!isAndroid}
                         onDragStart={() => setDraggedId(s.id)}
                         onDragEnd={() => {
                           setDraggedId(null)
@@ -336,7 +387,7 @@ export function SessionBrowser({
                           e.preventDefault()
                           setMenu({ profile: s, ...menuPosition(e) })
                         }}
-                        className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 py-1.5 text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06] ${
+                        className={`mx-1 flex cursor-pointer items-start gap-1.5 rounded px-2 ${ROW_PADDING} text-chrome/70 transition-colors duration-100 hover:bg-chrome/[0.06] ${
                           draggedId === s.id ? 'opacity-40' : ''
                         } ${dropTargetId === s.id && draggedId !== s.id ? 'bg-sky-400/10' : ''}`}
                         title={`${s.username}@${s.host}:${s.port}`}
@@ -345,15 +396,15 @@ export function SessionBrowser({
                             user's organization, and the same device reachable both ways
                             belongs together. */}
                         {s.protocol === 'telnet' ? (
-                          <Network size={11} className="mt-0.5 shrink-0 text-amber-400/40" />
+                          <Network size={ROW_ICON} className="mt-0.5 shrink-0 text-amber-400/40" />
                         ) : (
-                          <Server size={11} className="mt-0.5 shrink-0 text-chrome/30" />
+                          <Server size={ROW_ICON} className="mt-0.5 shrink-0 text-chrome/30" />
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-chrome/90">{s.label}</div>
                           <div className="truncate text-chrome/40">{profileSubtitle(s)}</div>
                         </div>
-                        {s.hasCredential && <Lock size={10} className="mt-0.5 shrink-0 text-chrome/25" />}
+                        {s.hasCredential && <Lock size={LOCK_ICON} className="mt-0.5 shrink-0 text-chrome/25" />}
                       </div>
                     ))}
                 </div>
@@ -363,7 +414,13 @@ export function SessionBrowser({
         )}
         {/* Importing lives only in Settings > Import (see
             `lib/sessionImport.ts`). */}
-        <div className="flex min-w-0 flex-col">{children}</div>
+        {/* Hidden rather than removed on a phone, so what's typed survives a look at the
+            saved list. */}
+        <div
+          className={`${isAndroid ? 'min-h-0 flex-1' : ''} ${showForm ? 'flex' : 'hidden'} min-w-0 flex-col`}
+        >
+          {children}
+        </div>
       </div>
 
       {/* Swallows the click that dismisses the menu, so dismissing never also

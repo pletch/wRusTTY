@@ -11,6 +11,16 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- On Android, the connection screen takes the whole pane, with Saved and New connection as
+  separate tabs and rows large enough to tap. It was the desktop's side-by-side layout.
+
+### Fixed
+
+- On Android, the connect form no longer offers session logging, and a session saved on a
+  desktop with logging on no longer starts a log nothing can reach.
+
 ### Added
 
 - On Android, the back gesture closes the topmost menu, panel or dialog, then a text
