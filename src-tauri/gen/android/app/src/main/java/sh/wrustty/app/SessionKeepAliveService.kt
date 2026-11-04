@@ -57,8 +57,16 @@ class SessionKeepAliveService : Service() {
 
   private fun notification(count: Int): Notification {
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    // Low importance counts as silent, and phones can hide a silent notification's icon
+    // from the status bar. This makes the same no noise, with the icon showing. A channel's
+    // importance can't be raised, so it's a new one.
+    manager.deleteNotificationChannel(OLD_CHANNEL_ID)
     manager.createNotificationChannel(
-      NotificationChannel(CHANNEL_ID, "Active sessions", NotificationManager.IMPORTANCE_LOW),
+      NotificationChannel(CHANNEL_ID, "Active sessions", NotificationManager.IMPORTANCE_DEFAULT).apply {
+        setSound(null, null)
+        enableVibration(false)
+        setShowBadge(false)
+      },
     )
     val open = PendingIntent.getActivity(
       this,
@@ -80,7 +88,8 @@ class SessionKeepAliveService : Service() {
 
   companion object {
     const val EXTRA_COUNT = "count"
-    private const val CHANNEL_ID = "sessions"
+    private const val OLD_CHANNEL_ID = "sessions"
+    private const val CHANNEL_ID = "sessions-visible"
     private const val NOTIFICATION_ID = 1
   }
 }

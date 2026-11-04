@@ -30,6 +30,7 @@ import { isDisconnect, parseReconnecting, shouldAutoClosePane } from '../lib/con
 import type { AuthPromptField, ConnectionSource, ConnEvent, Reconnecting } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import { heldOffset, keyboardOpen } from '../lib/keyboardHold'
+import { lineForThumb } from '../lib/scrollbarThumb'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
 import { proxyConfigFrom } from '../lib/settings'
@@ -805,7 +806,7 @@ export function Terminal({
     container.style.position = 'relative'
     container.style.zIndex = '0'
     const scrollbarEl = document.createElement('div')
-    scrollbarEl.className = 'term-scrollbar'
+    scrollbarEl.className = isAndroid ? 'term-scrollbar term-scrollbar-touch' : 'term-scrollbar'
     // Fixed-width controls anchored right inside the wider masking box.
     const innerEl = document.createElement('div')
     innerEl.className = 'term-scrollbar-inner'
@@ -894,7 +895,7 @@ export function Terminal({
       applyScrollbarVisibility()
       if (!hasOverflow) return
       const trackHeight = track.clientHeight
-      const thumbHeight = Math.max(20, (rows / total) * trackHeight)
+      const thumbHeight = Math.max(isAndroid ? 44 : 20, (rows / total) * trackHeight)
       const maxScroll = total - rows
       const maxThumbTop = trackHeight - thumbHeight
       const thumbTop = maxScroll > 0 ? (term.viewportY / maxScroll) * maxThumbTop : 0
@@ -960,9 +961,8 @@ export function Terminal({
       const maxThumbTop = trackHeight - thumbHeight
       const maxScroll = term.scrollbackLength - term.rows
       dragMoveHandler = (moveEv: MouseEvent) => {
-        const newTop = Math.min(Math.max(0, startTop + (moveEv.clientY - startY)), maxThumbTop)
-        const ratio = maxThumbTop > 0 ? newTop / maxThumbTop : 0
-        term.scrollToLine(Math.round(ratio * maxScroll))
+        const newTop = startTop + (moveEv.clientY - startY)
+        term.scrollToLine(lineForThumb(newTop, maxThumbTop, maxScroll))
       }
       dragUpHandler = () => {
         if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
@@ -974,6 +974,39 @@ export function Terminal({
       window.addEventListener('mouseup', dragUpHandler)
     }
     thumb.addEventListener('mousedown', onThumbMouseDown)
+
+    // A finger, which the mouse path above never sees once it starts to drag. Captured,
+    // so it can stray off the narrow thumb, and canceled, so it doesn't open the keyboard.
+    let touchDrag: { startY: number; startTop: number; maxThumbTop: number; maxScroll: number } | null =
+      null
+    const onThumbPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return
+      e.preventDefault()
+      e.stopPropagation()
+      thumb.setPointerCapture(e.pointerId)
+      thumb.classList.add('dragging')
+      touchDrag = {
+        startY: e.clientY,
+        startTop: thumb.offsetTop,
+        maxThumbTop: track.clientHeight - thumb.clientHeight,
+        maxScroll: term.scrollbackLength - term.rows,
+      }
+    }
+    const onThumbPointerMove = (e: PointerEvent) => {
+      if (!touchDrag) return
+      const top = touchDrag.startTop + (e.clientY - touchDrag.startY)
+      term.scrollToLine(lineForThumb(top, touchDrag.maxThumbTop, touchDrag.maxScroll))
+    }
+    const onThumbPointerEnd = () => {
+      touchDrag = null
+      thumb.classList.remove('dragging')
+    }
+    if (isAndroid) {
+      thumb.addEventListener('pointerdown', onThumbPointerDown)
+      thumb.addEventListener('pointermove', onThumbPointerMove)
+      thumb.addEventListener('pointerup', onThumbPointerEnd)
+      thumb.addEventListener('pointercancel', onThumbPointerEnd)
+    }
 
     const scrollListener = term.onScroll(() => {
       updateThumb()
@@ -1878,6 +1911,10 @@ export function Terminal({
       downBtn.removeEventListener('mousedown', onDownMouseDown)
       track.removeEventListener('mousedown', onTrackMouseDown)
       thumb.removeEventListener('mousedown', onThumbMouseDown)
+      thumb.removeEventListener('pointerdown', onThumbPointerDown)
+      thumb.removeEventListener('pointermove', onThumbPointerMove)
+      thumb.removeEventListener('pointerup', onThumbPointerEnd)
+      thumb.removeEventListener('pointercancel', onThumbPointerEnd)
       if (dragMoveHandler) window.removeEventListener('mousemove', dragMoveHandler)
       if (dragUpHandler) window.removeEventListener('mouseup', dragUpHandler)
       scrollbarEl.remove()

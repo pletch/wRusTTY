@@ -32,6 +32,10 @@ release job publishes it as the GitHub release notes.
 
 - On Android, the back gesture closes the topmost menu, panel or dialog, then a text
   selection, and only then leaves the app, with your sessions still running.
+- On Android, an icon shows in the status bar while a session is open. The notification was
+  in the Silent group, where phones can hide it. It still makes no sound.
+- On Android, the terminal's scrollbar can be dragged with a finger, to jump through long
+  scrollback.
 - On Android, pinching the terminal zooms it for now. A two-finger double-tap, or restarting
   the app, returns to the font size in Settings, which a pinch doesn't change.
 - The Android key row has more: a double-tap locks Ctrl or Alt on until tapped again, and

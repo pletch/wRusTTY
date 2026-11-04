@@ -136,6 +136,23 @@ body {
   background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.4);
   cursor: pointer;
 }
+/* A finger needs more than the thumb's width to aim at, so its target reaches left over
+   the last couple of columns, and only where the thumb is. */
+.term-scrollbar-touch .term-scrollbar-thumb {
+  touch-action: none;
+}
+.term-scrollbar-touch .term-scrollbar-thumb::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  bottom: -8px;
+  left: -26px;
+  right: 0;
+}
+.term-scrollbar-touch .term-scrollbar-thumb.dragging {
+  left: -6px;
+  background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.7);
+}
 .term-scrollbar-thumb:hover {
   background-color: rgba(var(--term-scrollbar-fg, 255, 255, 255), 0.5);
 }
