@@ -191,6 +191,8 @@ function App() {
   // Not before checking for sessions a previous webview left running: at zero, the
   // service holding them up would stop.
   const [keptChecked, setKeptChecked] = useState(!isAndroid)
+  // Android: a font size from pinching, until a two-finger double-tap or a restart.
+  const [pinchFontSize, setPinchFontSize] = useState<number | null>(null)
   const [compactHeight, setCompactHeight] = useState(() => isCompactHeight(window.innerHeight))
   useEffect(() => {
     if (!isAndroid) return
@@ -430,6 +432,10 @@ function App() {
       void handling.then((listener) => listener?.unregister())
     }
   }, [])
+  // Choosing a size in Settings should show it, whatever a pinch left behind.
+  useEffect(() => {
+    setPinchFontSize(null)
+  }, [terminalSettings.fontSize])
   useEffect(() => {
     if (isAndroid) syncVaultAutoLock(terminalSettings.vaultAutoLockMinutes)
   }, [terminalSettings.vaultAutoLockMinutes])
@@ -1183,6 +1189,9 @@ function App() {
     backgroundLayers.terminal === terminalSettings.backgroundOpacity && !backgroundOverride
       ? terminalSettings
       : { ...appearance, backgroundOpacity: backgroundLayers.terminal, backgroundOverride }
+  // Over the setting, which stays as it was, so a pinch is only for now.
+  const pinchedSettings =
+    pinchFontSize === null ? paneSettings : { ...paneSettings, fontSize: pinchFontSize }
   const backgroundTheme = backgroundOverride
     ? { ...configuredTheme, background: backgroundOverride }
     : configuredTheme
@@ -1477,10 +1486,11 @@ function App() {
                     leaf.initial?.id ? (sessions.find((p) => p.id === leaf.initial?.id) ?? null) : null
                   }
                   label={leafTitle(leaf, sourceLabel(leaf.source))}
-                  settings={paneSettings}
+                  settings={pinchedSettings}
                   backspaceSendsCtrlH={leaf.backspaceSendsCtrlH}
                   autoReconnect={leaf.autoReconnect}
                   logging={loggingByPane[leaf.id] ?? false}
+                  onPinchFontSize={setPinchFontSize}
                   autoLog={
                     !isAndroid && (terminalSettings.autoLogSessions || profileLogsSession(leaf.source))
                   }

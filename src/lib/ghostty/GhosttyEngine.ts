@@ -29,7 +29,12 @@ import { OscStream, parseOsc } from './oscStream'
 import type * as mainAbi from './main/abi'
 import * as phases from '../writePhases'
 import { findTheme, hexToRgb, type TerminalTheme } from '../theme'
-import { cursorStyleSequence, type CursorStyleSetting, type TextBlending } from '../settings'
+import {
+  FONT_SIZE_RANGE,
+  cursorStyleSequence,
+  type CursorStyleSetting,
+  type TextBlending,
+} from '../settings'
 import { headFamily, plainSelection, type FontSelection } from '../fontStack'
 import { bundledSettled } from '../bundledFonts'
 import {
@@ -54,6 +59,7 @@ import {
   MODE_ALTERNATE_SCROLL,
 } from './wasmBindings'
 import { isAndroid } from '../platform'
+import { TouchPinch } from './TouchPinch'
 import { TouchScroller } from './TouchScroller'
 import { TouchSelection } from './TouchSelection'
 import { GhosttyInputHandler } from './GhosttyInputHandler'
@@ -318,6 +324,8 @@ export class GhosttyEngine implements TerminalEngine {
   /** Wheel travel short of a whole line, carried to the next event. */
   private wheelRemainder = 0
   private touchScroller: TouchScroller | null = null
+  private touchPinch: TouchPinch | null = null
+  private onPinchFontSizeHandlers = new Set<(size: number | null) => void>()
   private touchSelection: TouchSelection | null = null
   private readonly tracksSnapshots: boolean
   private readonly restoreFrom: Promise<Uint8Array | null> | null
@@ -1261,6 +1269,19 @@ export class GhosttyEngine implements TerminalEngine {
     if (isAndroid) {
       // The gesture is ours; the browser has nothing to pan here anyway.
       this.canvas.style.touchAction = 'none'
+      this.touchPinch = new TouchPinch(
+        this.canvas,
+        {
+          fontSize: () => this.fontSize,
+          setFontSize: (size) => {
+            for (const h of this.onPinchFontSizeHandlers) h(size)
+          },
+          resetFontSize: () => {
+            for (const h of this.onPinchFontSizeHandlers) h(null)
+          },
+        },
+        FONT_SIZE_RANGE,
+      )
       this.touchScroller = new TouchScroller(this.canvas, {
         rowHeight: () => this.renderer?.getCellSize().height ?? 0,
         scroll: (rows, x, y) => this.touchScroll(rows, x, y),
@@ -1415,6 +1436,9 @@ export class GhosttyEngine implements TerminalEngine {
     this.selection.dispose()
     this.touchScroller?.dispose()
     this.touchScroller = null
+    this.touchPinch?.dispose()
+    this.touchPinch = null
+    this.onPinchFontSizeHandlers.clear()
     this.touchSelection?.dispose()
     this.touchSelection = null
     if (this.cursorBlinkTimer !== null) {
@@ -2204,6 +2228,11 @@ export class GhosttyEngine implements TerminalEngine {
   snapshot(onChunk: (chunk: Uint8Array) => boolean): number {
     if (!this.coreReady) return -1
     return this.wasm!.exports.ghostty_terminal_snapshot?.(this.termPtr, onChunk) ?? -1
+  }
+
+  onPinchFontSize(cb: (size: number | null) => void): IDisposable {
+    this.onPinchFontSizeHandlers.add(cb)
+    return { dispose: () => this.onPinchFontSizeHandlers.delete(cb) }
   }
 
   onPasteRequest(cb: () => void): IDisposable {

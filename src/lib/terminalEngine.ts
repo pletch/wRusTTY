@@ -178,6 +178,8 @@ export interface TerminalEngine {
   readonly isRestored?: boolean
   /** Streams a snapshot. Nonzero means there isn't one. */
   snapshot?(onChunk: (chunk: Uint8Array) => boolean): number
+  /** Two fingers asked for a font size, or null for the usual one. The host applies it. */
+  onPinchFontSize?(cb: (size: number | null) => void): IDisposable
   /** The touch selection's Paste, which goes through the host's paste guard. */
   onPasteRequest?(cb: () => void): IDisposable
   onCopyRequest?(cb: (text: string) => void): IDisposable

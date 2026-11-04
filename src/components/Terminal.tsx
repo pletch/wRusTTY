@@ -128,6 +128,8 @@ interface Props {
    * pane with a new nonce. */
   searchRequest?: { nonce: number; paneId: string } | null
   onStatus?: (status: string) => void
+  /** A pinch asked for this font size, or null for the usual one. */
+  onPinchFontSize?: (size: number | null) => void
   onSessionId?: (id: string | null) => void
   /** The fitted grid in cells, reported only when it changes. */
   onDimensions?: (cols: number, rows: number) => void
@@ -202,6 +204,7 @@ export function Terminal({
   searchRequest,
   attachTo,
   onStatus,
+  onPinchFontSize,
   onSessionId,
   onDimensions,
   onScrollbackBudget,
@@ -385,6 +388,8 @@ export function Terminal({
   // dependencies would reconnect the session on every status update.
   const onStatusRef = useRef(onStatus)
   onStatusRef.current = onStatus
+  const onPinchFontSizeRef = useRef(onPinchFontSize)
+  onPinchFontSizeRef.current = onPinchFontSize
 
   const onSessionIdRef = useRef(onSessionId)
   onSessionIdRef.current = onSessionId
@@ -1661,6 +1666,7 @@ export function Terminal({
       pasteFromClipboard()
     }
     container.addEventListener('contextmenu', onContextMenu)
+    const pinchListener = term.onPinchFontSize?.((size) => onPinchFontSizeRef.current?.(size))
     const pasteRequestListener = term.onPasteRequest?.(pasteFromClipboard)
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1799,6 +1805,7 @@ export function Terminal({
       resizeObserver.disconnect()
       canvasObserver.disconnect()
       container.removeEventListener('contextmenu', onContextMenu)
+      pinchListener?.dispose()
       pasteRequestListener?.dispose()
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()
