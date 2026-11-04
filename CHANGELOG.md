@@ -11,6 +11,15 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- On Android, dragging a selection scrolls the terminal when a finger nears the edge of what's
+  showing. It had to get past the terminal's edge, which there was little or no room for in
+  landscape or with the keyboard open.
+- On Android, tabs size to their titles and the strip scrolls, rather than every tab
+  shrinking until no title can be read. Only the active tab shows its close button, the
+  active tab scrolls into view, and a fade and arrow mark any side with more tabs.
+
 ## [0.6.0] - 2026-11-04
 
 ### Changed

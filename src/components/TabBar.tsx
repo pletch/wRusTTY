@@ -11,6 +11,8 @@ import {
   CircleDashed,
   Laptop,
   ShieldCheck,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { glyphForShell, glyphForShellId } from './shellIconFor'
 import { LocalShellIcon } from './LocalShellIcon'
@@ -19,6 +21,8 @@ import type { AppProgress } from '../lib/appProgress'
 import type { CommandActivity } from '../lib/shellIntegration'
 import { allLeaves, verticalRows } from '../lib/paneTree'
 import { DRAG_TAB_MIME, DRAG_PANE_MIME } from '../lib/dragTypes'
+import { isAndroid } from '../lib/platform'
+import { stripEdges, stripMask, type StripEdges } from '../lib/tabStripEdges'
 import { titleBadge } from '../lib/titleBadge'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -231,6 +235,14 @@ export function TabBar({
   const [paneDragOver, setPaneDragOver] = useState(false)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
   const [overflowing, setOverflowing] = useState(false)
+  // Android: which sides have more tabs, since a phone has no wheel or hover to find out.
+  const [edges, setEdges] = useState<StripEdges>({ left: false, right: false })
+  const updateEdges = () => {
+    const el = tabsContainerRef.current
+    if (!el) return
+    const next = stripEdges(el.scrollLeft, el.clientWidth, el.scrollWidth)
+    setEdges((now) => (now.left === next.left && now.right === next.right ? now : next))
+  }
 
   useEffect(() => {
     if (!menu) return
@@ -245,12 +257,26 @@ export function TabBar({
     const el = tabsContainerRef.current
     if (!el) return
     // >1: independent rounding can report a 1px overflow that isn't real.
-    const checkOverflow = () => setOverflowing(el.scrollWidth - el.clientWidth > 1)
+    const checkOverflow = () => {
+      setOverflowing(el.scrollWidth - el.clientWidth > 1)
+      updateEdges()
+    }
     checkOverflow()
     const observer = new ResizeObserver(checkOverflow)
     observer.observe(el)
     return () => observer.disconnect()
   }, [tabs])
+
+  // Android: the strip scrolls rather than shrinking its tabs, so the one in use could
+  // otherwise be off screen.
+  useEffect(() => {
+    if (!isAndroid || !activeTabId) return
+    tabsContainerRef.current
+      ?.querySelector(`[data-tab-id="${CSS.escape(activeTabId)}"]`)
+      ?.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' })
+  }, [activeTabId, tabs.length])
+
+  const androidMask = isAndroid ? stripMask(edges) : null
 
   // Tab contents sit below the pane map. One clearance for the tallest map
   // on screen keeps every tab's title on the same baseline.
@@ -298,15 +324,21 @@ export function TabBar({
       </div>
       {/* The fade mask keeps a partially scrolled tab from ending in a hard
        * clip (e.g. through its close button). Only while overflowing. */}
+      <div className="relative flex min-w-0 shrink items-stretch">
       <div
         ref={tabsContainerRef}
+        onScroll={isAndroid ? updateEdges : undefined}
         // The native scrollbar is hidden (the fade is the affordance; wheel
         // scrolling still works). `px-2` leaves room for the first and last
         // tabs' fillets: otherwise the last one counts as overflow and the first
         // is clipped square.
         className="tab-strip-scroll flex min-w-0 shrink items-stretch overflow-x-auto px-2"
         style={
-          overflowing
+          isAndroid
+            ? androidMask
+              ? { WebkitMaskImage: androidMask, maskImage: androidMask }
+              : undefined
+            : overflowing
             ? {
                 WebkitMaskImage:
                   'linear-gradient(to right, black calc(100% - 24px), transparent 100%)',
@@ -439,7 +471,12 @@ export function TabBar({
               // top of the pane (as in Chrome and Edge). Quiet tabs take the strip's
               // tone. A hovered tab gets the shape and a fill partway toward the active
               // one. `mt-1` keeps every tab clear of the window's top edge.
-              className={`group relative mt-1 flex min-w-[130px] max-w-[200px] cursor-pointer items-center gap-2 px-3 text-xs transition-colors duration-150 ${
+              data-tab-id={tab.id}
+              // A phone sizes each tab to its title and scrolls, rather than shrinking
+              // every tab until no title can be read.
+              className={`group relative mt-1 flex ${
+                isAndroid ? 'min-w-[72px] shrink-0' : 'min-w-[130px]'
+              } max-w-[200px] cursor-pointer items-center gap-2 px-3 text-xs transition-colors duration-150 ${
                 active
                   ? 'z-10 rounded-t-lg text-chrome'
                   : 'text-chrome/45 hover:rounded-t-lg hover:text-chrome/80'
@@ -536,6 +573,8 @@ export function TabBar({
                * Edge and Windows Terminal): `:hover` isn't re-evaluated until the
                * pointer moves, so after closing a dialog an invisible ✕ is hard to
                * hit. */}
+              {/* A phone has no hover, so an invisible one would only cost title room. */}
+              {(!isAndroid || active) && (
               <button
                 aria-label={`Close ${tab.title}`}
                 data-tab-close
@@ -549,9 +588,27 @@ export function TabBar({
               >
                 <X size={13} strokeWidth={2} />
               </button>
+              )}
             </div>
           )
         })}
+      </div>
+      {isAndroid && edges.left && (
+        <ChevronLeft
+          aria-hidden
+          size={14}
+          data-testid="more-tabs-left"
+          className="pointer-events-none absolute left-0 top-1/2 z-20 -translate-y-1/2 text-chrome/70"
+        />
+      )}
+      {isAndroid && edges.right && (
+        <ChevronRight
+          aria-hidden
+          size={14}
+          data-testid="more-tabs-right"
+          className="pointer-events-none absolute right-0 top-1/2 z-20 -translate-y-1/2 text-chrome/70"
+        />
+      )}
       </div>
       <button
         onClick={onNew}

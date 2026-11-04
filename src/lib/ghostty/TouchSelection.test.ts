@@ -1,11 +1,29 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { Selection } from './SelectionController'
+import { dragOvershoot, type Selection } from './SelectionController'
 import { TouchScroller } from './TouchScroller'
 import { TouchSelection } from './TouchSelection'
 
 const CELL = { width: 10, height: 20 }
+
+describe('dragOvershoot', () => {
+  const BOUNDS = { top: 100, bottom: 500 }
+
+  it('is nothing within the bounds, including right at them', () => {
+    expect(dragOvershoot(300, BOUNDS)).toBe(0)
+    expect(dragOvershoot(100, BOUNDS)).toBe(0)
+    expect(dragOvershoot(500, BOUNDS)).toBe(0)
+  })
+
+  it('is negative above, which scrolls back into history', () => {
+    expect(dragOvershoot(60, BOUNDS)).toBe(-40)
+  })
+
+  it('is positive below', () => {
+    expect(dragOvershoot(530, BOUNDS)).toBe(30)
+  })
+})
 
 describe('TouchSelection', () => {
   let container: HTMLElement

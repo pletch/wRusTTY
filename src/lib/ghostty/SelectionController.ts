@@ -22,6 +22,13 @@ export interface Selection {
   rectangular?: boolean
 }
 
+/** How far a drag is past its bounds: negative above, positive below, 0 within. */
+export function dragOvershoot(y: number, bounds: { top: number; bottom: number }): number {
+  if (y < bounds.top) return y - bounds.top
+  if (y > bounds.bottom) return y - bounds.bottom
+  return 0
+}
+
 /** What the controller needs from the engine. */
 export interface SelectionHost {
   /** Absolute rows `from..to` inclusive. */
@@ -33,6 +40,9 @@ export interface SelectionHost {
   /** The canvas, for hit-testing a drag; `null` before mount and after
    *  dispose. */
   canvas(): HTMLCanvasElement | null
+  /** Where a drag starts to scroll, if not the canvas's edges. A finger may have nowhere
+   *  to go past them, and with the keyboard open the bottom edge is behind it. */
+  dragScrollBounds?(): { top: number; bottom: number } | null
   /** Whether there is anywhere to put a selection yet. */
   hasRenderer(): boolean
   /** Sets the selection to draw (or `null`) and marks the view dirty. */
@@ -200,10 +210,10 @@ export class SelectionController {
   private updateDragScroll(e: MouseEvent): void {
     const canvas = this.host.canvas()
     if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    const above = rect.top - e.clientY
-    const below = e.clientY - rect.bottom
-    const out = above > 0 ? -above : below > 0 ? below : 0
+    const out = dragOvershoot(
+      e.clientY,
+      this.host.dragScrollBounds?.() ?? canvas.getBoundingClientRect(),
+    )
     if (out === 0) {
       this.stopDragScroll()
       return

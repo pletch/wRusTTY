@@ -165,6 +165,9 @@ const BLEND_MODES: Record<TextBlending, number> = {
   'linear-corrected': BLEND_LINEAR_CORRECTED,
 }
 
+/** How near the edge of what's showing a finger has to get to scroll its selection. */
+const TOUCH_DRAG_SCROLL_EDGE_PX = 32
+
 export class GhosttyEngine implements TerminalEngine {
   private container: HTMLElement | null = null
   private canvas: HTMLCanvasElement | null = null
@@ -373,6 +376,7 @@ export class GhosttyEngine implements TerminalEngine {
       readWrapFlags: (from, to) => this.readWrapFlags(from, to),
       coords: (e) => this.getCoords(e),
       canvas: () => this.canvas,
+      dragScrollBounds: () => this.touchDragScrollBounds(),
       hasRenderer: () => !!this.renderer,
       setSelection: (sel) => {
         if (this.renderer) this.renderer.selection = sel
@@ -1901,6 +1905,19 @@ export class GhosttyEngine implements TerminalEngine {
   }
 
   /** The drag of a handle, or of the finger still down after a long press. */
+  /** A phone scrolls a drag once a finger nears the edge of what's showing. Measured from
+   * the pane, which clips the grid, so it holds whichever way up the phone is and with the
+   * keyboard open. */
+  private touchDragScrollBounds(): { top: number; bottom: number } | null {
+    const pane = this.container?.parentElement
+    if (!isAndroid || !pane) return null
+    const rect = pane.getBoundingClientRect()
+    return {
+      top: rect.top + TOUCH_DRAG_SCROLL_EDGE_PX,
+      bottom: Math.min(rect.bottom, window.innerHeight) - TOUCH_DRAG_SCROLL_EDGE_PX,
+    }
+  }
+
   private touchDragSelection(x: number, y: number): void {
     if (this.touchPressStart) {
       this.selection.resumeFrom(this.touchPressStart)
