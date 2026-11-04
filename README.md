@@ -201,7 +201,7 @@ and open it on the phone, allowing installs from that app when asked. It isn't o
 Google Play.
 
 - SSH, SFTP and Telnet, with a key row for what a phone keyboard lacks, touch scrolling
-  and selection
+  and selection, a draggable scrollbar, and pinch to zoom
 - The vault, with biometric unlock. It locks itself 5 minutes after you leave the app,
   which you can change. A desktop backup can be restored on the phone, and session types
   the phone can't open are kept but not listed

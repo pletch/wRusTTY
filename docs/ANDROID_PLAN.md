@@ -388,9 +388,9 @@ rejected `invoke`s for these until M1 and M3 deal with them.
   controls. The split buttons are hidden, toolbar buttons are finger-sized through
   `.touch-toolbar` in `index.css`, and its menus anchor to the toolbar so they stay on
   screen. A menu of rarely used actions wouldn't win back height while the tabs have
-  their own row, so all seven buttons stay out. Not done: dialogs (`ConnectDialog`,
-  `SettingsDialog`, `SessionBrowser`) going full screen, and anything that depends on
-  hover, including the pane controls in `Pane.tsx`.
+  their own row, so the buttons stay out. The connection screen and Settings take the whole
+  screen, one view at a time. The back gesture closes what's open before leaving the app
+  (`lib/backGesture.ts`).
 - **Keybindings.** Keep them for hardware keyboards and hide the editor.
 - **Performance.** Run the harness in `src/bench` on a mid-range phone.
   `CONTEXT_BUDGET = 8` (`ContextManager.ts:14`) and glyph atlas memory are the
