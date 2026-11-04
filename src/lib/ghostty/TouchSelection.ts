@@ -30,6 +30,21 @@ export interface TouchSelectionHost {
   clear(): void
 }
 
+const live = new Set<TouchSelection>()
+
+/** Clears whichever selection or Paste bar is showing, for the back gesture. False if
+ * none is. */
+export function dismissShownTouchSelection(): boolean {
+  let dismissed = false
+  for (const selection of live) {
+    if (selection.showing()) {
+      selection.dismiss()
+      dismissed = true
+    }
+  }
+  return dismissed
+}
+
 export class TouchSelection {
   private readonly host: TouchSelectionHost
   private readonly container: HTMLElement
@@ -42,6 +57,7 @@ export class TouchSelection {
   private dragging = false
 
   constructor(container: HTMLElement, host: TouchSelectionHost) {
+    live.add(this)
     this.container = container
     this.host = host
     this.startHandle = this.makeHandle('start')
@@ -75,6 +91,7 @@ export class TouchSelection {
   }
 
   dispose(): void {
+    live.delete(this)
     this.startHandle.remove()
     this.endHandle.remove()
     this.bar.remove()

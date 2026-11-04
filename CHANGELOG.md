@@ -11,6 +11,11 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- On Android, the back gesture closes the topmost menu, panel or dialog, then a text
+  selection, and only then leaves the app, with your sessions still running.
+
 ## [0.5.1] - 2026-11-03
 
 ### Fixed

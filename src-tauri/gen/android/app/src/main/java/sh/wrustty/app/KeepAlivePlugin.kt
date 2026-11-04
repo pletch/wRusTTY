@@ -46,6 +46,13 @@ class KeepAlivePlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
+  /** To the background rather than finished, so the sessions carry on. */
+  @Command
+  fun moveToBack(invoke: Invoke) {
+    activity.moveTaskToBack(true)
+    invoke.resolve()
+  }
+
   /**
    * Android 13 and up hides the notification without this. The service runs
    * either way, so declining costs only the visible reminder.

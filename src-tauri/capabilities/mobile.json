@@ -8,6 +8,8 @@
   ],
   "permissions": [
     "core:default",
+    "core:app:allow-register-listener",
+    "core:app:allow-remove-listener",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text",
     "dialog:allow-open",

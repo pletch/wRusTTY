@@ -30,6 +30,11 @@ export function isTopDismissable(token: DismissToken): boolean {
   return stack.length > 0 && stack[stack.length - 1] === token
 }
 
+/** Whether anything is open for Escape to reach. */
+export function hasDismissable(): boolean {
+  return stack.length > 0
+}
+
 /** Test seam: the stack is module state. */
 export function resetDismissStack(): void {
   stack.length = 0

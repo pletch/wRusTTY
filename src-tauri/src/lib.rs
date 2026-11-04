@@ -257,6 +257,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             keep_alive::keep_alive_set_sessions,
             #[cfg(target_os = "android")]
+            keep_alive::leave_app,
+            #[cfg(target_os = "android")]
             android_files::device_file_name,
             #[cfg(target_os = "android")]
             android_screen::set_secure_screen,

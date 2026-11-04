@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { createPortal } from 'react-dom'
 import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
 import { syncSecureScreen, syncVaultAutoLock } from './lib/androidSecurity'
+import { startBackHandling } from './lib/backGesture'
 import { isAndroid, isCompactHeight } from './lib/platform'
 import { tabForKept } from './lib/sessionReattach'
 import { KeyRow } from './components/KeyRow'
@@ -419,6 +420,16 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!isAndroid) return
+    const handling = startBackHandling().catch((e: unknown) => {
+      console.warn('could not take over the back gesture', e)
+      return null
+    })
+    return () => {
+      void handling.then((listener) => listener?.unregister())
+    }
+  }, [])
   useEffect(() => {
     if (isAndroid) syncVaultAutoLock(terminalSettings.vaultAutoLockMinutes)
   }, [terminalSettings.vaultAutoLockMinutes])
