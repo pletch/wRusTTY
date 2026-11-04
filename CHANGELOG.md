@@ -16,6 +16,9 @@ release job publishes it as the GitHub release notes.
 - On Android, dragging a selection scrolls the terminal when a finger nears the edge of what's
   showing. It had to get past the terminal's edge, which there was little or no room for in
   landscape or with the keyboard open.
+- On Android, Remote files and Port forwarding take the whole pane. A tap opens a folder or
+  starts a download, a file's details sit under its full name, transfers stay at the bottom,
+  and the long-press menu stays on screen.
 - On Android, tabs size to their titles and the strip scrolls, rather than every tab
   shrinking until no title can be read. Only the active tab shows its close button, the
   active tab scrolls into view, and a fade and arrow mark any side with more tabs.

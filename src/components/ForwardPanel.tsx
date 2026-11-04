@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { X, ArrowLeftRight, Square, RotateCw, AlertTriangle } from 'lucide-react'
+import { X, ArrowLeft, ArrowLeftRight, Square, RotateCw, AlertTriangle } from 'lucide-react'
 import * as forward from '../lib/forward'
 import type { ForwardInfo, ForwardSpec } from '../lib/forward'
 import { toast } from '../lib/toast'
@@ -19,6 +19,10 @@ interface Props {
 
 // No `flex-1`/`flex-none` here: Tailwind resolves conflicting utilities by
 // stylesheet order, not class order (as with ConnectDialog's inputClass).
+/** A finger needs a larger target than a pointer. */
+const FIELD_PADDING = isAndroid ? 'py-2' : ''
+const ACTION_PADDING = isAndroid ? 'rounded px-2 py-1.5 active:bg-chrome/10' : ''
+
 const inputClass =
   'min-w-0 rounded border border-chrome/10 bg-black/20 px-1.5 py-1 text-chrome/90 outline-none transition-colors duration-100 focus:border-sky-400/50'
 
@@ -157,19 +161,36 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
   return (
     <div
       data-forward-panel
-      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100"
+      // A phone gives it the whole pane, which shrinks above the keyboard.
+      className={
+        isAndroid
+          ? 'animate-in fade-in absolute inset-0 z-40 overflow-y-auto bg-surface p-3 text-sm duration-100'
+          : 'animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 w-72 rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100'
+      }
       onClick={(e) => e.stopPropagation()}
     >
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="flex items-center gap-1.5 font-medium text-chrome/90">
-          <ArrowLeftRight size={13} /> Port forwarding
-        </h2>
-        <button
-          onClick={onClose}
-          className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
-        >
-          <X size={13} />
-        </button>
+        {isAndroid ? (
+          <button
+            onClick={onClose}
+            aria-label="Close port forwarding"
+            className="-ml-2 flex items-center gap-2 rounded p-2 font-medium text-chrome/90 active:bg-chrome/10"
+          >
+            <ArrowLeft size={20} strokeWidth={2} /> Port forwarding
+          </button>
+        ) : (
+          <>
+            <h2 className="flex items-center gap-1.5 font-medium text-chrome/90">
+              <ArrowLeftRight size={13} /> Port forwarding
+            </h2>
+            <button
+              onClick={onClose}
+              className="flex items-center justify-center rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
+            >
+              <X size={13} />
+            </button>
+          </>
+        )}
       </div>
 
       {active.length > 0 && (
@@ -189,16 +210,16 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
                   {!f.active && (
                     <button
                       onClick={() => retry(f.id)}
-                      className="flex items-center gap-1 text-chrome/40 transition-colors duration-100 hover:text-sky-300"
+                      className={`flex items-center gap-1 text-chrome/40 transition-colors duration-100 hover:text-sky-300 ${ACTION_PADDING}`}
                     >
-                      <RotateCw size={10} /> retry
+                      <RotateCw size={isAndroid ? 14 : 10} /> retry
                     </button>
                   )}
                   <button
                     onClick={() => remove(f.id)}
-                    className="flex items-center gap-1 text-chrome/40 transition-colors duration-100 hover:text-red-300"
+                    className={`flex items-center gap-1 text-chrome/40 transition-colors duration-100 hover:text-red-300 ${ACTION_PADDING}`}
                   >
-                    <Square size={10} /> {f.active ? 'stop' : 'dismiss'}
+                    <Square size={isAndroid ? 14 : 10} /> {f.active ? 'stop' : 'dismiss'}
                   </button>
                 </span>
               </div>
@@ -222,7 +243,9 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
               key={t}
               type="button"
               onClick={() => setType(t)}
-              className={`flex-1 rounded py-1 uppercase transition-colors duration-100 ${
+              className={`flex-1 rounded uppercase transition-colors duration-100 ${
+                isAndroid ? 'py-2' : 'py-1'
+              } ${
                 type === t ? 'bg-chrome/15 text-chrome' : 'text-chrome/40 hover:text-chrome/70'
               }`}
             >
@@ -233,13 +256,13 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
 
         <div className="flex gap-1">
           <input
-            className={`${inputClass} flex-1`}
+            className={`${inputClass} ${FIELD_PADDING} flex-1`}
             placeholder="bind host"
             value={bindHost}
             onChange={(e) => setBindHost(e.target.value)}
           />
           <input
-            className={`${inputClass} w-16 flex-none`}
+            className={`${inputClass} ${FIELD_PADDING} ${isAndroid ? 'w-20' : 'w-16'} flex-none`}
             placeholder="port"
             value={bindPort}
             onChange={(e) => setBindPort(e.target.value)}
@@ -249,14 +272,14 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
         {type !== 'dynamic' && (
           <div className="flex gap-1">
             <input
-              className={`${inputClass} flex-1`}
+              className={`${inputClass} ${FIELD_PADDING} flex-1`}
               placeholder="target host"
               value={targetHost}
               onChange={(e) => setTargetHost(e.target.value)}
               required
             />
             <input
-              className={`${inputClass} w-16 flex-none`}
+              className={`${inputClass} ${FIELD_PADDING} ${isAndroid ? 'w-20' : 'w-16'} flex-none`}
               placeholder="port"
               value={targetPort}
               onChange={(e) => setTargetPort(e.target.value)}
@@ -268,7 +291,9 @@ export function ForwardPanel({ sessionId, status, onClose }: Props) {
 
         <button
           type="submit"
-          className="w-full rounded bg-sky-500/90 py-1.5 font-medium text-white transition-colors duration-100 hover:bg-sky-500"
+          className={`w-full rounded bg-sky-500/90 font-medium text-white transition-colors duration-100 hover:bg-sky-500 ${
+            isAndroid ? 'py-2.5' : 'py-1.5'
+          }`}
         >
           Add forward
         </button>

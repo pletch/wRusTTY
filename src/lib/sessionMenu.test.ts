@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest'
-import { menuAnchor } from './sessionMenu'
+import { keepMenuOnScreen, menuAnchor } from './sessionMenu'
+
+describe('keepMenuOnScreen', () => {
+  const SIZE = { width: 200, height: 300 }
+  const PHONE = { width: 412, height: 800 }
+
+  it('leaves a menu that fits where it was asked for', () => {
+    expect(keepMenuOnScreen({ x: 50, y: 60 }, SIZE, PHONE)).toEqual({ x: 50, y: 60 })
+  })
+
+  it('pulls one in from the right and the bottom', () => {
+    expect(keepMenuOnScreen({ x: 400, y: 790 }, SIZE, PHONE)).toEqual({ x: 204, y: 492 })
+  })
+
+  it('stays clear of what covers the bottom', () => {
+    expect(keepMenuOnScreen({ x: 50, y: 790 }, SIZE, PHONE, 64).y).toBe(428)
+  })
+
+  it('keeps the top reachable when the menu is taller than the room', () => {
+    expect(keepMenuOnScreen({ x: 50, y: 90 }, SIZE, { width: 800, height: 200 }).y).toBe(8)
+  })
+})
 
 /**
  * Where the menu opens: beside the row, never under the cursor.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Channel } from '@tauri-apps/api/core'
 import { open as openDialog, save } from '@tauri-apps/plugin-dialog'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
@@ -7,6 +7,7 @@ import {
   ClipboardCopy,
   Download,
   File,
+  ArrowLeft,
   FilePen,
   FileText,
   Folder,
@@ -27,6 +28,7 @@ import { toast } from '../lib/toast'
 import { formatBytes } from '../lib/formatBytes'
 import { formatMode, formatOctal, needsRootToEdit, parseOctal } from '../lib/fileMode'
 import { isAndroid } from '../lib/platform'
+import { keepMenuOnScreen } from '../lib/sessionMenu'
 import type { RemoteIdentity } from '../lib/fileMode'
 import {
   describeTree,
@@ -88,6 +90,8 @@ const TOOL_PADDING = isAndroid ? 'p-2' : 'p-1'
 const ROW_ICON = isAndroid ? 18 : 12
 const ROW_PADDING = isAndroid ? 'py-2.5' : 'py-1.5'
 const MENU_ICON = isAndroid ? 18 : 13
+/** The key row and status bar, which sit over the bottom of a phone's window. */
+const MENU_RESERVED_BELOW = isAndroid ? 64 : 0
 
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path
@@ -815,6 +819,35 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
     )
   }
 
+  // Registered after the panel's, so back and Escape reach these first.
+  useDismissable(menu !== null, () => setMenu(null))
+  useDismissable(isAndroid && naming !== null, () => setNaming(null))
+
+  // Placed by measuring, since which items it has depends on the row.
+  const menuRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const el = menuRef.current
+    if (!menu || !el) return
+    const { x, y } = keepMenuOnScreen(
+      menu,
+      { width: el.offsetWidth, height: el.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+      MENU_RESERVED_BELOW,
+    )
+    el.style.left = `${x}px`
+    el.style.top = `${y}px`
+  }, [menu])
+
+  // A name being typed stays above the keyboard, which arrives after the field takes focus.
+  const isNaming = naming !== null
+  useEffect(() => {
+    if (!isAndroid || !isNaming) return
+    const reveal = () => document.activeElement?.scrollIntoView?.({ block: 'nearest' })
+    reveal()
+    window.addEventListener('resize', reveal)
+    return () => window.removeEventListener('resize', reveal)
+  }, [isNaming])
+
   const menuItem =
     `flex w-full items-center gap-2 px-3 ${ROW_PADDING} text-left transition-colors duration-100 hover:bg-chrome/10 disabled:opacity-30 disabled:hover:bg-transparent`
 
@@ -839,7 +872,12 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
   return (
     <div
       data-files-panel
-      className="animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100"
+      // A phone gives it the whole pane, which shrinks above the keyboard.
+      className={
+        isAndroid
+          ? 'animate-in fade-in absolute inset-0 z-40 flex flex-col bg-surface p-3 text-sm duration-100'
+          : 'animate-in fade-in slide-in-from-top-1 absolute right-2 top-10 z-40 flex w-96 flex-col rounded-lg border border-chrome/10 bg-surface p-3 text-xs shadow-xl duration-100'
+      }
       onClick={(e) => {
         e.stopPropagation()
         // The panel stops clicks reaching window, so close the menu explicitly.
@@ -847,19 +885,31 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         setMenu(null)
       }}
     >
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="flex items-center gap-1.5 font-medium text-chrome/90">
-          <Folder size={13} /> Remote files
-        </h2>
-        <button
-          onClick={onClose}
-          className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80`}
-        >
-          <X size={TOOL_ICON} />
-        </button>
+      <div className="mb-2 flex shrink-0 items-center justify-between">
+        {isAndroid ? (
+          <button
+            onClick={onClose}
+            aria-label="Close remote files"
+            className="-ml-2 flex items-center gap-2 rounded p-2 font-medium text-chrome/90 active:bg-chrome/10"
+          >
+            <ArrowLeft size={20} strokeWidth={2} /> Remote files
+          </button>
+        ) : (
+          <>
+            <h2 className="flex items-center gap-1.5 font-medium text-chrome/90">
+              <Folder size={13} /> Remote files
+            </h2>
+            <button
+              onClick={onClose}
+              className={`flex items-center justify-center rounded ${TOOL_PADDING} text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80`}
+            >
+              <X size={TOOL_ICON} />
+            </button>
+          </>
+        )}
       </div>
 
-      <div className="mb-2 flex items-center gap-1">
+      <div className="mb-2 flex shrink-0 items-center gap-1">
         <button
           onClick={() => cwd && load(parentOf(cwd))}
           disabled={!cwd || cwd === '/'}
@@ -906,7 +956,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
 
       {error && <p className="mb-2 text-red-400">{error}</p>}
 
-      <ul className="max-h-96 space-y-0.5 overflow-y-auto">
+      <ul className={`space-y-0.5 overflow-y-auto ${isAndroid ? 'min-h-0 flex-1' : 'max-h-96'}`}>
         {loading && <li className="px-2 py-1.5 text-chrome/40">Loading…</li>}
         {!loading && entries.length === 0 && !error && !naming && (
           <li className="px-2 py-1.5 text-chrome/40">Empty directory</li>
@@ -926,14 +976,26 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
               key={entry.name}
               ref={entry.name === selected ? selectedRef : undefined}
               aria-selected={entry.name === selected || undefined}
-              onDoubleClick={() => open(entry)}
+              onDoubleClick={isAndroid ? undefined : () => open(entry)}
+              // A tap on a phone. One that only closes the menu, or lands in a field
+              // being typed in, isn't a request to open anything. A file goes to the save
+              // picker, so a stray tap can still be backed out of.
+              onClick={
+                isAndroid
+                  ? () => {
+                      if (!menu && !naming) void open(entry)
+                    }
+                  : undefined
+              }
               onContextMenu={(e) => {
                 e.preventDefault()
                 setMenu({ entry, x: e.clientX, y: e.clientY })
               }}
-              className={`flex cursor-default items-center justify-between gap-2 rounded px-2 ${ROW_PADDING} ${
-                entry.name === selected ? 'bg-sky-400/15' : 'hover:bg-chrome/5'
-              }`}
+              className={`flex cursor-default rounded px-2 ${ROW_PADDING} ${
+                isAndroid
+                  ? 'select-none flex-col items-stretch gap-0.5 active:bg-chrome/10'
+                  : 'items-center justify-between gap-2'
+              } ${entry.name === selected ? 'bg-sky-400/15' : 'hover:bg-chrome/5'}`}
             >
               <span className="flex min-w-0 flex-1 items-center gap-1.5 text-chrome/80">
                 {entry.isDir ? (
@@ -946,10 +1008,17 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                     setNaming({ kind: 'rename', original: entry.name, draft }),
                   )
                 ) : (
-                  <span className="truncate">{entry.name}</span>
+                  // All of a long name on a phone, which has room to wrap but not to spare.
+                  <span className={isAndroid ? 'min-w-0 [overflow-wrap:anywhere]' : 'truncate'}>
+                    {entry.name}
+                  </span>
                 )}
               </span>
-              <span className="flex shrink-0 items-center gap-2 text-chrome/30">
+              <span
+                className={`flex shrink-0 items-center ${
+                  isAndroid ? 'gap-3 pl-6 text-xs text-chrome/45' : 'gap-2 text-chrome/30'
+                }`}
+              >
                 {editId && (
                   // "watching", dismissable by hand: with the OS opener nothing can tell
                   // when the editor closes. With `externalEditor` set it clears itself on
@@ -1001,7 +1070,7 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                 ) : (
                   entry.mode !== null && (
                     <span
-                      className="font-mono text-chrome/25"
+                      className={`font-mono ${isAndroid ? 'text-chrome/45' : 'text-chrome/25'}`}
                       // Octal in the tooltip (what you type), letters in the column (what
                       // you scan). Owner falls back to numeric ids, since SFTP v3 carries no
                       // names.
@@ -1011,7 +1080,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                     </span>
                   )
                 )}
-                {!entry.isDir && <span className="w-16 text-right">{formatBytes(entry.size)}</span>}
+                {!entry.isDir && (
+                  <span className={isAndroid ? '' : 'w-16 text-right'}>{formatBytes(entry.size)}</span>
+                )}
               </span>
             </li>
           )
@@ -1019,7 +1090,11 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
       </ul>
 
       {transfers.length > 0 && (
-        <div className="mt-2 flex max-h-32 flex-col gap-2 overflow-y-auto border-t border-chrome/10 pt-2">
+        <div
+          className={`mt-2 flex shrink-0 flex-col gap-2 overflow-y-auto border-t border-chrome/10 pt-2 ${
+            isAndroid ? 'max-h-[40%]' : 'max-h-32'
+          }`}
+        >
           {transfers.map((t) => (
             <div key={t.key} className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
@@ -1054,7 +1129,9 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
                     } else if (t.id) void sftp.cancelTransfer(t.id).catch(() => {})
                   }}
                   title={t.failed ? 'Dismiss' : 'Cancel this transfer'}
-                  className="flex items-center justify-center rounded p-0.5 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
+                  className={`flex items-center justify-center rounded ${
+                    isAndroid ? TOOL_PADDING : 'p-0.5'
+                  } text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80`}
                 >
                   <X size={TOOL_ICON} />
                 </button>
@@ -1102,7 +1179,10 @@ export function FilesPanel({ sessionId, startDir, reveal, editorCommand, onClose
         // Fixed to the pointer, but inside the panel's subtree so its
         // click-away rule doesn't treat the menu as outside.
         <div
-          className="animate-in fade-in zoom-in-95 fixed z-50 w-40 origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-xs text-chrome/80 shadow-xl duration-100"
+          ref={menuRef}
+          className={`animate-in fade-in zoom-in-95 fixed z-50 origin-top-left rounded-md border border-chrome/10 bg-surface py-1 text-chrome/80 shadow-xl duration-100 ${
+            isAndroid ? 'w-56 text-sm' : 'w-40 text-xs'
+          }`}
           style={{ left: menu.x, top: menu.y }}
         >
           {(menu.entry.isDir || !isAndroid) && (
