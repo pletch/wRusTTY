@@ -29,6 +29,7 @@ import * as conn from '../lib/connection'
 import { isDisconnect, parseReconnecting, shouldAutoClosePane } from '../lib/connection'
 import type { AuthPromptField, ConnectionSource, ConnEvent, Reconnecting } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
+import { heldOffset, keyboardOpen } from '../lib/keyboardHold'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
 import { proxyConfigFrom } from '../lib/settings'
@@ -1732,7 +1733,45 @@ export function Terminal({
       conn.resize(source, sessionId, cols, rows).catch(() => {})
     })
 
+    // See lib/keyboardHold.ts. Holding the container's height means nothing below here
+    // sees a resize: no refit, and nothing for the far end to redraw for.
+    let unheldHeight = 0
+    let keyboardHeld = false
+    let followFrame: number | null = null
+    const followCursor = () => {
+      followFrame = requestAnimationFrame(followCursor)
+      const cell = term.cellSize?.()
+      const cursor = term.cursorCell?.()
+      const pane = container.parentElement
+      if (!cell || !cursor || !pane) return
+      const visible = pane.clientHeight - parseFloat(getComputedStyle(pane).paddingTop)
+      const offset = heldOffset(cursor.y - term.viewportY, cell.height, unheldHeight, visible)
+      container.style.transform = offset > 0 ? `translateY(${-offset}px)` : ''
+    }
+    const releaseKeyboardHold = () => {
+      keyboardHeld = false
+      if (followFrame !== null) cancelAnimationFrame(followFrame)
+      followFrame = null
+      container.style.height = ''
+      container.style.transform = ''
+      if (container.parentElement) container.parentElement.style.overflow = ''
+    }
+    const holdForKeyboard = () => {
+      if (!isAndroid || container.clientWidth === 0) return
+      if (!keyboardOpen(window.innerWidth, window.innerHeight)) {
+        if (keyboardHeld) releaseKeyboardHold()
+        if (container.clientHeight > 0) unheldHeight = container.clientHeight
+        return
+      }
+      if (keyboardHeld || unheldHeight === 0) return
+      keyboardHeld = true
+      container.style.height = `${unheldHeight}px`
+      if (container.parentElement) container.parentElement.style.overflow = 'hidden'
+      followCursor()
+    }
+
     const onResize = () => {
+      holdForKeyboard()
       // A hidden tab is 0x0; fitting to it would shrink the PTY and back on every
       // tab switch, desyncing the cursor.
       if (container.clientWidth === 0 || container.clientHeight === 0) return
@@ -1796,6 +1835,7 @@ export function Terminal({
 
     return () => {
       disposed = true
+      releaseKeyboardHold()
       ptyResize.cancel()
       // Before the engine goes, so nothing drains into a freed core.
       scheduler.dispose()

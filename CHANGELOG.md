@@ -18,6 +18,11 @@ release job publishes it as the GitHub release notes.
 
 ### Fixed
 
+- On Android, opening or closing the keyboard no longer resizes the terminal for the host.
+  Each resize made programs like Claude Code redraw over their own output, leaving
+  overlapping copies. The grid now stays as it is and slides to keep the cursor in view,
+  so a full-screen program's bottom rows can sit behind the keyboard. Rotating and pinching
+  still resize it.
 - On Android, the connect form no longer offers session logging, and a session saved on a
   desktop with logging on no longer starts a log nothing can reach.
 

@@ -381,8 +381,9 @@ rejected `invoke`s for these until M1 and M3 deal with them.
   the keyboard (`lib/softModifiers.ts`), without waiting for a composing keyboard to
   finish its word, which ends that composition by refocusing the input. Reported
   working on the test phone.
-- **Viewport.** When the keyboard opens, the grid must shrink and the cursor stay
-  visible. Debounce the PTY resize so the remote shell doesn't reflow repeatedly.
+- **Viewport.** When the keyboard opens, the grid keeps its size and slides to keep the
+  cursor visible (`lib/keyboardHold.ts`). Resizing it for the host made inline programs like
+  Claude Code redraw over their own output on every open and close.
 - **Layout.** The toolbar is the top row and the tabs the second, with no window
   controls. The split buttons are hidden, toolbar buttons are finger-sized through
   `.touch-toolbar` in `index.css`, and its menus anchor to the toolbar so they stay on
