@@ -15,6 +15,8 @@ release job publishes it as the GitHub release notes.
 
 - On Android, the connection screen takes the whole pane, with Saved and New connection as
   separate tabs and rows large enough to tap. It was the desktop's side-by-side layout.
+- On Android, Settings is full screen: a list of sections, each opening on its own, with
+  the back gesture returning to the list and then closing it.
 
 ### Fixed
 

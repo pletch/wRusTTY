@@ -1,6 +1,8 @@
 import { useEffect, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  ArrowLeft,
+  ChevronRight,
   Settings,
   FolderOpen,
   ClipboardCopy,
@@ -811,6 +813,10 @@ export function SettingsDialog({
   const confirm = useConfirm()
   const [open, setOpen] = useState(false)
   const [section, setSection] = useState<SectionId>('terminal')
+  // A phone is too narrow for the list beside a section, so it shows one, then the other.
+  const [phoneInSection, setPhoneInSection] = useState(false)
+  const showSectionList = !isAndroid || !phoneInSection
+  const showSection = !isAndroid || phoneInSection
   // null while unknown, so a button can say "checking" rather than briefly
   // claiming there is nothing to import.
   const [puttyCount, setPuttyCount] = useState<number | null>(null)
@@ -867,6 +873,8 @@ export function SettingsDialog({
   }
 
   useDismissable(open, () => setOpen(false))
+  // After the one above, so back leaves a section before it closes Settings.
+  useDismissable(open && isAndroid && phoneInSection, () => setPhoneInSection(false))
 
   // Deliberately not resetting `section` on close: reopening where you left
   // off is right far more often than not, since settings get revisited in
@@ -875,7 +883,10 @@ export function SettingsDialog({
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          setPhoneInSection(false)
+          setOpen(true)
+        }}
         className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
           open ? 'text-chrome/90' : 'text-chrome/50 hover:text-chrome/90'
         }`}
@@ -890,7 +901,10 @@ export function SettingsDialog({
         // containing block and clips the overlay to the strip's 40px).
         createPortal(
           <div
-            className="animate-in fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 duration-150"
+            // The bottom padding is the key row, which stays above every dialog.
+            className={`animate-in fade-in fixed inset-0 z-50 flex items-center justify-center duration-150 ${
+              isAndroid ? 'bg-surface pb-10' : 'bg-black/60 p-4'
+            }`}
             onClick={() => setOpen(false)}
           >
             <WindowDragStrip />
@@ -900,36 +914,80 @@ export function SettingsDialog({
               // between them would shift the category list out from under
               // the pointer. Capped against the window so a short one still
               // fits on a small screen.
-              className="animate-in zoom-in-95 relative flex h-[430px] max-h-full w-[660px] max-w-full overflow-hidden rounded-xl border border-chrome/10 bg-surface text-xs shadow-2xl duration-150"
+              className={
+                isAndroid
+                  ? 'relative flex h-full w-full flex-col overflow-hidden bg-surface text-sm'
+                  : 'animate-in zoom-in-95 relative flex h-[430px] max-h-full w-[660px] max-w-full overflow-hidden rounded-xl border border-chrome/10 bg-surface text-xs shadow-2xl duration-150'
+              }
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2">
-                {VISIBLE_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setSection(id)}
-                    className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 ${
-                      section === id
-                        ? 'bg-chrome/10 text-chrome'
-                        : 'text-chrome/50 hover:bg-chrome/5 hover:text-chrome/80'
-                    }`}
-                  >
-                    <Icon size={13} className="shrink-0" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col">
+              {isAndroid && showSectionList && (
                 <div className="flex shrink-0 items-center justify-between border-b border-chrome/10 px-4 py-2.5">
-                  <span className="font-medium text-chrome/90">
-                    {SECTIONS.find((s) => s.id === section)?.label}
-                  </span>
+                  <span className="font-medium text-chrome/90">Settings</span>
+                  <button
+                    onClick={() => setOpen(false)}
+                    className="rounded p-2 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome/80"
+                    title="Close"
+                  >
+                    <X size={20} strokeWidth={2} />
+                  </button>
+                </div>
+              )}
+              {showSectionList && (
+                <div
+                  className={
+                    isAndroid
+                      ? 'min-h-0 flex-1 overflow-y-auto py-1'
+                      : 'w-44 shrink-0 overflow-y-auto border-r border-chrome/10 bg-black/10 py-2'
+                  }
+                >
+                  {VISIBLE_SECTIONS.map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      onClick={() => {
+                        setSection(id)
+                        setPhoneInSection(true)
+                      }}
+                      className={
+                        isAndroid
+                          ? 'flex w-full items-center gap-3 px-4 py-3.5 text-left text-chrome/85 transition-colors duration-100 active:bg-chrome/10'
+                          : `flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors duration-100 ${
+                              section === id
+                                ? 'bg-chrome/10 text-chrome'
+                                : 'text-chrome/50 hover:bg-chrome/5 hover:text-chrome/80'
+                            }`
+                      }
+                    >
+                      <Icon size={isAndroid ? 18 : 13} className="shrink-0" />
+                      <span className="min-w-0 flex-1">{label}</span>
+                      {isAndroid && <ChevronRight size={16} className="shrink-0 text-chrome/30" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {showSection && (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <div className="flex shrink-0 items-center justify-between border-b border-chrome/10 px-4 py-2.5">
+                  {isAndroid ? (
+                    <button
+                      onClick={() => setPhoneInSection(false)}
+                      className="-ml-2 flex min-w-0 items-center gap-2 rounded p-2 font-medium text-chrome/90 active:bg-chrome/10"
+                      aria-label="Back to settings"
+                    >
+                      <ArrowLeft size={20} strokeWidth={2} className="shrink-0" />
+                      <span className="truncate">{SECTIONS.find((s) => s.id === section)?.label}</span>
+                    </button>
+                  ) : (
+                    <span className="font-medium text-chrome/90">
+                      {SECTIONS.find((s) => s.id === section)?.label}
+                    </span>
+                  )}
                   <button
                     onClick={() => setOpen(false)}
                     className="rounded p-1 text-chrome/40 transition-colors duration-100 hover:bg-chrome/10 hover:text-chrome"
                     title="Close (Esc)"
                   >
-                    <X size={14} strokeWidth={2} />
+                    <X size={isAndroid ? 20 : 14} strokeWidth={2} />
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
@@ -1861,6 +1919,7 @@ export function SettingsDialog({
                   )}
                 </div>
               </div>
+              )}
             </div>
           </div>,
           document.body,
