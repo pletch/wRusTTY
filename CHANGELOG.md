@@ -15,6 +15,9 @@ release job publishes it as the GitHub release notes.
 
 - On Android, the back gesture closes the topmost menu, panel or dialog, then a text
   selection, and only then leaves the app, with your sessions still running.
+- The Android key row has more: a double-tap locks Ctrl or Alt on until tapped again, and
+  its new button reaches Home, End, PgUp, PgDn, Del, Ctrl-C, Ctrl-D, `_`, `\`, `&` and
+  F1 to F12. Each press gives a light tick, which can be turned off in Settings.
 
 ## [0.5.1] - 2026-11-03
 

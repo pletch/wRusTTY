@@ -1,9 +1,11 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { tapHaptic } from '../lib/keepAlive'
 import { TERMINAL_INPUT_LABEL } from '../lib/ghostty/GhosttyInputHandler'
 import {
+  softModifierLocks,
   softModifiers,
   subscribeSoftModifiers,
-  toggleSoftModifier,
+  tapSoftModifier,
   type SoftModifiers,
 } from '../lib/softModifiers'
 
@@ -13,10 +15,10 @@ const REPEAT_EVERY_MS = 60
 
 type RowKey =
   | { label: string; aria: string; modifier: keyof SoftModifiers }
-  | { label: string; aria: string; key: string; repeats?: boolean }
+  | { label: string; aria: string; key: string; repeats?: boolean; code?: string; ctrl?: boolean }
   | { label: string; aria: string; text: string }
 
-const KEYS: RowKey[] = [
+const MAIN_KEYS: RowKey[] = [
   { label: 'Esc', aria: 'Escape', key: 'Escape' },
   { label: 'Tab', aria: 'Tab', key: 'Tab' },
   { label: 'Ctrl', aria: 'Control', modifier: 'ctrl' },
@@ -30,6 +32,27 @@ const KEYS: RowKey[] = [
   { label: '/', aria: 'Slash', text: '/' },
   { label: '-', aria: 'Dash', text: '-' },
 ]
+
+const NAVIGATION_KEYS: RowKey[] = [
+  { label: 'Home', aria: 'Home', key: 'Home' },
+  { label: 'End', aria: 'End', key: 'End' },
+  { label: 'PgUp', aria: 'Page up', key: 'PageUp', repeats: true },
+  { label: 'PgDn', aria: 'Page down', key: 'PageDown', repeats: true },
+  { label: 'Del', aria: 'Delete', key: 'Delete', repeats: true },
+  { label: '^C', aria: 'Control C', key: 'c', code: 'KeyC', ctrl: true },
+  { label: '^D', aria: 'Control D', key: 'd', code: 'KeyD', ctrl: true },
+  { label: '_', aria: 'Underscore', text: '_' },
+  { label: '\\', aria: 'Backslash', text: '\\' },
+  { label: '&', aria: 'Ampersand', text: '&' },
+]
+
+const FUNCTION_KEYS: RowKey[] = Array.from({ length: 12 }, (_, i) => ({
+  label: `F${i + 1}`,
+  aria: `F${i + 1}`,
+  key: `F${i + 1}`,
+}))
+
+const PAGES = [MAIN_KEYS, NAVIGATION_KEYS, FUNCTION_KEYS]
 
 type Field = HTMLInputElement | HTMLTextAreaElement
 
@@ -46,10 +69,21 @@ function focusedField(): Field | null {
 
 /** Returns whether something handled it. A synthetic event has no default action,
  * so a canceled one is the only sign anything did. */
-function dispatchKey(type: 'keydown' | 'keyup', key: string, repeat = false): boolean {
+function dispatchKey(
+  type: 'keydown' | 'keyup',
+  k: { key: string; code?: string; ctrl?: boolean },
+  repeat = false,
+): boolean {
   const target = document.activeElement ?? document.body
   return !target.dispatchEvent(
-    new KeyboardEvent(type, { key, code: key, repeat, bubbles: true, cancelable: true }),
+    new KeyboardEvent(type, {
+      key: k.key,
+      code: k.code ?? k.key,
+      ctrlKey: k.ctrl === true,
+      repeat,
+      bubbles: true,
+      cancelable: true,
+    }),
   )
 }
 
@@ -101,9 +135,14 @@ function applyToField(field: Field, key: string) {
  * keys. In a dialog's field they do what they would there, and Esc still reaches
  * whatever listens for it. A press never takes focus, which would close the keyboard.
  */
-export function KeyRow({ background }: { background?: string }) {
+export function KeyRow({ background, haptics }: { background?: string; haptics?: boolean }) {
   const mods = useSyncExternalStore(subscribeSoftModifiers, softModifiers)
-  const repeat = useRef<{ timer: number; key: string } | null>(null)
+  const locks = useSyncExternalStore(subscribeSoftModifiers, softModifierLocks)
+  const [page, setPage] = useState(0)
+  const repeat = useRef<{
+    timer: number
+    key: { key: string; code?: string; ctrl?: boolean }
+  } | null>(null)
 
   const stopRepeat = () => {
     if (!repeat.current) return
@@ -114,10 +153,11 @@ export function KeyRow({ background }: { background?: string }) {
   useEffect(() => stopRepeat, [])
 
   const press = (k: RowKey) => {
+    if (haptics) tapHaptic()
     if ('modifier' in k) {
       // Only the terminal consumes these. Armed from a dialog, one would wait there
       // and land on the next thing typed in the terminal.
-      if (isTerminal(document.activeElement)) toggleSoftModifier(k.modifier)
+      if (isTerminal(document.activeElement)) tapSoftModifier(k.modifier)
     } else if ('text' in k) {
       const field = focusedField()
       if (field) {
@@ -130,7 +170,7 @@ export function KeyRow({ background }: { background?: string }) {
     } else {
       stopRepeat()
       const send = (repeating: boolean) => {
-        const handled = dispatchKey('keydown', k.key, repeating)
+        const handled = dispatchKey('keydown', k, repeating)
         const field = focusedField()
         if (field && !handled) applyToField(field, k.key)
       }
@@ -141,7 +181,7 @@ export function KeyRow({ background }: { background?: string }) {
       }
       // Non-repeating keys still get a release, on letting go, for Kitty.
       repeat.current = {
-        key: k.key,
+        key: k,
         timer: k.repeats ? window.setTimeout(tick, REPEAT_DELAY_MS) : 0,
       }
     }
@@ -155,8 +195,9 @@ export function KeyRow({ background }: { background?: string }) {
       className="relative z-[80] flex h-10 shrink-0 select-none items-stretch border-t border-chrome/10"
       style={{ background }}
     >
-      {KEYS.map((k) => {
+      {PAGES[page].map((k) => {
         const armed = 'modifier' in k && mods[k.modifier]
+        const locked = 'modifier' in k && locks[k.modifier]
         return (
           <button
             key={k.aria}
@@ -168,7 +209,11 @@ export function KeyRow({ background }: { background?: string }) {
             className={`min-w-0 flex-1 touch-manipulation ${
               k.label.length === 1 ? 'text-lg leading-none' : 'text-xs'
             } ${
-              armed ? 'bg-sky-400/30 text-chrome' : 'text-chrome/70 active:bg-chrome/20'
+              locked
+                ? 'bg-sky-500 font-semibold text-white'
+                : armed
+                  ? 'bg-sky-400/30 text-chrome'
+                  : 'text-chrome/70 active:bg-chrome/20'
             }`}
             onPointerDown={(e) => {
               e.preventDefault()
@@ -186,6 +231,22 @@ export function KeyRow({ background }: { background?: string }) {
           </button>
         )
       })}
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="More keys"
+        className="min-w-0 flex-1 touch-manipulation text-lg leading-none text-chrome/70 active:bg-chrome/20"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          stopRepeat()
+          if (haptics) tapHaptic()
+          setPage((p) => (p + 1) % PAGES.length)
+        }}
+        onMouseDown={(e) => e.preventDefault()}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {'\u22EF'}
+      </button>
     </div>
   )
 }

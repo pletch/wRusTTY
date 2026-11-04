@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TERMINAL_INPUT_LABEL } from '../lib/ghostty/GhosttyInputHandler'
-import { takeSoftModifiers } from '../lib/softModifiers'
+import { clearSoftModifiers, takeSoftModifiers } from '../lib/softModifiers'
 import { KeyRow } from './KeyRow'
 
 describe('KeyRow', () => {
@@ -25,7 +25,7 @@ describe('KeyRow', () => {
   afterEach(() => {
     cleanup()
     input.remove()
-    takeSoftModifiers()
+    clearSoftModifiers()
     vi.useRealTimers()
   })
 
@@ -36,6 +36,29 @@ describe('KeyRow', () => {
     expect(events).toEqual(['down:Escape'])
     fireEvent.pointerUp(esc)
     expect(events).toEqual(['down:Escape', 'up:Escape'])
+  })
+
+  it('reaches the other pages through More keys, and comes back around', () => {
+    render(<KeyRow />)
+    const more = screen.getByLabelText('More keys')
+    fireEvent.pointerDown(more)
+    expect(screen.queryByLabelText('Escape')).toBeNull()
+    expect(screen.getByLabelText('Page up')).toBeTruthy()
+    fireEvent.pointerDown(more)
+    expect(screen.getByLabelText('F12')).toBeTruthy()
+    fireEvent.pointerDown(more)
+    expect(screen.getByLabelText('Escape')).toBeTruthy()
+  })
+
+  it('sends Ctrl-C as a key press with Ctrl held, for the encoder', () => {
+    const seen: KeyboardEvent[] = []
+    input.addEventListener('keydown', (e) => seen.push(e))
+    render(<KeyRow />)
+    fireEvent.pointerDown(screen.getByLabelText('More keys'))
+    fireEvent.pointerDown(screen.getByLabelText('Control C'))
+    expect(seen[0].key).toBe('c')
+    expect(seen[0].code).toBe('KeyC')
+    expect(seen[0].ctrlKey).toBe(true)
   })
 
   it('types a symbol as text', () => {
@@ -53,15 +76,30 @@ describe('KeyRow', () => {
     expect(document.activeElement).toBe(input)
   })
 
-  it('shows a modifier armed until tapped again', () => {
+  it('shows a modifier armed until tapped again a while later', () => {
+    vi.useFakeTimers()
     render(<KeyRow />)
     const ctrl = screen.getByLabelText('Control')
     expect(ctrl.getAttribute('aria-pressed')).toBe('false')
     fireEvent.pointerDown(ctrl)
     expect(ctrl.getAttribute('aria-pressed')).toBe('true')
     expect(events).toEqual([])
+    vi.advanceTimersByTime(1000)
     fireEvent.pointerDown(ctrl)
     expect(ctrl.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('locks a modifier on a quick second tap, and shows it differently', () => {
+    vi.useFakeTimers()
+    render(<KeyRow />)
+    const ctrl = screen.getByLabelText('Control')
+    fireEvent.pointerDown(ctrl)
+    const armedLook = ctrl.className
+    fireEvent.pointerDown(ctrl)
+    expect(ctrl.getAttribute('aria-pressed')).toBe('true')
+    expect(ctrl.className).not.toBe(armedLook)
+    expect(takeSoftModifiers().ctrl).toBe(true)
+    expect(takeSoftModifiers().ctrl).toBe(true)
   })
 
   it('shows a modifier disarmed once a key has used it', () => {

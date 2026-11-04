@@ -34,6 +34,15 @@ pub async fn keep_alive_set_sessions(app: AppHandle, count: u32) -> Result<(), S
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn key_haptic(app: AppHandle) -> Result<(), String> {
+    app.state::<KeepAlive<Wry>>()
+        .0
+        .run_mobile_plugin::<serde_json::Value>("keyHaptic", ())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// What the back gesture ends in. See `lib/backGesture.ts`.
 #[tauri::command]
 pub async fn leave_app(app: AppHandle) -> Result<(), String> {

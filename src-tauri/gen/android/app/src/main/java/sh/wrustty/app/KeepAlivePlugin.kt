@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.view.HapticFeedbackConstants
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -43,6 +44,14 @@ class KeepAlivePlugin(private val activity: Activity) : Plugin(activity) {
       // work; they just won't survive this time in the background.
       Log.w(TAG, "couldn't update the service for $count sessions", e)
       invoke.reject(e.message)
+    }
+  }
+
+  @Command
+  fun keyHaptic(invoke: Invoke) {
+    activity.runOnUiThread {
+      activity.window.decorView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+      invoke.resolve()
     }
   }
 

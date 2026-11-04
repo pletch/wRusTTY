@@ -11,6 +11,9 @@ import {
   legacyModifiedBytes,
   softModifiers,
   takeSoftModifiers,
+  tapSoftModifier,
+  softModifierLocks,
+  clearSoftModifiers,
   toggleSoftModifier,
 } from './softModifiers'
 
@@ -174,5 +177,47 @@ describe('legacyModifiedBytes', () => {
 
   it('combines Ctrl and Alt', () => {
     expect(bytes('c', true, true)).toEqual([0x1b, 0x03])
+  })
+})
+
+describe('tapSoftModifier', () => {
+  afterEach(() => clearSoftModifiers())
+
+  it('arms for one key', () => {
+    tapSoftModifier('ctrl', 1000)
+    expect(takeSoftModifiers().ctrl).toBe(true)
+    expect(softModifiers().ctrl).toBe(false)
+  })
+
+  it('locks on a quick second tap, staying on through keys', () => {
+    tapSoftModifier('ctrl', 1000)
+    tapSoftModifier('ctrl', 1200)
+    expect(softModifierLocks().ctrl).toBe(true)
+    expect(takeSoftModifiers().ctrl).toBe(true)
+    expect(takeSoftModifiers().ctrl).toBe(true)
+    expect(softModifiers().ctrl).toBe(true)
+  })
+
+  it('disarms on a slow second tap rather than locking', () => {
+    tapSoftModifier('alt', 1000)
+    tapSoftModifier('alt', 2000)
+    expect(softModifiers().alt).toBe(false)
+    expect(softModifierLocks().alt).toBe(false)
+  })
+
+  it('turns off with one tap once locked', () => {
+    tapSoftModifier('ctrl', 1000)
+    tapSoftModifier('ctrl', 1100)
+    tapSoftModifier('ctrl', 5000)
+    expect(softModifiers().ctrl).toBe(false)
+    expect(softModifierLocks().ctrl).toBe(false)
+  })
+
+  it('leaves a locked modifier on while another is used once', () => {
+    tapSoftModifier('ctrl', 1000)
+    tapSoftModifier('ctrl', 1100)
+    tapSoftModifier('alt', 2000)
+    expect(takeSoftModifiers()).toEqual({ ctrl: true, alt: true })
+    expect(softModifiers()).toEqual({ ctrl: true, alt: false })
   })
 })

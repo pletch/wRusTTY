@@ -162,6 +162,8 @@ export interface TerminalSettings {
   vaultAutoLockMinutes: number
   /** Android: keeps the app out of screenshots and screen sharing. */
   secureScreen: boolean
+  /** Android: a light tick on each key row press. */
+  keyRowHaptics: boolean
   /** 1 = fully opaque (default). Below 1 the background is alpha-blended, over
    * the window effect if one is set. */
   backgroundOpacity: number
@@ -369,6 +371,7 @@ const defaults: TerminalSettings = {
   restoreSessionsOnLaunch: false,
   vaultAutoLockMinutes: 5,
   secureScreen: false,
+  keyRowHaptics: true,
   backgroundOpacity: 1,
   // Off by default.
   unfocusedDimPercent: 0,

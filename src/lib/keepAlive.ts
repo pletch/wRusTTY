@@ -15,6 +15,12 @@ export function liveSessionCount(statuses: string[]): number {
   ).length
 }
 
+/** A light tick for a key row press. It needs no permission, and follows the phone's
+ * own touch feedback setting. A miss isn't worth reporting. */
+export function tapHaptic(): void {
+  invoke('key_haptic').catch(() => {})
+}
+
 export function syncKeepAlive(count: number): void {
   if (!isAndroid) return
   invoke('keep_alive_set_sessions', { count }).catch((e: unknown) => {

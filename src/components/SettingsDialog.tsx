@@ -1099,6 +1099,14 @@ export function SettingsDialog({
                           } selects with the keyboard.`}
                         />
                       )}
+                      {isAndroid && (
+                        <Toggle
+                          checked={settings.keyRowHaptics}
+                          onChange={(v) => onChange({ ...settings, keyRowHaptics: v })}
+                          label="Key row vibration"
+                          hint="A light tick on each press, if your phone's touch feedback is on."
+                        />
+                      )}
                       {!isAndroid && (
                         <Toggle
                           checked={settings.rightClickPaste}

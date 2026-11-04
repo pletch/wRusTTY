@@ -1,8 +1,9 @@
 /**
  * Ctrl and Alt for a soft keyboard, which has neither. Tapping one in the key
  * row arms it for the next key, from the row or the keyboard, which is how
- * `GhosttyInputHandler` picks it up. One set for the app: only the focused
- * terminal consumes it.
+ * `GhosttyInputHandler` picks it up. Tapping twice quickly locks it on until it's
+ * tapped again, for things like a tmux prefix. One set for the app: only the
+ * focused terminal consumes it.
  */
 
 export interface SoftModifiers {
@@ -12,11 +13,18 @@ export interface SoftModifiers {
 
 const NONE: SoftModifiers = { ctrl: false, alt: false }
 
+/** A second tap within this long locks instead of disarming. */
+const DOUBLE_TAP_MS = 350
+
 let current = NONE
+/** Which of `current` stay on after a key. */
+let locks = NONE
+let armedAt: Partial<Record<keyof SoftModifiers, number>> = {}
 const listeners = new Set<() => void>()
 
-function set(next: SoftModifiers) {
+function set(next: SoftModifiers, nextLocks: SoftModifiers = locks) {
   current = next
+  locks = nextLocks
   for (const listener of listeners) listener()
 }
 
@@ -33,15 +41,41 @@ export function toggleSoftModifier(which: keyof SoftModifiers): void {
   set({ ...current, [which]: !current[which] })
 }
 
+/** A stable object for a snapshot, like `softModifiers`. */
+export function softModifierLocks(): SoftModifiers {
+  return locks
+}
+
+/** A tap on a modifier's key: off, to armed, to locked if quick, and back to off. */
+export function tapSoftModifier(which: keyof SoftModifiers, now = Date.now()): void {
+  if (locks[which]) {
+    set({ ...current, [which]: false }, { ...locks, [which]: false })
+  } else if (!current[which]) {
+    armedAt = { ...armedAt, [which]: now }
+    set({ ...current, [which]: true })
+  } else if (now - (armedAt[which] ?? 0) <= DOUBLE_TAP_MS) {
+    set(current, { ...locks, [which]: true })
+  } else {
+    set({ ...current, [which]: false })
+  }
+}
+
 export function softModifierArmed(): boolean {
   return current.ctrl || current.alt
 }
 
-/** What's armed, disarming it: a modifier applies to one key. */
+/** What's on, disarming it: a modifier applies to one key unless it's locked. */
 export function takeSoftModifiers(): SoftModifiers {
   const taken = current
-  if (softModifierArmed()) set(NONE)
+  if (softModifierArmed() && (current.ctrl !== locks.ctrl || current.alt !== locks.alt)) {
+    set(locks)
+  }
   return taken
+}
+
+/** Everything off, locks included. */
+export function clearSoftModifiers(): void {
+  set(NONE, NONE)
 }
 
 /**

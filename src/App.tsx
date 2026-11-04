@@ -1623,7 +1623,6 @@ function App() {
           />
         )}
       </div>
-      {isAndroid && <KeyRow background={stripBackground} />}
       {tabs.length > 0 && !compactHeight && (
         <StatusBar
           protocol={statusBarConn?.protocol ?? null}
@@ -1647,6 +1646,8 @@ function App() {
           }
         />
       )}
+      {/* Last, so it sits directly on top of the keyboard. */}
+      {isAndroid && <KeyRow background={stripBackground} haptics={terminalSettings.keyRowHaptics} />}
       <ToastHost />
       {(() => {
         const plural = (n: number) => `${n} connection${n === 1 ? '' : 's'}`

@@ -259,6 +259,8 @@ pub fn run() {
             #[cfg(target_os = "android")]
             keep_alive::leave_app,
             #[cfg(target_os = "android")]
+            keep_alive::key_haptic,
+            #[cfg(target_os = "android")]
             android_files::device_file_name,
             #[cfg(target_os = "android")]
             android_screen::set_secure_screen,
