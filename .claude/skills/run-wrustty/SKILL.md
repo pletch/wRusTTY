@@ -204,7 +204,7 @@ in `src/lib/ghostty/vendor/README.md`. In WSL, under `~` rather than `/mnt/c`:
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin ae0dc1b7136c2baddc3e067663aa041cd555cfda
+git fetch -q --depth 1 origin 27ffca0dd67177d1f069ea7f910362e5d871613d
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
 ~/zig-x86_64-linux-0.17.0/zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast

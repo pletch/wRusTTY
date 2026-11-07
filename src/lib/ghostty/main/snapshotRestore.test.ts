@@ -33,7 +33,8 @@ interface SnapshotExports {
   ghostty_snapshot_decoder_new_buf(alloc: number, slot: number, ptr: number, len: number): number
   ghostty_snapshot_decoder_decode(decoder: number, slot: number): number
   ghostty_snapshot_decoder_free(decoder: number): void
-  ghostty_formatter_terminal_new(alloc: number, slot: number, term: number, opts: number): number
+  ghostty_formatter_terminal_new(alloc: number, slot: number, term: number): number
+  ghostty_formatter_set(fmt: number, option: number, value: number): number
   ghostty_formatter_format_alloc(fmt: number, alloc: number, outPtr: number, outLen: number): number
   ghostty_formatter_free(fmt: number): void
 }
@@ -41,24 +42,23 @@ type Ex = abi.GhosttyMainExports & SnapshotExports
 
 const GHOSTTY_IO_ERROR = -5
 
-/** `GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES`. */
-const T_OPT_CONTINUATION_MAX_BYTES = 31
+const T_OPT_CONTINUATION_MAX_BYTES = abi.T_OPT_CONTINUATION_MAX_BYTES
 const CONTINUATION_LIMIT = 64 * 1024
 
 /**
- * `GhosttyFormatterTerminalOptions` on wasm32, passed by pointer. Laid out from
- * `formatter.h`. A wrong offset would turn off an extra and weaken every
- * comparison, so `formatted output includes the state it's compared on` checks
- * that the extras really are on.
+ * Formatter options, set by key since vt-1.0.0 (`formatter.h`). A wrong key
+ * would leave an extra off and weaken every comparison, so `formatted output
+ * includes the state it's compared on` checks that the extras really are on.
  */
 const FORMAT_PLAIN = 0
 const FORMAT_VT = 1
-const OPTS_SIZE = 40
-const OPTS_OFF_EMIT = 4
-const OPTS_EXTRA = 12
-const OPTS_EXTRA_SIZE = 24
-const OPTS_SCREEN = OPTS_EXTRA + 12
-const OPTS_SCREEN_SIZE = 12
+const FORMATTER_OPT_EMIT = 1
+const FORMATTER_OPT_UNWRAP = 2
+const FORMATTER_OPT_TRIM = 3
+const FORMATTER_OPT_EXTRAS = 5
+/** `GHOSTTY_FORMATTER_EXTRAS_ALL`: palette, modes, regions, tab stops, pwd,
+ *  keyboard, cursor, style, hyperlink, protection, Kitty flags, charsets. */
+const FORMATTER_EXTRAS_ALL = 0xfff
 
 function newInstance(): Ex {
   return new WebAssembly.Instance(module, { env: { log: () => {} } }).exports as unknown as Ex
@@ -191,26 +191,26 @@ class Term {
   }
 
   private format(emit: number): string {
-    const opts = this.ex.ghostty_wasm_alloc(OPTS_SIZE)
-    new Uint8Array(this.ex.memory.buffer, opts, OPTS_SIZE).fill(0)
-    const v = this.view()
-    v.setUint32(opts, OPTS_SIZE, true)
-    v.setUint32(opts + OPTS_OFF_EMIT, emit, true)
-    v.setUint32(opts + OPTS_EXTRA, OPTS_EXTRA_SIZE, true)
-    for (let i = 0; i < 6; i++) v.setUint8(opts + OPTS_EXTRA + 4 + i, 1)
-    v.setUint32(opts + OPTS_SCREEN, OPTS_SCREEN_SIZE, true)
-    for (let i = 0; i < 6; i++) v.setUint8(opts + OPTS_SCREEN + 4 + i, 1)
-
     const slot = this.ex.ghostty_wasm_alloc_opaque()
-    abi.expectOk(this.ex.ghostty_formatter_terminal_new(0, slot, this.term, opts), 'formatter_new')
+    abi.expectOk(this.ex.ghostty_formatter_terminal_new(0, slot, this.term), 'formatter_new')
     const fmt = this.view().getUint32(slot, true)
+    const value = this.ex.ghostty_wasm_alloc(4)
+    const set = (option: number, v: number) => {
+      this.view().setUint32(value, v, true)
+      abi.expectOk(this.ex.ghostty_formatter_set(fmt, option, value), `formatter_set ${option}`)
+    }
+    set(FORMATTER_OPT_EMIT, emit)
+    // As before the option keys: rows as they are, untrimmed, every extra.
+    set(FORMATTER_OPT_UNWRAP, 0)
+    set(FORMATTER_OPT_TRIM, 0)
+    set(FORMATTER_OPT_EXTRAS, FORMATTER_EXTRAS_ALL)
+    this.ex.ghostty_wasm_free(value, 4)
     const bytes = this.takeAlloc(
       (p, l) => this.ex.ghostty_formatter_format_alloc(fmt, 0, p, l),
       'formatter_format_alloc',
     )
     this.ex.ghostty_formatter_free(fmt)
     this.ex.ghostty_wasm_free_opaque(slot)
-    this.ex.ghostty_wasm_free(opts, OPTS_SIZE)
     return new TextDecoder().decode(bytes)
   }
 

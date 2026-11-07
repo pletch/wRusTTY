@@ -1,6 +1,6 @@
 /**
  * Mouse reporting, encoded by the engine. Ghostty implements all five formats
- * and tracking modes, and `setopt_from_terminal` reads what the far end set,
+ * and tracking modes, and `set_from_terminal` reads what the far end set,
  * so this is a wrapper (as `KeyEncoder.ts` is).
  *
  * ## Positions are pixels
@@ -137,7 +137,7 @@ export class MouseEncoder {
     d.setUint32(b + MOUSE_SIZE_OFF_PADDING_BOTTOM, Math.max(0, Math.round(s.paddingBottom ?? 0)), true)
     d.setUint32(b + MOUSE_SIZE_OFF_PADDING_RIGHT, Math.max(0, Math.round(s.paddingRight ?? 0)), true)
     d.setUint32(b + MOUSE_SIZE_OFF_PADDING_LEFT, Math.max(0, Math.round(s.paddingLeft ?? 0)), true)
-    ex.ghostty_mouse_encoder_setopt(this.encoder, MOUSE_ENCODER_OPT_SIZE, b)
+    ex.ghostty_mouse_encoder_set(this.encoder, MOUSE_ENCODER_OPT_SIZE, b)
   }
 
   /**
@@ -149,11 +149,11 @@ export class MouseEncoder {
     const { ex } = this
 
     // The application's modes as of this event; they can change between any two.
-    ex.ghostty_mouse_encoder_setopt_from_terminal(this.encoder, this.term)
+    ex.ghostty_mouse_encoder_set_from_terminal(this.encoder, this.term)
 
-    // After `setopt_from_terminal`, which doesn't touch it.
+    // After `set_from_terminal`, which doesn't touch it.
     this.dv().setUint8(this.flagBuf, e.anyButtonPressed ? 1 : 0)
-    ex.ghostty_mouse_encoder_setopt(
+    ex.ghostty_mouse_encoder_set(
       this.encoder,
       MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
       this.flagBuf,

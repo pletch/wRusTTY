@@ -11,9 +11,9 @@ comparison oracle.
 ## The expected artifact
 
 ```text
-SHA-256  1e4101ec558c65971d9a8275453fbaf628919d87a43e322b1e4277ba6d0a4f76
-Size     1,277,048 bytes
-Source   ghostty-org/ghostty @ ae0dc1b7136c2baddc3e067663aa041cd555cfda
+SHA-256  5edd02712ddc336e706a5a1be362c78d1456b9ccd10d13cfc23e4b0e000b8f3f
+Size     1,331,227 bytes
+Source   ghostty-org/ghostty @ 27ffca0dd67177d1f069ea7f910362e5d871613d
          + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
 Built    Zig 0.17.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 Then     node tools/strip-wasm-debug.mjs (see below) — this is the POST-strip hash
@@ -51,7 +51,7 @@ unicode table generator. Build under `~`, not `/mnt/c`.
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin ae0dc1b7136c2baddc3e067663aa041cd555cfda
+git fetch -q --depth 1 origin 27ffca0dd67177d1f069ea7f910362e5d871613d
 git checkout -q FETCH_HEAD
 git apply ../patches/ghostty-main-esc-k.patch
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
@@ -105,11 +105,18 @@ budget down gives away depth for nothing; nudging one up can double what every
 pane costs. The test floods the real core and asserts the heap stays under the
 label.
 
+**That staircase is gone at the `27ffca0d` pin.** The heap now sits about 1 MB
+above the budget and grows with it in a straight line (2.5, 6, 12 and 26 MB of
+budget measure 3.4, 7.1, 13.2 and 27.0 MB of heap), so every tier is well under
+its label. The budgets were left as they were; raising them would buy depth at
+the memory the labels already promise, and is its own decision. See
+`GhosttyEngine.ts`.
+
 To re-measure: sweep the raw field and count `ghostty_terminal_get_scrollback_length`
-after a flood. Retention tracks `value / (cols * 9.2)` wherever the budget
+after a flood. Retention tracks `value / (cols * 8.7)` wherever the budget
 exceeds a few pages. That constant belongs to the binary — the v1.3.1 build
-delivered 12.65 bytes per cell, this one delivers ~9.2, so the same budget buys
-~37% more depth and every tier was re-picked around the new heap staircase.
+delivered 12.65 bytes per cell, the `main` builds before `27ffca0d` ~9.2, and
+this one ~8.7.
 
 An earlier revision of this file asserted the opposite and dismissed
 `ghostty-web`'s own "it's bytes" docs (their PR #151) as not applying to the code

@@ -11,6 +11,13 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `27ffca0d`, just past the first stable
+  release of its terminal library (libghostty-vt 1.0). Colored and styled output parses
+  about twice as fast, and emoji and other combined characters about three times as fast.
+  Each scrollback setting also holds about 5% more lines in less memory.
+
 ### Fixed
 
 - A connection lost while the vault is locked waits for you to unlock it and then
@@ -25,6 +32,8 @@ release job publishes it as the GitHub release notes.
 - On Android, a pane opened or rotated with the keyboard up no longer tells the host about
   the short height, which made programs redraw when the keyboard closed.
 - On Android, a screen that falls far behind catches up rather than silently missing output.
+- In rare cases, widening a full-screen program's pane, such as rotating a phone with one
+  open, could leave the terminal reading memory it had already freed.
 
 ## [0.6.1] - 2026-11-04
 

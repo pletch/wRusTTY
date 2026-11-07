@@ -130,7 +130,7 @@ export class MainScrollbackReader {
   /** A style color slot, or -1 for "none". */
   private styleColor(tagOff: number, valueOff: number): number {
     const d = this.dv()
-    const tag = d.getUint32(this.stylePtr + tagOff, true)
+    const tag = d.getUint8(this.stylePtr + tagOff)
     if (tag === abi.STYLE_COLOR_PALETTE) return this.paletteColor(d.getUint8(this.stylePtr + valueOff))
     if (tag === abi.STYLE_COLOR_RGB) return this.rgbAt(this.stylePtr + valueOff)
     return -1
@@ -221,17 +221,18 @@ export class MainScrollbackReader {
     let attrs2 = 0
     if (hasStyle) {
       const p = this.stylePtr
-      const underline = d.getUint32(p + abi.STYLE_OFF_UNDERLINE_STYLE, true)
-      if (d.getUint8(p + abi.STYLE_OFF_BOLD)) flags |= CELL_BOLD
-      if (d.getUint8(p + abi.STYLE_OFF_ITALIC)) flags |= CELL_ITALIC
-      if (d.getUint8(p + abi.STYLE_OFF_STRIKETHROUGH)) flags |= CELL_STRIKETHROUGH
-      if (d.getUint8(p + abi.STYLE_OFF_INVERSE)) flags |= CELL_INVERSE
-      if (d.getUint8(p + abi.STYLE_OFF_INVISIBLE)) flags |= CELL_INVISIBLE
-      if (d.getUint8(p + abi.STYLE_OFF_BLINK)) flags |= CELL_BLINK
-      if (d.getUint8(p + abi.STYLE_OFF_FAINT)) flags |= CELL_FAINT
+      const sf = d.getUint16(p + abi.STYLE_OFF_FLAGS, true)
+      const underline = abi.styleUnderline(sf)
+      if (sf & abi.STYLE_FLAG_BOLD) flags |= CELL_BOLD
+      if (sf & abi.STYLE_FLAG_ITALIC) flags |= CELL_ITALIC
+      if (sf & abi.STYLE_FLAG_STRIKETHROUGH) flags |= CELL_STRIKETHROUGH
+      if (sf & abi.STYLE_FLAG_INVERSE) flags |= CELL_INVERSE
+      if (sf & abi.STYLE_FLAG_INVISIBLE) flags |= CELL_INVISIBLE
+      if (sf & abi.STYLE_FLAG_BLINK) flags |= CELL_BLINK
+      if (sf & abi.STYLE_FLAG_FAINT) flags |= CELL_FAINT
       if (underline !== 0) flags |= CELL_UNDERLINE
       attrs2 = underline & CELL2_UNDERLINE_MASK
-      if (d.getUint8(p + abi.STYLE_OFF_OVERLINE)) attrs2 |= CELL2_OVERLINE
+      if (sf & abi.STYLE_FLAG_OVERLINE) attrs2 |= CELL2_OVERLINE
     }
     d.setUint8(at + OFF_FLAGS, flags)
     d.setUint8(at + OFF_ATTRS2, attrs2)

@@ -186,22 +186,23 @@ export function snapshotViaGhosttyMain(input: SnapshotInput): GridSnapshot {
 
       abi.expectOk(ex.ghostty_render_state_row_cells_get(cells, abi.RS_CELLS_STYLE, stylePtr), 'cells_get STYLE')
       const d = dv()
-      const underline = d.getUint32(stylePtr + abi.STYLE_OFF_UNDERLINE_STYLE, true)
+      const sf = d.getUint16(stylePtr + abi.STYLE_OFF_FLAGS, true)
+      const underline = abi.styleUnderline(sf)
       let f = 0
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_BOLD)) f |= CELL_BOLD
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_ITALIC)) f |= CELL_ITALIC
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_STRIKETHROUGH)) f |= CELL_STRIKETHROUGH
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_INVERSE)) f |= CELL_INVERSE
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_INVISIBLE)) f |= CELL_INVISIBLE
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_BLINK)) f |= CELL_BLINK
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_FAINT)) f |= CELL_FAINT
+      if (sf & abi.STYLE_FLAG_BOLD) f |= CELL_BOLD
+      if (sf & abi.STYLE_FLAG_ITALIC) f |= CELL_ITALIC
+      if (sf & abi.STYLE_FLAG_STRIKETHROUGH) f |= CELL_STRIKETHROUGH
+      if (sf & abi.STYLE_FLAG_INVERSE) f |= CELL_INVERSE
+      if (sf & abi.STYLE_FLAG_INVISIBLE) f |= CELL_INVISIBLE
+      if (sf & abi.STYLE_FLAG_BLINK) f |= CELL_BLINK
+      if (sf & abi.STYLE_FLAG_FAINT) f |= CELL_FAINT
       // Our `flags` byte carries "underlined at all"; *which* underline lives
       // in attrs2, exactly as the vendored packing does.
       if (underline !== 0) f |= CELL_UNDERLINE
       flags.push(f)
 
       let a2 = underline & CELL2_UNDERLINE_MASK
-      if (d.getUint8(stylePtr + abi.STYLE_OFF_OVERLINE)) a2 |= CELL2_OVERLINE
+      if (sf & abi.STYLE_FLAG_OVERLINE) a2 |= CELL2_OVERLINE
       attrs2.push(a2)
     }
 

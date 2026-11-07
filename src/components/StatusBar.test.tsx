@@ -75,7 +75,7 @@ describe('StatusBar scrollback estimate', () => {
 
   it('shows a depth estimate beside the size', () => {
     render(<StatusBar {...base} dimensions={dims} scrollbackBudgetBytes={24 * 1024 * 1024} />)
-    expect(screen.getByText(/~34k/)).toBeTruthy()
+    expect(screen.getByText(/~36k/)).toBeTruthy()
   })
 
   it('shows nothing extra when the pane has not reported a budget', () => {
@@ -97,8 +97,8 @@ describe('StatusBar scrollback estimate', () => {
       <StatusBar {...base} dimensions={{ cols: 400, rows: 24 }} scrollbackBudgetBytes={budget} />,
     )
     expect(narrowText).not.toBe(wide.textContent ?? '')
-    expect(narrowText).toMatch(/~34k/)
-    expect(wide.textContent ?? '').toMatch(/~6\.8k/)
+    expect(narrowText).toMatch(/~36k/)
+    expect(wide.textContent ?? '').toMatch(/~7\.2k/)
   })
 
   it('explains both numbers in the tooltip', () => {

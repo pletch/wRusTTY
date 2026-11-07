@@ -17,7 +17,7 @@ import * as abi from './abi'
  *   GHOSTTY_MAIN_WASM=/path/to/ghostty-vt.wasm npx vitest run abi.parity
  *
  * Build it from the pin in `docs/PORT_GHOSTTY_MAIN.md`
- * (ae0dc1b7136c2baddc3e067663aa041cd555cfda) with Zig 0.17.0.
+ * (27ffca0dd67177d1f069ea7f910362e5d871613d) with Zig 0.17.0.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -198,10 +198,11 @@ run('ghostty main ABI, against a build at the pin', () => {
   })
 
   /**
-   * `GhosttyStyle`'s offsets were found by writing one attribute at a time and
-   * seeing which byte moved, because the header's apparent layout is wrong —
-   * the color union is 8-aligned, so the booleans sit 20-odd bytes further
-   * along than a naive reading puts them. These assert the answers.
+   * `GhosttyStyle` is a frozen 16-byte struct since vt-1.0.0: three 4-byte
+   * colors and a `uint16_t` of flags, with the underline style in bits 8-10.
+   * These drive each attribute through the parser and check it lands in its
+   * own bit, since a flag that's merely close would pass by landing on a
+   * neighbor.
    */
   describe('GhosttyStyle', () => {
     /** Style of the first cell after writing `seq` then one glyph. */
@@ -210,42 +211,35 @@ run('ghostty main ABI, against a build at the pin', () => {
       const p = h.ex.ghostty_wasm_alloc(abi.STYLE_SIZE)
       h.write(`${seq}X`)
       const d = h.dv()
-      for (let i = 0; i < abi.STYLE_SIZE; i += 4) d.setUint32(p + i, 0, true)
-      d.setUint32(p + abi.STYLE_OFF_SIZE, abi.STYLE_SIZE, true) // versioned struct
+      // Filled with a pattern, so a field the call doesn't write shows.
+      for (let i = 0; i < abi.STYLE_SIZE; i++) d.setUint8(p + i, 0xa5)
       abi.expectOk(
         h.ex.ghostty_terminal_grid_ref(h.term, h.point(abi.POINT_TAG_ACTIVE, 0, 0), h.refPtr),
         'grid_ref',
       )
       abi.expectOk(h.ex.ghostty_grid_ref_style(h.refPtr, p), 'grid_ref_style')
-      return { d: h.dv(), p }
+      const flags = h.dv().getUint16(p + abi.STYLE_OFF_FLAGS, true)
+      return { d: h.dv(), p, flags }
     }
 
-    it('reports the size it filled, which is how a layout change announces itself', () => {
+    it('writes the whole struct, and a plain cell is all zeros', () => {
       const { d, p } = styleAfter('')
-      expect(d.getUint32(p + abi.STYLE_OFF_SIZE, true)).toBe(abi.STYLE_SIZE)
+      for (let i = 0; i < abi.STYLE_SIZE; i++) expect(d.getUint8(p + i), `byte ${i}`).toBe(0)
     })
 
-    it.each([
-      ['bold', '\x1b[1m', abi.STYLE_OFF_BOLD],
-      ['italic', '\x1b[3m', abi.STYLE_OFF_ITALIC],
-      ['faint', '\x1b[2m', abi.STYLE_OFF_FAINT],
-      ['blink', '\x1b[5m', abi.STYLE_OFF_BLINK],
-      ['inverse', '\x1b[7m', abi.STYLE_OFF_INVERSE],
-      ['invisible', '\x1b[8m', abi.STYLE_OFF_INVISIBLE],
-      ['strikethrough', '\x1b[9m', abi.STYLE_OFF_STRIKETHROUGH],
-      ['overline', '\x1b[53m', abi.STYLE_OFF_OVERLINE],
-    ])('sets %s and only %s', (_name, seq, offset) => {
-      const { d, p } = styleAfter(seq)
-      expect(d.getUint8(p + offset)).toBe(1)
-      // Every other boolean must stay clear — an offset that is merely close
-      // would otherwise pass by landing on a neighbor.
-      for (const other of [
-        abi.STYLE_OFF_BOLD, abi.STYLE_OFF_ITALIC, abi.STYLE_OFF_FAINT, abi.STYLE_OFF_BLINK,
-        abi.STYLE_OFF_INVERSE, abi.STYLE_OFF_INVISIBLE, abi.STYLE_OFF_STRIKETHROUGH,
-        abi.STYLE_OFF_OVERLINE,
-      ]) {
-        if (other !== offset) expect(d.getUint8(p + other)).toBe(0)
-      }
+    const FLAGS = [
+      ['bold', '\x1b[1m', abi.STYLE_FLAG_BOLD],
+      ['italic', '\x1b[3m', abi.STYLE_FLAG_ITALIC],
+      ['faint', '\x1b[2m', abi.STYLE_FLAG_FAINT],
+      ['blink', '\x1b[5m', abi.STYLE_FLAG_BLINK],
+      ['inverse', '\x1b[7m', abi.STYLE_FLAG_INVERSE],
+      ['invisible', '\x1b[8m', abi.STYLE_FLAG_INVISIBLE],
+      ['strikethrough', '\x1b[9m', abi.STYLE_FLAG_STRIKETHROUGH],
+      ['overline', '\x1b[53m', abi.STYLE_FLAG_OVERLINE],
+    ] as const
+
+    it.each(FLAGS)('sets %s and only %s', (_name, seq, flag) => {
+      expect(styleAfter(seq).flags).toBe(flag)
     })
 
     it.each([
@@ -254,28 +248,34 @@ run('ghostty main ABI, against a build at the pin', () => {
       ['curly', '\x1b[4:3m', 3],
       ['dotted', '\x1b[4:4m', 4],
       ['dashed', '\x1b[4:5m', 5],
-    ])('carries %s underline as an int, not a flag', (_name, seq, expected) => {
-      const { d, p } = styleAfter(seq)
-      expect(d.getUint32(p + abi.STYLE_OFF_UNDERLINE_STYLE, true)).toBe(expected)
+    ])('carries %s underline in the flags, apart from the attribute bits', (_name, seq, expected) => {
+      const { flags } = styleAfter(seq)
+      expect(abi.styleUnderline(flags)).toBe(expected)
+      expect(flags & 0xff).toBe(0)
     })
 
     it('tags a palette color apart from an rgb one', () => {
       const pal = styleAfter('\x1b[31m')
-      expect(pal.d.getUint32(pal.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_PALETTE)
+      expect(pal.d.getUint8(pal.p + abi.STYLE_OFF_FG_TAG)).toBe(abi.STYLE_COLOR_PALETTE)
       expect(pal.d.getUint8(pal.p + abi.STYLE_OFF_FG_VALUE)).toBe(1) // red
 
       const rgb = styleAfter('\x1b[38;2;10;20;30m')
-      expect(rgb.d.getUint32(rgb.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_RGB)
+      expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_TAG)).toBe(abi.STYLE_COLOR_RGB)
       expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_VALUE)).toBe(10)
       expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_VALUE + 1)).toBe(20)
       expect(rgb.d.getUint8(rgb.p + abi.STYLE_OFF_FG_VALUE + 2)).toBe(30)
     })
 
-    it('keeps background in its own slot, not aliasing foreground', () => {
+    it('keeps background and underline color in their own slots', () => {
       const bg = styleAfter('\x1b[44m')
-      expect(bg.d.getUint32(bg.p + abi.STYLE_OFF_BG_TAG, true)).toBe(abi.STYLE_COLOR_PALETTE)
+      expect(bg.d.getUint8(bg.p + abi.STYLE_OFF_BG_TAG)).toBe(abi.STYLE_COLOR_PALETTE)
       expect(bg.d.getUint8(bg.p + abi.STYLE_OFF_BG_VALUE)).toBe(4) // blue
-      expect(bg.d.getUint32(bg.p + abi.STYLE_OFF_FG_TAG, true)).toBe(abi.STYLE_COLOR_NONE)
+      expect(bg.d.getUint8(bg.p + abi.STYLE_OFF_FG_TAG)).toBe(abi.STYLE_COLOR_NONE)
+
+      const ul = styleAfter('\x1b[58;5;9m')
+      expect(ul.d.getUint8(ul.p + abi.STYLE_OFF_UNDERLINE_TAG)).toBe(abi.STYLE_COLOR_PALETTE)
+      expect(ul.d.getUint8(ul.p + abi.STYLE_OFF_UNDERLINE_VALUE)).toBe(9)
+      expect(ul.d.getUint8(ul.p + abi.STYLE_OFF_BG_TAG)).toBe(abi.STYLE_COLOR_NONE)
     })
   })
 

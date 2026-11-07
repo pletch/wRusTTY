@@ -11,12 +11,12 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ ae0dc1b7136c2baddc3e067663aa041cd555cfda
+ghostty-org/ghostty @ 27ffca0dd67177d1f069ea7f910362e5d871613d
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  cc0366927ea3398a51040ec4b2ec6027edace61652b45132bafe86644d9d8aea
-Size     5,267,542 bytes
+SHA-256  e2f546c93e70d05020a92efa71ac76a09389906751207d33d5634e3fe03db539
+Size     5,458,244 bytes
 Built    Zig 0.17.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
-Exports  196 (193 functions) — the patch adds none
+Exports  217 (214 functions) — the patch adds none
 ```
 
 **This build is patched.** The unpatched build was not re-measured at this pin;
@@ -48,7 +48,7 @@ Rebuilding needs **Zig 0.17.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin ae0dc1b7136c2baddc3e067663aa041cd555cfda
+git fetch -q --depth 1 origin 27ffca0dd67177d1f069ea7f910362e5d871613d
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch

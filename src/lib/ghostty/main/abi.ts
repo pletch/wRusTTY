@@ -2,11 +2,13 @@
  * The ghostty `main` C ABI, as constants and types; see
  * `docs/PORT_GHOSTTY_MAIN.md`.
  *
- * Pinned to ghostty-org/ghostty @ ae0dc1b7136c2baddc3e067663aa041cd555cfda.
- * Values are transcribed from that commit's headers, exercised against its
- * binary by `main/abi.parity.test.ts`, and struct layouts are checked against
- * the binary by `main/abi.manifest.test.ts`. Re-pinning means re-checking; a
- * falling export count is usually upstream consolidation, not a broken build.
+ * Pinned to ghostty-org/ghostty @ 27ffca0dd67177d1f069ea7f910362e5d871613d,
+ * libghostty-vt 1.1.0-dev, whose C API is the stable `vt-1.0.0` one: upstream
+ * CI now fails any change to it that isn't an addition. Values are exercised
+ * against the binary by `main/abi.parity.test.ts`, and every struct layout and
+ * enum value here is checked against the binary's own manifest by
+ * `main/abi.manifest.test.ts`, so a re-pin that moves one fails with both
+ * numbers.
  *
  * Where `main` replaces one of our named getters with a key, the old name is
  * noted so the mapping is greppable.
@@ -53,15 +55,15 @@ export const POINT_OFF_X = 8
 export const POINT_OFF_Y = 12
 
 /**
- * `GhosttyGridRef` layout, wasm32: `{ size_t size; void *node; uint16_t x, y; }`.
+ * `GhosttyGridRef` layout, wasm32: `{ void *node; uint16_t x, y; }`, frozen,
+ * with no size field since vt-1.0.0. Zero it rather than sizing it.
  * It lives in caller memory, so a row is walked by rewriting `x` rather than
  * resolving a point per cell; resolution is O(scrollback depth).
  */
-export const GRID_REF_SIZE = 12
-export const GRID_REF_OFF_SIZE = 0
-export const GRID_REF_OFF_NODE = 4
-export const GRID_REF_OFF_X = 8
-export const GRID_REF_OFF_Y = 10
+export const GRID_REF_SIZE = 8
+export const GRID_REF_OFF_NODE = 0
+export const GRID_REF_OFF_X = 4
+export const GRID_REF_OFF_Y = 6
 
 /* -------------------------------------------------------------------------- */
 /* Selections and search                                                       */
@@ -69,16 +71,14 @@ export const GRID_REF_OFF_Y = 10
 
 /**
  * `GhosttySelection`: a pair of grid refs and a rectangle flag; native search
- * matches come back as this. A sized struct: write `SELECTION_SIZE` into the
- * first word, including in every element of a `GhosttySelectionBuffer`.
- * Endpoints are inclusive, in either order, and untracked (valid only until the
- * next terminal write).
+ * matches come back as this. Frozen, with no size field since vt-1.0.0: zero
+ * it. Endpoints are inclusive, in either order, and untracked (valid only
+ * until the next terminal write).
  */
-export const SELECTION_SIZE = 32
-export const SELECTION_OFF_SIZE = 0
-export const SELECTION_OFF_START = 4
-export const SELECTION_OFF_END = 16
-export const SELECTION_OFF_RECTANGLE = 28
+export const SELECTION_SIZE = 20
+export const SELECTION_OFF_START = 0
+export const SELECTION_OFF_END = 8
+export const SELECTION_OFF_RECTANGLE = 16
 
 /**
  * `GhosttySelectionBuffer`: `{ GhosttySelection *ptr; size_t cap; size_t len; }`.
@@ -109,24 +109,23 @@ export const SEARCH_STATUS_RUNNING = 0
 export const SEARCH_STATUS_FEED_REQUIRED = 1
 export const SEARCH_STATUS_COMPLETE = 2
 
-/** `GhosttySearchOption`. The two select options take a NULL value. */
-export const SEARCH_OPT_NEEDLE = 0
-export const SEARCH_OPT_SELECT_NEXT = 1
-export const SEARCH_OPT_SELECT_PREV = 2
-export const SEARCH_OPT_SELECT_SCROLL = 3
+/** `GhosttySearchOption`. Selecting a match is `ghostty_search_select_next`
+ *  and `_prev` since vt-1.0.0, no longer an option. */
+export const SEARCH_OPT_NEEDLE = 1
+export const SEARCH_OPT_SELECT_SCROLL = 4
 
 /**
  * `GhosttySearchData`. `SELECTED_INDEX` counts newest-to-oldest (0 = newest);
  * `NativeSearchController` flips it for the find bar.
  */
-export const SEARCH_DATA_STATUS = 0
-export const SEARCH_DATA_NEEDLE = 1
-export const SEARCH_DATA_TOTAL_MATCHES = 2
-export const SEARCH_DATA_SELECTED_INDEX = 3
-export const SEARCH_DATA_SELECTED_MATCH = 4
-export const SEARCH_DATA_MATCHES = 5
-export const SEARCH_DATA_VIEWPORT_MATCHES = 6
-export const SEARCH_DATA_SELECT_SCROLL = 7
+export const SEARCH_DATA_STATUS = 1
+export const SEARCH_DATA_NEEDLE = 2
+export const SEARCH_DATA_TOTAL_MATCHES = 3
+export const SEARCH_DATA_SELECTED_INDEX = 4
+export const SEARCH_DATA_SELECTED_MATCH = 5
+export const SEARCH_DATA_MATCHES = 6
+export const SEARCH_DATA_VIEWPORT_MATCHES = 7
+export const SEARCH_DATA_SELECT_SCROLL = 8
 
 /** `GhosttySearchScroll`. We use `NONE`: the viewport offset is ours. */
 export const SEARCH_SCROLL_IF_NEEDED = 0
@@ -204,29 +203,38 @@ export const ROW_DATA_DIRTY = 8
 /* -------------------------------------------------------------------------- */
 
 /**
- * `GhosttyStyle` layout, wasm32: 72 bytes. Colors carry a `uint64_t`, so each
- * is 8-aligned and 16 bytes wide. Read directly from caller memory (there is no
- * `ghostty_style_get`). `size` is versioned: write the buffer size in, and the
- * callee writes back what it filled.
+ * `GhosttyStyle` layout: 16 bytes on every platform, frozen since vt-1.0.0,
+ * with no size field. Three 4-byte colors (a one-byte tag, then a palette index
+ * or three RGB bytes), then a `uint16_t` of flags. Read directly from caller
+ * memory (there is no `ghostty_style_get`).
  */
-export const STYLE_SIZE = 72
-export const STYLE_OFF_SIZE = 0
-export const STYLE_OFF_FG_TAG = 8
-export const STYLE_OFF_FG_VALUE = 16
-export const STYLE_OFF_BG_TAG = 24
-export const STYLE_OFF_BG_VALUE = 32
-export const STYLE_OFF_UNDERLINE_TAG = 40
-export const STYLE_OFF_UNDERLINE_VALUE = 48
-export const STYLE_OFF_BOLD = 56
-export const STYLE_OFF_ITALIC = 57
-export const STYLE_OFF_FAINT = 58
-export const STYLE_OFF_BLINK = 59
-export const STYLE_OFF_INVERSE = 60
-export const STYLE_OFF_INVISIBLE = 61
-export const STYLE_OFF_STRIKETHROUGH = 62
-export const STYLE_OFF_OVERLINE = 63
-/** `int`, not a bool: 0 none, 1 single, 2 double, 3 curly, 4 dotted, 5 dashed. */
-export const STYLE_OFF_UNDERLINE_STYLE = 64
+export const STYLE_SIZE = 16
+export const STYLE_OFF_FG_TAG = 0
+export const STYLE_OFF_FG_VALUE = 1
+export const STYLE_OFF_BG_TAG = 4
+export const STYLE_OFF_BG_VALUE = 5
+export const STYLE_OFF_UNDERLINE_TAG = 8
+export const STYLE_OFF_UNDERLINE_VALUE = 9
+export const STYLE_OFF_FLAGS = 12
+
+/** `GhosttyStyleFlags` bits (`GHOSTTY_STYLE_FLAG_*`). */
+export const STYLE_FLAG_BOLD = 1 << 0
+export const STYLE_FLAG_ITALIC = 1 << 1
+export const STYLE_FLAG_FAINT = 1 << 2
+export const STYLE_FLAG_BLINK = 1 << 3
+export const STYLE_FLAG_INVERSE = 1 << 4
+export const STYLE_FLAG_INVISIBLE = 1 << 5
+export const STYLE_FLAG_STRIKETHROUGH = 1 << 6
+export const STYLE_FLAG_OVERLINE = 1 << 7
+/** Bits 8-10 of the flags: 0 none, 1 single, 2 double, 3 curly, 4 dotted,
+ *  5 dashed (`GhosttySgrUnderline`). */
+export const STYLE_UNDERLINE_SHIFT = 8
+export const STYLE_UNDERLINE_MASK = 0x7 << STYLE_UNDERLINE_SHIFT
+
+/** The underline style held in a style's flags. */
+export function styleUnderline(flags: number): number {
+  return (flags & STYLE_UNDERLINE_MASK) >>> STYLE_UNDERLINE_SHIFT
+}
 
 /** `GhosttyStyleColorTag`. */
 export const STYLE_COLOR_NONE = 0
@@ -300,20 +308,21 @@ export const RS_DIRTY_FALSE = 0
 export const RS_DIRTY_PARTIAL = 1
 export const RS_DIRTY_FULL = 2
 
-/** `GhosttyRenderStateCursorVisualStyle` (DECSCUSR). */
+/** `GhosttyCursorStyle` (DECSCUSR), shared by the terminal and render state
+ *  since vt-1.0.0. */
 export const RS_CURSOR_BAR = 0
 export const RS_CURSOR_BLOCK = 1
 export const RS_CURSOR_UNDERLINE = 2
 export const RS_CURSOR_BLOCK_HOLLOW = 3
 
 /** `GhosttyRenderStateOption` / `...RowOption` — keys for the `set` calls. */
-export const RS_OPTION_DIRTY = 0
+export const RS_OPTION_DIRTY = 1
 /**
  * Per-row dirty is cleared by the consumer via `row_set(iter, ROW_OPTION_DIRTY,
  * false)`; otherwise every row reads dirty from the second frame on.
  * `render_state_set(state, DIRTY, false)` is a different flag.
  */
-export const RS_ROW_OPTION_DIRTY = 0
+export const RS_ROW_OPTION_DIRTY = 1
 
 /** `GhosttyRenderStateRowData` — keys for `ghostty_render_state_row_get`. */
 export const RS_ROW_DATA_DIRTY = 1 // was render_state_is_row_dirty
@@ -360,7 +369,8 @@ export const T_DATA_ACTIVE_SCREEN = 6 // was terminal_is_alternate_screen
 export const T_DATA_CURSOR_VISIBLE = 7
 export const T_DATA_KITTY_KEYBOARD_FLAGS = 8
 export const T_DATA_SCROLLBAR = 9
-export const T_DATA_CURSOR_STYLE = 10
+/** A `GhosttyStyle`: the SGR style new text gets. Was `CURSOR_STYLE`. */
+export const T_DATA_CURSOR_SGR_STYLE = 10
 export const T_DATA_MOUSE_TRACKING = 11 // was terminal_has_mouse_tracking
 export const T_DATA_TITLE = 12
 export const T_DATA_PWD = 13
@@ -386,82 +396,82 @@ export const T_DATA_SCROLLBACK_MAX_LINES = 35
  * sequences with side effects or responses unless the effect callbacks
  * (`OPT_WRITE_PTY` and friends) are registered.
  */
-export const T_OPT_USERDATA = 0
+export const T_OPT_USERDATA = 1
 /** Replaces `terminal_has_response` / `terminal_read_response`. */
-export const T_OPT_WRITE_PTY = 1
-export const T_OPT_BELL = 2
-export const T_OPT_ENQUIRY = 3
-export const T_OPT_XTVERSION = 4
-export const T_OPT_TITLE_CHANGED = 5
-export const T_OPT_SIZE = 6
-export const T_OPT_COLOR_SCHEME = 7
-export const T_OPT_DEVICE_ATTRIBUTES = 8
-export const T_OPT_TITLE = 9
-export const T_OPT_PWD = 10
-export const T_OPT_COLOR_FOREGROUND = 11
-export const T_OPT_COLOR_BACKGROUND = 12
-export const T_OPT_COLOR_CURSOR = 13
-export const T_OPT_COLOR_PALETTE = 14
-export const T_OPT_SELECTION = 21
+export const T_OPT_WRITE_PTY = 2
+export const T_OPT_BELL = 3
+export const T_OPT_ENQUIRY = 4
+export const T_OPT_XTVERSION = 5
+export const T_OPT_TITLE_CHANGED = 6
+export const T_OPT_SIZE = 7
+export const T_OPT_COLOR_SCHEME = 8
+export const T_OPT_DEVICE_ATTRIBUTES = 9
+export const T_OPT_TITLE = 10
+export const T_OPT_PWD = 11
+export const T_OPT_COLOR_FOREGROUND = 12
+export const T_OPT_COLOR_BACKGROUND = 13
+export const T_OPT_COLOR_CURSOR = 14
+export const T_OPT_COLOR_PALETTE = 15
+export const T_OPT_SELECTION = 22
 /**
  * The core holds the configured default cursor across a RIS.
  */
-export const T_OPT_DEFAULT_CURSOR_STYLE = 22
-export const T_OPT_DEFAULT_CURSOR_BLINK = 23
-export const T_OPT_PWD_CHANGED = 25
-export const T_OPT_CLIPBOARD_WRITE = 26
+export const T_OPT_DEFAULT_CURSOR_STYLE = 23
+export const T_OPT_DEFAULT_CURSOR_BLINK = 24
+export const T_OPT_PWD_CHANGED = 26
+export const T_OPT_CLIPBOARD_WRITE = 27
 /**
  * Both scrollback caps bind independently, so set both.
  */
-export const T_OPT_SCROLLBACK_MAX_BYTES = 27
-export const T_OPT_SCROLLBACK_MAX_LINES = 28
-export const T_OPT_DESKTOP_NOTIFICATION = 29
-export const T_OPT_PROGRESS_REPORT = 30
+export const T_OPT_SCROLLBACK_MAX_BYTES = 28
+export const T_OPT_SCROLLBACK_MAX_LINES = 29
+export const T_OPT_DESKTOP_NOTIFICATION = 30
+export const T_OPT_PROGRESS_REPORT = 31
 /**
  * Answer `CSI 21 t` (report window title). **Leave this off**: a remote host
  * that can set the title could read it back as typed input (command
  * injection). `effects.test.ts` asserts it stays unanswered with the PTY write
  * callback installed.
  */
-export const T_OPT_TITLE_REPORT = 32
+export const T_OPT_TITLE_REPORT = 33
 
 /**
  * `size_t*`: how much of an unfinished sequence to keep. A snapshot needs it,
  * since one taken mid-sequence has to carry the bytes so far. Zero, the default,
  * makes encoding fail whenever a write happened to end inside a sequence.
  */
-export const T_OPT_CONTINUATION_MAX_BYTES = 31
+export const T_OPT_CONTINUATION_MAX_BYTES = 32
 
 /** `GhosttySnapshotDecoderOption` keys. */
-export const SNAPSHOT_OPT_MAX_CONTINUATION_BYTES = 0
-export const SNAPSHOT_OPT_RETAIN_CONTINUATION = 1
+export const SNAPSHOT_OPT_MAX_CONTINUATION_BYTES = 1
+export const SNAPSHOT_OPT_RETAIN_CONTINUATION = 2
 
 /**
  * Whether growing the rows may pull lines back out of scrollback. `bool*`,
  * default true, kept across a RIS. Off behind a ConPTY, which repaints its own
  * buffer after a resize and would overwrite the pulled rows.
  */
-export const T_OPT_RESIZE_PULL_SCROLLBACK = 40
+export const T_OPT_RESIZE_PULL_SCROLLBACK = 41
 
 /**
  * `GhosttyTerminalRenderHoldFn`: `(terminal, userdata, bool held) -> void`,
  * called where synchronized output (mode 2026) begins and ends. The value is
  * the function pointer itself.
  */
-export const T_OPT_RENDER_HOLD = 41
+export const T_OPT_RENDER_HOLD = 42
 
 /**
  * Answer DECRQCRA with a screen-rectangle checksum. **Leave it off**: a remote
  * program could read the whole screen one cell at a time. `effects.test.ts`
  * asserts it stays unanswered.
  */
-export const T_OPT_XT_CHECKSUM_REPORT = 44
+export const T_OPT_XT_CHECKSUM_REPORT = 45
 
 /**
  * `GhosttyTerminalResetFn`: `(terminal, userdata) -> void`, called after a
  * full reset (RIS). The value is the function pointer itself.
  */
-export const T_OPT_RESET = 43
+export const T_OPT_RESET = 44
 
 /**
  * `ghostty_terminal_vt_write_until` boundaries (`GhosttyTerminalBoundary`),
@@ -493,7 +503,7 @@ export const WRITE_STOP_OFF_END = 20
  * Sets a mode via a `GhosttyTerminalModeConfig*`. Never fires the render-hold
  * callback, so it can end a hold the program never released.
  */
-export const T_OPT_MODE = 34
+export const T_OPT_MODE = 35
 /** DEC private mode 2026, synchronized output. */
 export const MODE_SYNC_OUTPUT = 2026
 
@@ -634,10 +644,7 @@ export interface GhosttyMainExports {
   ghostty_grid_ref_row(ref: number, outRow: number): number
   ghostty_grid_ref_graphemes(ref: number, buf: number, bufLen: number, outLen: number): number
   ghostty_grid_ref_hyperlink_uri(ref: number, buf: number, bufLen: number, outLen: number): number
-  /**
-   * Fills a caller-owned `GhosttyStyle`; write `STYLE_SIZE` into its first
-   * word first.
-   */
+  /** Fills a caller-owned `GhosttyStyle` (`STYLE_SIZE` bytes). */
   ghostty_grid_ref_style(ref: number, outStyle: number): number
   ghostty_style_default(outStyle: number): void
   ghostty_style_is_default(style: number): number
@@ -666,6 +673,9 @@ export interface GhosttyMainExports {
   /** Blocking feed-and-tick until complete; for tests and probes. */
   ghostty_search_run(search: number): number
   ghostty_search_set(search: number, option: number, value: number): number
+  /** Moves the selected match. `GHOSTTY_NO_VALUE` when there are none. */
+  ghostty_search_select_next(search: number): number
+  ghostty_search_select_prev(search: number): number
   ghostty_search_get(search: number, data: number, value: number): number
   ghostty_search_get_multi(
     search: number,
@@ -679,42 +689,43 @@ export interface GhosttyMainExports {
    * `KeyEncoder.create` checks they exist. */
   ghostty_key_event_new(alloc: number, slot: number): number
   ghostty_key_event_free(event: number): void
-  ghostty_key_event_set_action(event: number, action: number): void
-  ghostty_key_event_set_key(event: number, key: number): void
-  ghostty_key_event_set_mods(event: number, mods: number): void
-  ghostty_key_event_set_consumed_mods(event: number, mods: number): void
-  ghostty_key_event_set_composing(event: number, composing: number): void
-  /** The text isn't copied; the buffer must outlive every `encode` that reads
-   *  it. */
-  ghostty_key_event_set_utf8(event: number, ptr: number, len: number): void
-  ghostty_key_event_set_unshifted_codepoint(event: number, codepoint: number): void
+  ghostty_key_event_set_action(event: number, action: number): number
+  ghostty_key_event_set_key(event: number, key: number): number
+  ghostty_key_event_set_mods(event: number, mods: number): number
+  ghostty_key_event_set_consumed_mods(event: number, mods: number): number
+  ghostty_key_event_set_composing(event: number, composing: number): number
+  /** `str` points to a `GhosttyString` (by value in the header, a pointer on
+   *  wasm32). The text isn't copied; the buffer must outlive every `encode`
+   *  that reads it. */
+  ghostty_key_event_set_utf8(event: number, str: number): number
+  ghostty_key_event_set_unshifted_codepoint(event: number, codepoint: number): number
   ghostty_key_encoder_new(alloc: number, slot: number): number
   ghostty_key_encoder_free(encoder: number): void
   /** `value` is a *pointer* to the value, whose type depends on the option. */
-  ghostty_key_encoder_setopt(encoder: number, option: number, value: number): void
-  ghostty_key_encoder_setopt_from_terminal(encoder: number, term: number): void
+  ghostty_key_encoder_set(encoder: number, option: number, value: number): number
+  ghostty_key_encoder_set_from_terminal(encoder: number, term: number): number
   /** Writes the byte count to `outLen` even when it returns `OUT_OF_SPACE`,
    *  in which case that count is the buffer size required. */
   ghostty_key_encoder_encode(encoder: number, event: number, out: number, outSize: number, outLen: number): number
 
   ghostty_mouse_event_new(alloc: number, slot: number): number
   ghostty_mouse_event_free(event: number): void
-  ghostty_mouse_event_set_action(event: number, action: number): void
-  ghostty_mouse_event_set_button(event: number, button: number): void
+  ghostty_mouse_event_set_action(event: number, action: number): number
+  ghostty_mouse_event_set_button(event: number, button: number): number
   /** "No button" (there is no button 0), for motion with nothing held. */
-  ghostty_mouse_event_clear_button(event: number): void
-  ghostty_mouse_event_set_mods(event: number, mods: number): void
+  ghostty_mouse_event_clear_button(event: number): number
+  ghostty_mouse_event_set_mods(event: number, mods: number): number
   /** `position` points to a `GhosttyMousePosition` (two `f32`, surface
    *  pixels); by-value in the header, a pointer on wasm32. */
-  ghostty_mouse_event_set_position(event: number, position: number): void
+  ghostty_mouse_event_set_position(event: number, position: number): number
   ghostty_mouse_encoder_new(alloc: number, slot: number): number
   ghostty_mouse_encoder_free(encoder: number): void
   /** `value` is a *pointer* to the value, whose type depends on the option. */
-  ghostty_mouse_encoder_setopt(encoder: number, option: number, value: number): void
+  ghostty_mouse_encoder_set(encoder: number, option: number, value: number): number
   /** Sets tracking mode and output format from the terminal; leaves surface
    *  geometry and the any-button flag alone. */
-  ghostty_mouse_encoder_setopt_from_terminal(encoder: number, term: number): void
-  ghostty_mouse_encoder_reset(encoder: number): void
+  ghostty_mouse_encoder_set_from_terminal(encoder: number, term: number): number
+  ghostty_mouse_encoder_reset(encoder: number): number
   /** Writes the byte count to `outLen` even when it returns `OUT_OF_SPACE`,
    *  in which case that count is the buffer size required. */
   ghostty_mouse_encoder_encode(encoder: number, event: number, out: number, outSize: number, outLen: number): number

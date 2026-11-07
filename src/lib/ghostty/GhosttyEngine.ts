@@ -89,23 +89,29 @@ const CURSOR_BLINK_MS = 530
 
 /**
  * The core's `scrollbackLimit` is a byte budget, not a row count. Retention
- * tracks `value / (cols * 9.2)` for this binary; rows fall out of the budget and
- * the width, which is why the setting is the budget. Re-measure after
- * rebuilding the vendored binary (see docs/DEV_HISTORY.md).
+ * tracks `value / (cols * 8.7)` for this binary (9.2 before the 27ffca0d pin);
+ * rows fall out of the budget and the width, which is why the setting is the
+ * budget. Re-measure after rebuilding the vendored binary (see
+ * docs/DEV_HISTORY.md).
  */
-const SCROLLBACK_BYTES_PER_CELL = 9.2
+const SCROLLBACK_BYTES_PER_CELL = 8.7
 
 /**
  * Per-pane memory tiers: key is the pane's total WASM footprint in MB as shown
- * in Settings, value is the scrollback budget. WASM memory grows in doubling
- * steps, so each budget is the largest that stays inside its step:
+ * in Settings, value is the scrollback budget. Measured at the 27ffca0d pin,
+ * flooded to saturation at 80 and 200 columns alike:
  *
- *   budget <= 2.5 MB  ->  5.0 MB heap   (8 MB tier)
- *   budget 2.75-6 MB  ->  9.0 MB heap   (16 MB tier)
- *   budget 6.5-12 MB  -> 17.0 MB heap   (32 MB tier)
- *   budget 13-26 MB   -> 33.0 MB heap   (64 MB tier)
+ *   2.5 MB budget  ->  3.4 MB heap   (8 MB tier)
+ *     6 MB budget  ->  7.1 MB heap   (16 MB tier)
+ *    12 MB budget  -> 13.2 MB heap   (32 MB tier)
+ *    26 MB budget  -> 27.0 MB heap   (64 MB tier)
  *
- * Measured, not derived: re-measure after any rebuild of the vendored binary.
+ * The budgets were picked on the previous binary, whose heap grew in doubling
+ * steps (5, 9, 17 and 33 MB at these budgets). This one grows almost in line
+ * with the budget, about 1 MB over it, so every tier now sits well under its
+ * label; raising the budgets would buy depth at the memory the labels already
+ * promise. Measured, not derived: re-measure after any rebuild of the vendored
+ * binary.
  */
 const SCROLLBACK_BUDGET_BY_FOOTPRINT_MB: Record<number, number> = {
   8: 2.5 * 1024 * 1024,

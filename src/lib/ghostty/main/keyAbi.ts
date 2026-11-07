@@ -112,17 +112,17 @@ export const KEY_ACTION_PRESS = 1
 export const KEY_ACTION_REPEAT = 2
 
 /**
- * `GhosttyKeyEncoderOption`. `setopt_from_terminal` sets all of these except
+ * `GhosttyKeyEncoderOption`. `set_from_terminal` sets all of these except
  * `MACOS_OPTION_AS_ALT`, which has no meaning on Windows.
  */
-export const KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION = 0
-export const KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION = 1
-export const KEY_ENCODER_OPT_IGNORE_KEYPAD_WITH_NUMLOCK = 2
-export const KEY_ENCODER_OPT_ALT_ESC_PREFIX = 3
-export const KEY_ENCODER_OPT_MODIFY_OTHER_KEYS_STATE_2 = 4
-export const KEY_ENCODER_OPT_KITTY_FLAGS = 5
-export const KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT = 6
-export const KEY_ENCODER_OPT_BACKARROW_KEY_MODE = 7
+export const KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION = 1
+export const KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION = 2
+export const KEY_ENCODER_OPT_IGNORE_KEYPAD_WITH_NUMLOCK = 3
+export const KEY_ENCODER_OPT_ALT_ESC_PREFIX = 4
+export const KEY_ENCODER_OPT_MODIFY_OTHER_KEYS_STATE_2 = 5
+export const KEY_ENCODER_OPT_KITTY_FLAGS = 6
+export const KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT = 7
+export const KEY_ENCODER_OPT_BACKARROW_KEY_MODE = 8
 
 /**
  * `GhosttyKittyKeyFlags`, the bits an application pushes with `CSI > flags u`.

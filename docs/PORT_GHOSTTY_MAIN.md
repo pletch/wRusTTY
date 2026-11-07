@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ ae0dc1b7136c2baddc3e067663aa041cd555cfda
+ghostty-org/ghostty @ 27ffca0dd67177d1f069ea7f910362e5d871613d
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,13 +34,99 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, 190, 190, 196, **196 here** — so re-pin only with a reason and re-run
-the checks when you do. The long run of it going *down* was consolidation rather
+180, 181, 189, 189, 190, 190, 190, 190, 196, 196, **214 here** — so re-pin only with a reason and re-run
+the checks when you do. From this pin on, upstream holds the C API to additions
+only (see below), so a re-pin should no longer move a number we already use. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca`, `ghostty_osc_set` at `f9e82709`, and Kitty graphics
 image iteration at `8ef0ec12`.
 
-### Moving from `8ef0ec12` (2026-10-24) to this pin
+### Moving from `ae0dc1b7` (2026-10-31) to this pin
+
+207 commits over a week. On 2026-11-06 upstream tagged **`vt-1.0.0`**, the first
+release of libghostty-vt, and in preparing it broke the C API on purpose, once,
+to make it stable. CI now fails any change to it that isn't an addition
+(`fdedebade`, `ea675302b`), checked against a committed baseline and a
+per-target layout file (`src/terminal/c/abi/wasm32-freestanding.json`). This
+pin is three VT commits past the tag, with the same API: it reports
+`1.1.0-dev+27ffca0`. Still Zig 0.17.0, and the ESC k patch applied cleanly.
+
+**What the break changed for us:**
+
+- **Every option enum was renumbered.** Each enum used as a `get`/`set` key now
+  starts with `INVALID = 0`, shifting the rest up by one (`657e82d1a`). That
+  moved 58 of our constants: all of `T_OPT_*`, the search, snapshot, render
+  state, key and mouse encoder options. Data keys (`T_DATA_*`, `RS_DATA_*`)
+  already started at 1 and didn't move. A missed one is silent: the core
+  sets a different option. `abi.manifest.test.ts` now checks every enum
+  constant we transcribe against the binary's own manifest, which carries
+  enum values since this pin, so this can't drift again unnoticed.
+- **`GhosttyStyle` is a frozen 16-byte struct** (`a447ff7d8`): three 4-byte
+  colors (a one-byte tag, then a palette index or RGB), then a `uint16_t` of
+  flags with the underline style in bits 8-10. It was 72 bytes with a size
+  field and a byte per attribute. `ViewportReader`, `ScrollbackReader` and the
+  bench read it through `abi.STYLE_FLAG_*` and `abi.styleUnderline`.
+- **`GhosttyGridRef` and `GhosttySelection` lost their size field**
+  (`9e0d83cee`): 8 and 20 bytes, zeroed rather than sized.
+- **Renames and new shapes.** `key_encoder_setopt`/`mouse_encoder_setopt` (and
+  `_from_terminal`) are `*_set`. `key_event_set_utf8` takes a `GhosttyString`,
+  by pointer on wasm32. Search selection is `ghostty_search_select_next` and
+  `_prev` instead of two options. `T_DATA_CURSOR_STYLE` is
+  `CURSOR_SGR_STYLE`. Setters that returned `void` return a result, and an
+  unknown key returns the new `GHOSTTY_UNSUPPORTED` (-8). The formatter takes
+  its options by key (`ghostty_formatter_set`), which only the snapshot test
+  uses.
+
+**Fixes we can reach:**
+
+- **Resize no longer leaves pins on a freed page** (`1b8b3f55b`, after the
+  tag). Growing the columns without reflow (the alternate screen, or
+  wraparound off) copies rows back into the previous page, and stops early
+  when one doesn't fit, for example a row heavy with graphemes. The rows
+  copied before it kept tracked pins, the viewport's included, pointing at
+  the page that was then destroyed. A phone rotating with a full-screen app
+  open is that resize.
+- **Print respects the right margin after wrapping** (`faa346b06`). With left
+  and right margins set, a wide character after a wrap could leave the cursor
+  outside them.
+- **The continuation size query succeeds when nothing is pending**
+  (`6dc6cd927`). It returned `OUT_OF_SPACE` with a size of zero, which our
+  snapshot code already allowed for.
+
+**Speed.** Styles are packed into 128 bits and applied in one pass
+(`687f37acd`, `54d162da5`), the print fast path handles mixed widths and
+open hyperlinks (`68750a1be`, `4c92f8095`), ASCII prints from the input bytes
+(`c12d42eaf`), and blank rows are no longer cleared or scanned again
+(`881fc6890`, `8484146c7`). Headless `vt_write` at 200x60 in Node 24, best of
+five, two runs each:
+
+| payload | `ae0dc1b7` | this pin | |
+|---|---|---|---|
+| ASCII text | 684-696 MB/s | 674-689 MB/s | same |
+| SGR-heavy | 84-85 MB/s | 156-157 MB/s | **1.85x** |
+| mixed plain/SGR | 303-320 MB/s | 362-378 MB/s | 1.2x |
+| grapheme-heavy (ZWJ, flags, modifiers) | 77-78 MB/s | 232 MB/s | **3.0x** |
+| inline redraw, 30 rows x 2000 frames | 257-272 MB/s | 365-371 MB/s | 1.4x |
+
+The last row is shaped like an inline program such as Claude Code: synchronized
+updates, cursor up, erase, and the block drawn again. `/#bench` in the app
+hasn't been re-run.
+
+**Memory.** Scrollback costs about 8.7 bytes a cell, against 9.2, so each
+budget holds about 5% more rows. The heap no longer grows in doubling steps:
+it sits about 1 MB above the budget, in a straight line (2.5 MB of budget is a
+3.4 MB heap, 26 MB is 27 MB). The tier budgets in `GhosttyEngine.ts` were
+picked against the old staircase and are unchanged, so every tier now uses
+well under its label. Raising them is left as its own decision.
+
+Inert here: Kitty graphics (placeholder targeting, eviction by transmission
+order, the garbage cursor pin after a resize, which only Kitty placement
+reads), triple-click selection (we select in JS), the removed selection
+formatter, the docs rewrite, and packaging.
+
+The stripped binary grew **54,179 bytes** (1,277,048 -> 1,331,227).
+
+### Moving from `8ef0ec12` (2026-10-24) to `ae0dc1b7`
 
 60 merges over a week, which include Ghostty 1.4.0 (tagged 2026-10-27). A plain
 `git log 8ef0ec12..` counts about 18,000 commits because the release branch was
@@ -650,7 +736,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout ae0dc1b7136c2baddc3e067663aa041cd555cfda
+cd ghostty && git checkout 27ffca0dd67177d1f069ea7f910362e5d871613d
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm

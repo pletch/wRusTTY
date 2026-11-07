@@ -1,6 +1,7 @@
 /**
- * `abi.ts`'s struct layouts, checked against the binary's own manifest
- * (`ghostty_type_json`: size, alignment and every field's offset).
+ * `abi.ts`'s struct layouts and enum values, checked against the binary's own
+ * manifest (`ghostty_type_json`: size, alignment, every field's offset, and
+ * every enum's values).
  *
  * The offsets in `abi.ts` were probed (write a value, read it back), which
  * can't find where a struct ends: an unread union tail has no observable
@@ -14,6 +15,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import * as abi from './abi'
+import * as keyAbi from './keyAbi'
+import * as mouseAbi from './mouseAbi'
 
 const here = dirname(fileURLToPath(import.meta.url))
 /** The shipped binary, whose layouts `abi.ts` must match. */
@@ -25,9 +28,13 @@ interface ManifestField {
   type: string
 }
 interface ManifestType {
+  kind?: string
   size: number
   align: number
   fields?: Record<string, ManifestField>
+  /** Enums only. */
+  prefix?: string
+  values?: Record<string, number>
 }
 interface ManifestAbi {
   target: string
@@ -137,19 +144,16 @@ run('abi.ts against ghostty_type_json', () => {
 
   it('GhosttyGridRef', () => {
     expect(abi.GRID_REF_SIZE).toBe(m.GhosttyGridRef.size)
-    expect(abi.GRID_REF_OFF_SIZE).toBe(field('GhosttyGridRef', 'size').offset)
     expect(abi.GRID_REF_OFF_NODE).toBe(field('GhosttyGridRef', 'node').offset)
     expect(abi.GRID_REF_OFF_X).toBe(field('GhosttyGridRef', 'x').offset)
     expect(abi.GRID_REF_OFF_Y).toBe(field('GhosttyGridRef', 'y').offset)
   })
 
   /**
-   * The native search path's types, written by us and read by the core (the
-   * selection and each buffer element carry a `size` field).
+   * The native search path's types, written by us and read by the core.
    */
   it('GhosttySelection and its buffer', () => {
     expect(abi.SELECTION_SIZE).toBe(m.GhosttySelection.size)
-    expect(abi.SELECTION_OFF_SIZE).toBe(field('GhosttySelection', 'size').offset)
     expect(abi.SELECTION_OFF_START).toBe(field('GhosttySelection', 'start').offset)
     expect(abi.SELECTION_OFF_END).toBe(field('GhosttySelection', 'end').offset)
     expect(abi.SELECTION_OFF_RECTANGLE).toBe(field('GhosttySelection', 'rectangle').offset)
@@ -175,13 +179,13 @@ run('abi.ts against ghostty_type_json', () => {
     expect(abi.POINT_COORDINATE_OFF_Y).toBe(field('GhosttyPointCoordinate', 'y').offset)
   })
 
-  it('GhosttyStyle — size, colors and the attribute bytes', () => {
+  it('GhosttyStyle — three packed colors, then the flags', () => {
     expect(abi.STYLE_SIZE).toBe(m.GhosttyStyle.size)
-    expect(abi.STYLE_OFF_SIZE).toBe(field('GhosttyStyle', 'size').offset)
 
     // Each color is a nested GhosttyStyleColor, so offsets add up.
     const tag = field('GhosttyStyleColor', 'tag').offset
     const val = field('GhosttyStyleColor', 'value').offset
+    expect(field('GhosttyStyleColor', 'tag').size).toBe(1)
     for (const [member, offTag, offValue] of [
       ['fg_color', abi.STYLE_OFF_FG_TAG, abi.STYLE_OFF_FG_VALUE],
       ['bg_color', abi.STYLE_OFF_BG_TAG, abi.STYLE_OFF_BG_VALUE],
@@ -192,22 +196,8 @@ run('abi.ts against ghostty_type_json', () => {
       expect(offValue, `${member} value`).toBe(base + val)
     }
 
-    for (const [name, ours] of [
-      ['bold', abi.STYLE_OFF_BOLD],
-      ['italic', abi.STYLE_OFF_ITALIC],
-      ['faint', abi.STYLE_OFF_FAINT],
-      ['blink', abi.STYLE_OFF_BLINK],
-      ['inverse', abi.STYLE_OFF_INVERSE],
-      ['invisible', abi.STYLE_OFF_INVISIBLE],
-      ['strikethrough', abi.STYLE_OFF_STRIKETHROUGH],
-      ['overline', abi.STYLE_OFF_OVERLINE],
-    ] as const) {
-      expect(ours, name).toBe(field('GhosttyStyle', name).offset)
-    }
-
-    // Upstream's `underline`; ours says UNDERLINE_STYLE to keep it apart from
-    // the color.
-    expect(abi.STYLE_OFF_UNDERLINE_STYLE).toBe(field('GhosttyStyle', 'underline').offset)
+    expect(abi.STYLE_OFF_FLAGS).toBe(field('GhosttyStyle', 'flags').offset)
+    expect(field('GhosttyStyle', 'flags').size).toBe(2)
   })
 
   it('GhosttyTerminalModeConfig — the in/out struct behind T_DATA_MODE', () => {
@@ -282,5 +272,72 @@ run('abi.ts against ghostty_type_json', () => {
   it('GhosttyColorRgb is the unit PALETTE_BYTES counts in', () => {
     expect(abi.COLOR_RGB_BYTES).toBe(m.GhosttyColorRgb.size)
     expect(abi.PALETTE_BYTES).toBe(abi.PALETTE_ENTRIES * m.GhosttyColorRgb.size)
+  })
+
+  /**
+   * Every enum constant we transcribe, by our prefix and upstream's enum. vt-1.0.0
+   * renumbered most of them by one (`INVALID = 0` first), which is silent if
+   * missed: the core gets a different option. A constant here with no upstream
+   * name fails too, so a removed key can't linger.
+   */
+  const ENUMS: [module: Record<string, unknown>, ours: string, upstream: string, skip?: RegExp][] = [
+    [abi, 'GHOSTTY_', 'GhosttyResult'],
+    [abi, 'POINT_TAG_', 'GhosttyPointTag'],
+    [abi, 'SEARCH_STATUS_', 'GhosttySearchStatus'],
+    [abi, 'SEARCH_OPT_', 'GhosttySearchOption'],
+    [abi, 'SEARCH_DATA_', 'GhosttySearchData'],
+    [abi, 'SEARCH_SCROLL_', 'GhosttySearchScroll'],
+    [abi, 'CELL_CONTENT_', 'GhosttyCellContentTag', /^CELL_CONTENT_TAG_MASK$/],
+    [abi, 'CELL_WIDE_', 'GhosttyCellWide'],
+    [abi, 'CELL_DATA_', 'GhosttyCellData'],
+    [abi, 'ROW_DATA_', 'GhosttyRowData'],
+    [abi, 'STYLE_COLOR_', 'GhosttyStyleColorTag'],
+    [abi, 'RS_DATA_', 'GhosttyRenderStateData'],
+    [abi, 'RS_DIRTY_', 'GhosttyRenderStateDirty'],
+    [abi, 'RS_CURSOR_', 'GhosttyCursorStyle', /^RS_CURSOR_(SIZE|OFF_)/],
+    [abi, 'RS_OPTION_', 'GhosttyRenderStateOption'],
+    [abi, 'RS_ROW_OPTION_', 'GhosttyRenderStateRowOption'],
+    [abi, 'RS_ROW_DATA_', 'GhosttyRenderStateRowData'],
+    [abi, 'RS_CELLS_', 'GhosttyRenderStateRowCellsData'],
+    [abi, 'T_DATA_', 'GhosttyTerminalData'],
+    [abi, 'T_OPT_', 'GhosttyTerminalOption'],
+    [abi, 'SNAPSHOT_OPT_', 'GhosttySnapshotDecoderOption'],
+    [abi, 'BOUNDARY_', 'GhosttyTerminalBoundary'],
+    [abi, 'STRING_END_', 'GhosttyTerminalStringEnd'],
+    [abi, 'SCREEN_', 'GhosttyTerminalScreen'],
+    [keyAbi, 'KEY_ACTION_', 'GhosttyKeyAction'],
+    [keyAbi, 'KEY_ENCODER_OPT_', 'GhosttyKeyEncoderOption'],
+    [mouseAbi, 'MOUSE_ACTION_', 'GhosttyMouseAction'],
+    [mouseAbi, 'MOUSE_BUTTON_', 'GhosttyMouseButton', /^MOUSE_BUTTON_WHEEL_/],
+    [mouseAbi, 'MOUSE_ENCODER_OPT_', 'GhosttyMouseEncoderOption'],
+  ]
+
+  it.each(ENUMS.map(([mod, ours, upstream, skip]) => [upstream, ours, mod, skip] as const))(
+    '%s matches our %s constants',
+    (upstream, ours, mod, skip) => {
+      const e = m[upstream]
+      expect(e?.values, `manifest has no enum ${upstream}`).toBeDefined()
+      // A longer prefix in the table owns its constants (RS_ROW_DATA_ isn't RS_DATA_).
+      const longer = ENUMS.filter(([, p]) => p !== ours && p.startsWith(ours)).map(([, p]) => p)
+      let checked = 0
+      for (const [name, value] of Object.entries(mod)) {
+        if (!name.startsWith(ours) || typeof value !== 'number') continue
+        if (skip?.test(name) || longer.some((p) => name.startsWith(p))) continue
+        const key = name.slice(ours.length)
+        expect(e.values![key], `${name} against ${e.prefix}${key} (undefined if upstream has none)`).toBe(value)
+        checked++
+      }
+      expect(checked, `no ${ours} constants checked`).toBeGreaterThan(0)
+    },
+  )
+
+  it('KEY_CODES is GhosttyKey in order', () => {
+    const keys = Object.entries(m.GhosttyKey.values!).filter(([k]) => k !== 'MAX_VALUE')
+    expect(keyAbi.KEY_CODES.length).toBe(keys.length)
+    for (const [name, value] of keys) {
+      // `A` is `KeyA`, `NUMPAD_MEMORY_ADD` is `NumpadMemoryAdd`.
+      const ours = keyAbi.KEY_CODES[value].replace(/^Key(?=.$)/, '')
+      expect(ours.toLowerCase(), name).toBe(name.replaceAll('_', '').toLowerCase())
+    }
   })
 })

@@ -168,8 +168,8 @@ export class NativeSearchController {
     } else if (!options?.incremental) {
       // The user took over; drop the anchor.
       this.anchorTop = -1
-      // We count oldest-first, so "next" is the core's SELECT_PREV.
-      this.select(options?.back ? abi.SEARCH_OPT_SELECT_NEXT : abi.SEARCH_OPT_SELECT_PREV)
+      // We count oldest-first, so "next" is the core's select_prev.
+      this.select(options?.back ? 'next' : 'prev')
     }
 
     this.refresh(true)
@@ -253,14 +253,16 @@ export class NativeSearchController {
     }
   }
 
-  /** Moves the selection; false when there's nothing to select. */
-  private select(option: number): boolean {
-    return this.ex.ghostty_search_set(this.handle, option, 0) === abi.GHOSTTY_SUCCESS
+  /** Moves the selection in the core's newest-first order; false when there's
+   *  nothing to select. */
+  private select(direction: 'next' | 'prev'): boolean {
+    const step = direction === 'next' ? this.ex.ghostty_search_select_next : this.ex.ghostty_search_select_prev
+    return step(this.handle) === abi.GHOSTTY_SUCCESS
   }
 
   /**
    * Steps the selection back toward `anchorTop`: the oldest match at or after
-   * the top of the viewport. The core only has SELECT_NEXT/PREV (the first NEXT
+   * the top of the viewport. The core only has select_next/prev (the first next
    * selects the newest match), so the target index is found by binary search in
    * the newest-to-oldest match list and stepped to. Re-run each frame while the
    * anchor is live, since the list grows as the scan proceeds.
@@ -291,7 +293,7 @@ export class NativeSearchController {
     let ok = this.selected
     const current = this.selected ? (this.readUsize(abi.SEARCH_DATA_SELECTED_INDEX) ?? 0) : -1
     for (let i = current; i < target; i++) {
-      ok = this.select(abi.SEARCH_OPT_SELECT_NEXT)
+      ok = this.select('next')
       if (!ok) break
     }
     return ok
@@ -348,7 +350,6 @@ export class NativeSearchController {
 
   /** The selected match in absolute coordinates, or null. */
   private readSelectedMatch(): { startY: number; startX: number; endY: number; endX: number } | null {
-    this.dv().setUint32(this.selSlot + abi.SELECTION_OFF_SIZE, abi.SELECTION_SIZE, true)
     const rc = this.ex.ghostty_search_get(this.handle, abi.SEARCH_DATA_SELECTED_MATCH, this.selSlot)
     if (rc !== abi.GHOSTTY_SUCCESS) return null
     return this.spanOf(this.selSlot)
@@ -445,12 +446,9 @@ export class NativeSearchController {
     this.matchBuf = this.ex.ghostty_wasm_alloc(this.matchCap * abi.SELECTION_SIZE)
   }
 
-  /** Fills `matchBuf` and returns the count; each element needs its `size`. */
+  /** Fills `matchBuf` and returns the count. */
   private fillMatches(data: number, cap: number): number {
     const d = this.dv()
-    for (let i = 0; i < cap; i++) {
-      d.setUint32(this.matchBuf + i * abi.SELECTION_SIZE + abi.SELECTION_OFF_SIZE, abi.SELECTION_SIZE, true)
-    }
     d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_PTR, this.matchBuf, true)
     d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_CAP, cap, true)
     d.setUint32(this.bufSlot + abi.SELECTION_BUFFER_OFF_LEN, 0, true)

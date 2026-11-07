@@ -6,7 +6,7 @@
  *
  * ## Which protocol is in force
  *
- * Not a setting: `setopt_from_terminal` reads the modes the application set
+ * Not a setting: `set_from_terminal` reads the modes the application set
  * (DECCKM, DECKPAM, `modifyOtherKeys`, the Kitty flag stack) per keystroke,
  * since a push can arrive between any two.
  *
@@ -85,6 +85,8 @@ export class KeyEncoder {
   private readonly buf: number
   private readonly lenSlot: number
   private readonly utf8Buf: number
+  /** A `GhosttyString` pointing into `utf8Buf`, which `set_utf8` takes. */
+  private readonly utf8Str: number
   private readonly encoderUtf8 = new TextEncoder()
   private view: DataView
 
@@ -105,13 +107,14 @@ export class KeyEncoder {
     this.buf = ex.ghostty_wasm_alloc(BUF_BYTES)
     this.utf8Buf = ex.ghostty_wasm_alloc(UTF8_BYTES)
     this.lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
+    this.utf8Str = ex.ghostty_wasm_alloc(abi.STRING_SIZE)
 
-    // The one option `setopt_from_terminal` can't derive (and resets anyway).
+    // The one option `set_from_terminal` can't derive (and resets anyway).
     // There's no option key on Windows; treating one as Alt is what a terminal
     // wants.
     const optSlot = ex.ghostty_wasm_alloc(1)
     new Uint8Array(ex.memory.buffer, optSlot, 1)[0] = 0
-    ex.ghostty_key_encoder_setopt(this.encoder, KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, optSlot)
+    ex.ghostty_key_encoder_set(this.encoder, KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT, optSlot)
     ex.ghostty_wasm_free(optSlot, 1)
   }
 
@@ -144,7 +147,7 @@ export class KeyEncoder {
     const { ex } = this
 
     // The application's modes as of this keystroke.
-    ex.ghostty_key_encoder_setopt_from_terminal(this.encoder, this.term)
+    ex.ghostty_key_encoder_set_from_terminal(this.encoder, this.term)
 
     ex.ghostty_key_event_set_action(
       this.event,
@@ -159,14 +162,14 @@ export class KeyEncoder {
 
     const text = textOf(e)
     if (text === null) {
-      ex.ghostty_key_event_set_utf8(this.event, 0, 0)
+      this.setUtf8(0, 0)
       ex.ghostty_key_event_set_unshifted_codepoint(this.event, 0)
     } else {
       const written = this.encoderUtf8.encodeInto(
         text,
         new Uint8Array(ex.memory.buffer, this.utf8Buf, UTF8_BYTES),
       ).written
-      ex.ghostty_key_event_set_utf8(this.event, this.utf8Buf, written)
+      this.setUtf8(this.utf8Buf, written)
       // Only meaningful unshifted; see the header.
       ex.ghostty_key_event_set_unshifted_codepoint(this.event, e.shiftKey ? 0 : text.codePointAt(0)!)
     }
@@ -182,17 +185,24 @@ export class KeyEncoder {
    */
   probeProtocol(): string {
     const { ex } = this
-    ex.ghostty_key_encoder_setopt_from_terminal(this.encoder, this.term)
+    ex.ghostty_key_encoder_set_from_terminal(this.encoder, this.term)
     ex.ghostty_key_event_set_action(this.event, KEY_ACTION_PRESS)
     ex.ghostty_key_event_set_key(this.event, keyFor('KeyA', 'a'))
     ex.ghostty_key_event_set_mods(this.event, MODS_CTRL)
     ex.ghostty_key_event_set_consumed_mods(this.event, 0)
     ex.ghostty_key_event_set_composing(this.event, 0)
     new Uint8Array(ex.memory.buffer, this.utf8Buf, 1)[0] = 0x61
-    ex.ghostty_key_event_set_utf8(this.event, this.utf8Buf, 1)
+    this.setUtf8(this.utf8Buf, 1)
     ex.ghostty_key_event_set_unshifted_codepoint(this.event, 0x61)
     const out = this.run()
     return out ? String.fromCharCode(...out) : ''
+  }
+
+  private setUtf8(ptr: number, len: number): void {
+    const d = this.dv()
+    d.setUint32(this.utf8Str + abi.STRING_OFF_PTR, ptr, true)
+    d.setUint32(this.utf8Str + abi.STRING_OFF_LEN, len, true)
+    this.ex.ghostty_key_event_set_utf8(this.event, this.utf8Str)
   }
 
   /** `encode`, then the buffer dance the C API asks for. */
@@ -233,6 +243,7 @@ export class KeyEncoder {
     ex.ghostty_wasm_free(this.buf, BUF_BYTES)
     ex.ghostty_wasm_free(this.utf8Buf, UTF8_BYTES)
     ex.ghostty_wasm_free(this.lenSlot, abi.USIZE_BYTES)
+    ex.ghostty_wasm_free(this.utf8Str, abi.STRING_SIZE)
   }
 }
 

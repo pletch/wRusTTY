@@ -55,11 +55,11 @@ export function mouseButtonFor(domButton: number): number | null {
 }
 
 /** `GhosttyMouseEncoderOption`. */
-export const MOUSE_ENCODER_OPT_EVENT = 0
-export const MOUSE_ENCODER_OPT_FORMAT = 1
-export const MOUSE_ENCODER_OPT_SIZE = 2
-export const MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED = 3
-export const MOUSE_ENCODER_OPT_TRACK_LAST_CELL = 4
+export const MOUSE_ENCODER_OPT_EVENT = 1
+export const MOUSE_ENCODER_OPT_FORMAT = 2
+export const MOUSE_ENCODER_OPT_SIZE = 3
+export const MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED = 4
+export const MOUSE_ENCODER_OPT_TRACK_LAST_CELL = 5
 
 /**
  * `GhosttyMouseEncoderSize` field offsets on wasm32 (four-byte `size_t`).
