@@ -32,6 +32,9 @@ release job publishes it as the GitHub release notes.
 - On Android, a pane opened or rotated with the keyboard up no longer tells the host about
   the short height, which made programs redraw when the keyboard closed.
 - On Android, a screen that falls far behind catches up rather than silently missing output.
+- On Android, tapping just below the last row, or on the pane's edge, could leave the
+  keyboard unable to open until you switched away from the app and back. A press there
+  now counts as a press on the terminal, on desktop too.
 - In rare cases, widening a full-screen program's pane, such as rotating a phone with one
   open, could leave the terminal reading memory it had already freed.
 

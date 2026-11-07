@@ -42,6 +42,7 @@ import type {
 } from '../lib/connection'
 import * as sessionLog from '../lib/logging'
 import { heldOffset, keyboardOpen, keyboardTakes } from '../lib/keyboardHold'
+import { pressAroundGrid } from '../lib/pressAroundGrid'
 import { lineForThumb } from '../lib/scrollbarThumb'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
@@ -2046,6 +2047,10 @@ export function Terminal({
       className="relative h-full w-full px-1.5 pt-3"
       // Painted from the same theme as the engine, so the padding can't drift.
       style={{ background: backgroundWithOpacity(paneTheme(settings), settings.backgroundOpacity) }}
+      // A press beside the grid keeps the terminal focused; see lib/pressAroundGrid.ts.
+      onMouseDown={(e) => {
+        pressAroundGrid(e, containerRef.current, () => termRef.current?.focus())
+      }}
       // File drops from Explorer, via DOM events (Tauri's drag-drop is off; it
       // breaks tab dragging). Only `Files` drags are handled here.
       onDragOver={(e) => {
