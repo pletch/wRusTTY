@@ -22,6 +22,11 @@ use crate::prompt::{AuthPrompt, AuthPromptField, AuthPrompter};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a host gets to answer after a network change. Long enough for a VPN to
+/// finish moving to the new network, since a connection through it may well survive.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long to wait for a goodbye a dead link may not be able to send.
+const PROBE_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Prompt rounds a keyboard-interactive exchange may take before the server is
 /// treated as never finishing. Real stacks use under five.
@@ -88,6 +93,25 @@ impl SshConnector {
 }
 
 impl SshSession {
+    /// [`Session::probe`], with the wait as a parameter for tests. Ending the session
+    /// makes its channel report the link as lost, which is what starts a reconnect.
+    pub fn probe_within(
+        &self,
+        timeout: Duration,
+    ) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+        let handle = self.handle.clone()?;
+        Some(Box::pin(async move {
+            if let Ok(Ok(())) = tokio::time::timeout(timeout, handle.send_ping()).await {
+                return;
+            }
+            let _ = tokio::time::timeout(
+                PROBE_DISCONNECT_TIMEOUT,
+                handle.disconnect(Disconnect::ByApplication, "", "English"),
+            )
+            .await;
+        }))
+    }
+
     /// Starts a local, remote, or dynamic (SOCKS5) port forward on the
     /// active connection.
     pub async fn add_forward(&self, spec: ForwardSpec) -> Result<ForwardHandle, SshError> {
@@ -279,6 +303,10 @@ impl Session for SshSession {
                 .await;
         }
         Ok(())
+    }
+
+    fn probe(&self) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+        self.probe_within(PROBE_TIMEOUT)
     }
 }
 

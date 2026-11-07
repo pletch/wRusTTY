@@ -40,8 +40,13 @@ const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Output waiting to go to a webview before more is dropped. Well above the 16 MB the
 /// coalescer lets a working webview fall behind by, so this only binds on a stuck one,
-/// whose output `SessionKeep` has anyway.
+/// whose output `SessionKeep` has anyway. Once it binds, output stops going out and the
+/// webview is told, so it can catch up from where it got to rather than carry on with a
+/// hole in the stream.
 const MAX_QUEUED_BYTES: usize = 32 * 1024 * 1024;
+
+/// Tells a webview that output was dropped on its way there.
+const OUTPUT_RESYNC_EVENT: &str = r#"{"type":"outputResync"}"#;
 
 /// One thing to send, addressed to the attachment it was meant for.
 struct Outgoing {
@@ -60,6 +65,8 @@ struct Sender {
     /// Bumped by each attach, so output for a webview that's gone is skipped rather
     /// than sent into a queue that may not be draining.
     attachment: Arc<AtomicU64>,
+    /// Output has been dropped and the webview told, until it attaches again.
+    dropping: Arc<AtomicBool>,
 }
 
 impl Sender {
@@ -82,7 +89,36 @@ impl Sender {
             queue,
             queued_bytes,
             attachment,
+            dropping: Arc::default(),
         }
+    }
+
+    /// Output, which once dropped has to stay dropped until the webview catches up, or
+    /// it would land after a hole.
+    fn send_output(
+        &self,
+        channel: Channel<InvokeResponseBody>,
+        events: Option<Channel<InvokeResponseBody>>,
+        body: InvokeResponseBody,
+    ) {
+        if self.dropping.load(Ordering::SeqCst) {
+            return;
+        }
+        let len = match &body {
+            InvokeResponseBody::Raw(bytes) => bytes.len(),
+            InvokeResponseBody::Json(_) => 0,
+        };
+        if self.queued_bytes.load(Ordering::SeqCst) + len > MAX_QUEUED_BYTES {
+            self.dropping.store(true, Ordering::SeqCst);
+            if let Some(events) = events {
+                self.send(
+                    events,
+                    InvokeResponseBody::Json(OUTPUT_RESYNC_EVENT.to_string()),
+                );
+            }
+            return;
+        }
+        self.send(channel, body);
     }
 
     fn send(&self, channel: Channel<InvokeResponseBody>, body: InvokeResponseBody) {
@@ -90,10 +126,6 @@ impl Sender {
             InvokeResponseBody::Raw(bytes) => bytes.len(),
             InvokeResponseBody::Json(_) => 0,
         };
-        // Only output, which is safe in `SessionKeep`. Events are small and rare.
-        if len > 0 && self.queued_bytes.load(Ordering::SeqCst) + len > MAX_QUEUED_BYTES {
-            return;
-        }
         self.queued_bytes.fetch_add(len, Ordering::SeqCst);
         let attachment = self.attachment.load(Ordering::SeqCst);
         let _ = self.queue.send(Outgoing {
@@ -130,6 +162,9 @@ fn locked(kept: &Shared) -> MutexGuard<'_, Kept> {
 #[derive(Default)]
 pub struct SessionAttachState {
     sessions: Mutex<HashMap<String, Shared>>,
+    /// What the frontend wants a rebuilt webview to start with, like a temporary zoom.
+    /// Opaque here, and gone with the process, unlike the webview's own storage.
+    ui_state: Mutex<Option<String>>,
     /// The last window closed and the process stayed for its sessions, so the next
     /// Activity has no webview until [`on_run_event`] builds one.
     window_gone: AtomicBool,
@@ -224,10 +259,23 @@ fn unix_ms() -> u64 {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ReplayStep {
+    /// Base64.
+    Output {
+        output: String,
+    },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachReply {
-    /// Base64. What came after the snapshot, for the new terminal to catch up on.
-    replay: String,
+    /// What came after the snapshot, in order, for the terminal to catch up on.
+    replay: Vec<ReplayStep>,
     /// Output was lost since the snapshot, so the screen may be wrong for now.
     gap: bool,
     /// Where live output carries on from.
@@ -261,15 +309,15 @@ impl SessionAttachState {
         let for_data = kept.clone();
         let data_sender = sender.clone();
         let data = Channel::new(move |body| {
-            let target = {
+            let (target, events) = {
                 let mut kept = locked(&for_data);
                 if let InvokeResponseBody::Raw(bytes) = &body {
                     kept.keep.push_output(bytes);
                 }
-                kept.data.clone()
+                (kept.data.clone(), kept.events.clone())
             };
             if let Some(channel) = target {
-                data_sender.send(channel, body);
+                data_sender.send_output(channel, events, body);
             }
             Ok(())
         });
@@ -301,10 +349,24 @@ impl SessionAttachState {
     ///
     /// The swap happens under the same lock as the copy, so each byte is either in the
     /// replay or goes to the new channel, never both and never neither.
+    #[cfg(test)]
     pub fn attach(
         &self,
         session_id: &str,
         descriptor: Option<String>,
+        events: Channel<InvokeResponseBody>,
+        data: Channel<InvokeResponseBody>,
+    ) -> Result<AttachReply, String> {
+        self.attach_from(session_id, descriptor, None, events, data)
+    }
+
+    /// [`Self::attach`], from `from` in the output for a terminal that's still up
+    /// rather than from the snapshot.
+    pub fn attach_from(
+        &self,
+        session_id: &str,
+        descriptor: Option<String>,
+        from: Option<u64>,
         events: Channel<InvokeResponseBody>,
         data: Channel<InvokeResponseBody>,
     ) -> Result<AttachReply, String> {
@@ -317,16 +379,28 @@ impl SessionAttachState {
         }
 
         let reattaching = kept.events.is_some();
-        let catch_up = kept.keep.catch_up();
-        let mut replay = Vec::new();
-        for event in &catch_up.events {
-            if let Replay::Output(bytes) = event {
-                replay.extend_from_slice(bytes);
-            }
-        }
+        let catch_up = match from {
+            Some(position) => kept.keep.catch_up_from(position),
+            None => kept.keep.catch_up(),
+        };
+        let replay = catch_up
+            .events
+            .iter()
+            .map(|event| match event {
+                Replay::Output(bytes) => ReplayStep::Output {
+                    output: BASE64.encode(bytes),
+                },
+                Replay::Resize { cols, rows } => ReplayStep::Resize {
+                    cols: *cols,
+                    rows: *rows,
+                },
+            })
+            .collect();
 
         // Anything still queued for the last webview is now skipped.
         kept.sender.attachment.fetch_add(1, Ordering::SeqCst);
+        // This reply covers whatever was dropped.
+        kept.sender.dropping.store(false, Ordering::SeqCst);
         kept.events = Some(events.clone());
         kept.data = Some(data);
 
@@ -342,10 +416,18 @@ impl SessionAttachState {
         }
 
         Ok(AttachReply {
-            replay: BASE64.encode(&replay),
+            replay,
             gap: catch_up.gap,
             position: catch_up.position,
         })
+    }
+
+    /// The size the far end was just told about, so what follows replays at it.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn note_resize(&self, session_id: &str, cols: u16, rows: u16) {
+        if let Some(kept) = self.get(session_id) {
+            locked(&kept).keep.push_resize(cols, rows);
+        }
     }
 
     /// Sessions a new webview should bring back.
@@ -391,11 +473,46 @@ impl SessionAttachState {
 pub async fn session_attach(
     session_id: String,
     descriptor: Option<String>,
+    from: Option<u64>,
     events: Channel<InvokeResponseBody>,
     data: Channel<InvokeResponseBody>,
     state: State<'_, SessionAttachState>,
 ) -> Result<AttachReply, String> {
-    state.attach(&session_id, descriptor, events, data)
+    state.attach_from(&session_id, descriptor, from, events, data)
+}
+
+#[tauri::command]
+pub async fn session_ui_state_get(
+    state: State<'_, SessionAttachState>,
+) -> Result<Option<String>, String> {
+    Ok(state
+        .ui_state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone())
+}
+
+#[tauri::command]
+pub async fn session_ui_state_put(
+    value: String,
+    state: State<'_, SessionAttachState>,
+) -> Result<(), String> {
+    *state
+        .ui_state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(value);
+    Ok(())
+}
+
+/// `NetworkWatch.networkChanged`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_sh_wrustty_app_NetworkWatch_networkChanged(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+    online: u8,
+) {
+    crate::session_registry::network_changed(online != 0);
 }
 
 #[tauri::command]
@@ -560,7 +677,84 @@ mod tests {
     const CONNECTED: &str = r#"{"type":"status","status":"connected"}"#;
 
     fn replayed(reply: &AttachReply) -> Vec<u8> {
-        BASE64.decode(&reply.replay).unwrap()
+        reply
+            .replay
+            .iter()
+            .flat_map(|step| match step {
+                ReplayStep::Output { output } => BASE64.decode(output).unwrap(),
+                ReplayStep::Resize { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replays_at_the_size_the_output_was_written_for() {
+        let state = SessionAttachState::default();
+        let (_events, data) = state.wrap::<InvokeResponseBody>("s");
+        state.note_resize("s", 48, 42);
+        output(&data, b"one");
+        state.note_resize("s", 48, 18);
+        output(&data, b"two");
+        let (events, _) = recording();
+        let (attached, _) = recording();
+        let reply = state.attach("s", None, events, attached).unwrap();
+        assert_eq!(
+            reply.replay,
+            vec![
+                ReplayStep::Resize { cols: 48, rows: 42 },
+                ReplayStep::Output {
+                    output: BASE64.encode(b"one")
+                },
+                ReplayStep::Resize { cols: 48, rows: 18 },
+                ReplayStep::Output {
+                    output: BASE64.encode(b"two")
+                },
+            ]
+        );
+    }
+
+    /// Dropped output used to vanish without a word, leaving a hole in the stream.
+    #[test]
+    fn a_webview_that_falls_too_far_behind_is_told_once_and_can_catch_up() {
+        let state = SessionAttachState::default();
+        let (_events, data) = state.wrap::<InvokeResponseBody>("s");
+        let (stuck_data, release) = stuck();
+        let (events, event_log) = recording();
+        state.attach("s", None, events, stuck_data).unwrap();
+
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..(MAX_QUEUED_BYTES / chunk.len() + 8) {
+            output(&data, &chunk);
+        }
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while json(&event_log).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(json(&event_log), vec![OUTPUT_RESYNC_EVENT.to_string()]);
+
+        // The terminal got as far as this, and everything after it is still kept.
+        output(&data, b"after");
+        let (events, _) = recording();
+        let (attached, live) = recording();
+        let position = {
+            let kept = state.get("s").unwrap();
+            let position = locked(&kept).keep.position();
+            position - 5
+        };
+        let reply = state
+            .attach_from("s", None, Some(position), events, attached)
+            .unwrap();
+        assert_eq!(replayed(&reply), b"after");
+
+        // Output flows again.
+        output(&data, b"live");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while raw(&live).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(raw(&live), b"live");
     }
 
     #[test]

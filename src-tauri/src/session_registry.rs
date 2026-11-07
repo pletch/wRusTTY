@@ -327,6 +327,66 @@ fn countdown_seconds(delay: Duration) -> u64 {
     (delay.as_secs_f64().round() as u64).max(1)
 }
 
+/// What `resolve_auth` says when a credential is in a locked vault. A reconnect waits
+/// for an unlock on this rather than spending its retries, since retrying can't help
+/// and nobody may be there to unlock within the window.
+pub const VAULT_LOCKED: &str = "vault is locked";
+
+/// How long a lost session waits for a network before giving up. Bounded because the
+/// foreground service and its wake lock stay up for it.
+const OFFLINE_WAIT_LIMIT: Duration = Duration::from_secs(60 * 60);
+
+/// The network as the platform reports it. Only Android does, so elsewhere this stays
+/// online and nothing here ever fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NetworkState {
+    online: bool,
+    generation: u64,
+}
+
+fn network_signal() -> &'static tokio::sync::watch::Sender<NetworkState> {
+    static SIGNAL: std::sync::OnceLock<tokio::sync::watch::Sender<NetworkState>> =
+        std::sync::OnceLock::new();
+    SIGNAL.get_or_init(|| {
+        tokio::sync::watch::channel(NetworkState {
+            online: true,
+            generation: 0,
+        })
+        .0
+    })
+}
+
+fn vault_signal() -> &'static tokio::sync::watch::Sender<u64> {
+    static SIGNAL: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> =
+        std::sync::OnceLock::new();
+    SIGNAL.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+/// The default network changed, to another one or to none.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn network_changed(online: bool) {
+    network_signal().send_modify(|state| {
+        state.online = online;
+        state.generation += 1;
+    });
+}
+
+/// Wakes any reconnect waiting on the vault.
+pub fn vault_unlocked() {
+    vault_signal().send_modify(|count| *count += 1);
+}
+
+/// Whether the network came back within `limit`.
+async fn wait_for_network(
+    network: &mut tokio::sync::watch::Receiver<NetworkState>,
+    limit: Duration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(limit, network.wait_for(|state| state.online)).await,
+        Ok(Ok(_))
+    )
+}
+
 /// A write taking this long gets logged. Well above anything a person could
 /// mistake for normal echo, and rare enough not to fill the log.
 const SLOW_WRITE: Duration = Duration::from_millis(500);
@@ -627,6 +687,10 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
     // Why the last attempt couldn't build a connector, for the final message
     // (not reported per attempt, which would toast each one).
     let mut build_error: Option<String> = None;
+    // Subscribed before the first look at either, so a change can't fall between a look
+    // and a wait. At worst that means one retry too many.
+    let mut network = network_signal().subscribe();
+    let mut vault = vault_signal().subscribe();
 
     loop {
         let connector = match pending.take() {
@@ -637,8 +701,22 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                         build_error = None;
                         connector
                     }
-                    // Not fatal: a serial adapter not yet plugged back in, or a locked
-                    // vault, both look like this and may resolve within the window.
+                    Err(message) if message == VAULT_LOCKED => {
+                        let _ = tx
+                            .send(ConnectionEvent::Status(ConnectionStatus::WaitingForVault))
+                            .await;
+                        tokio::select! {
+                            _ = vault.changed() => {
+                                attempt = 0;
+                                run_started = std::time::Instant::now();
+                                build_error = None;
+                                continue;
+                            }
+                            _ = removed(sessions, session_id) => return,
+                        }
+                    }
+                    // Not fatal: a serial adapter not yet plugged back in looks like
+                    // this, and may resolve within the window.
                     Err(message) => {
                         build_error = Some(message);
                         // Straight to the backoff; this still spends an attempt.
@@ -679,11 +757,34 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                     }
                 }
 
-                // Wait for this session to end, or for the pane to close.
-                tokio::select! {
-                    // `None`: the forwarder (and so the webview) is gone.
-                    down = down_rx.recv() => if down.is_none() { return },
-                    _ = removed(sessions, session_id) => return,
+                // Wait for this session to end, or for the pane to close. Across a network
+                // change it may already be dead with nothing to say so until keepalives
+                // run out, minutes later, so it gets asked.
+                loop {
+                    tokio::select! {
+                        // `None`: the forwarder (and so the webview) is gone.
+                        down = down_rx.recv() => {
+                            if down.is_none() {
+                                return;
+                            }
+                            break;
+                        }
+                        _ = removed(sessions, session_id) => return,
+                        Ok(()) = network.changed() => {
+                            if network.borrow_and_update().online {
+                                let slot = slot.clone();
+                                tokio::spawn(async move {
+                                    let probe = {
+                                        let slot = slot.lock().await;
+                                        slot.ready().ok().and_then(|session| session.probe())
+                                    };
+                                    if let Some(probe) = probe {
+                                        probe.await;
+                                    }
+                                });
+                            }
+                        }
+                    }
                 }
 
                 // Only `Lost` reaches `down_rx`. Report the loss even if no retry follows:
@@ -716,6 +817,25 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
             }
         }
 
+        // With no network there's nothing for a retry to find, so none is spent.
+        if !network.borrow_and_update().online {
+            let _ = tx
+                .send(ConnectionEvent::Status(ConnectionStatus::WaitingForNetwork))
+                .await;
+            tokio::select! {
+                back = wait_for_network(&mut network, OFFLINE_WAIT_LIMIT) => {
+                    if !back {
+                        give_up(sessions, session_id, slot, tx, attempt, build_error).await;
+                        return;
+                    }
+                    attempt = 0;
+                    run_started = std::time::Instant::now();
+                    continue;
+                }
+                _ = removed(sessions, session_id) => return,
+            }
+        }
+
         let Some(delay) = schedule_retry(tx, &mut attempt, run_started.elapsed(), &policy).await
         else {
             give_up(sessions, session_id, slot, tx, attempt, build_error).await;
@@ -725,6 +845,11 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             _ = removed(sessions, session_id) => return,
+            // A new network is a new chance, so it's tried now, with a fresh budget.
+            Ok(()) = network.changed() => {
+                attempt = 0;
+                run_started = std::time::Instant::now();
+            }
         }
     }
 }
@@ -1191,6 +1316,38 @@ mod tests {
 
         assert!(publish(&slot, FakeSession::default()).await.is_none());
         assert!(slot.lock().await.ready().is_ok());
+    }
+
+    // ---- waiting on the network ----------------------------------------
+
+    #[tokio::test]
+    async fn a_network_coming_back_ends_the_wait() {
+        let (tx, mut rx) = tokio::sync::watch::channel(NetworkState {
+            online: false,
+            generation: 1,
+        });
+        let wait =
+            tokio::spawn(async move { wait_for_network(&mut rx, Duration::from_secs(30)).await });
+        tx.send_modify(|state| state.online = true);
+        assert!(wait.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_wait_for_a_network_has_a_limit() {
+        let (_tx, mut rx) = tokio::sync::watch::channel(NetworkState {
+            online: false,
+            generation: 1,
+        });
+        assert!(!wait_for_network(&mut rx, Duration::from_millis(10)).await);
+    }
+
+    #[tokio::test]
+    async fn being_online_already_needs_no_wait() {
+        let (_tx, mut rx) = tokio::sync::watch::channel(NetworkState {
+            online: true,
+            generation: 1,
+        });
+        assert!(wait_for_network(&mut rx, Duration::from_millis(10)).await);
     }
 
     // ---- auto-reconnect ----------------------------------------------------

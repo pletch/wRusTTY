@@ -11,7 +11,13 @@ import { isAndroid } from './platform'
 /** Sessions worth holding the process for: open, or on the way to being open. */
 export function liveSessionCount(statuses: string[]): number {
   return statuses.filter(
-    (s) => s === 'connected' || s === 'connecting' || parseReconnecting(s) !== null,
+    // Not `waitingForVault`: nothing can happen until someone unlocks, which they'll
+    // do with the app open, so it isn't worth holding the phone awake for.
+    (s) =>
+      s === 'connected' ||
+      s === 'connecting' ||
+      s === 'waitingForNetwork' ||
+      parseReconnecting(s) !== null,
   ).length
 }
 

@@ -11,6 +11,21 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- A connection lost while the vault is locked waits for you to unlock it and then
+  reconnects, rather than using up its retries and giving up. It says so in the pane.
+- On Android, sessions react to the network changing. A lost one retries as soon as a
+  network appears, with a fresh set of retries, and spends none while there isn't one. A
+  live one is checked within about 15 seconds, rather than taking about three minutes to
+  find out its connection is dead. One that still answers, such as through a VPN that moved
+  networks, stays connected.
+- On Android, output caught up after the screen is rebuilt is written at the size it was
+  written for. A rebuilt screen also keeps its pinch zoom and knows if the keyboard is open.
+- On Android, a pane opened or rotated with the keyboard up no longer tells the host about
+  the short height, which made programs redraw when the keyboard closed.
+- On Android, a screen that falls far behind catches up rather than silently missing output.
+
 ## [0.6.1] - 2026-11-04
 
 ### Changed

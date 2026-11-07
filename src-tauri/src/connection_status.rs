@@ -20,6 +20,8 @@ pub fn status_label(status: &wr_core::ConnectionStatus) -> String {
             attempt,
             in_seconds,
         } => format!("reconnecting: {attempt} in {in_seconds}"),
+        ConnectionStatus::WaitingForNetwork => "waitingForNetwork".to_string(),
+        ConnectionStatus::WaitingForVault => "waitingForVault".to_string(),
         ConnectionStatus::Failed(msg) => format!("failed: {msg}"),
     }
 }

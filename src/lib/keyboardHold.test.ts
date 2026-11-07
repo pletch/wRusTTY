@@ -1,9 +1,35 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { heldOffset, keyboardOpen, resetKeyboardHold } from './keyboardHold'
+import {
+  heldOffset,
+  keyboardOpen,
+  keyboardTakes,
+  resetKeyboardHold,
+  seedKeyboardHold,
+} from './keyboardHold'
 
 describe('keyboardOpen', () => {
   beforeEach(resetKeyboardHold)
+
+  it('knows a keyboard is open from what an earlier webview learned', () => {
+    seedKeyboardHold({ 412: 800 }, () => {})
+    expect(keyboardOpen(412, 450)).toBe(true)
+    expect(keyboardTakes(412, 450)).toBe(350)
+  })
+
+  it('reports a new height so it can be saved, but not one it knew', () => {
+    const saved: Record<string, number>[] = []
+    seedKeyboardHold({ 412: 800 }, (heights) => saved.push(heights))
+    keyboardOpen(412, 450)
+    keyboardOpen(412, 800)
+    expect(saved).toEqual([])
+    keyboardOpen(900, 400)
+    expect(saved).toEqual([{ 412: 800, 900: 400 }])
+  })
+
+  it('takes nothing at a width it has not seen', () => {
+    expect(keyboardTakes(412, 450)).toBe(0)
+  })
 
   it('sees a large drop in height at the same width', () => {
     expect(keyboardOpen(412, 800)).toBe(false)

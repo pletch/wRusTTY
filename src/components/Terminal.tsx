@@ -26,10 +26,22 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { error as logError } from '@tauri-apps/plugin-log'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import * as conn from '../lib/connection'
-import { isDisconnect, parseReconnecting, shouldAutoClosePane } from '../lib/connection'
-import type { AuthPromptField, ConnectionSource, ConnEvent, Reconnecting } from '../lib/connection'
+import {
+  isDisconnect,
+  parseReconnecting,
+  parseReconnectWait,
+  shouldAutoClosePane,
+} from '../lib/connection'
+import type {
+  AuthPromptField,
+  ConnectionSource,
+  ConnEvent,
+  Reconnecting,
+  ReconnectWait,
+  ReplayStep,
+} from '../lib/connection'
 import * as sessionLog from '../lib/logging'
-import { heldOffset, keyboardOpen } from '../lib/keyboardHold'
+import { heldOffset, keyboardOpen, keyboardTakes } from '../lib/keyboardHold'
 import { lineForThumb } from '../lib/scrollbarThumb'
 import { createPtyResizeSender } from '../lib/ptyResize'
 import type { TerminalSettings } from '../lib/settings'
@@ -317,6 +329,9 @@ export function Terminal({
   // Read from the connection effect's handler, which closes over stale state.
   const reconnectingRef = useRef<Reconnecting | null>(null)
   reconnectingRef.current = reconnecting
+  const [reconnectWait, setReconnectWait] = useState<ReconnectWait | null>(null)
+  const reconnectWaitRef = useRef<ReconnectWait | null>(null)
+  reconnectWaitRef.current = reconnectWait
   // The rendering engine never came up. Separate from connection failures:
   // the session may be fine, and reconnecting won't help.
   const [engineFailed, setEngineFailed] = useState<string | null>(null)
@@ -751,6 +766,8 @@ export function Terminal({
     let replaying = false
     let writtenBytes = 0
     let snapshotAt = 0
+    let attachGeneration = 0
+    let catchingUp = false
     let snapshotTimer: ReturnType<typeof setInterval> | null = null
     let onVisibilityChange: (() => void) | null = null
     const reattachId = attachToRef.current
@@ -1279,6 +1296,8 @@ export function Terminal({
         case 'status': {
           onStatusRef.current?.(event.status)
           const retry = parseReconnecting(event.status)
+          const wait = parseReconnectWait(event.status)
+          setReconnectWait(wait)
           if (event.status.startsWith('failed') || isDisconnect(event.status)) {
             // Before the status line, so it lands on the primary screen, and so a new
             // shell doesn't inherit the dead program's modes.
@@ -1289,7 +1308,7 @@ export function Terminal({
             tracker.reset()
             progressTracker.reset()
           }
-          if (retry) {
+          if (retry || wait) {
             // The retry run supersedes both terminal states until it gives up.
             setReconnecting(retry)
             setConnectFailed(null)
@@ -1298,7 +1317,7 @@ export function Terminal({
             setReconnecting(null)
             setConnectFailed(event.status.replace(/^failed: /, ''))
           } else if (event.status === 'connected') {
-            if (reconnectingRef.current) {
+            if (reconnectingRef.current || reconnectWaitRef.current) {
               // SSH has no session resumption; mark the seam in the scrollback.
               term.writeln('\r\n[reconnected — this is a new shell]')
             }
@@ -1323,6 +1342,9 @@ export function Terminal({
             storedFingerprint: event.storedFingerprint,
             knownKeys: event.knownKeys,
           })
+          break
+        case 'outputResync':
+          void catchUpAfterDrop()
           break
         case 'authPrompt':
           setAuthPrompt({
@@ -1401,12 +1423,67 @@ export function Terminal({
       connectWith(cols, rows)
     }
 
+    // See lib/keyboardHold.ts. Holding the container's height means nothing below here
+    // sees a resize: no refit, and nothing for the far end to redraw for.
+    /** The container's height with no keyboard, by window width, as a rotation changes it. */
+    const fullHeightAtWidth = new Map<number, number>()
+    let heldHeight = 0
+    let heldAtWidth = 0
+    let keyboardHeld = false
+    let followFrame: number | null = null
+    const paneVisibleHeight = (pane: HTMLElement) =>
+      pane.clientHeight - parseFloat(getComputedStyle(pane).paddingTop)
+    const followCursor = () => {
+      followFrame = requestAnimationFrame(followCursor)
+      const cell = term.cellSize?.()
+      const cursor = term.cursorCell?.()
+      const pane = container.parentElement
+      if (!cell || !cursor || !pane) return
+      const offset = heldOffset(
+        cursor.y - term.viewportY,
+        cell.height,
+        heldHeight,
+        paneVisibleHeight(pane),
+      )
+      container.style.transform = offset > 0 ? `translateY(${-offset}px)` : ''
+    }
+    const releaseKeyboardHold = () => {
+      keyboardHeld = false
+      if (followFrame !== null) cancelAnimationFrame(followFrame)
+      followFrame = null
+      container.style.height = ''
+      container.style.transform = ''
+      if (container.parentElement) container.parentElement.style.overflow = ''
+    }
+    const holdForKeyboard = () => {
+      if (!isAndroid || container.clientWidth === 0) return
+      const { innerWidth: width, innerHeight: height } = window
+      if (!keyboardOpen(width, height)) {
+        if (keyboardHeld) releaseKeyboardHold()
+        if (container.clientHeight > 0) fullHeightAtWidth.set(width, container.clientHeight)
+        return
+      }
+      const pane = container.parentElement
+      if (!pane || (keyboardHeld && heldAtWidth === width)) return
+      // A pane opened with the keyboard up, or rotated with it, hasn't seen its full
+      // height. It's what's showing plus what the keyboard took. Without this, the far
+      // end is told the short height, and then redraws when the keyboard closes.
+      heldHeight =
+        fullHeightAtWidth.get(width) ?? paneVisibleHeight(pane) + keyboardTakes(width, height)
+      heldAtWidth = width
+      keyboardHeld = true
+      container.style.height = `${heldHeight}px`
+      pane.style.overflow = 'hidden'
+      if (followFrame === null) followCursor()
+    }
+
     const mountedAt = performance.now()
     let lastW = -1
     let lastH = -1
     let stableFrames = 0
     const awaitSize = () => {
       if (disposed) return
+      holdForKeyboard()
       const el = containerRef.current
       const w = el?.clientWidth ?? 0
       const h = el?.clientHeight ?? 0
@@ -1455,17 +1532,29 @@ export function Terminal({
      * Live output waits until the catch-up has been written, since that comes back as
      * the reply and could otherwise land after output newer than it.
      */
-    async function attachToSession(id: string) {
-      const reattaching = reattachId !== undefined
+    async function attachToSession(id: string, resuming = false) {
+      const reattaching = resuming || reattachId !== undefined
+      const generation = ++attachGeneration
       let held: Uint8Array[] | null = []
       const liveData = (bytes: Uint8Array) => {
+        // Anything still arriving from an earlier attach is covered by this one's reply.
+        if (generation !== attachGeneration) return
         if (held) held.push(bytes)
         else onData(bytes)
+      }
+      const writeReplay = (steps: ReplayStep[]) => {
+        for (const step of steps) {
+          if ('output' in step) term.write(step.output)
+          // At the size it was written for, or a program's cursor moves land on the
+          // wrong rows. A first attach is already at the size it just reported.
+          else if (reattaching) term.resize(step.cols, step.rows)
+        }
       }
       try {
         const reply = await conn.attachSession(
           id,
           reattaching ? null : describeForKeeping(source, labelRef.current),
+          resuming ? writtenBytes : null,
           onEvent,
           liveData,
         )
@@ -1477,17 +1566,20 @@ export function Terminal({
         if (disposed) return
         if (reattaching) {
           replaying = true
-          term.write(reply.replay)
+          writeReplay(reply.replay)
           replaying = false
           // Whatever the old webview had in flight is never coming back as credit.
           conn.ackDelivery(id, Number.MAX_SAFE_INTEGER).catch(() => {})
-        } else if (reply.replay.length > 0) {
-          term.write(reply.replay)
+        } else {
+          writeReplay(reply.replay)
         }
         writtenBytes = reply.position
         // So the next chance saves one, whatever the last one covered.
         if (reattaching) snapshotAt = -1
-        const lostScreen = reattaching && !reply.gap && !term.isRestored && (await restoreFrom) !== null
+        // Back to the size this screen actually has now that the output is in.
+        if (reattaching && !resuming) refitRef.current?.()
+        const lostScreen =
+          reattaching && !resuming && !reply.gap && !term.isRestored && (await restoreFrom) !== null
         if (reply.gap || lostScreen) {
           term.writeln('\r\n[earlier output was lost while the app was closed]')
           // Full-screen programs repaint when their size changes.
@@ -1500,6 +1592,7 @@ export function Terminal({
         const pending = held
         held = null
         for (const bytes of pending) onData(bytes)
+        if (resuming) return
 
         snapshotTimer = setInterval(saveSnapshot, SNAPSHOT_EVERY_MS)
         onVisibilityChange = () => {
@@ -1511,6 +1604,19 @@ export function Terminal({
         held = null
         if (!disposed) term.writeln(`\r\n[could not reattach: ${String(err)}]`)
       }
+    }
+
+    /** Output was dropped because this webview fell too far behind. Once it has written
+     * what did arrive, it can ask for the rest. */
+    async function catchUpAfterDrop() {
+      const id = sessionId
+      if (!id || catchingUp) return
+      catchingUp = true
+      while (scheduler.pending > 0 && !disposed) {
+        await new Promise((resolve) => setTimeout(resolve, 16))
+      }
+      if (!disposed) await attachToSession(id, true)
+      catchingUp = false
     }
 
     function connectWith(cols: number, rows: number) {
@@ -1765,43 +1871,6 @@ export function Terminal({
       if (!sessionId) return
       conn.resize(source, sessionId, cols, rows).catch(() => {})
     })
-
-    // See lib/keyboardHold.ts. Holding the container's height means nothing below here
-    // sees a resize: no refit, and nothing for the far end to redraw for.
-    let unheldHeight = 0
-    let keyboardHeld = false
-    let followFrame: number | null = null
-    const followCursor = () => {
-      followFrame = requestAnimationFrame(followCursor)
-      const cell = term.cellSize?.()
-      const cursor = term.cursorCell?.()
-      const pane = container.parentElement
-      if (!cell || !cursor || !pane) return
-      const visible = pane.clientHeight - parseFloat(getComputedStyle(pane).paddingTop)
-      const offset = heldOffset(cursor.y - term.viewportY, cell.height, unheldHeight, visible)
-      container.style.transform = offset > 0 ? `translateY(${-offset}px)` : ''
-    }
-    const releaseKeyboardHold = () => {
-      keyboardHeld = false
-      if (followFrame !== null) cancelAnimationFrame(followFrame)
-      followFrame = null
-      container.style.height = ''
-      container.style.transform = ''
-      if (container.parentElement) container.parentElement.style.overflow = ''
-    }
-    const holdForKeyboard = () => {
-      if (!isAndroid || container.clientWidth === 0) return
-      if (!keyboardOpen(window.innerWidth, window.innerHeight)) {
-        if (keyboardHeld) releaseKeyboardHold()
-        if (container.clientHeight > 0) unheldHeight = container.clientHeight
-        return
-      }
-      if (keyboardHeld || unheldHeight === 0) return
-      keyboardHeld = true
-      container.style.height = `${unheldHeight}px`
-      if (container.parentElement) container.parentElement.style.overflow = 'hidden'
-      followCursor()
-    }
 
     const onResize = () => {
       holdForKeyboard()
@@ -2077,6 +2146,17 @@ export function Terminal({
           <AlertTriangle size={20} className="text-red-400" />
           <p className="max-w-xs text-chrome/70">{connectFailed}</p>
           {disconnectActions}
+        </div>
+      )}
+      {reconnectWait && (
+        // Like the strip below, for a retry that's paused rather than counting down.
+        <div className="animate-in fade-in slide-in-from-top-1 pointer-events-none absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 bg-amber-500/90 px-3 py-1 text-xs font-medium text-black">
+          <Unplug size={13} />
+          <span>
+            {reconnectWait === 'vault'
+              ? 'Connection lost — unlock the vault to reconnect'
+              : 'Connection lost — waiting for a network'}
+          </span>
         </div>
       )}
       {reconnecting && (

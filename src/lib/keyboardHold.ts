@@ -13,16 +13,43 @@ const KEYBOARD_MIN_PX = 120
 
 /** By width, so a rotation doesn't read as a keyboard. */
 const tallestAtWidth = new Map<number, number>()
+let onHeightsChanged: ((heights: Record<string, number>) => void) | null = null
+
+function heights(): Record<string, number> {
+  return Object.fromEntries(tallestAtWidth)
+}
 
 export function keyboardOpen(width: number, height: number): boolean {
-  const tallest = Math.max(tallestAtWidth.get(width) ?? 0, height)
-  tallestAtWidth.set(width, tallest)
+  const known = tallestAtWidth.get(width) ?? 0
+  const tallest = Math.max(known, height)
+  if (tallest !== known) {
+    tallestAtWidth.set(width, tallest)
+    onHeightsChanged?.(heights())
+  }
   return tallest - height >= KEYBOARD_MIN_PX
+}
+
+/** How much of the window the keyboard has taken at this width. */
+export function keyboardTakes(width: number, height: number): number {
+  return Math.max(0, (tallestAtWidth.get(width) ?? height) - height)
+}
+
+/** Picks up what an earlier webview learned, so one rebuilt with the keyboard open knows
+ * it's open. `onChange` hears about anything learned from here on. */
+export function seedKeyboardHold(
+  saved: Record<string, number>,
+  onChange: (heights: Record<string, number>) => void,
+): void {
+  for (const [width, height] of Object.entries(saved)) {
+    tallestAtWidth.set(Number(width), Math.max(tallestAtWidth.get(Number(width)) ?? 0, height))
+  }
+  onHeightsChanged = onChange
 }
 
 /** Test seam: the heights are module state. */
 export function resetKeyboardHold(): void {
   tallestAtWidth.clear()
+  onHeightsChanged = null
 }
 
 /** How far up to slide a grid of `gridPx`, with `visiblePx` of it showing, so `cursorRow`

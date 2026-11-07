@@ -95,6 +95,7 @@ pub async fn telnet_write(
 
 #[tauri::command]
 pub async fn telnet_resize(
+    app: AppHandle,
     session_id: String,
     cols: u16,
     rows: u16,
@@ -103,6 +104,14 @@ pub async fn telnet_resize(
 ) -> Result<(), String> {
     // See `ssh_resize`: the marker goes down before the size it announces.
     crate::logging::note_resize(&logging, &session_id, cols, rows);
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager as _;
+        app.state::<crate::session_attach::SessionAttachState>()
+            .note_resize(&session_id, cols, rows);
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = app;
     state.sessions.resize(&session_id, cols, rows).await
 }
 

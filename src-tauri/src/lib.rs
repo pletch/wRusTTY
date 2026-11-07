@@ -276,6 +276,10 @@ pub fn run() {
             session_attach::session_kept_put_snapshot,
             #[cfg(target_os = "android")]
             session_attach::session_kept_snapshot,
+            #[cfg(target_os = "android")]
+            session_attach::session_ui_state_get,
+            #[cfg(target_os = "android")]
+            session_attach::session_ui_state_put,
             coalesce::delivery_stats,
             coalesce::reset_delivery_stats,
             coalesce::ack_delivery,

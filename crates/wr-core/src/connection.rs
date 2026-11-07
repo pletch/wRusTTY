@@ -46,4 +46,11 @@ pub trait Session: Send {
     async fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Self::Error>;
 
     async fn disconnect(&mut self) -> Result<(), Self::Error>;
+
+    /// Checks that the far end still answers, ending the session if it doesn't, for
+    /// after a network change. Returned as a future so the session's lock, which typing
+    /// needs, isn't held while it waits. `None` for a transport that can't tell.
+    fn probe(&self) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> {
+        None
+    }
 }

@@ -283,6 +283,7 @@ pub async fn vault_create(
 ) -> Result<(), String> {
     let vault = Vault::create(vault_path(&app)?, &master_password).map_err(|e| e.to_string())?;
     *state.vault.lock().await = Some(vault);
+    crate::session_registry::vault_unlocked();
     Ok(())
 }
 
@@ -312,6 +313,7 @@ async fn unlock_with_password(
     }
     prune_orphaned_credentials(app, profile_state, &mut vault).await;
     *state.vault.lock().await = Some(vault);
+    crate::session_registry::vault_unlocked();
     Ok(())
 }
 
@@ -622,6 +624,7 @@ pub async fn vault_unlock_with_os(
         };
         prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
         *state.vault.lock().await = Some(vault);
+        crate::session_registry::vault_unlocked();
         return Ok(());
     }
     #[cfg(target_os = "android")]
@@ -633,6 +636,7 @@ pub async fn vault_unlock_with_os(
             .map_err(|e| e.to_string())?;
         prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
         *state.vault.lock().await = Some(vault);
+        crate::session_registry::vault_unlocked();
         return Ok(());
     }
     let _ = kind;
@@ -643,6 +647,7 @@ pub async fn vault_unlock_with_os(
         .map_err(|e| e.to_string())?;
     prune_orphaned_credentials(&for_prune, &profile_state, &mut vault).await;
     *state.vault.lock().await = Some(vault);
+    crate::session_registry::vault_unlocked();
     Ok(())
 }
 

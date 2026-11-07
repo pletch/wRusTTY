@@ -27,6 +27,11 @@ pub enum ConnectionStatus {
         attempt: u32,
         in_seconds: u64,
     },
+    /// A lost connection that has no network to come back on.
+    WaitingForNetwork,
+    /// A lost connection whose credentials are in a locked vault. It stays here until
+    /// the vault is unlocked, rather than spending its retries.
+    WaitingForVault,
     Failed(String),
 }
 

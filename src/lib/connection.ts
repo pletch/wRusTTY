@@ -36,6 +36,8 @@ export type ConnectionSource =
 
 export type ConnEvent =
   | { type: 'status'; status: string }
+  /** Android: output was dropped on its way here; see `session_attach.rs`. */
+  | { type: 'outputResync' }
   | {
       type: 'hostKeyPrompt'
       requestId: string
@@ -250,23 +252,39 @@ export function disconnect(source: ConnectionSource, sessionId: string) {
 
 /** Android: connects this webview to a session; see `session_attach.rs`. A session
  * attached for the first time passes a descriptor, for the next webview to rebuild it. */
+/** A step of catching a terminal up: output to write, or the size to write it at. */
+export type ReplayStep = { output: Uint8Array } | { cols: number; rows: number }
+
+/** `from` catches a terminal that's still up from where it got to. Otherwise the reply
+ * picks up from the session's snapshot. */
 export async function attachSession(
   sessionId: string,
   descriptor: string | null,
+  from: number | null,
   onEvent: (event: ConnEvent) => void,
   onData: (bytes: Uint8Array) => void,
-): Promise<{ replay: Uint8Array; gap: boolean; position: number }> {
+): Promise<{ replay: ReplayStep[]; gap: boolean; position: number }> {
   const events = new Channel<ConnEvent>()
   events.onmessage = onEvent
   const data = new Channel<ArrayBuffer>()
   data.onmessage = (buf) => onData(new Uint8Array(buf))
-  const reply = await invoke<{ replay: string; gap: boolean; position: number }>('session_attach', {
+  const reply = await invoke<{
+    replay: ({ output: string } | { cols: number; rows: number })[]
+    gap: boolean
+    position: number
+  }>('session_attach', {
     sessionId,
     descriptor,
+    from,
     events,
     data,
   })
-  return { ...reply, replay: decodeBase64(reply.replay) }
+  return {
+    ...reply,
+    replay: reply.replay.map((step) =>
+      'output' in step ? { output: decodeBase64(step.output) } : step,
+    ),
+  }
 }
 
 export function listKeptSessions() {
@@ -307,6 +325,15 @@ export function parseReconnecting(status: string): Reconnecting | null {
   const match = /^reconnecting: (\d+) in (\d+)$/.exec(status)
   if (!match) return null
   return { attempt: Number(match[1]), inSeconds: Number(match[2]) }
+}
+
+/** A lost connection paused until something changes, rather than retrying. */
+export type ReconnectWait = 'network' | 'vault'
+
+export function parseReconnectWait(status: string): ReconnectWait | null {
+  if (status === 'waitingForNetwork') return 'network'
+  if (status === 'waitingForVault') return 'vault'
+  return null
 }
 
 /** Whether a status means the session is over: `disconnected` (a clean close)

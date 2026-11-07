@@ -65,6 +65,10 @@ pub struct SessionKeep {
     /// Nothing before this is kept. Moves when a snapshot releases older output,
     /// and when overflow drops it.
     kept_from: u64,
+    /// The size in force before the first of `entries`. Without it, output after a
+    /// snapshot would replay at whatever size the new terminal happens to be, and a
+    /// program's cursor moves would land on the wrong rows.
+    base_size: Option<(u16, u16)>,
     snapshot: Option<KeptSnapshot>,
 }
 
@@ -76,6 +80,7 @@ impl SessionKeep {
             max_held,
             position: 0,
             kept_from: 0,
+            base_size: None,
             snapshot: None,
         }
     }
@@ -112,9 +117,12 @@ impl SessionKeep {
             let Some(front) = self.entries.pop_front() else {
                 return;
             };
-            if let Entry::Output { start, bytes } = &front {
-                self.held -= bytes.len();
-                self.kept_from = start + bytes.len() as u64;
+            match &front {
+                Entry::Output { start, bytes } => {
+                    self.held -= bytes.len();
+                    self.kept_from = start + bytes.len() as u64;
+                }
+                Entry::Resize { cols, rows, .. } => self.base_size = Some((*cols, *rows)),
             }
         }
     }
@@ -140,7 +148,9 @@ impl SessionKeep {
     fn release_before(&mut self, position: u64) {
         while let Some(front) = self.entries.front() {
             match front {
-                Entry::Resize { at, .. } if *at < position => {}
+                Entry::Resize { at, cols, rows } if *at < position => {
+                    self.base_size = Some((*cols, *rows));
+                }
                 Entry::Output { start, bytes } if start + (bytes.len() as u64) <= position => {
                     self.held -= bytes.len();
                 }
@@ -159,6 +169,9 @@ impl SessionKeep {
     pub fn catch_up(&self) -> CatchUp {
         let from = self.snapshot.as_ref().map_or(0, |s| s.position);
         let mut events = Vec::new();
+        if let Some((cols, rows)) = self.base_size {
+            events.push(Replay::Resize { cols, rows });
+        }
         for entry in &self.entries {
             match entry {
                 Entry::Resize { at, cols, rows } if *at >= from => events.push(Replay::Resize {
@@ -180,6 +193,28 @@ impl SessionKeep {
         CatchUp {
             events,
             gap: self.kept_from > from,
+            position: self.position,
+        }
+    }
+}
+
+impl SessionKeep {
+    /// The output since `position`, for a terminal still up that missed some. No
+    /// resizes, since it's already at its size.
+    pub fn catch_up_from(&self, position: u64) -> CatchUp {
+        let mut events = Vec::new();
+        for entry in &self.entries {
+            if let Entry::Output { start, bytes } = entry {
+                let end = start + bytes.len() as u64;
+                if end > position {
+                    let skip = position.saturating_sub(*start) as usize;
+                    events.push(Replay::Output(bytes[skip..].to_vec()));
+                }
+            }
+        }
+        CatchUp {
+            events,
+            gap: self.kept_from > position,
             position: self.position,
         }
     }
@@ -231,6 +266,58 @@ mod tests {
         assert!(keep.put_snapshot(2, b"snap".to_vec()));
         assert_eq!(output(&keep.catch_up()), b"cdef");
         assert_eq!(keep.held, 6);
+    }
+
+    /// Otherwise the first output replays at the new terminal's size, not its own.
+    #[test]
+    fn starts_from_the_size_in_force_at_the_snapshot() {
+        let mut keep = SessionKeep::new(1024);
+        keep.push_resize(48, 42);
+        keep.push_output(b"old");
+        keep.put_snapshot(3, b"snap".to_vec());
+        keep.push_output(b"new");
+        assert_eq!(
+            keep.catch_up().events,
+            vec![
+                Replay::Resize { cols: 48, rows: 42 },
+                Replay::Output(b"new".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_later_snapshot_carries_the_size_forward() {
+        let mut keep = SessionKeep::new(1024);
+        keep.push_resize(48, 42);
+        keep.push_output(b"a");
+        keep.put_snapshot(1, b"s".to_vec());
+        keep.push_output(b"b");
+        keep.put_snapshot(2, b"s".to_vec());
+        assert_eq!(
+            keep.catch_up().events,
+            vec![Replay::Resize { cols: 48, rows: 42 }]
+        );
+    }
+
+    #[test]
+    fn catches_a_live_terminal_up_from_where_it_stopped() {
+        let mut keep = SessionKeep::new(1024);
+        keep.push_resize(48, 42);
+        keep.push_output(b"abcdef");
+        let c = keep.catch_up_from(4);
+        assert_eq!(c.events, vec![Replay::Output(b"ef".to_vec())]);
+        assert!(!c.gap);
+        assert_eq!(c.position, 6);
+    }
+
+    #[test]
+    fn says_so_when_a_live_terminal_is_too_far_behind() {
+        let mut keep = SessionKeep::new(4);
+        keep.push_output(b"abcd");
+        keep.push_output(b"efgh");
+        let c = keep.catch_up_from(1);
+        assert!(c.gap);
+        assert_eq!(output(&c), b"efgh");
     }
 
     #[test]

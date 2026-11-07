@@ -44,6 +44,7 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge(statusBarStyle = dark, navigationBarStyle = dark)
     super.onCreate(savedInstanceState)
     PluginActivityHandover.adopt(this)
+    NetworkWatch.start(this)
     if (secureScreen) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
     // Edge to edge, the webview would draw its full height under the status bar,

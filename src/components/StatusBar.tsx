@@ -28,6 +28,8 @@ function statusLabel(status: string | undefined): string {
   const retry = parseReconnecting(status)
   if (retry) return `Reconnecting in ${retry.inSeconds}s`
   if (status === 'lost') return 'Connection lost'
+  if (status === 'waitingForNetwork') return 'Waiting for a network'
+  if (status === 'waitingForVault') return 'Unlock to reconnect'
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 

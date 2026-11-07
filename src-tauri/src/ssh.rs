@@ -391,8 +391,8 @@ pub async fn ssh_connect_profile(
             let profile_id = profile_id.clone();
             let proxy = proxy.clone();
             // Each attempt re-resolves from the vault, so secrets aren't held and
-            // profile edits take effect. A locked vault fails the attempt and the run
-            // keeps trying.
+            // profile edits take effect. A locked vault pauses the run until it's
+            // unlocked (see `VAULT_LOCKED`).
             async move {
                 let vault_state = app.state::<VaultState>();
                 resolve_profile_config(&app, &profile_id, &vault_state, proxy).await
@@ -481,7 +481,9 @@ async fn resolve_auth(
     }
 
     let guard = vault_state.vault.lock().await;
-    let vault = guard.as_ref().ok_or("vault is locked")?;
+    let vault = guard
+        .as_ref()
+        .ok_or(crate::session_registry::VAULT_LOCKED)?;
 
     match profile.auth_type.as_str() {
         "password" => match vault.get(&profile.id) {
@@ -676,6 +678,7 @@ pub async fn ssh_write(
 
 #[tauri::command]
 pub async fn ssh_resize(
+    app: AppHandle,
     session_id: String,
     cols: u16,
     rows: u16,
@@ -684,6 +687,11 @@ pub async fn ssh_resize(
 ) -> Result<(), String> {
     // Logged before applying, so output after the marker is at the new size.
     crate::logging::note_resize(&logging, &session_id, cols, rows);
+    #[cfg(target_os = "android")]
+    app.state::<crate::session_attach::SessionAttachState>()
+        .note_resize(&session_id, cols, rows);
+    #[cfg(not(target_os = "android"))]
+    let _ = app;
     state.sessions.resize(&session_id, cols, rows).await
 }
 

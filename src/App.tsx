@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { liveSessionCount, syncKeepAlive } from './lib/keepAlive'
 import { syncSecureScreen, syncVaultAutoLock } from './lib/androidSecurity'
 import { startBackHandling } from './lib/backGesture'
+import { seedKeyboardHold } from './lib/keyboardHold'
+import { loadRebuildState, saveRebuildState } from './lib/rebuildState'
 import { isAndroid, isCompactHeight } from './lib/platform'
 import { tabForKept } from './lib/sessionReattach'
 import { KeyRow } from './components/KeyRow'
@@ -316,7 +318,15 @@ function App() {
   // beats offering to reconnect them.
   useEffect(() => {
     if (!isAndroid) return
-    listKeptSessions()
+    // First, so a terminal brought back already knows its keyboard state and zoom.
+    loadRebuildState()
+      .then((saved) => {
+        seedKeyboardHold(saved.windowHeights, (windowHeights) =>
+          saveRebuildState({ windowHeights }),
+        )
+        setPinchFontSize(saved.pinchFontSize)
+        return listKeptSessions()
+      })
       .then((kept) => {
         const restored: Tab[] = []
         for (const k of kept) {
@@ -432,10 +442,17 @@ function App() {
       void handling.then((listener) => listener?.unregister())
     }
   }, [])
-  // Choosing a size in Settings should show it, whatever a pinch left behind.
+  // Choosing a size in Settings should show it, whatever a pinch left behind. Skipped on
+  // mount, when nothing was chosen, since a rebuilt webview is about to restore its zoom.
+  const settledFontSize = useRef(terminalSettings.fontSize)
   useEffect(() => {
+    if (settledFontSize.current === terminalSettings.fontSize) return
+    settledFontSize.current = terminalSettings.fontSize
     setPinchFontSize(null)
   }, [terminalSettings.fontSize])
+  useEffect(() => {
+    if (isAndroid) saveRebuildState({ pinchFontSize })
+  }, [pinchFontSize])
   useEffect(() => {
     if (isAndroid) syncVaultAutoLock(terminalSettings.vaultAutoLockMinutes)
   }, [terminalSettings.vaultAutoLockMinutes])
