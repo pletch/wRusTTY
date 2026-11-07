@@ -63,7 +63,8 @@ curly underlines just work.
   panel; forwards are owned by the backend, so they survive the panel closing
   and are re-established after a reconnect
 - **Keepalive and auto-reconnect** — the session comes back, and so do its port
-  forwards and its in-flight file transfers
+  forwards and its in-flight file transfers. One that needs a saved credential while
+  the vault is locked waits for you to unlock it rather than giving up
 - **Wake-on-LAN** — a per-session MAC, probed first so an awake host is never
   sent a packet, with a *Wake* action on any saved session
 - **Outbound proxy** — reach SSH hosts (or their jump host) through an HTTP
@@ -208,6 +209,8 @@ Google Play.
 - File transfers to and from phone storage and Google Drive
 - Sessions keep running in the background, and come back with their history if Android
   destroys the screen or the WebView's renderer dies
+- Sessions follow the network: a lost one reconnects as soon as a network is back, and
+  a live one is checked when the network changes, such as moving from cellular to Wi-Fi
 
 Not there yet: folder transfers, remote editing, agent authentication, local shells and
 serial. Sessions don't survive the app itself being killed or swiped away.
