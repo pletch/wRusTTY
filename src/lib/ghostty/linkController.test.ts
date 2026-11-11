@@ -155,6 +155,69 @@ describe('LinkController', () => {
     expect(new LinkController(s.host).linkAt({ x: 5, y: 0 })).toBeNull()
   })
 
+  /** Claude Code's sign-in URL: the program breaks it with newlines, so no
+   *  row carries a wrap flag. */
+  describe('URLs broken by hard newlines', () => {
+    it('joins a URL that fills its row and carries on below', () => {
+      const s = stub([
+        ['https://a.example/ab', false],
+        ['cdefghijklmnopqrstuv', false],
+        ['wx', false],
+        ['next line', false],
+      ], 4)
+      const link = new LinkController(s.host).linkAt({ x: 1, y: 2 })
+      expect(link?.url).toBe('https://a.example/abcdefghijklmnopqrstuvwx')
+      expect(link?.segments).toEqual([
+        { row: 0, from: 0, to: 19 },
+        { row: 1, from: 0, to: 19 },
+        { row: 2, from: 0, to: 1 },
+      ])
+    })
+
+    it('keeps an indent the program repeats', () => {
+      const s = stub([
+        ['  go https://a.ex/ab', false],
+        ['  cd/ef', false],
+      ], 2)
+      expect(new LinkController(s.host).linkAt({ x: 6, y: 0 })?.url).toBe('https://a.ex/abcd/ef')
+    })
+
+    it('finds the joined URL from below even with its head off screen', () => {
+      const s = stub([
+        ['https://a.example/ab', false],
+        ['cd', false],
+      ], 1, 1)
+      expect(new LinkController(s.host).linkAt({ x: 0, y: 1 })?.url).toBe('https://a.example/abcd')
+    })
+
+    it('does not join a URL that stops short of the edge', () => {
+      const s = stub([
+        ['https://a.example/a', false],
+        ['bcd', false],
+      ], 2)
+      expect(new LinkController(s.host).linkAt({ x: 0, y: 0 })?.url).toBe('https://a.example/a')
+    })
+
+    it('does not join a line at a different indent, a blank, or a new URL', () => {
+      for (const next of [' indented', '', 'https://b.example']) {
+        const s = stub([
+          ['https://a.example/ab', false],
+          [next, false],
+        ], 2)
+        expect(new LinkController(s.host).linkAt({ x: 0, y: 0 })?.url).toBe('https://a.example/ab')
+      }
+    })
+
+    it('does not join when the full row ends in prose, not a URL', () => {
+      const s = stub([
+        ['see https://a.ex now', false],
+        ['then more', false],
+      ], 2)
+      expect(new LinkController(s.host).linkAt({ x: 5, y: 0 })?.url).toBe('https://a.ex')
+      expect(new LinkController(s.host).linkAt({ x: 0, y: 1 })).toBeNull()
+    })
+  })
+
   describe('paths', () => {
     it('offers none unless the host asks for them', () => {
       const s = stub([['cat /etc/hosts', false]], 1)

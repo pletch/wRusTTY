@@ -139,6 +139,20 @@ export function findUrls(line: string): UrlMatch[] {
 }
 
 /**
+ * Whether `text` ends partway through a URL: a match, before trailing
+ * punctuation is trimmed, that runs to the last character. Used to decide
+ * whether a full row's URL carries on past a hard line break.
+ */
+export function endsInUrl(text: string): boolean {
+  URL_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = URL_RE.exec(text)) !== null) {
+    if (m.index + m[0].length === text.length && isBoundary(text, m.index)) return true
+  }
+  return false
+}
+
+/**
  * Whether a URL may be handed to the system opener. Checked again right
  * before opening. On Windows a `file://` or UNC target can leak credentials
  * via SMB authentication, and `vbscript:`, `javascript:` and custom schemes

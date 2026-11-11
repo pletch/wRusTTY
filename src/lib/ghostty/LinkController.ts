@@ -1,6 +1,6 @@
 import { findPaths, type PathFlavor } from '../pathDetect'
-import { findUrls } from '../urlDetect'
-import { logicalLines, segmentsFor, type Segment } from './logicalLines'
+import { endsInUrl, findUrls } from '../urlDetect'
+import { logicalLines, segmentsFor, type LogicalLine, type Segment } from './logicalLines'
 import type { RowText } from './rowText'
 import type { Point } from './SelectionController'
 
@@ -61,6 +61,75 @@ export interface LinkHost {
  */
 const WRAP_CHASE_ROWS = 32
 
+/** A character a URL can contain; `urlDetect`'s scan, one character at a time. */
+const URL_CHAR_RE = /[^\s<>"`^{}|\\]/
+
+/** Index of the first non-blank character at or after `from`, or -1. */
+function firstNonBlank(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) if (!/\s/.test(text[i])) return i
+  return -1
+}
+
+/**
+ * Rejoins URLs that a program broke with its own newlines. A full-screen app
+ * that does its own wrapping (Claude Code's sign-in URL, anything drawn with
+ * Ink) writes a long URL as several hard lines, which carry no wrap flag, so
+ * only the first row would be a link.
+ *
+ * A line runs on into the next when all of these hold, which is what a
+ * program wrapping a URL hard at the edge produces and prose rarely does:
+ * - its last row is full to the last column, with no trailing blank;
+ * - it ends partway through a URL;
+ * - the next line starts at the same column as this one's last row, with a
+ *   URL character, and doesn't start a URL of its own.
+ *
+ * The join drops the next line's indent. Lines are otherwise untouched.
+ */
+export function stitchBrokenUrls(lines: LogicalLine[], cols: number): LogicalLine[] {
+  const out: LogicalLine[] = []
+  for (const line of lines) {
+    const prev = out[out.length - 1]
+    const at = prev ? continuationStart(prev, line, cols) : -1
+    if (at < 0) {
+      out.push(line)
+      continue
+    }
+    out[out.length - 1] = {
+      text: prev.text + line.text.slice(at),
+      startRow: prev.startRow,
+      rowCount: prev.rowCount + line.rowCount,
+      rowAt: concat(prev.rowAt, line.rowAt.subarray(at)),
+      colAt: concat(prev.colAt, line.colAt.subarray(at)),
+    }
+  }
+  return out
+}
+
+/** Where `next` carries on `prev`'s URL, or -1 if it doesn't. */
+function continuationStart(prev: LogicalLine, next: LogicalLine, cols: number): number {
+  const last = prev.text.length - 1
+  if (last < 0 || /\s/.test(prev.text[last]) || prev.colAt[last] !== cols - 1) return -1
+  // Must be the very next row.
+  if (next.startRow !== prev.rowAt[last] + 1) return -1
+
+  // The indent of prev's last row, which a wrapping program repeats.
+  let rowStart = last
+  while (rowStart > 0 && prev.rowAt[rowStart - 1] === prev.rowAt[last]) rowStart--
+  const indentAt = firstNonBlank(prev.text, rowStart)
+  const at = firstNonBlank(next.text, 0)
+  if (at < 0 || next.colAt[at] !== prev.colAt[indentAt] || next.rowAt[at] !== next.startRow) return -1
+  if (!URL_CHAR_RE.test(next.text[at]) || /^https?:\/\//i.test(next.text.slice(at, at + 8))) return -1
+
+  return endsInUrl(prev.text) ? at : -1
+}
+
+function concat(a: Int32Array, b: Int32Array): Int32Array {
+  const out = new Int32Array(a.length + b.length)
+  out.set(a)
+  out.set(b, a.length)
+  return out
+}
+
 export class LinkController {
   private readonly host: LinkHost
 
@@ -118,21 +187,16 @@ export class LinkController {
     const viewTop = Math.max(0, Math.min(top, total - 1))
     const viewBottom = Math.min(total - 1, viewTop + this.host.rows() - 1)
 
-    // Widen to hold whole logical lines, reading the flags once.
+    // Widen to hold whole lines, so a link crossing the viewport's edge isn't
+    // cut in half. The whole chase is read, not just up to the next hard
+    // break: a hard-broken URL (see `stitchBrokenUrls`) has no flag to follow.
+    // A line still running at the window's top is treated as starting there,
+    // as the user sees it.
     const lo = Math.max(0, viewTop - WRAP_CHASE_ROWS)
     const hi = Math.min(total - 1, viewBottom + WRAP_CHASE_ROWS)
     const flags = this.host.readWrapFlags(lo, hi)
-
-    // Back to the start of the first row's line. If the chase runs out, the
-    // partial line is treated as its own, as the user sees it.
-    let from = viewTop
-    while (from > lo && flags[from - lo]) from--
-    // Forward to the end of the line the viewport's last row belongs to.
-    let to = viewBottom
-    while (to < hi && flags[to + 1 - lo]) to++
-
-    const rows = this.host.readRows(from, to)
-    const lines = logicalLines(rows, flags.slice(from - lo, to - lo + 1), from)
+    const rows = this.host.readRows(lo, hi)
+    const lines = stitchBrokenUrls(logicalLines(rows, flags, lo), this.host.cols())
 
     const out: Link[] = []
     for (const line of lines) {
