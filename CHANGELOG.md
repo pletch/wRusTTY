@@ -22,6 +22,11 @@ release job publishes it as the GitHub release notes.
   screen instead of pushing them straight back.
 - On a host with Ghostty's own shell integration installed, resizing a pane no
   longer leaves a copy of the prompt behind, or clears the previous prompt.
+- With the bash, zsh or fish shell-integration snippet, resizing a pane at a
+  prompt no longer leaves a stale copy of a wide prompt above the redrawn one,
+  or shows a wrapped command line twice. The snippet now has the terminal
+  clear the prompt for the shell to draw again, when the shell will. Re-copy
+  the snippet from Settings to pick this up.
 
 ## [0.6.2] - 2026-11-07
 

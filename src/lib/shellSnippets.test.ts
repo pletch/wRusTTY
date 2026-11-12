@@ -78,6 +78,27 @@ describe('shell snippets', () => {
     },
   )
 
+  // On a resize the terminal clears the prompt for the shell to draw again
+  // only when `A` says the shell will (libghostty-vt's default is off). A
+  // shell that said so and then didn't redraw would leave the prompt blank,
+  // so each one asks only when its redraw is on, and says redraw=0 otherwise:
+  // the setting outlasts the shell that sent it. Recorded in each shell
+  // through resizes and replayed into the engine, both ways.
+  it.each([
+    ['bash', 'redraw=last', '[[ -o emacs || -o vi ]]'],
+    ['zsh', 'redraw=1', '[[ -o zle ]]'],
+    ['fish', 'redraw=1', 'if test "$fish_handle_reflow" = 1'],
+  ])('%s asks the terminal to clear the prompt on a resize only when it redraws', (id, ask, guard) => {
+    const { script } = SHELL_SNIPPETS.find((s) => s.id === id)!
+    expect(script).toContain(`133;A;${ask}`)
+    expect(script).toContain('133;A;redraw=0')
+    expect(script).toContain(guard)
+  })
+
+  it('PowerShell keeps the prompt on a resize rather than having it cleared', () => {
+    expect(SHELL_SNIPPETS.find((s) => s.id === 'powershell')!.script).toContain(']133;A;redraw=0')
+  })
+
   const powershell = SHELL_SNIPPETS.find((s) => s.id === 'powershell')!
 
   it('PowerShell reads $? before anything can overwrite it', () => {

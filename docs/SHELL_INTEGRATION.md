@@ -94,6 +94,28 @@ zsh snippet printed the command with `print`, which expands backslashes and
 undid the escaping: a zsh command with a `;` in it was recorded only up to the
 `;`. Re-copy the snippet if you installed an earlier one.
 
+`A` also carries `redraw`, which says what to do with the prompt when the
+pane is resized. Shells redraw the prompt they are showing when the width
+changes, and the terminal reflows the old one at the same time, so without
+help a wide prompt is left behind as a stale copy above the new one, and a
+wrapped command line shows up twice. With `redraw=1` the terminal clears the
+prompt first and lets the shell draw it again; `redraw=last` clears only its
+last line, which is all bash's readline redraws. The engine leaves this off
+unless told, since a shell that didn't redraw would leave a blank where its
+prompt was.
+
+So each snippet asks only when its shell will redraw: bash while line
+editing is on, zsh while its line editor is, and fish while
+`$fish_handle_reflow` is 1, which fish sets itself for a terminal it doesn't
+recognize, this one included. Otherwise it sends `redraw=0`, since the
+setting stays with the terminal after the shell that sent it exits.
+PowerShell's always sends `redraw=0`; its redraw hasn't been tested. All of
+this was checked by recording bash 5.2, zsh 5.9 and fish 4.0 through a
+series of resizes, with a wide two-line prompt and a wrapped command line,
+and replaying the output into the engine: with the opt-in each width shows
+one clean prompt, and with each shell's redraw turned off the prompt
+reflows as before rather than going blank.
+
 ## bash
 
 Add to `~/.bashrc` on the remote host:
@@ -178,7 +200,15 @@ if [[ $- == *i* && -z $__osc133_installed ]]; then
       __osc133_running=0
     fi
     __osc7_report
-    printf '\e]133;A\a'
+    # `redraw` tells the terminal whether to clear the prompt on a resize
+    # for the shell to draw again. Readline redraws only the prompt's last
+    # line, and only with line editing on; without it nothing would replace
+    # what was cleared.
+    if [[ -o emacs || -o vi ]]; then
+      printf '\e]133;A;redraw=last\a'
+    else
+      printf '\e]133;A;redraw=0\a'
+    fi
   }
 
   # Runs last in PROMPT_COMMAND, so the next command to fire the DEBUG trap
@@ -325,7 +355,14 @@ __osc133_precmd() {
     __osc133_running=0
   fi
   __osc7_report
-  print -n "\e]133;A\a"
+  # `redraw` tells the terminal whether to clear the prompt on a resize for
+  # the shell to draw again. The line editor redraws all of it; without the
+  # line editor nothing would replace what was cleared.
+  if [[ -o zle ]]; then
+    print -n "\e]133;A;redraw=1\a"
+  else
+    print -n "\e]133;A;redraw=0\a"
+  fi
   # OSC 133 `B`: where the prompt ends and your own typing begins. In PS1
   # rather than printed here, because this hook runs before the prompt is
   # drawn. Re-checked every cycle so a theme that rebuilds PS1 cannot drop
@@ -357,7 +394,15 @@ Add to `~/.config/fish/config.fish`:
 # Understood by iTerm2, kitty, WezTerm, Windows Terminal, VS Code and wRusTTY;
 # silently discarded by terminals that don't implement them.
 function __osc133_prompt --on-event fish_prompt
-    printf '\e]133;A\a'
+    # `redraw` tells the terminal whether to clear the prompt on a resize for
+    # fish to draw again. fish repaints it when $fish_handle_reflow is 1, which
+    # it sets itself for a terminal it doesn't know, this one included; set to
+    # anything else, nothing would replace what was cleared.
+    if test "$fish_handle_reflow" = 1
+        printf '\e]133;A;redraw=1\a'
+    else
+        printf '\e]133;A;redraw=0\a'
+    end
 end
 
 # OSC 133 `B`: where the prompt ends and your own typing begins. The event
@@ -532,7 +577,11 @@ if (-not [Console]::IsInputRedirected -and -not $Global:__osc133_installed) {
       $Global:__osc133_running = $false
     }
     __osc7_report
-    [Console]::Write("$__osc133_esc]133;A$__osc133_bel")
+    # `redraw=0`: the terminal leaves the prompt to reflow on a resize
+    # rather than clearing it for PowerShell to draw again, which hasn't been
+    # tested here. Said outright, since the setting outlasts the shell that
+    # sent it.
+    [Console]::Write("$__osc133_esc]133;A;redraw=0$__osc133_bel")
     # OSC 133 `B` marks the end of the prompt, so it is appended to what the
     # prompt returns rather than written here: the host writes that string
     # after this function returns, and anything sent to the console now would
