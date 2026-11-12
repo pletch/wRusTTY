@@ -7,6 +7,22 @@ import { TERMINAL_INPUT_LABEL } from '../lib/ghostty/GhosttyInputHandler'
 import { clearSoftModifiers, takeSoftModifiers } from '../lib/softModifiers'
 import { KeyRow } from './KeyRow'
 
+/** A press and lift in place, the way a finger taps. */
+function tap(el: Element) {
+  fireEvent.pointerDown(el, { clientX: 100, clientY: 10 })
+  fireEvent.pointerUp(el, { clientX: 100, clientY: 10 })
+}
+
+/** A finger landing on `el` and dragging `dx` sideways before lifting. The row has
+ * the pointer captured, so the rest goes to it: the key may be gone by then. */
+function swipe(el: Element, dx: number, dy = 0) {
+  const row = el.closest('[data-modal]')!
+  fireEvent.pointerDown(el, { clientX: 100, clientY: 10 })
+  fireEvent.pointerMove(row, { clientX: 100 + dx / 2, clientY: 10 + dy / 2 })
+  fireEvent.pointerMove(row, { clientX: 100 + dx, clientY: 10 + dy })
+  fireEvent.pointerUp(row, { clientX: 100 + dx, clientY: 10 + dy })
+}
+
 describe('KeyRow', () => {
   let input: HTMLTextAreaElement
   let events: string[]
@@ -29,33 +45,146 @@ describe('KeyRow', () => {
     vi.useRealTimers()
   })
 
-  it('sends a key to the focused terminal, and its release on letting go', () => {
+  it('sends a key and its release on a tap, but nothing before the lift', () => {
     render(<KeyRow />)
     const esc = screen.getByLabelText('Escape')
-    fireEvent.pointerDown(esc)
-    expect(events).toEqual(['down:Escape'])
-    fireEvent.pointerUp(esc)
+    fireEvent.pointerDown(esc, { clientX: 100, clientY: 10 })
+    expect(events).toEqual([])
+    fireEvent.pointerUp(esc, { clientX: 100, clientY: 10 })
     expect(events).toEqual(['down:Escape', 'up:Escape'])
   })
 
-  it('reaches the other pages through More keys, and comes back around', () => {
+  it('sends a held key once it has stayed put, and its release on letting go', () => {
+    vi.useFakeTimers()
     render(<KeyRow />)
-    const more = screen.getByLabelText('More keys')
-    fireEvent.pointerDown(more)
+    const esc = screen.getByLabelText('Escape')
+    fireEvent.pointerDown(esc, { clientX: 100, clientY: 10 })
+    vi.advanceTimersByTime(150)
+    expect(events).toEqual(['down:Escape'])
+    fireEvent.pointerUp(esc, { clientX: 100, clientY: 10 })
+    expect(events).toEqual(['down:Escape', 'up:Escape'])
+  })
+
+  it('reaches the other pages by swiping left, and comes back around', () => {
+    render(<KeyRow />)
+    swipe(screen.getByLabelText('Escape'), -60)
     expect(screen.queryByLabelText('Escape')).toBeNull()
     expect(screen.getByLabelText('Page up')).toBeTruthy()
-    fireEvent.pointerDown(more)
+    swipe(screen.getByLabelText('Home'), -60)
     expect(screen.getByLabelText('F12')).toBeTruthy()
-    fireEvent.pointerDown(more)
+    swipe(screen.getByLabelText('F1'), -60)
     expect(screen.getByLabelText('Escape')).toBeTruthy()
+    expect(events).toEqual([])
+  })
+
+  it('goes back a page by swiping right, wrapping from the first', () => {
+    render(<KeyRow />)
+    swipe(screen.getByLabelText('Escape'), 60)
+    expect(screen.getByLabelText('F12')).toBeTruthy()
+    swipe(screen.getByLabelText('F1'), 60)
+    expect(screen.getByLabelText('Page up')).toBeTruthy()
+  })
+
+  it('turns one page per swipe, however far it goes', () => {
+    render(<KeyRow />)
+    swipe(screen.getByLabelText('Escape'), -300)
+    expect(screen.getByLabelText('Page up')).toBeTruthy()
+  })
+
+  it('takes a small wobble as a tap', () => {
+    render(<KeyRow />)
+    swipe(screen.getByLabelText('Escape'), 8, 5)
+    expect(events).toEqual(['down:Escape', 'up:Escape'])
+  })
+
+  it('drops a press dragged off the row', () => {
+    render(<KeyRow />)
+    swipe(screen.getByLabelText('Escape'), 0, -40)
+    expect(events).toEqual([])
+    expect(screen.getByLabelText('Escape')).toBeTruthy()
+  })
+
+  it("can't swipe once a held key has fired", () => {
+    vi.useFakeTimers()
+    render(<KeyRow />)
+    const esc = screen.getByLabelText('Escape')
+    fireEvent.pointerDown(esc, { clientX: 100, clientY: 10 })
+    vi.advanceTimersByTime(150)
+    fireEvent.pointerMove(esc, { clientX: 20, clientY: 10 })
+    fireEvent.pointerUp(esc, { clientX: 20, clientY: 10 })
+    expect(screen.getByLabelText('Escape')).toBeTruthy()
+    expect(events).toEqual(['down:Escape', 'up:Escape'])
+  })
+
+  it('lets a new press take over from one whose lift never came', () => {
+    render(<KeyRow />)
+    fireEvent.pointerDown(screen.getByLabelText('Escape'), {
+      clientX: 100,
+      clientY: 10,
+    })
+    tap(screen.getByLabelText('Pipe'))
+    expect(events).toEqual(['text:|'])
+  })
+
+  describe('with motion allowed', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    })
+    afterEach(() => vi.unstubAllGlobals())
+
+    const track = () => screen.getByTestId('key-pages').previousElementSibling as HTMLElement
+
+    it('follows the finger, then slides on to the next page', () => {
+      render(<KeyRow />)
+      const esc = screen.getByLabelText('Escape')
+      const row = esc.closest('[data-modal]')!
+      fireEvent.pointerDown(esc, { clientX: 100, clientY: 10 })
+      fireEvent.pointerMove(row, { clientX: 60, clientY: 10 })
+      expect(track().style.transform).toContain('-40px')
+      fireEvent.pointerUp(row, { clientX: 60, clientY: 10 })
+      expect(track().style.transition).toContain('transform')
+      expect(screen.getByLabelText('Escape')).toBeTruthy()
+      act(() => void vi.advanceTimersByTime(180))
+      expect(screen.getByLabelText('Page up')).toBeTruthy()
+      expect(track().style.transition).toBe('none')
+    })
+
+    it('slides back without turning when the finger returns', () => {
+      render(<KeyRow />)
+      const esc = screen.getByLabelText('Escape')
+      const row = esc.closest('[data-modal]')!
+      fireEvent.pointerDown(esc, { clientX: 100, clientY: 10 })
+      fireEvent.pointerMove(row, { clientX: 60, clientY: 10 })
+      fireEvent.pointerUp(row, { clientX: 95, clientY: 10 })
+      act(() => void vi.advanceTimersByTime(180))
+      expect(screen.getByLabelText('Escape')).toBeTruthy()
+      expect(events).toEqual([])
+    })
+
+    it('ignores a press while the row is still sliding', () => {
+      render(<KeyRow />)
+      swipe(screen.getByLabelText('Escape'), -60)
+      tap(screen.getByLabelText('Pipe'))
+      expect(events).toEqual([])
+    })
+  })
+
+  it('marks the current page', () => {
+    render(<KeyRow />)
+    const dots = () =>
+      [...screen.getByTestId('key-pages').children].map((d) => d.hasAttribute('data-current'))
+    expect(dots()).toEqual([true, false, false])
+    swipe(screen.getByLabelText('Escape'), -60)
+    expect(dots()).toEqual([false, true, false])
   })
 
   it('sends Ctrl-C as a key press with Ctrl held, for the encoder', () => {
     const seen: KeyboardEvent[] = []
     input.addEventListener('keydown', (e) => seen.push(e))
     render(<KeyRow />)
-    fireEvent.pointerDown(screen.getByLabelText('More keys'))
-    fireEvent.pointerDown(screen.getByLabelText('Control C'))
+    swipe(screen.getByLabelText('Escape'), -60)
+    tap(screen.getByLabelText('Control C'))
     expect(seen[0].key).toBe('c')
     expect(seen[0].code).toBe('KeyC')
     expect(seen[0].ctrlKey).toBe(true)
@@ -63,7 +192,7 @@ describe('KeyRow', () => {
 
   it('types a symbol as text', () => {
     render(<KeyRow />)
-    fireEvent.pointerDown(screen.getByLabelText('Pipe'))
+    tap(screen.getByLabelText('Pipe'))
     expect(events).toEqual(['text:|'])
   })
 
@@ -81,11 +210,11 @@ describe('KeyRow', () => {
     render(<KeyRow />)
     const ctrl = screen.getByLabelText('Control')
     expect(ctrl.getAttribute('aria-pressed')).toBe('false')
-    fireEvent.pointerDown(ctrl)
+    tap(ctrl)
     expect(ctrl.getAttribute('aria-pressed')).toBe('true')
     expect(events).toEqual([])
     vi.advanceTimersByTime(1000)
-    fireEvent.pointerDown(ctrl)
+    tap(ctrl)
     expect(ctrl.getAttribute('aria-pressed')).toBe('false')
   })
 
@@ -93,9 +222,9 @@ describe('KeyRow', () => {
     vi.useFakeTimers()
     render(<KeyRow />)
     const ctrl = screen.getByLabelText('Control')
-    fireEvent.pointerDown(ctrl)
+    tap(ctrl)
     const armedLook = ctrl.className
-    fireEvent.pointerDown(ctrl)
+    tap(ctrl)
     expect(ctrl.getAttribute('aria-pressed')).toBe('true')
     expect(ctrl.className).not.toBe(armedLook)
     expect(takeSoftModifiers().ctrl).toBe(true)
@@ -105,7 +234,7 @@ describe('KeyRow', () => {
   it('shows a modifier disarmed once a key has used it', () => {
     render(<KeyRow />)
     const ctrl = screen.getByLabelText('Control')
-    fireEvent.pointerDown(ctrl)
+    tap(ctrl)
     act(() => void takeSoftModifiers())
     expect(ctrl.getAttribute('aria-pressed')).toBe('false')
   })
@@ -114,9 +243,9 @@ describe('KeyRow', () => {
     vi.useFakeTimers()
     render(<KeyRow />)
     const up = screen.getByLabelText('Up arrow')
-    fireEvent.pointerDown(up)
-    vi.advanceTimersByTime(400 + 60)
-    fireEvent.pointerUp(up)
+    fireEvent.pointerDown(up, { clientX: 100, clientY: 10 })
+    vi.advanceTimersByTime(150 + 400 + 60)
+    fireEvent.pointerUp(up, { clientX: 100, clientY: 10 })
     vi.advanceTimersByTime(1000)
     expect(events).toEqual([
       'down:ArrowUp',
@@ -137,7 +266,7 @@ describe('KeyRow', () => {
   it('sends nothing to the terminal when something else has focus', () => {
     render(<KeyRow />)
     input.blur()
-    fireEvent.pointerDown(screen.getByLabelText('Escape'))
+    tap(screen.getByLabelText('Escape'))
     expect(events).toEqual([])
   })
 
@@ -170,7 +299,7 @@ describe('KeyRow', () => {
     it('types a symbol at the caret, and React hears it', () => {
       const { first, state } = setup()
       first.setSelectionRange(2, 2)
-      fireEvent.pointerDown(screen.getByLabelText('Pipe'))
+      tap(screen.getByLabelText('Pipe'))
       expect(state.textContent).toBe('ab|cd')
       expect(first.selectionStart).toBe(3)
       expect(events).toEqual([])
@@ -180,7 +309,7 @@ describe('KeyRow', () => {
       setup()
       const password = screen.getByTestId('password') as HTMLInputElement
       password.focus()
-      fireEvent.pointerDown(screen.getByLabelText('Tilde'))
+      tap(screen.getByLabelText('Tilde'))
       expect(password.value).toBe('~')
     })
 
@@ -188,30 +317,26 @@ describe('KeyRow', () => {
       const { first } = setup()
       first.setSelectionRange(1, 1)
       const left = screen.getByLabelText('Left arrow')
-      fireEvent.pointerDown(left)
-      fireEvent.pointerUp(left)
+      tap(left)
       expect(first.selectionStart).toBe(0)
-      fireEvent.pointerDown(left)
-      fireEvent.pointerUp(left)
+      tap(left)
       expect(first.selectionStart).toBe(0)
-      fireEvent.pointerDown(screen.getByLabelText('Right arrow'))
+      tap(screen.getByLabelText('Right arrow'))
       expect(first.selectionStart).toBe(1)
     })
 
     it('moves through the fields with Tab, skipping disabled ones and wrapping', () => {
       const { first } = setup()
       const tab = screen.getByLabelText('Tab')
-      fireEvent.pointerDown(tab)
-      fireEvent.pointerUp(tab)
+      tap(tab)
       expect(document.activeElement).toBe(screen.getByTestId('password'))
-      fireEvent.pointerDown(tab)
-      fireEvent.pointerUp(tab)
+      tap(tab)
       expect(document.activeElement).toBe(first)
     })
 
     it('never tabs into the terminal', () => {
       const { first } = setup()
-      fireEvent.pointerDown(screen.getByLabelText('Tab'))
+      tap(screen.getByLabelText('Tab'))
       expect(document.activeElement).not.toBe(input)
       expect(first).toBeTruthy()
     })
@@ -220,7 +345,7 @@ describe('KeyRow', () => {
       setup()
       const heard = vi.fn()
       window.addEventListener('keydown', heard)
-      fireEvent.pointerDown(screen.getByLabelText('Escape'))
+      tap(screen.getByLabelText('Escape'))
       window.removeEventListener('keydown', heard)
       expect(heard).toHaveBeenCalledOnce()
       expect((heard.mock.calls[0][0] as KeyboardEvent).key).toBe('Escape')
@@ -230,14 +355,14 @@ describe('KeyRow', () => {
       const { first } = setup()
       first.setSelectionRange(2, 2)
       first.addEventListener('keydown', (e) => e.preventDefault())
-      fireEvent.pointerDown(screen.getByLabelText('Left arrow'))
+      tap(screen.getByLabelText('Left arrow'))
       expect(first.selectionStart).toBe(2)
     })
 
     it('does not arm Ctrl, which would land on the terminal later', () => {
       setup()
       const ctrl = screen.getByLabelText('Control')
-      fireEvent.pointerDown(ctrl)
+      tap(ctrl)
       expect(ctrl.getAttribute('aria-pressed')).toBe('false')
     })
   })
@@ -247,7 +372,7 @@ describe('KeyRow', () => {
     input.blur()
     const heard = vi.fn()
     window.addEventListener('keydown', heard)
-    fireEvent.pointerDown(screen.getByLabelText('Escape'))
+    tap(screen.getByLabelText('Escape'))
     window.removeEventListener('keydown', heard)
     expect(heard).toHaveBeenCalledOnce()
   })
