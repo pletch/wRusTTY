@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 27ffca0dd67177d1f069ea7f910362e5d871613d
+ghostty-org/ghostty @ cf3a8a6594eec899fe6335465668c60f2281ce9c
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,14 +34,69 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, 190, 190, 196, 196, **214 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, 190, 190, 196, 196, 214, **214 here** — so re-pin only with a reason and re-run
 the checks when you do. From this pin on, upstream holds the C API to additions
 only (see below), so a re-pin should no longer move a number we already use. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca`, `ghostty_osc_set` at `f9e82709`, and Kitty graphics
 image iteration at `8ef0ec12`.
 
-### Moving from `ae0dc1b7` (2026-10-31) to this pin
+### Moving from `27ffca0d` (2026-11-07) to this pin
+
+37 merges over five days. No ABI change: the headers differ only in
+`version.h`, the exports are the same 217, and the symbol map lost only an
+empty `GHOSTTY_VT_1.1` section. Upstream moved `main` onto the 1.0.x line, so
+the binary now reports `1.0.2-dev+cf3a8a659` where the last one said
+`1.1.0-dev`; the C API is still the stable `vt-1.0.0` one. The whole suite
+passed against the new binary before anything here was touched, except the
+two integrity checks that are meant to fail. Still Zig 0.17.0, and the ESC k
+patch applied cleanly.
+
+Taken for two resize fixes:
+
+- **Growing rows and shrinking columns in one resize (`e0e57281d`, #15141).**
+  The row growth pulled lines down from scrollback, then the column change
+  pushed them straight back, unlike the same two resizes one after the other.
+  We turn on `RESIZE_PULL_SCROLLBACK`, and dragging a window corner or
+  changing a split layout does both at once.
+- **Prompt marks through reflow (`e6076b3a6`, #15199).** Reflow copied a
+  row's prompt-start mark onto every row it split the row into, and a joined
+  row took the mark of the last row in it. The visible failure was in
+  clearing the prompt on a width change for the shell to redraw: narrowing
+  left the top of the prompt behind, once per resize, and widening could clear
+  the previous prompt too.
+
+  **That clearing is off for us by default.** libghostty-vt's
+  `ghostty_terminal_new` sets `shell_redraws_prompt = .false`, since an
+  embedder can't assume Ghostty's shell integration, and only `OSC 133;A`
+  with `redraw=1` (or `last`) turns it on. Our snippets don't send it, so a
+  pane running them never cleared a prompt on resize, before or after.
+  Probing four split and join cases, then ED 2 at the prompt, gave the same
+  results on both binaries. It applies to hosts with Ghostty's own shell
+  integration installed, which does opt in.
+
+`resizePromptAndPull.test.ts` covers both. Its prompts opt in with
+`redraw=1`, and every case fails on the previous binary.
+
+Also in range, smaller:
+
+- **A failed render update (`59044f5c5`, #15127)** left the rows it hadn't
+  rebuilt marked clean, so the next update used incomplete data, which could
+  crash. They now stay dirty.
+- **A restored snapshot (`a622196c9`, #15195)** gives its last page full
+  capacity, so the first write after a reconnect replay doesn't allocate
+  again.
+- **Parse and render speedups:** CSI parameter digits (#15161), style runs in
+  `endUpdate` (#15163), and stream-handler errors logged out of line (#15160),
+  which shrinks the hot print path's stack frame.
+
+Inert here: the line-limit pruning change (#15173; we limit by bytes), Kitty
+image replacement (#15184), the SIMD UTF-8 decoder (#15162; not built for
+wasm), and the CI, build and Windows packaging work.
+
+The stripped binary grew **2,366 bytes** (1,331,227 -> 1,333,593).
+
+### Moving from `ae0dc1b7` (2026-10-31) to `27ffca0d`
 
 207 commits over a week. On 2026-11-06 upstream tagged **`vt-1.0.0`**, the first
 release of libghostty-vt, and in preparing it broke the C API on purpose, once,
@@ -736,7 +791,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 27ffca0dd67177d1f069ea7f910362e5d871613d
+cd ghostty && git checkout cf3a8a6594eec899fe6335465668c60f2281ce9c
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm

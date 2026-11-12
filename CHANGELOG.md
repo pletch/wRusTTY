@@ -11,6 +11,18 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `cf3a8a65`.
+
+### Fixed
+
+- Resizing a pane taller and narrower at once, such as dragging a window corner
+  or changing a split layout, keeps the lines it pulls down from scrollback on
+  screen instead of pushing them straight back.
+- On a host with Ghostty's own shell integration installed, resizing a pane no
+  longer leaves a copy of the prompt behind, or clears the previous prompt.
+
 ## [0.6.2] - 2026-11-07
 
 ### Changed

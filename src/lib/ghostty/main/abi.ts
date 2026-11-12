@@ -2,8 +2,8 @@
  * The ghostty `main` C ABI, as constants and types; see
  * `docs/PORT_GHOSTTY_MAIN.md`.
  *
- * Pinned to ghostty-org/ghostty @ 27ffca0dd67177d1f069ea7f910362e5d871613d,
- * libghostty-vt 1.1.0-dev, whose C API is the stable `vt-1.0.0` one: upstream
+ * Pinned to ghostty-org/ghostty @ cf3a8a6594eec899fe6335465668c60f2281ce9c,
+ * libghostty-vt 1.0.2-dev, whose C API is the stable `vt-1.0.0` one: upstream
  * CI now fails any change to it that isn't an addition. Values are exercised
  * against the binary by `main/abi.parity.test.ts`, and every struct layout and
  * enum value here is checked against the binary's own manifest by
