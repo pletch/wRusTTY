@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use russh::keys::PublicKey;
+use russh::keys::{PublicKey, PublicKeyOrCertificate};
 use tokio::sync::Mutex;
 
 use crate::error::SshError;
@@ -75,8 +75,19 @@ impl russh::client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // A host certificate is checked as the key it certifies: known_hosts
+        // pins keys and nothing here trusts a certificate authority, and
+        // russh has verified the key exchange signature by that key already.
+        let certified;
+        let server_public_key = match server_key {
+            PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            PublicKeyOrCertificate::Certificate(cert) => {
+                certified = PublicKey::from(cert.public_key().clone());
+                &certified
+            }
+        };
         let status = {
             let store = self.known_hosts.lock().await;
             store.check(&self.host, self.port, server_public_key)

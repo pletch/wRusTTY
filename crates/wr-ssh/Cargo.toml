@@ -10,7 +10,7 @@ repository.workspace = true
 wr-core = { path = "../wr-core" }
 wr-fs = { path = "../wr-fs" }
 wr-sftp = { path = "../wr-sftp" }
-russh = "0.62"
+russh = "0.65"
 async-trait = "0.1"
 tokio.workspace = true
 serde.workspace = true

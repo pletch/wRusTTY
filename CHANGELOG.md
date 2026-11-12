@@ -13,6 +13,12 @@ release job publishes it as the GitHub release notes.
 
 ## [0.6.3] - 2026-11-12
 
+### Security
+
+- `russh` is updated to 0.65 for RUSTSEC-2026-0492: a server could make the
+  client act on channels it never opened. The release also covers
+  RUSTSEC-2026-0495, in russh's SSH agent server, which wRusTTY doesn't use.
+
 ### Changed
 
 - The terminal engine is re-pinned to Ghostty `cf3a8a65`.
