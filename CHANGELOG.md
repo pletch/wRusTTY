@@ -11,6 +11,25 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
+### Added
+
+- On the desktop, when there are more tabs than fit, arrows beside the tab
+  strip scroll it a view at a time, and a list button shows every tab to
+  jump to. The mouse wheel scrolls the strip too.
+- The active tab stays in sight: once the strip overflows, it holds at the
+  edge rather than scrolling away, and opening, switching to or clicking
+  into a tab brings it back to its place.
+
+### Changed
+
+- Toolbar buttons that don't apply to the current tab (Find, broadcast,
+  logging, port forwarding, remote files) are now dimmed instead of hidden
+  on the desktop, so the toolbar and tab strip no longer shift when you
+  switch tabs.
+- The edge fades on the tab strip now appear only on a side with more tabs.
+
 ## [0.6.3] - 2026-11-12
 
 ### Security
@@ -382,7 +401,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/pletch/wRusTTY/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/pletch/wRusTTY/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/pletch/wRusTTY/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/pletch/wRusTTY/compare/v0.6.0...v0.6.1
