@@ -11,6 +11,17 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- On the desktop, dragging a tab along the strip slides the other tabs aside
+  to show where it will land. Holding the drag near either edge scrolls an
+  overflowing strip.
+
+### Changed
+
+- The connect dialog lists its protocols as SSH, Local, Serial, Telnet on the
+  desktop.
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

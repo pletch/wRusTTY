@@ -75,6 +75,34 @@ export function pinnedX(slotX: number, tabWidth: number, viewWidth: number, inse
   return Math.min(Math.max(slotX, inset), far)
 }
 
+/** Where a dragged tab would land: its index once dropped, from where its
+ * center is (`center`, in strip content coordinates). `widths` are every tab's
+ * widths in order, `dragged` the dragged tab's index, `start` where the first
+ * tab begins. A neighbor gives way once the dragged tab's center passes the
+ * middle of the space the two would share, so with equal widths the gap is
+ * always the slot under the center. */
+export function dropIndex(center: number, dragged: number, widths: readonly number[], start: number): number {
+  const draggedWidth = widths[dragged]
+  let index = 0
+  let left = start
+  widths.forEach((width, i) => {
+    if (i === dragged) return
+    if (center > left + width / 2 + draggedWidth / 2) index++
+    left += width
+  })
+  return index
+}
+
+/** How far tab `i` slides aside while tab `dragged` (`draggedWidth` wide) would
+ * land at index `target`: tabs it passes shift by its width to open the gap
+ * there, and close the one it left. */
+export function slideShift(i: number, dragged: number, target: number, draggedWidth: number): number {
+  if (i === dragged) return 0
+  // Its index among the others once the dragged tab is lifted out.
+  const among = i < dragged ? i : i - 1
+  return (among >= target ? draggedWidth : 0) - (i > dragged ? draggedWidth : 0)
+}
+
 /** The offset that brings [start, end) (strip content coordinates) into view
  * with `room` px to spare on each side, moving as little as possible. */
 export function offsetToReveal(

@@ -26,10 +26,12 @@ import { isAndroid } from '../lib/platform'
 import {
   activeTabHole,
   clampOffset,
+  dropIndex,
   type MaskHole,
   maxOffset,
   offsetToReveal,
   pinnedX,
+  slideShift,
   stripEdges,
   stripMask,
   type StripEdges,
@@ -105,6 +107,15 @@ const keepFocus = (e: React.MouseEvent) => e.preventDefault()
 
 /** How long the desktop strip takes to glide to a new position. */
 const STRIP_SCROLL_MS = 180
+
+/** Time constant of tabs sliding aside for a drag: about two thirds of the
+ * way there in this long, settled in about four times it. */
+const SLIDE_EASE_MS = 40
+
+/** Dragging a tab this close to an edge of the strip scrolls it, by
+ * DRAG_SCROLL_PX each time the drag reports in (every few dozen ms). */
+const DRAG_EDGE_PX = 32
+const DRAG_SCROLL_PX = 14
 
 /** Width of the strip's edge fades. On the desktop the active tab also pins
  * this far in from an edge; once it does, the strip beyond it is cut clear
@@ -284,10 +295,23 @@ export function TabBar({
   // runs off the main thread, a frame ahead of anything positioned to match it.
   // Android keeps native scrolling, for its touch momentum, and no overlay.
   const trackRef = useRef<HTMLDivElement>(null)
+  // The track's view plus the overlay: the area a dragged tab counts as over.
+  const stripRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const offsetRef = useRef(0)
   const animationRef = useRef<number | null>(null)
   const goalRef = useRef(0)
+
+  // Desktop, while a tab is dragged over the strip: where it would land
+  // (`dropAt`), and how far each other tab has slid aside to open the gap there.
+  // The slide eases toward its target every frame and goes through `layout`, so
+  // the pinned active tab and the cut beneath it move with the tabs.
+  const dragRef = useRef<{ id: string; width: number; grab: number } | null>(null)
+  const [dropAt, setDropAt] = useState<number | null>(null)
+  const dropAtRef = useRef<number | null>(null)
+  const shiftRef = useRef(new Map<string, number>())
+  const shiftGoalRef = useRef(new Map<string, number>())
+  const slideRef = useRef<number | null>(null)
 
   /** The tabs on the track (or, on Android, in the scroller). */
   const tabEls = (): HTMLElement[] => {
@@ -327,12 +351,21 @@ export function TabBar({
     const sides = { left: offset > 1, right: max - offset > 1 }
     setEdgesIfChanged(sides)
 
+    // Tabs sliding aside for a drag.
+    for (const el of els) {
+      const shift = shiftRef.current.get(el.dataset.tabId!) ?? 0
+      el.style.transform = shift ? `translateX(${shift}px)` : ''
+    }
+
     let hole: MaskHole | null = null
     const slot = els.find((el) => el.dataset.tabId === activeTabIdRef.current)
     const overlay = overlayRef.current
-    if (slot && overlay) {
+    // The active tab, lifted out by a drag: its overlay is hidden and the gap
+    // moves, so there's nothing to cut for.
+    const activeLifted = dragRef.current?.id === activeTabIdRef.current && dropAtRef.current !== null
+    if (slot && overlay && !activeLifted) {
       const width = slot.offsetWidth
-      const slotX = slot.offsetLeft - offset
+      const slotX = slot.offsetLeft - offset + (shiftRef.current.get(slot.dataset.tabId!) ?? 0)
       const x = max > 0 ? pinnedX(slotX, width, view, STRIP_PAD_PX) : slotX
       overlay.style.transform = `translateX(${x}px)`
       overlay.style.width = `${width}px`
@@ -371,6 +404,116 @@ export function TabBar({
     animationRef.current = requestAnimationFrame(step)
   }
   useEffect(() => stopAnimation, [])
+
+  /** Eases every slid tab toward its goal, a frame at a time, until all rest. */
+  const runSlide = () => {
+    if (slideRef.current !== null) return
+    let last = performance.now()
+    const step = () => {
+      const now = performance.now()
+      // Time-based, so the slide takes the same time at any frame rate.
+      const pull = 1 - Math.exp(-(now - last) / SLIDE_EASE_MS)
+      last = now
+      let moving = false
+      const ids = new Set([...shiftRef.current.keys(), ...shiftGoalRef.current.keys()])
+      for (const id of ids) {
+        const goal = shiftGoalRef.current.get(id) ?? 0
+        const at = shiftRef.current.get(id) ?? 0
+        const next = Math.abs(goal - at) < 0.5 ? goal : at + (goal - at) * pull
+        if (next !== goal) moving = true
+        if (next === 0) shiftRef.current.delete(id)
+        else shiftRef.current.set(id, next)
+      }
+      layout()
+      slideRef.current = moving ? requestAnimationFrame(step) : null
+    }
+    slideRef.current = requestAnimationFrame(step)
+  }
+  useEffect(
+    () => () => {
+      if (slideRef.current !== null) cancelAnimationFrame(slideRef.current)
+    },
+    [],
+  )
+
+  /** Aims the slide at a drop at `at` (or nowhere: everything back in place). */
+  const aimSlide = (at: number | null) => {
+    if (at === dropAtRef.current) return
+    dropAtRef.current = at
+    setDropAt(at)
+    const drag = dragRef.current
+    const els = tabEls()
+    const dragged = drag ? els.findIndex((el) => el.dataset.tabId === drag.id) : -1
+    shiftGoalRef.current.clear()
+    if (drag && at !== null && dragged >= 0) {
+      els.forEach((el, i) => {
+        const shift = slideShift(i, dragged, at, drag.width)
+        if (shift) shiftGoalRef.current.set(el.dataset.tabId!, shift)
+      })
+    }
+    runSlide()
+  }
+
+  /** Ends a drag: everything back at rest at once, with no slide. Used when the
+   * drop has just reordered the tabs (they now sit where the slide had them)
+   * or the drag ended elsewhere. */
+  const endDrag = () => {
+    dragRef.current = null
+    dropAtRef.current = null
+    setDropAt(null)
+    shiftGoalRef.current.clear()
+    shiftRef.current.clear()
+    if (slideRef.current !== null) cancelAnimationFrame(slideRef.current)
+    slideRef.current = null
+    setDraggedId(null)
+    setDropTargetId(null)
+  }
+
+  // Leaving the strip mid-drag (toward a pane, say) closes the gap.
+  useEffect(() => {
+    if (!draggedId || isAndroid) return
+    const onDragOver = (e: DragEvent) => {
+      if (e.target instanceof Node && stripRef.current?.contains(e.target)) return
+      aimSlide(null)
+    }
+    window.addEventListener('dragover', onDragOver, true)
+    return () => window.removeEventListener('dragover', onDragOver, true)
+  }, [draggedId])
+
+  /** Desktop: a tab dragged over the strip. Scrolls near either edge, and
+   * opens the gap where it would land. */
+  const onStripDragOver = (e: React.DragEvent) => {
+    const drag = dragRef.current
+    const viewport = tabsContainerRef.current
+    if (!drag || !viewport) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    const box = viewport.getBoundingClientRect()
+    // Dragover keeps firing while the pointer rests, so holding near an edge
+    // keeps scrolling.
+    if (e.clientX < box.left + DRAG_EDGE_PX) offsetRef.current -= DRAG_SCROLL_PX
+    else if (e.clientX > box.right - DRAG_EDGE_PX) offsetRef.current += DRAG_SCROLL_PX
+    layout()
+    const els = tabEls()
+    const dragged = els.findIndex((el) => el.dataset.tabId === drag.id)
+    if (dragged < 0) return
+    const center = e.clientX - box.left + offsetRef.current - drag.grab + drag.width / 2
+    aimSlide(dropIndex(center, dragged, els.map((el) => el.offsetWidth), STRIP_PAD_PX))
+  }
+
+  const onStripDrop = (e: React.DragEvent) => {
+    const drag = dragRef.current
+    if (!drag) return
+    e.preventDefault()
+    const at = dropAtRef.current
+    // Cleared first, so the re-render that reorders lays the tabs out at rest:
+    // where the slide already put them.
+    endDrag()
+    if (at === null) return
+    const from = tabs.findIndex((t) => t.id === drag.id)
+    // The reducer moves the dragged tab to the target's index.
+    if (at !== from && tabs[at]) onReorder(drag.id, tabs[at].id)
+  }
 
   // Before paint after every render: titles, tab count, the active tab or the
   // overflow buttons may all have moved things.
@@ -585,14 +728,15 @@ export function TabBar({
         }}
         onDragStart={(e) => {
           setDraggedId(tab.id)
+          // Where in the tab it was picked up, so the gap follows the tab's
+          // middle rather than the pointer.
+          const box = e.currentTarget.getBoundingClientRect()
+          dragRef.current = { id: tab.id, width: box.width, grab: e.clientX - box.left }
           e.dataTransfer.effectAllowed = 'move'
           // Lets an empty pane elsewhere accept this tab; see DRAG_TAB_MIME.
           e.dataTransfer.setData(DRAG_TAB_MIME, tab.id)
         }}
-        onDragEnd={() => {
-          setDraggedId(null)
-          setDropTargetId(null)
-        }}
+        onDragEnd={endDrag}
         onDragOver={(e) => {
           // Accept a pane dragged out of a split here too, or the cursor shows
           // "not allowed" over a tab.
@@ -601,7 +745,8 @@ export function TabBar({
             e.dataTransfer.dropEffect = 'move'
             return
           }
-          if (!draggedId || draggedId === tab.id) return
+          // The desktop's strip handles a tab drag as a whole (the slide).
+          if (!isAndroid || !draggedId || draggedId === tab.id) return
           e.preventDefault()
           e.dataTransfer.dropEffect = 'move'
           setDropTargetId(tab.id)
@@ -615,6 +760,8 @@ export function TabBar({
             onDropPaneAsNewTab(tabId, paneId)
             return
           }
+          // The desktop's strip takes the drop (onStripDrop), where the gap is.
+          if (!isAndroid) return
           e.preventDefault()
           if (draggedId) onReorder(draggedId, tab.id)
           setDraggedId(null)
@@ -650,7 +797,13 @@ export function TabBar({
           active
             ? 'z-10 rounded-t-lg text-chrome'
             : 'text-chrome/45 hover:rounded-t-lg hover:text-chrome/80'
-        } ${draggedId === tab.id ? 'opacity-40' : ''} ${
+        } ${
+          // Over the strip the dragged tab is the gap the others open (the
+          // browser's drag image is what follows the pointer); elsewhere it
+          // shows faintly where it came from. Not hidden at dragstart, or the
+          // drag image, taken then, would be blank.
+          draggedId === tab.id ? (dropAt !== null ? 'opacity-0' : 'opacity-40') : ''
+        } ${
           dropTargetId === tab.id && draggedId !== tab.id ? 'bg-sky-400/10' : ''
         }`}
       >
@@ -808,7 +961,14 @@ export function TabBar({
       </div>
       {/* The fade mask keeps a partially scrolled tab from ending in a hard
        * clip (e.g. through its close button). Only on a side with more tabs. */}
-      <div className="relative flex min-w-0 shrink items-stretch">
+      <div
+        ref={stripRef}
+        className="relative flex min-w-0 shrink items-stretch"
+        // Here rather than on each tab, so the overlay and the gaps between
+        // tabs count too.
+        onDragOver={isAndroid ? undefined : onStripDragOver}
+        onDrop={isAndroid ? undefined : onStripDrop}
+      >
       {/* The view onto the tabs. Its mask (fades, and the hole under the active
        * tab) is written by `layout`, not here, so a render can't undo it.
        * The side padding leaves room for the first and last tabs' fillets

@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   activeTabHole,
   clampOffset,
+  dropIndex,
   maxOffset,
   offsetToReveal,
   pinnedX,
+  slideShift,
   stripEdges,
   stripMask,
 } from './tabStripEdges'
@@ -128,6 +130,48 @@ describe('offsetToReveal', () => {
 
   it('scrolls right just far enough', () => {
     expect(offsetToReveal(1000, 1150, 0, 800, 16)).toBe(366)
+  })
+})
+
+describe('dropIndex', () => {
+  // Four 100px tabs from x=16: centers at 66, 166, 266, 366.
+  const widths = [100, 100, 100, 100]
+
+  it('stays put while the dragged tab sits over its own slot', () => {
+    expect(dropIndex(166, 1, widths, 16)).toBe(1)
+  })
+
+  it('moves one along once its center passes into the next slot', () => {
+    expect(dropIndex(215, 1, widths, 16)).toBe(1)
+    expect(dropIndex(217, 1, widths, 16)).toBe(2)
+  })
+
+  it('goes to either end past the last slot', () => {
+    expect(dropIndex(-50, 2, widths, 16)).toBe(0)
+    expect(dropIndex(900, 0, widths, 16)).toBe(3)
+  })
+
+  it('accounts for a wider neighbor', () => {
+    // Dragging the 100px tab 0 past a 200px tab: it gives way at the middle of
+    // the 300px they share, 16 + 200/2 + 100/2.
+    expect(dropIndex(165, 0, [100, 200], 16)).toBe(0)
+    expect(dropIndex(167, 0, [100, 200], 16)).toBe(1)
+  })
+})
+
+describe('slideShift', () => {
+  it('moves nothing while the drop would leave the order as it was', () => {
+    expect([0, 1, 2, 3].map((i) => slideShift(i, 1, 1, 100))).toEqual([0, 0, 0, 0])
+  })
+
+  it('pulls the passed tabs left when dragging right', () => {
+    // Tab 0 dragged to the end: the rest close up behind it.
+    expect([0, 1, 2, 3].map((i) => slideShift(i, 0, 3, 100))).toEqual([0, -100, -100, -100])
+  })
+
+  it('pushes the passed tabs right when dragging left', () => {
+    // Tab 3 dragged to index 1: tabs 1 and 2 make room.
+    expect([0, 1, 2, 3].map((i) => slideShift(i, 3, 1, 100))).toEqual([0, 100, 100, 0])
   })
 })
 

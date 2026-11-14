@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TabBar } from './TabBar'
 import type { Tab } from '../types'
@@ -131,6 +131,92 @@ describe('TabBar overflow controls', () => {
     expect(screen.getByTestId('tab-list')).toBeTruthy()
     await userEvent.keyboard('{Escape}')
     expect(screen.queryByTestId('tab-list')).toBeNull()
+  })
+})
+
+describe('TabBar dragging a tab along the strip', () => {
+  // jsdom has no DragEvent, and Testing Library then builds a plain Event that
+  // drops clientX, which is the whole point here: a MouseEvent carries it.
+  class DragEventStandIn extends MouseEvent {}
+  beforeEach(() => {
+    vi.stubGlobal('DragEvent', DragEventStandIn)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.stubGlobal('ResizeObserver', NoopResizeObserver)
+  })
+
+  // On screen as laid out (the strip unscrolled, from x=0), for the pickup.
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const left = this.dataset.tabId !== undefined ? this.offsetLeft : 0
+      const width = this.dataset.tabId !== undefined ? TAB : VIEW
+      return { left, right: left + width, width, top: 0, bottom: 40, height: 40 } as DOMRect
+    })
+  })
+
+  const dataTransfer = () => ({
+    types: ['application/x-wrustty-tab'],
+    setData() {},
+    getData: () => '',
+    effectAllowed: '',
+    dropEffect: '',
+  })
+  const strip = () => document.querySelector('[data-tab-id]')!.parentElement!.parentElement!.parentElement!
+  const shiftOf = (id: string) =>
+    Number(/translateX\((-?[\d.]+)px\)/.exec(document.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)!.style.transform)?.[1] ?? 0)
+
+  /** Picks up tab `id` 50px in from its left edge. */
+  function pickUp(id: string) {
+    const el = document.querySelector<HTMLElement>(`[data-tab-id="${id}"]`)!
+    fireEvent.dragStart(el, { clientX: el.offsetLeft + 50, dataTransfer: dataTransfer() })
+  }
+
+  it('slides the tabs it passes aside, the active one included, and drops where the gap is', async () => {
+    const onReorder = vi.fn()
+    render(bar({ onReorder }))
+    pickUp('t1')
+    // Its middle now over tab 0's slot: tab 0 makes room by sliding right.
+    fireEvent.dragOver(strip(), { clientX: 60, dataTransfer: dataTransfer() })
+    await waitFor(() => expect(shiftOf('t0')).toBe(TAB))
+    // Tab 0 is the active one, drawn by the overlay: it slides with its slot,
+    // from 16 toward 216, pinning at the right edge of this narrow view.
+    expect(overlayX()).toBe(VIEW - PAD - TAB)
+    expect(shiftOf('t2')).toBe(0)
+
+    fireEvent.drop(strip(), { clientX: 60, dataTransfer: dataTransfer() })
+    expect(onReorder).toHaveBeenCalledWith('t1', 't0')
+    // Settled at once: the reordered tabs already sit where the slide put them.
+    expect(shiftOf('t0')).toBe(0)
+  })
+
+  it('leaves the order alone when dropped back over its own slot', () => {
+    const onReorder = vi.fn()
+    render(bar({ onReorder }))
+    pickUp('t1')
+    fireEvent.dragOver(strip(), { clientX: PAD + TAB + 50, dataTransfer: dataTransfer() })
+    fireEvent.drop(strip(), { clientX: PAD + TAB + 50, dataTransfer: dataTransfer() })
+    expect(onReorder).not.toHaveBeenCalled()
+  })
+
+  it('closes the gap when the drag leaves the strip', async () => {
+    render(bar())
+    pickUp('t1')
+    fireEvent.dragOver(strip(), { clientX: 60, dataTransfer: dataTransfer() })
+    await waitFor(() => expect(shiftOf('t0')).toBe(TAB))
+    fireEvent.dragOver(document.body, { clientX: 60, dataTransfer: dataTransfer() })
+    await waitFor(() => expect(shiftOf('t0')).toBe(0))
+  })
+
+  it('puts everything back when the drag ends elsewhere', async () => {
+    render(bar())
+    pickUp('t1')
+    fireEvent.dragOver(strip(), { clientX: 60, dataTransfer: dataTransfer() })
+    await waitFor(() => expect(shiftOf('t0')).toBe(TAB))
+    fireEvent.dragEnd(document.querySelector('[data-tab-id="t1"]')!)
+    expect(shiftOf('t0')).toBe(0)
   })
 })
 
