@@ -136,6 +136,11 @@ const COMMAND_NOTIFY_THRESHOLD_MS = 10_000
  * that flash progress briefly on startup. */
 const PROGRESS_NOTIFY_THRESHOLD_MS = 5_000
 
+/** A toolbar button that doesn't apply to the active pane: still in place, so
+ * the toolbar keeps its width, but dim and inert. Matches the split buttons at
+ * the split limit. */
+const TOOL_DISABLED = 'cursor-default text-chrome/15'
+
 /** The command result for an OS notification, which may appear on the lock
  * screen of an unattended machine. Omits the command line (OSC 633 includes
  * its arguments); the in-app toast has the detail. */
@@ -1135,6 +1140,10 @@ function App() {
   const activeIsSsh =
     activeLeaf?.source?.protocol === 'ssh' || activeLeaf?.source?.protocol === 'sshProfile'
   const activeSessionId = activePaneId ? (sessionIdByPane[activePaneId] ?? null) : null
+  // Which toolbar buttons apply to the active pane (see the toolbar).
+  const hasConnection = !!activeLeaf?.source
+  const hasSshSession = activeIsSsh && !!activeSessionId
+  const isSplit = !!activeTab && allLeaves(activeTab.root).length > 1
   // Per direction: split limits are per axis.
   const splitBlocked = (direction: 'horizontal' | 'vertical'): SplitLimit | null =>
     activeTab && activePaneId ? splitBlocker(activeTab.root, activePaneId, direction) : null
@@ -1296,10 +1305,21 @@ function App() {
         )}
         {activeTab && (
           <div className={toolbarGroupClass}>
-            {activeLeaf?.source && (
+            {/* On the desktop these stay put and dim when they don't apply to the
+                active tab, rather than come and go: the toolbar then keeps one
+                width, so the tab strip beside it (which takes what's left) doesn't
+                resize, jumping its arrows and changing how many tabs show, on
+                every tab switch. A phone hides them; its row has no room to spare. */}
+            {(!isAndroid || hasConnection) && (
               <button
-                className="flex items-center justify-center rounded p-1.5 text-chrome/50 transition-colors duration-fast ease-swift hover:bg-chrome/10 hover:text-chrome/90"
-                title={withShortcut('Find in terminal', terminalSettings.keybindings, 'find')}
+                disabled={!hasConnection}
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-fast ease-swift ${
+                  hasConnection ? 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90' : TOOL_DISABLED
+                }`}
+                title={
+                  withShortcut('Find in terminal', terminalSettings.keybindings, 'find') +
+                  (hasConnection ? '' : ' — nothing connected in this pane')
+                }
                 onClick={() =>
                   activePaneId &&
                   setSearchRequest((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, paneId: activePaneId }))
@@ -1308,19 +1328,24 @@ function App() {
                 <Search size={15} strokeWidth={2} />
               </button>
             )}
-            {/* Only on a tab with more than one pane, where broadcasting means
-                something. */}
-            {activeTab && allLeaves(activeTab.root).length > 1 && (
+            {/* Only works on a tab with more than one pane, where broadcasting
+                means something. */}
+            {(!isAndroid || isSplit) && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
-                  broadcastTabs.has(activeTab.id)
-                    ? 'bg-amber-400/20 text-amber-300 hover:text-amber-200'
-                    : 'text-chrome/50 hover:text-chrome/90'
+                disabled={!isSplit}
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
+                  !isSplit
+                    ? TOOL_DISABLED
+                    : broadcastTabs.has(activeTab.id)
+                      ? 'bg-amber-400/20 text-amber-300 hover:bg-chrome/10 hover:text-amber-200'
+                      : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
                 }`}
                 title={
-                  broadcastTabs.has(activeTab.id)
-                    ? `Broadcasting to all ${allLeaves(activeTab.root).length} panes in this tab — click to stop`
-                    : 'Send input to every pane in this tab'
+                  !isSplit
+                    ? 'Send input to every pane in this tab — split the tab first'
+                    : broadcastTabs.has(activeTab.id)
+                      ? `Broadcasting to all ${allLeaves(activeTab.root).length} panes in this tab — click to stop`
+                      : 'Send input to every pane in this tab'
                 }
                 onClick={() => toggleBroadcast(activeTab.id)}
               >
@@ -1328,47 +1353,58 @@ function App() {
               </button>
             )}
             {/* A phone's logs would land where they can't be reached. */}
-            {!isAndroid && activeLeaf?.source && (
+            {!isAndroid && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
-                  activePaneId && loggingByPane[activePaneId]
-                    ? 'text-red-400 hover:text-red-300'
-                    : 'text-chrome/50 hover:text-chrome/90'
+                disabled={!hasConnection}
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
+                  !hasConnection
+                    ? TOOL_DISABLED
+                    : activePaneId && loggingByPane[activePaneId]
+                      ? 'text-red-400 hover:bg-chrome/10 hover:text-red-300'
+                      : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
                 }`}
                 title={
-                  activePaneId && loggingByPane[activePaneId]
-                    ? 'Session logging on — click to stop'
-                    : 'Log session output to a file'
+                  !hasConnection
+                    ? 'Log session output to a file — nothing connected in this pane'
+                    : activePaneId && loggingByPane[activePaneId]
+                      ? 'Session logging on — click to stop'
+                      : 'Log session output to a file'
                 }
                 onClick={() => activePaneId && toggleLogging(activePaneId)}
               >
                 <ScrollText size={15} strokeWidth={2} />
               </button>
             )}
-            {activeIsSsh && activeSessionId && (
+            {(!isAndroid || hasSshSession) && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
-                  activePaneId && forwardsOpenByPane[activePaneId]
-                    ? 'text-chrome/90'
-                    : 'text-chrome/50 hover:text-chrome/90'
+                disabled={!hasSshSession}
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
+                  !hasSshSession
+                    ? TOOL_DISABLED
+                    : activePaneId && forwardsOpenByPane[activePaneId]
+                      ? 'text-chrome/90 hover:bg-chrome/10'
+                      : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
                 }`}
                 // Part of the panel's interaction scope, so opening it isn't a click-away.
                 data-forward-toggle
-                title="Port forwarding"
+                title={hasSshSession ? 'Port forwarding' : 'Port forwarding — SSH sessions only'}
                 onClick={() => activePaneId && toggleForwards(activePaneId)}
               >
                 <ArrowLeftRight size={15} strokeWidth={2} />
               </button>
             )}
-            {activeIsSsh && activeSessionId && (
+            {(!isAndroid || hasSshSession) && (
               <button
-                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 hover:bg-chrome/10 ${
-                  activePaneId && filesOpenByPane[activePaneId]
-                    ? 'text-chrome/90'
-                    : 'text-chrome/50 hover:text-chrome/90'
+                disabled={!hasSshSession}
+                className={`flex items-center justify-center rounded p-1.5 transition-colors duration-150 ${
+                  !hasSshSession
+                    ? TOOL_DISABLED
+                    : activePaneId && filesOpenByPane[activePaneId]
+                      ? 'text-chrome/90 hover:bg-chrome/10'
+                      : 'text-chrome/50 hover:bg-chrome/10 hover:text-chrome/90'
                 }`}
                 data-files-toggle
-                title="Remote files"
+                title={hasSshSession ? 'Remote files' : 'Remote files — SSH sessions only'}
                 onClick={() => activePaneId && toggleFiles(activePaneId)}
               >
                 <Folder size={15} strokeWidth={2} />

@@ -219,11 +219,19 @@ body {
   box-shadow: 0 0 0 3px rgb(var(--chrome-rgb) / 0.25);
 }
 
-/* The tab strip signals overflow with its own right-edge fade instead of a
-   scrollbar — the global scrollbar above doesn't fit inside its 40px-tall
+/* The tab strip signals overflow with its own edge fades and arrows instead
+   of a scrollbar — the global scrollbar above doesn't fit inside its 40px-tall
    row, and would show up even for sub-pixel rounding gaps that aren't real
    overflow. Scrolling (wheel/trackpad/programmatic) still works either way;
    this only hides the bar itself. */
+/* The invisible slot the desktop's active tab keeps on the strip (TabBar.tsx)
+   takes the same width as the tab, from the same text, but as generated
+   content rather than text in the page: the tab's words then exist once, for
+   find-in-page, screen readers and tests alike. */
+.tab-slot-text::before {
+  content: attr(data-text);
+}
+
 .tab-strip-scroll {
   scrollbar-width: none;
 }

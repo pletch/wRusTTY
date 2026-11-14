@@ -224,14 +224,14 @@ describe('TabBar badge does not move the label', () => {
     // a fixed width the box resizes several times a second and slides the
     // label — and the tab, whose width is content-driven — along with it.
     const { container } = render(bar({ titleByPane: { 't1-pane': '\u2733 Building' } }))
-    const badge = container.querySelector('[aria-hidden][class*="w-[14px]"]')
+    const badge = container.querySelector('[data-active-overlay] [aria-hidden][class*="w-[14px]"]')
     expect(badge).toBeTruthy()
     expect(badge?.textContent).toBe('\u2733\uFE0F')
   })
 
   it('sizes the same box for a spinner frame', () => {
     const { container } = render(bar({ titleByPane: { 't1-pane': '\u25D0 Building' } }))
-    const badge = container.querySelector('[aria-hidden][class*="w-[14px]"]')
+    const badge = container.querySelector('[data-active-overlay] [aria-hidden][class*="w-[14px]"]')
     expect(badge?.textContent).toBe('\u25D0')
   })
 })
