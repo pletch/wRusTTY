@@ -645,7 +645,7 @@ export function ConnectDialog({
         className={`space-y-3 overflow-y-auto ${isAndroid ? 'w-full p-4' : 'w-80 p-5'}`}
       >
         <div className="flex gap-1 rounded-md bg-black/20 p-1 text-xs">
-          {(isAndroid ? (['ssh', 'telnet'] as const) : (['ssh', 'telnet', 'serial', 'local'] as const)).map((p) => {
+          {(isAndroid ? (['ssh', 'telnet'] as const) : (['ssh', 'local', 'serial', 'telnet'] as const)).map((p) => {
             const Icon = protocolIcons[p]
             return (
               <button
