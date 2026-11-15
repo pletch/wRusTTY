@@ -21,6 +21,15 @@ release job publishes it as the GitHub release notes.
 
 - The connect dialog lists its protocols as SSH, Local, Serial, Telnet on the
   desktop.
+- The session menu's **Wake** sends three magic packets a moment apart rather
+  than one.
+
+### Fixed
+
+- Wake-on-LAN works reliably on a computer with Hyper-V, WSL, VirtualBox or
+  other virtual network adapters. With *Broadcast to* blank or set to
+  255.255.255.255, the magic packet now goes out every local network instead
+  of the one adapter Windows picked, which was often a virtual switch.
 
 ## [0.7.0] - 2026-11-14
 
