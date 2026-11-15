@@ -958,10 +958,10 @@ export function ConnectDialog({
                   <span className="text-xs text-chrome/40">Broadcast to</span>
                   <input
                     className={`${inputClass} w-full`}
-                    placeholder="255.255.255.255"
+                    placeholder="every local network"
                     value={wakeBroadcast}
                     onChange={(e) => setWakeBroadcast(e.target.value)}
-                    title="Where to send the magic packet. The default reaches this machine's own network only. Give the target subnet's broadcast address (e.g. 192.168.1.255) to reach another one — or to pick which network card the packet leaves by, if this machine has several."
+                    title="Where to send the magic packet. Blank sends it on every network this machine is connected to, and only those. Give the target subnet's broadcast address (e.g. 192.168.1.255) to reach another one, or to send on that network alone."
                   />
                 </label>
                 <label className="block w-32 space-y-1">

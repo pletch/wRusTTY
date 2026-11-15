@@ -19,7 +19,9 @@ use wr_core::{ConnectionEvent, ConnectionStatus};
 /// so it's only convention; some gear uses 7).
 pub const DEFAULT_PORT: u16 = 9;
 
-/// Default target: the limited broadcast, which never leaves the local segment.
+/// The fallback target when no broadcast is set and no interface could be
+/// listed: the limited broadcast, which never leaves the local segment. The
+/// normal default path is per-interface; see `send`.
 pub const DEFAULT_BROADCAST: Ipv4Addr = Ipv4Addr::BROADCAST;
 
 /// Default wait for a woken host to answer; covers a slow Windows box resuming
@@ -40,9 +42,9 @@ pub const MAX_WAIT_SECONDS: u64 = 600;
 pub struct WakeOnLan {
     /// In any common notation; see `parse_mac`.
     pub mac: String,
-    /// Where to broadcast. `None` is 255.255.255.255 (local segment only); a
-    /// directed broadcast (`192.168.1.255`) reaches another segment and pins the
-    /// interface; see `send`.
+    /// Where to broadcast. `None` sends on every local subnet (see `send`); a
+    /// directed broadcast (`192.168.1.255`) reaches another segment, and sends
+    /// only there.
     #[serde(default)]
     pub broadcast: Option<String>,
     #[serde(default)]
@@ -70,8 +72,19 @@ impl WakeOnLan {
     /// a silent fallback to the limited broadcast (which would work on the LAN and
     /// fail elsewhere), as is one `is_wakeable` refuses.
     pub fn broadcast_addr(&self) -> Result<Ipv4Addr, String> {
+        Ok(self.explicit_broadcast()?.unwrap_or(DEFAULT_BROADCAST))
+    }
+
+    /// The broadcast target the profile names, or `None` when it names none
+    /// (absent or a cleared field), which `send` takes as "every interface".
+    ///
+    /// A typed 255.255.255.255 is also `None`: it means "this machine's own
+    /// networks", which is what the per-interface send does reliably. Sent as
+    /// written, it leaves by whichever single interface Windows prefers. Old and
+    /// imported profiles often carry it.
+    fn explicit_broadcast(&self) -> Result<Option<Ipv4Addr>, String> {
         let addr: Ipv4Addr = match self.broadcast.as_deref().map(str::trim) {
-            None | Some("") => return Ok(DEFAULT_BROADCAST),
+            None | Some("") => return Ok(None),
             Some(text) => text
                 .parse()
                 .map_err(|_| format!("not a valid IPv4 broadcast address: {text}"))?,
@@ -82,7 +95,7 @@ impl WakeOnLan {
                  (255.255.255.255) or a private-range address such as 192.168.1.255"
             ));
         }
-        Ok(addr)
+        Ok((addr != Ipv4Addr::BROADCAST).then_some(addr))
     }
 
     /// Checks that need no network: the MAC parses and the target is allowed. Used
@@ -145,22 +158,132 @@ fn magic_packet(mac: [u8; 6]) -> [u8; 102] {
     packet
 }
 
-/// Broadcasts one magic packet. Binding 0.0.0.0 leaves the interface to the
-/// routing table; on a multi-homed machine, a directed broadcast
-/// (`WakeOnLan::broadcast`) picks the interface via its subnet.
-pub fn send(wake: &WakeOnLan) -> Result<(), String> {
-    let mac = parse_mac(&wake.mac)?;
-    let target = wake.broadcast_addr()?;
+/// One way out: the local address to send from, and the broadcast to send to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Route {
+    from: Ipv4Addr,
+    to: Ipv4Addr,
+}
 
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .map_err(|e| format!("could not open a socket to send the magic packet: {e}"))?;
+/// The directed broadcast of `ip`'s subnet, or `None` for a /31 or /32 (point-to-
+/// point and host routes have no broadcast) or a /0.
+fn subnet_broadcast(ip: Ipv4Addr, prefixlen: u8) -> Option<Ipv4Addr> {
+    if prefixlen == 0 || prefixlen >= 31 {
+        return None;
+    }
+    let host_bits = u32::MAX >> prefixlen;
+    Some(Ipv4Addr::from(u32::from(ip) | host_bits))
+}
+
+/// A route to each subnet this machine is on: every IPv4 interface that's up,
+/// minus loopback, point-to-point links (VPN tunnels) and link-local addresses
+/// (`if-addrs` drops those by default). Duplicates are collapsed.
+///
+/// The broadcasts come from the OS, not a file, so `is_wakeable` doesn't apply.
+fn interface_routes() -> Vec<Route> {
+    let interfaces = match if_addrs::get_if_addrs() {
+        Ok(interfaces) => interfaces,
+        Err(e) => {
+            log::warn!("wake: could not list network interfaces: {e}");
+            return Vec::new();
+        }
+    };
+    let mut routes = Vec::new();
+    for interface in interfaces {
+        if interface.is_loopback() || interface.is_p2p() || !interface.is_oper_up() {
+            continue;
+        }
+        let if_addrs::IfAddr::V4(v4) = &interface.addr else {
+            continue;
+        };
+        let Some(to) = subnet_broadcast(v4.ip, v4.prefixlen) else {
+            continue;
+        };
+        let route = Route { from: v4.ip, to };
+        if !routes.contains(&route) {
+            routes.push(route);
+        }
+    }
+    routes
+}
+
+/// Sends `packet` from `from` (0.0.0.0 leaves the interface to the routing
+/// table) to `to:port`.
+fn send_from(from: Ipv4Addr, to: Ipv4Addr, port: u16, packet: &[u8]) -> Result<(), String> {
+    let socket = UdpSocket::bind((from, 0))
+        .map_err(|e| format!("could not open a socket on {from} for the magic packet: {e}"))?;
     socket
         .set_broadcast(true)
         .map_err(|e| format!("could not enable broadcast on the socket: {e}"))?;
     socket
-        .send_to(&magic_packet(mac), (target, wake.port()))
-        .map_err(|e| format!("could not send the magic packet to {target}: {e}"))?;
+        .send_to(packet, (to, port))
+        .map_err(|e| format!("could not send the magic packet to {to} from {from}: {e}"))?;
+    Ok(())
+}
 
+/// Sends on each route. Succeeds if any send did: an adapter that's disabled or
+/// mid-reconfigure shouldn't sink the one that matters.
+fn send_on_routes(routes: &[Route], port: u16, packet: &[u8]) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for route in routes {
+        match send_from(route.from, route.to, port, packet) {
+            Ok(()) => log::debug!("wake: sent to {} from {}", route.to, route.from),
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.len() < routes.len() {
+        for e in &errors {
+            log::debug!("wake: {e}");
+        }
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Broadcasts one magic packet.
+///
+/// With a broadcast address on the profile, it goes there alone, and the
+/// routing table picks the interface (a directed broadcast has a route, so
+/// naming the subnet picks it).
+///
+/// Without one, it goes to every local subnet's broadcast, sent from that
+/// subnet's own address. A single 255.255.255.255 from 0.0.0.0 leaves by
+/// whichever interface Windows prefers. On a machine with Hyper-V, WSL or
+/// VirtualBox adapters, that's often a virtual switch with a lower metric than
+/// the real LAN, so the packet went nowhere useful, and which one won could
+/// change from one wake to the next. If no interface can be listed, it falls
+/// back to that single limited broadcast.
+pub fn send(wake: &WakeOnLan) -> Result<(), String> {
+    let packet = magic_packet(parse_mac(&wake.mac)?);
+    let port = wake.port();
+
+    if let Some(target) = wake.explicit_broadcast()? {
+        return send_from(Ipv4Addr::UNSPECIFIED, target, port, &packet);
+    }
+
+    let routes = interface_routes();
+    if routes.is_empty() {
+        return send_from(Ipv4Addr::UNSPECIFIED, DEFAULT_BROADCAST, port, &packet);
+    }
+    send_on_routes(&routes, port, &packet)
+}
+
+/// How many packets the manual Wake action sends, and the gap between them. It
+/// has no wait loop to re-send, so a short burst covers a dropped packet or a
+/// NIC that misses the first one.
+const MANUAL_BURST: u32 = 3;
+const MANUAL_BURST_GAP: Duration = Duration::from_millis(100);
+
+/// `send`, `MANUAL_BURST` times. Stops at the first error, since the failures
+/// `send` reports (a bad config, no socket) won't fix themselves 100ms later.
+async fn send_burst(wake: &WakeOnLan) -> Result<(), String> {
+    for i in 0..MANUAL_BURST {
+        if i > 0 {
+            tokio::time::sleep(MANUAL_BURST_GAP).await;
+        }
+        send(wake)?;
+    }
     Ok(())
 }
 
@@ -226,15 +349,15 @@ pub async fn wake_and_wait(
     }
 }
 
-/// Sends a saved session's magic packet without waiting or connecting. No
-/// probe: the user asked for a packet.
+/// Sends a saved session's magic packet (a short burst; see `MANUAL_BURST`)
+/// without waiting or connecting. No probe: the user asked for a packet.
 #[tauri::command]
 pub async fn wake_host(app: tauri::AppHandle, profile_id: String) -> Result<(), String> {
     let profile = crate::profiles::get_profile(&app, &profile_id)?;
     let wake = profile
         .wake_on_lan
         .ok_or("this session has no MAC address saved — add one by editing it")?;
-    send(&wake)
+    send_burst(&wake).await
 }
 
 #[cfg(test)]
@@ -305,6 +428,27 @@ mod tests {
             wait_seconds: None,
         };
         assert_eq!(wake.broadcast_addr().unwrap(), Ipv4Addr::BROADCAST);
+        assert_eq!(wake.explicit_broadcast().unwrap(), None);
+    }
+
+    /// A typed limited broadcast goes out every interface, like a blank field;
+    /// a subnet's broadcast still goes only there.
+    #[test]
+    fn a_typed_limited_broadcast_means_every_interface() {
+        let mut wake = WakeOnLan {
+            mac: "aa:bb:cc:dd:ee:ff".into(),
+            broadcast: Some(" 255.255.255.255 ".into()),
+            port: None,
+            wait_seconds: None,
+        };
+        assert_eq!(wake.explicit_broadcast().unwrap(), None);
+        assert!(wake.validate().is_ok());
+
+        wake.broadcast = Some("192.168.11.255".into());
+        assert_eq!(
+            wake.explicit_broadcast().unwrap(),
+            Some("192.168.11.255".parse().unwrap())
+        );
     }
 
     /// A malformed address is an error, not a fallback.
@@ -425,6 +569,88 @@ mod tests {
         let (len, _) = receiver.recv_from(&mut buf).unwrap();
         assert_eq!(len, 102);
         assert_eq!(buf[..102], magic_packet(EXPECTED));
+    }
+
+    #[test]
+    fn a_subnet_broadcast_sets_the_host_bits() {
+        let ip: Ipv4Addr = "192.168.11.113".parse().unwrap();
+        assert_eq!(
+            subnet_broadcast(ip, 24),
+            Some("192.168.11.255".parse().unwrap())
+        );
+        assert_eq!(
+            subnet_broadcast(ip, 20),
+            Some("192.168.15.255".parse().unwrap())
+        );
+        let ten: Ipv4Addr = "10.1.2.3".parse().unwrap();
+        assert_eq!(
+            subnet_broadcast(ten, 8),
+            Some("10.255.255.255".parse().unwrap())
+        );
+        assert_eq!(subnet_broadcast(ten, 30), Some("10.1.2.3".parse().unwrap()));
+    }
+
+    /// Point-to-point and host routes have no broadcast to send to.
+    #[test]
+    fn a_subnet_too_narrow_or_wide_has_no_broadcast() {
+        let ip: Ipv4Addr = "10.1.2.3".parse().unwrap();
+        for prefix in [0, 31, 32] {
+            assert_eq!(subnet_broadcast(ip, prefix), None, "/{prefix}");
+        }
+    }
+
+    /// Whatever this machine has, loopback isn't a way to a sleeping host.
+    #[test]
+    fn interface_routes_leave_out_loopback() {
+        for route in interface_routes() {
+            assert!(!route.from.is_loopback(), "{route:?}");
+            assert!(!route.from.is_link_local(), "{route:?}");
+        }
+    }
+
+    /// TEST-NET-3: not on this machine, so binding to it fails, which stands in
+    /// for an adapter that's down.
+    const NOT_OURS: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 1);
+
+    #[test]
+    fn one_failing_route_does_not_sink_the_others() {
+        let (sink, wake) = packet_sink();
+        let routes = [
+            Route {
+                from: NOT_OURS,
+                to: Ipv4Addr::LOCALHOST,
+            },
+            Route {
+                from: Ipv4Addr::LOCALHOST,
+                to: Ipv4Addr::LOCALHOST,
+            },
+        ];
+
+        send_on_routes(&routes, wake.port(), &magic_packet(EXPECTED)).unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(packets_received(&sink), 1);
+    }
+
+    #[test]
+    fn every_route_failing_is_an_error() {
+        let routes = [Route {
+            from: NOT_OURS,
+            to: Ipv4Addr::LOCALHOST,
+        }];
+        let error = send_on_routes(&routes, 9, &magic_packet(EXPECTED)).unwrap_err();
+        assert!(error.contains(&NOT_OURS.to_string()), "{error}");
+    }
+
+    /// The manual Wake action sends a burst, not one packet.
+    #[tokio::test(start_paused = true)]
+    async fn the_manual_wake_sends_a_burst() {
+        let (sink, wake) = packet_sink();
+
+        send_burst(&wake).await.unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(packets_received(&sink), MANUAL_BURST as usize);
     }
 
     #[test]

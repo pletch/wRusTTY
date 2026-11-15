@@ -512,26 +512,15 @@ like a hardware fault, because every event the app sees is well-formed. Before
 theorizing about a layout race that will not reproduce, check whether the
 gesture that triggers it fired once.
 
-## Wake-on-LAN: the two pieces deliberately left out
+## Wake-on-LAN: the piece deliberately left out
 
 Shipped: a per-session MAC (`SessionProfile.wakeOnLan`), a probe-first wake in
 `src-tauri/src/wake.rs`, the pre-connect hook it runs from
-(`SessionRegistry::spawn_connect_prepared`), the form field, and a **Wake**
-item in the session context menu. Two known gaps, both scoped out on purpose
-rather than missed.
-
-**Automatic multi-NIC broadcast.** `wake::send` binds `0.0.0.0`, so the
-routing table picks the interface and a limited broadcast has no way to
-influence that choice. On a machine with Wi-Fi, Ethernet and a Hyper-V switch
-all up, the packet leaves by whichever one wins. The current answer is the
-per-profile *Broadcast to* field: a directed broadcast (`192.168.1.255`) has a
-route, so naming the subnet picks the interface.
-
-Doing it automatically means enumerating interfaces and sending on each, which
-needs a dependency — `if-addrs` is the small, obvious one. Worth it only if
-the manual field turns out to be a recurring annoyance; the failure it fixes
-is invisible (the packet goes somewhere, just not where you meant), which
-argues for doing it eventually.
+(`SessionRegistry::spawn_connect_prepared`), the form field, a **Wake** item
+in the session context menu (which sends a short burst), and, with no
+*Broadcast to* set, a send on every local subnet (via `if-addrs`) rather than
+one limited broadcast that Windows routed out a Hyper-V/WSL switch. One known
+gap, scoped out on purpose rather than missed.
 
 **Waking through a jump host.** `start_connection` currently *skips* waking
 when a profile has a jump host, and the form hides the field, because a magic

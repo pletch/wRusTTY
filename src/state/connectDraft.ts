@@ -93,7 +93,7 @@ export interface ConnectDraft {
   keepalive: string
   /** MAC to wake this host, as typed; '' turns waking off. */
   wakeMac: string
-  /** Directed broadcast to send it to; '' is 255.255.255.255. */
+  /** Directed broadcast to send it to; '' sends on every local subnet. */
   wakeBroadcast: string
   /** Seconds to wait for the host; '' is the backend's 60. */
   wakeWait: string

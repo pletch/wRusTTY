@@ -60,8 +60,9 @@ export function authNeedsVault(authType: SessionProfile['authType']): boolean {
 }
 
 /** What to send to wake a sleeping host, and where. Only the MAC is required.
- * `broadcast` matters for another subnet (or picking an interface): use that
- * subnet's directed broadcast (`192.168.1.255`) instead of 255.255.255.255. */
+ * `broadcast` matters for another subnet (or limiting it to one interface): use
+ * that subnet's directed broadcast (`192.168.1.255`). `null` sends on every
+ * local subnet. */
 export interface WakeOnLan {
   /** Any of `aa:bb:cc:dd:ee:ff`, `aa-bb-...`, `aabb.ccdd.eeff`, bare hex. */
   mac: string

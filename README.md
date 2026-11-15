@@ -300,8 +300,9 @@ manager and front end are protocol-agnostic.
   does), from a second texture kept apart from the text atlas.
 - **Agent auth and `MaxAuthTries`**: an agent loaded with many keys can be cut
   off (OpenSSH defaults to 6 attempts) before the right one is reached.
-- **Wake-on-LAN doesn't route.** The default 255.255.255.255 reaches this
-  machine's segment only; a host on another subnet needs its directed broadcast
+- **Wake-on-LAN doesn't route.** By default the packet goes out on every
+  network this machine is on, and reaches only those; a host on another subnet
+  needs its directed broadcast
   (e.g. `192.168.1.255`) in *Broadcast to*. On the target, Wake-on-LAN needs the
   adapter's *Wake on Magic Packet* and power-management options enabled, and
   Fast Startup off to wake from a full shutdown. Wi-Fi wake is unreliable;
