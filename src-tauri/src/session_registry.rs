@@ -336,8 +336,9 @@ pub const VAULT_LOCKED: &str = "vault is locked";
 /// foreground service and its wake lock stay up for it.
 const OFFLINE_WAIT_LIMIT: Duration = Duration::from_secs(60 * 60);
 
-/// The network as the platform reports it. Only Android does, so elsewhere this stays
-/// online and nothing here ever fires.
+/// The network as the platform reports it: `NetworkWatch.kt` on Android,
+/// `network_watch.rs` on Windows. Windows only ever reports changes, never offline.
+/// Elsewhere this stays online and nothing here ever fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NetworkState {
     online: bool,
@@ -363,7 +364,7 @@ fn vault_signal() -> &'static tokio::sync::watch::Sender<u64> {
 }
 
 /// The default network changed, to another one or to none.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "android", windows)), allow(dead_code))]
 pub fn network_changed(online: bool) {
     network_signal().send_modify(|state| {
         state.online = online;
@@ -575,6 +576,7 @@ impl<C: Connector> SessionRegistry<C> {
 
             let log_app = app.clone();
             let log_session_id = session_id.clone();
+            let observer_session_id = session_id.clone();
             let forward = tokio::spawn(crate::coalesce::forward_coalesced(
                 session_id.clone(),
                 rx,
@@ -589,6 +591,12 @@ impl<C: Connector> SessionRegistry<C> {
                     )
                 },
                 move |status| {
+                    if matches!(
+                        status,
+                        ConnectionStatus::Disconnected(wr_core::DisconnectKind::Closed)
+                    ) {
+                        log::info!("{observer_session_id}: closed by the far end");
+                    }
                     // Only `Lost`; an exited shell shouldn't be reconnected (see
                     // `DisconnectKind`).
                     if matches!(
@@ -681,9 +689,10 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
     // Only a session that was up gets reconnected; a failed first handshake
     // just fails.
     let mut ever_connected = false;
-    // Consecutive failures and when the run began; both reset on success.
+    // Consecutive failures and when the run of them began; both reset when a live
+    // session is lost, so a run is timed from the loss.
     let mut attempt: u32 = 0;
-    let mut run_started = std::time::Instant::now();
+    let mut run_started = tokio::time::Instant::now();
     // Why the last attempt couldn't build a connector, for the final message
     // (not reported per attempt, which would toast each one).
     let mut build_error: Option<String> = None;
@@ -708,7 +717,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                         tokio::select! {
                             _ = vault.changed() => {
                                 attempt = 0;
-                                run_started = std::time::Instant::now();
+                                run_started = tokio::time::Instant::now();
                                 build_error = None;
                                 continue;
                             }
@@ -745,13 +754,12 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                 }
                 let reconnected = ever_connected;
                 ever_connected = true;
-                attempt = 0;
-                run_started = std::time::Instant::now();
 
                 // Only after a reconnect. Awaited rather than spawned, so a second drop
                 // during the restore is seen after it rather than raced (a forward could
                 // otherwise be re-established on a dead handle).
                 if reconnected {
+                    log::info!("{session_id}: reconnected");
                     if let Some(on_transport) = on_transport {
                         on_transport(TransportPhase::Restored).await;
                     }
@@ -772,6 +780,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                         _ = removed(sessions, session_id) => return,
                         Ok(()) = network.changed() => {
                             if network.borrow_and_update().online {
+                                log::info!("{session_id}: network changed; checking the connection");
                                 let slot = slot.clone();
                                 tokio::spawn(async move {
                                     let probe = {
@@ -794,8 +803,15 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                     on_transport(TransportPhase::Lost).await;
                 }
                 if reconnect.is_none() {
+                    log::info!("{session_id}: connection lost; auto-reconnect is off for it");
                     return;
                 }
+                log::info!("{session_id}: connection lost; reconnecting");
+                // The budget is for this run of failures, so its clock starts at the loss.
+                // Started at the connect instead, any session up longer than the wall-clock
+                // bound gave up at the first backoff, before a single attempt.
+                attempt = 0;
+                run_started = tokio::time::Instant::now();
                 match begin_reconnect(slot).await {
                     Reclaimed::Displaced(mut dead) => {
                         // Closed rather than dropped; this also resets the SFTP cells so the
@@ -829,7 +845,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
                         return;
                     }
                     attempt = 0;
-                    run_started = std::time::Instant::now();
+                    run_started = tokio::time::Instant::now();
                     continue;
                 }
                 _ = removed(sessions, session_id) => return,
@@ -848,7 +864,7 @@ async fn supervise<C, MakeC, MakeFut, R, RFut>(
             // A new network is a new chance, so it's tried now, with a fresh budget.
             Ok(()) = network.changed() => {
                 attempt = 0;
-                run_started = std::time::Instant::now();
+                run_started = tokio::time::Instant::now();
             }
         }
     }
@@ -887,6 +903,8 @@ async fn give_up<S: Session>(
         Some(error) => format!("could not reconnect after {attempts} attempts: {error}"),
         None => format!("could not reconnect after {attempts} attempts"),
     };
+    // Connect failures are logged by each transport; this is the run's verdict.
+    log::warn!("{session_id}: gave up: {reason}");
     let _ = tx
         .send(ConnectionEvent::Status(ConnectionStatus::Failed(reason)))
         .await;
@@ -1868,6 +1886,58 @@ mod tests {
             )),
             "giving up has to be reported, not silent: {statuses:?}"
         );
+    }
+
+    /// The wall-clock budget starts at the loss, not at the connect. It used to start
+    /// at the connect, so a session up longer than the bound gave up at the first
+    /// backoff without trying: "could not reconnect after 1 attempts".
+    #[tokio::test(start_paused = true)]
+    async fn a_long_lived_session_gets_its_whole_budget_when_lost() {
+        let registry = registry_with_connecting_slot("fake-0").await;
+        let slot = registry.lookup("fake-0").await.unwrap();
+        let script = Script::shared();
+        let (tx, mut rx) = mpsc::channel(256);
+        let (down_tx, down_rx) = mpsc::unbounded_channel();
+
+        let run = tokio::spawn(supervise(
+            registry.sessions.clone(),
+            "fake-0".to_string(),
+            slot.clone(),
+            tx,
+            down_rx,
+            FakeConnector {
+                script: script.clone(),
+            },
+            Some(script.factory()),
+            None::<NoRestore>,
+            ReconnectPolicy::default(),
+        ));
+
+        // Up well past the wall-clock bound before anything goes wrong.
+        tokio::time::sleep(Duration::from_secs(RECONNECT_MAX_ELAPSED_SECONDS * 4)).await;
+        assert!(slot.lock().await.ready().is_ok());
+
+        // The first retries land while the old interface is gone; a later one works.
+        script.fail_first.store(2, Ordering::Relaxed);
+        down_tx.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        assert_eq!(
+            script.attempts(),
+            4,
+            "the first connect, two failures, then success"
+        );
+        assert!(slot.lock().await.ready().is_ok(), "it should be back");
+        let statuses = drain(&mut rx).await;
+        assert!(
+            !statuses
+                .iter()
+                .any(|s| matches!(s, ConnectionStatus::Failed(msg) if msg.starts_with("could not reconnect"))),
+            "it gave up despite having its budget: {statuses:?}"
+        );
+
+        registry.disconnect("fake-0").await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
     }
 
     /// Closing the pane mid-backoff stops the run immediately.

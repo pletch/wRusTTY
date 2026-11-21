@@ -64,7 +64,8 @@ curly underlines just work.
   and are re-established after a reconnect
 - **Keepalive and auto-reconnect** — the session comes back, and so do its port
   forwards and its in-flight file transfers. One that needs a saved credential while
-  the vault is locked waits for you to unlock it rather than giving up
+  the vault is locked waits for you to unlock it rather than giving up. On Windows and
+  Android a network change, like Wi-Fi to Ethernet, is noticed in seconds
 - **Wake-on-LAN** — a per-session MAC, probed first so an awake host is never
   sent a packet, with a *Wake* action on any saved session
 - **Outbound proxy** — reach SSH hosts (or their jump host) through an HTTP

@@ -124,6 +124,12 @@ windows = { version = "=0.62.2", features = [
   # Reading a shell's own icon out of its executable, in shell_icon.rs: GDI is
   # what turns the HICON that SHDefExtractIconW hands back into pixels.
   "Win32_Graphics_Gdi",
+  # Watching for local addresses coming and going, in network_watch.rs, so
+  # sessions are checked the moment the network changes rather than when
+  # their keepalives run out.
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
 ] }
 # IUserConsentVerifierInterop::RequestVerificationForWindowAsync's generic
 # return type is `T: windows_core::Interface`, which we satisfy with

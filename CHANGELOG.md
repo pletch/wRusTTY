@@ -23,6 +23,10 @@ release job publishes it as the GitHub release notes.
   desktop.
 - The session menu's **Wake** sends three magic packets a moment apart rather
   than one.
+- On Windows, sessions are checked as soon as the network changes, such as
+  turning Wi-Fi off with Ethernet connected. One that no longer answers
+  reconnects within seconds, instead of sitting frozen for up to three minutes
+  until its keepalives run out.
 
 ### Fixed
 
@@ -30,6 +34,10 @@ release job publishes it as the GitHub release notes.
   other virtual network adapters. With *Broadcast to* blank or set to
   255.255.255.255, the magic packet now goes out every local network instead
   of the one adapter Windows picked, which was often a virtual switch.
+- Auto-reconnect works for sessions that had been open more than five minutes.
+  Its five-minute budget was counted from when the session connected rather
+  than from when it dropped, so a longer-lived session gave up before trying,
+  with "could not reconnect after 1 attempts".
 
 ## [0.7.0] - 2026-11-14
 

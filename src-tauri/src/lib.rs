@@ -32,6 +32,8 @@ mod local_open;
 #[cfg(desktop)]
 mod local_shells;
 mod logging;
+#[cfg(windows)]
+mod network_watch;
 mod profiles;
 #[cfg(desktop)]
 mod putty_import;
@@ -308,6 +310,9 @@ pub fn run() {
             };
             app.handle().plugin(log_builder.build())?;
             session_lock::register(app.handle());
+            // After the log plugin, so a failure to start is recorded.
+            #[cfg(windows)]
+            network_watch::start();
             #[cfg(target_os = "android")]
             vault_autolock::start(app.handle());
             Ok(())
