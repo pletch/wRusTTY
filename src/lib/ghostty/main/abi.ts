@@ -2,7 +2,7 @@
  * The ghostty `main` C ABI, as constants and types; see
  * `docs/PORT_GHOSTTY_MAIN.md`.
  *
- * Pinned to ghostty-org/ghostty @ cf3a8a6594eec899fe6335465668c60f2281ce9c,
+ * Pinned to ghostty-org/ghostty @ 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7,
  * libghostty-vt 1.0.2-dev, whose C API is the stable `vt-1.0.0` one: upstream
  * CI now fails any change to it that isn't an addition. Values are exercised
  * against the binary by `main/abi.parity.test.ts`, and every struct layout and

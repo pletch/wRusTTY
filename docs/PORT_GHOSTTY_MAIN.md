@@ -24,24 +24,65 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ cf3a8a6594eec899fe6335465668c60f2281ce9c
+ghostty-org/ghostty @ 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7
 ```
 
 Chosen deliberately, not merely "what was current":
 
 - It is the commit every ABI fact below was verified against.
-- It is the commit we hold a **built binary** for. Rebuilding needs Zig 0.17.0
+- It is the commit we hold a **built binary** for. Rebuilding needs Zig 0.17.1
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, 190, 190, 196, 196, 214, **214 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, 190, 190, 196, 196, 214, 214, **214 here** — so re-pin only with a reason and re-run
 the checks when you do. From this pin on, upstream holds the C API to additions
 only (see below), so a re-pin should no longer move a number we already use. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca`, `ghostty_osc_set` at `f9e82709`, and Kitty graphics
 image iteration at `8ef0ec12`.
 
-### Moving from `27ffca0d` (2026-11-07) to this pin
+### Moving from `cf3a8a65` (2026-11-12) to this pin
+
+24 merges over eight days, and the first pin that needs **Zig 0.17.1**
+(`minimum_zig_version` moved in `2521ab9f6`). It is installed in WSL at
+`~/zig-x86_64-linux-0.17.1`, beside 0.17.0, its SHA-256 checked against
+ziglang.org's index. No ABI change: the headers are untouched, the exports are
+the same 217, and the binary still reports `1.0.2-dev`. The whole suite passed
+against the new binary before anything here was touched, except the two
+integrity checks that are meant to fail. The ESC k patch applied cleanly.
+
+Taken for speed, not for a fix. Measured against the previous binary at
+200x60, 8 MB per workload in 16 KB writes, best of five, run twice:
+
+| Workload | Before | After | |
+|---|---|---|---|
+| `ls -l --hyperlink` style output (OSC 8 per line) | 97-99 MB/s | 116-119 MB/s | 1.19x |
+| A TUI redrawing rows (CUP, EL, ED, colors) | 58 MB/s | 82 MB/s | 1.42x |
+| Plain scrolling text | 273-278 MB/s | 274-275 MB/s | even |
+| Colored words (control) | 91 MB/s | 89-90 MB/s | even |
+
+- **Hyperlink hashing (`2f5c8b17f`, #15285).** IDs and URIs were hashed a
+  byte at a time; now each string is hashed in one update.
+- **One `clearCells` (`8046a2360`, #15224).** The screen's copy, which skips
+  rows that are already blank and releases styles a run at a time, now serves
+  both. Upstream measured 3-5% natively; in wasm the erase workload gains 42%.
+- **Carriage return without a pin lookup (`9fff23493`, #15221).** 2-6%
+  natively; not visible in the scrolling workload here.
+
+None of it is the compiler. The previous pin built with 0.17.1 is within 3
+bytes of its 0.17.0 build (1,333,596 against 1,333,593) and benchmarks the same
+as it, so both the speedups and the size change below come from the source.
+
+Inert here: a write past the end of a row when `PageList.clone` pads a short
+region (`a5cd02e8a`, #15222), since nothing in the library calls `clone`
+outside tests (Ghostty's app does); and a Debug-only integrity panic when
+growing rows while scrolled up (`7fa26e8b6`, #15237), whose check is compiled
+out of a fast build.
+
+The stripped binary shrank **17,243 bytes** (1,333,593 -> 1,316,350), most of
+it the duplicate `clearCells` going away.
+
+### Moving from `27ffca0d` (2026-11-07) to `cf3a8a65`
 
 37 merges over five days. No ABI change: the headers differ only in
 `version.h`, the exports are the same 217, and the symbol map lost only an
@@ -791,13 +832,13 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout cf3a8a6594eec899fe6335465668c60f2281ce9c
+cd ghostty && git checkout 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm
 ```
 
-Requires **Zig 0.17.0** (`minimum_zig_version` in `build.zig.zon`), against
+Requires **Zig 0.17.1** (`minimum_zig_version` in `build.zig.zon`), against
 0.15.2 for the v1.3.1 build. Zig 0.17 renamed the optimize modes, so the flag
 is `-Doptimize=fast`. The old `ReleaseFast` is still accepted as an alias and
 builds a byte-identical binary. Linux or WSL — building natively on Windows hits a
@@ -1165,8 +1206,8 @@ sending, and whether to ask before pasting.
 
 ### Rebuilding
 
-Producing the binary needs **Zig 0.17.0 on Linux/WSL**. It is installed in the
-WSL Debian on this machine at `~/zig-x86_64-linux-0.17.0/zig`, next to 0.16.0, which is still
+Producing the binary needs **Zig 0.17.1 on Linux/WSL**. It is installed in the
+WSL Debian on this machine at `~/zig-x86_64-linux-0.17.1/zig`, next to 0.17.0 and 0.16.0, which is still
 the one on `PATH`; drive it with `wsl.exe -e bash -lc`. The recipe,
 the strip step and what has to be re-measured afterward are in
 `src/lib/ghostty/vendor/README.md`. Build under `~`, not `/mnt/c`.

@@ -27,6 +27,9 @@ release job publishes it as the GitHub release notes.
   turning Wi-Fi off with Ethernet connected. One that no longer answers
   reconnects within seconds, instead of sitting frozen for up to three minutes
   until its keepalives run out.
+- The terminal engine is re-pinned to Ghostty `9ad3c422`. Full-screen programs
+  that redraw by erasing rows process about 40% faster, and output full of
+  hyperlinks (such as `ls --hyperlink`) about 20% faster.
 
 ### Fixed
 

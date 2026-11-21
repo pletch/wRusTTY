@@ -4,7 +4,7 @@ The **only** fix we still carry against ghostty `main`, and the whole residual
 patch burden of the port: 24 lines across two files, against the 1,648 lines of
 `ghostty-131-wasm-api.patch` that the v1.3.1 build needs.
 
-Applies cleanly to the port's pin, `cf3a8a6594eec899fe6335465668c60f2281ce9c`.
+Applies cleanly to the port's pin, `9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7`.
 
 ```sh
 git apply ../patches/ghostty-main-esc-k.patch

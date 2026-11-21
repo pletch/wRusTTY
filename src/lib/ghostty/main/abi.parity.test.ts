@@ -17,7 +17,7 @@ import * as abi from './abi'
  *   GHOSTTY_MAIN_WASM=/path/to/ghostty-vt.wasm npx vitest run abi.parity
  *
  * Build it from the pin in `docs/PORT_GHOSTTY_MAIN.md`
- * (cf3a8a6594eec899fe6335465668c60f2281ce9c) with Zig 0.17.0.
+ * (9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7) with Zig 0.17.1.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

@@ -11,11 +11,11 @@ allowed to skip when it is absent — that is how they stay green on CI, which
 holds no comparison build — while the shipped binary never may.
 
 ```
-ghostty-org/ghostty @ cf3a8a6594eec899fe6335465668c60f2281ce9c
+ghostty-org/ghostty @ 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7
        + patches/ghostty-main-esc-k.patch   (#176; 24 lines, 2 files)
-SHA-256  84710cc0f9ced8d36c0a6d041b39ba936138440a62ac47c797d601bc9ef59d5b
-Size     5,462,871 bytes
-Built    Zig 0.17.0, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
+SHA-256  f7ea38af2e7a20425f418ce677704a1543a8fa014a7b459dbfa8b092a1843b4d
+Size     5,274,682 bytes
+Built    Zig 0.17.1, -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 Exports  217 (214 functions) — the patch adds none
 ```
 
@@ -40,7 +40,7 @@ not what these headers read as. See `docs/PORT_GHOSTTY_MAIN.md`.
 
 ## Replacing it
 
-Rebuilding needs **Zig 0.17.0 on Linux or WSL** (native Windows hits a Zig
+Rebuilding needs **Zig 0.17.1 on Linux or WSL** (native Windows hits a Zig
 `ftruncate`/`FileTooBig` bug in the unicode table generator):
 
 ```sh
@@ -48,7 +48,7 @@ Rebuilding needs **Zig 0.17.0 on Linux or WSL** (native Windows hits a Zig
 mkdir ghostty-pin && cd ghostty-pin && git init -q .
 git config core.autocrlf false          # or the patch will not apply
 git remote add origin https://github.com/ghostty-org/ghostty.git
-git fetch -q --depth 1 origin cf3a8a6594eec899fe6335465668c60f2281ce9c
+git fetch -q --depth 1 origin 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7
 git checkout -q FETCH_HEAD
 
 git apply ../patches/ghostty-main-esc-k.patch

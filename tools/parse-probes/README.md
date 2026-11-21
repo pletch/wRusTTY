@@ -80,7 +80,7 @@ V8 to Liftoff and costs ~2.75x, which is its own long story.
 builds with different toolchains:
 
 - our vendored binary: ghostty-web's fork, **Zig 0.15.2**, `zig build lib-vt`
-- main: **Zig 0.17.0** (`minimum_zig_version` in `build.zig.zon`), and the flag
+- main: **Zig 0.17.1** (`minimum_zig_version` in `build.zig.zon`), and the flag
   is `-Demit-lib-vt`, not a `lib-vt` step
 
 ```sh
