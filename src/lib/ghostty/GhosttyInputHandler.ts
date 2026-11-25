@@ -32,6 +32,12 @@ export class GhosttyInputHandler {
    */
   private keyEncoder: () => KeyEncoder | null
   private composing = false
+  /**
+   * Takes text that is a paste rather than typing, so it goes through the
+   * host's paste guard. Returns false when nobody claimed it, and the text is
+   * then sent as typed. See [`isPasteLike`].
+   */
+  pasteSink: ((text: string) => boolean) | null = null
   /** A key-row modifier took this composition's text; its result is stale. */
   private dropComposition = false
 
@@ -141,13 +147,19 @@ export class GhosttyInputHandler {
     if (text) this.onData(this.encoder.encode(text))
   }
 
+  /** Sends `text`, unless it's a paste and the host took it. */
+  private deliver(text: string, inputType: string | null) {
+    if (isPasteLike(text, inputType) && this.pasteSink?.(text)) return
+    this.send(text)
+  }
+
   private handleCompositionStart = () => {
     this.composing = true
   }
 
   private handleCompositionEnd = (e: CompositionEvent) => {
     this.composing = false
-    if (!this.dropComposition) this.send(e.data)
+    if (!this.dropComposition) this.deliver(e.data, null)
     this.element.value = ''
   }
 
@@ -186,7 +198,15 @@ export class GhosttyInputHandler {
       this.element.value = ''
       return
     }
-    if (typeof ie.data === 'string') this.send(ie.data)
+    // A native paste carries its text in `dataTransfer`, or only in the box's
+    // value, rather than in `data`.
+    const text =
+      typeof ie.data === 'string'
+        ? ie.data
+        : PASTE_INPUT_TYPES.has(ie.inputType)
+          ? ie.dataTransfer?.getData('text/plain') || this.element.value
+          : null
+    if (text) this.deliver(text, ie.inputType)
     // Clear it so a stale value doesn't reach the next composition.
     this.element.value = ''
   }
@@ -230,6 +250,24 @@ export class GhosttyInputHandler {
     const bytes = this.keyEncoder()?.encode(e)
     if (bytes) this.onData(bytes)
   }
+}
+
+/** Input types the browser uses for text that was pasted or dropped. */
+const PASTE_INPUT_TYPES = new Set(['insertFromPaste', 'insertFromPasteAsQuotation', 'insertFromDrop'])
+
+/**
+ * Whether text arriving in the input box is a paste, which must go through
+ * the paste guard rather than out as keystrokes.
+ *
+ * The browser says so for a native paste. A keyboard's clipboard panel
+ * (Gboard's chip, for one) usually doesn't: it commits the text as if typed.
+ * So text with a line break inside it counts too, since typing never produces
+ * one mid-text. A lone or trailing line break doesn't count: some keyboards
+ * send Enter that way, and it has to stay a Return.
+ */
+export function isPasteLike(text: string, inputType: string | null): boolean {
+  if (inputType !== null && PASTE_INPUT_TYPES.has(inputType)) return true
+  return /[\r\n]/.test(text.replace(/[\r\n]+$/, ''))
 }
 
 /** A key event with the armed key-row modifiers added, disarming them. */

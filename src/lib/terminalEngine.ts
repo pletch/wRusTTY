@@ -182,6 +182,9 @@ export interface TerminalEngine {
   onPinchFontSize?(cb: (size: number | null) => void): IDisposable
   /** The touch selection's Paste, which goes through the host's paste guard. */
   onPasteRequest?(cb: () => void): IDisposable
+  /** Text pasted into the input box, such as from a keyboard's clipboard
+   *  panel, for the host's paste guard. Without a listener it's sent as typed. */
+  onTextPaste?(cb: (text: string) => void): IDisposable
   onCopyRequest?(cb: (text: string) => void): IDisposable
 
   /**

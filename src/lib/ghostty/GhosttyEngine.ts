@@ -340,6 +340,7 @@ export class GhosttyEngine implements TerminalEngine {
   private readonly restoreFrom: Promise<Uint8Array | null> | null
   private restoredFromSnapshot = false
   private onPasteRequestHandlers = new Set<() => void>()
+  private onTextPasteHandlers = new Set<(text: string) => void>()
   /** Where a long press's word began, until the finger drags from it. */
   private touchPressStart: { x: number; y: number } | null = null
   /**
@@ -1421,6 +1422,13 @@ export class GhosttyEngine implements TerminalEngine {
         handler(out)
       }
     }, () => this.keyEncoder)
+    // A keyboard's clipboard panel pastes by typing into the input box. With a
+    // host listening, that goes through its paste guard like any other paste.
+    this.inputHandler.pasteSink = (text) => {
+      if (this.onTextPasteHandlers.size === 0) return false
+      for (const h of this.onTextPasteHandlers) h(text)
+      return true
+    }
     // Focus lives on the input handler's element.
     this.inputHandler.element.addEventListener('focus', this.onFocus)
     this.inputHandler.element.addEventListener('blur', this.onBlur)
@@ -2261,6 +2269,11 @@ export class GhosttyEngine implements TerminalEngine {
   onPasteRequest(cb: () => void): IDisposable {
     this.onPasteRequestHandlers.add(cb)
     return { dispose: () => this.onPasteRequestHandlers.delete(cb) }
+  }
+
+  onTextPaste(cb: (text: string) => void): IDisposable {
+    this.onTextPasteHandlers.add(cb)
+    return { dispose: () => this.onTextPasteHandlers.delete(cb) }
   }
 
   onCopyRequest(cb: (text: string) => void): IDisposable {

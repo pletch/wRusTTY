@@ -9,6 +9,10 @@ export interface ConfirmRequest {
   /** Asks for a password as well. Resolves to null to accept it, or to what to show
    * while asking again. */
   checkPassword?: (password: string) => Promise<string | null>
+  /** A second way to go ahead, shown between Cancel and the confirm button.
+   * Choosing it runs `run` and resolves the ask to false, since the caller's
+   * own action did not happen. */
+  alternative?: { label: string; run: () => void }
 }
 
 export type Ask = (request: ConfirmRequest) => Promise<boolean>

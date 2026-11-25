@@ -11,6 +11,9 @@ interface Props {
   confirmLabel: string
   /** Asks for a password, and only confirms once this resolves to null. */
   checkPassword?: (password: string) => Promise<string | null>
+  /** Shows a second, non-destructive way to go ahead. */
+  alternativeLabel?: string
+  onAlternative?: () => void
   onConfirm: () => void
   onCancel: () => void
 }
@@ -25,6 +28,8 @@ export function ConfirmDialog({
   body,
   confirmLabel,
   checkPassword,
+  alternativeLabel,
+  onAlternative,
   onConfirm,
   onCancel,
 }: Props) {
@@ -104,6 +109,14 @@ export function ConfirmDialog({
           >
             Cancel
           </button>
+          {alternativeLabel && onAlternative && (
+            <button
+              onClick={onAlternative}
+              className="rounded bg-chrome/10 px-3 py-1.5 text-xs font-medium text-chrome/90 transition-colors duration-100 hover:bg-chrome/20"
+            >
+              {alternativeLabel}
+            </button>
+          )}
           <button
             onClick={() => void confirm()}
             disabled={checkPassword ? !password || checking : false}

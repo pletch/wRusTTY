@@ -37,6 +37,12 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           body={request.body}
           confirmLabel={request.confirmLabel ?? 'Continue'}
           checkPassword={request.checkPassword}
+          alternativeLabel={request.alternative?.label}
+          onAlternative={() => {
+            const run = request.alternative?.run
+            settle(false)
+            run?.()
+          }}
           onConfirm={() => settle(true)}
           onCancel={() => settle(false)}
         />

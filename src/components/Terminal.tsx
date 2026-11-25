@@ -89,6 +89,7 @@ import * as sftp from '../lib/sftp'
 import { toast } from '../lib/toast'
 import * as broadcast from '../lib/broadcast'
 import { countLines, pasteNeedsNoConfirm, stripTrailingNewline } from '../lib/pasteGuard'
+import { joinWrapped, rememberRemoteCopy, remoteCopyWidth } from '../lib/joinWrapped'
 
 /**
  * Bytes to write before granting the backend more credit: a sixteenth of its
@@ -1273,7 +1274,12 @@ export function Terminal({
           writeText,
           // Toast on every write: silent writes are what make clipboard poisoning
           // work.
-          onWrote: () => toast.info('The remote host set your clipboard'),
+          onWrote: (text) => {
+            // Paste as one line uses this pane's width to tell wraps from
+            // newlines that were meant.
+            rememberRemoteCopy(text, term.cols)
+            toast.info('The remote host set your clipboard')
+          },
           onError: logError,
         }),
       ),
@@ -1748,43 +1754,53 @@ export function Terminal({
     // A path names a file on the remote host; the caller resolves it.
     const pathListener = term.onPathActivate?.((path) => onOpenPathRef.current?.(path))
 
-    // The single paste path for right-click, Ctrl+Shift+V and Shift+Insert, so
-    // the multi-line guard applies to all of them.
+    // The single paste path for right-click, Ctrl+Shift+V, Shift+Insert, the
+    // touch Paste bar and a keyboard's clipboard panel, so the multi-line
+    // guard applies to all of them.
+    const pasteText = (raw: string) => {
+      if (!raw) return
+      const text = stripTrailingNewline(raw)
+      if (!text) return
+      const lines = countLines(text)
+      // Both have to agree: see pasteGuard.ts for why ours is not optional.
+      const safe = pasteNeedsNoConfirm(text, term.isPasteSafe?.(text))
+      if (safe) {
+        term.paste(text)
+        return
+      }
+      const multiLine = lines > 1
+      // Give both reasons when both apply.
+      const reasons: string[] = []
+      if (multiLine) {
+        reasons.push(
+          'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.',
+        )
+      }
+      if (text.includes('\x1b')) {
+        reasons.push(
+          `${multiLine ? 'It also contains' : 'This text contains'} a terminal escape sequence. That is defused before being sent — the escape becomes a space — but text carrying one is worth a second look.`,
+        )
+      }
+      void confirmRef.current({
+        title: multiLine ? `Paste ${lines} lines?` : 'Paste this text?',
+        // The fallback is currently unreachable.
+        body: reasons.join(' ') || 'This text may not be safe to paste as typed.',
+        confirmLabel: 'Paste',
+        // For a command that a program such as Claude Code wrapped
+        // itself, so every wrap arrived as a newline. See joinWrapped.ts.
+        alternative: multiLine
+          ? {
+              label: 'Paste as one line',
+              run: () => term.paste(joinWrapped(text, remoteCopyWidth(text))),
+            }
+          : undefined,
+      }).then((ok) => {
+        if (ok) term.paste(text)
+      })
+    }
     const pasteFromClipboard = () => {
       readText()
-        .then((raw) => {
-          if (!raw) return
-          const text = stripTrailingNewline(raw)
-          if (!text) return
-          const lines = countLines(text)
-          // Both have to agree: see pasteGuard.ts for why ours is not optional.
-          const safe = pasteNeedsNoConfirm(text, term.isPasteSafe?.(text))
-          if (safe) {
-            term.paste(text)
-            return
-          }
-          const multiLine = lines > 1
-          // Give both reasons when both apply.
-          const reasons: string[] = []
-          if (multiLine) {
-            reasons.push(
-              'Every newline in a multi-line paste is a Return the shell acts on, so this runs each line as typed.',
-            )
-          }
-          if (text.includes('\x1b')) {
-            reasons.push(
-              `${multiLine ? 'It also contains' : 'This text contains'} a terminal escape sequence. That is defused before being sent — the escape becomes a space — but text carrying one is worth a second look.`,
-            )
-          }
-          void confirmRef.current({
-            title: multiLine ? `Paste ${lines} lines?` : 'Paste this text?',
-            // The fallback is currently unreachable.
-            body: reasons.join(' ') || 'This text may not be safe to paste as typed.',
-            confirmLabel: 'Paste',
-          }).then((ok) => {
-            if (ok) term.paste(text)
-          })
-        })
+        .then(pasteText)
         .catch(() => {})
     }
 
@@ -1809,6 +1825,7 @@ export function Terminal({
     container.addEventListener('contextmenu', onContextMenu)
     const pinchListener = term.onPinchFontSize?.((size) => onPinchFontSizeRef.current?.(size))
     const pasteRequestListener = term.onPasteRequest?.(pasteFromClipboard)
+    const textPasteListener = term.onTextPaste?.(pasteText)
 
     const onKeyDown = (e: KeyboardEvent) => {
       // Autocomplete only claims keys while a suggestion is showing; Tab is never
@@ -1950,6 +1967,7 @@ export function Terminal({
       container.removeEventListener('contextmenu', onContextMenu)
       pinchListener?.dispose()
       pasteRequestListener?.dispose()
+      textPasteListener?.dispose()
       container.removeEventListener('keydown', onKeyDown, true)
       selectionListener.dispose()
       copyListener?.dispose()

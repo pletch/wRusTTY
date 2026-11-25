@@ -11,6 +11,22 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Added
+
+- The multi-line paste prompt has a **Paste as one line** button, for a long
+  command that arrived broken across lines, such as one copied out of Claude
+  Code. Indentation and `\` or backtick continuations are dropped. When the
+  text came from another pane over OSC 52, a line that filled that pane's width
+  is joined without a space, so a URL or path split at the edge comes back
+  whole.
+
+### Fixed
+
+- Text pasted from a keyboard's clipboard panel, such as Gboard's on
+  Android, goes through the multi-line paste prompt like any other paste.
+  It used to be typed straight into the shell, so each line ran as it
+  arrived.
+
 ## [0.7.1] - 2026-11-21
 
 ### Added

@@ -76,8 +76,8 @@ export interface Osc52Sink {
   allowWrite: boolean
   /** Performs the write. Rejection is reported through `onError`. */
   writeText: (text: string) => Promise<void>
-  /** A write landed; the caller tells the user. */
-  onWrote: () => void
+  /** A write landed; the caller tells the user. Gets the text written. */
+  onWrote: (text: string) => void
   onError: (message: string) => void
 }
 
@@ -94,7 +94,7 @@ export function applyOsc52(payload: string, sink: Osc52Sink): boolean {
   if (req.kind === 'write' && sink.allowWrite) {
     sink
       .writeText(req.text)
-      .then(sink.onWrote)
+      .then(() => sink.onWrote(req.text))
       .catch((e) => sink.onError(`OSC 52 clipboard write failed: ${e}`))
   }
   return true
