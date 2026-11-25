@@ -11,6 +11,8 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-25
+
 ### Added
 
 - The multi-line paste prompt has a **Paste as one line** button, for a long
@@ -466,7 +468,8 @@ the encrypted credential vault, split panes, SFTP file browsing, PuTTY session
 and key import, and the Ghostty-based terminal. See the README for the full
 feature list.
 
-[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/pletch/wRusTTY/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/pletch/wRusTTY/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/pletch/wRusTTY/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/pletch/wRusTTY/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/pletch/wRusTTY/compare/v0.6.2...v0.6.3
