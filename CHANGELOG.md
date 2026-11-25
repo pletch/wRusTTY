@@ -26,6 +26,17 @@ release job publishes it as the GitHub release notes.
   Android, goes through the multi-line paste prompt like any other paste.
   It used to be typed straight into the shell, so each line ran as it
   arrived.
+- After vim, less or tmux scrolls part of the screen, a long URL that wraps
+  across rows opens and copies whole, and copying a wrapped line no longer
+  adds a line break where it wrapped. The scroll used to forget which rows
+  had wrapped.
+- An emoji with a skin tone, such as ☝🏻, takes two cells in programs that turn
+  on grapheme clustering (mode 2027), so the rest of the line lines up.
+
+### Changed
+
+- The terminal engine is re-pinned to Ghostty `9fd1ebf2`. A tmux pane scrolling
+  beside another one processes about 1.5-2x faster.
 
 ## [0.7.1] - 2026-11-21
 

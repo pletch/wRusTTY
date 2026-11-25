@@ -24,7 +24,7 @@ Three measurements, all in `tools/parse-probes/`, and one source check:
 ## The pin
 
 ```
-ghostty-org/ghostty @ 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7
+ghostty-org/ghostty @ 9fd1ebf21f04f81b0cc21ad28fcef91aa51b016f
 ```
 
 Chosen deliberately, not merely "what was current":
@@ -34,14 +34,64 @@ Chosen deliberately, not merely "what was current":
   on Linux/WSL, so re-pinning is a deliberate act rather than a routine bump.
 
 `main`'s surface keeps moving — 187 exports when first measured, 202, then 201,
-180, 181, 189, 189, 190, 190, 190, 190, 196, 196, 214, 214, **214 here** — so re-pin only with a reason and re-run
+180, 181, 189, 189, 190, 190, 190, 190, 196, 196, 214, 214, 214, **214 here** — so re-pin only with a reason and re-run
 the checks when you do. From this pin on, upstream holds the C API to additions
 only (see below), so a re-pin should no longer move a number we already use. The long run of it going *down* was consolidation rather
 than a broken build (see the ABI breaks below); the steps back up were the
 search API at `492300ca`, `ghostty_osc_set` at `f9e82709`, and Kitty graphics
 image iteration at `8ef0ec12`.
 
-### Moving from `cf3a8a65` (2026-11-12) to this pin
+### Moving from `9ad3c422` (2026-11-20) to this pin
+
+38 merges over five days. No ABI change: the header changes are
+documentation (the mouse encoder's last-cell behavior, the skin tone width
+rule) and `version.h`, now `1.0.3-dev`. The exports are the same 217. Upstream
+lowered `minimum_zig_version` back to 0.17.0 (#15339); this was built with
+0.17.1. The whole suite passed against the new binary before anything here
+was touched, except the two integrity checks that are meant to fail, and the
+ESC k patch applied cleanly.
+
+Taken for:
+
+- **Soft wraps through IL and DL (`4917fd8a1`, #15309).** Insert and delete
+  line in a full-width scroll region, which is how vim, less and tmux scroll
+  part of the screen, cleared the wrap of every row they moved. Link
+  detection joins a URL across a soft wrap, and copy joins wrapped rows
+  without a line break, so both went wrong after such a scroll until the
+  program redrew. Rows that move together keep their wrap now.
+- **The mouse encoder's last cell (`74d1983f2`, #15317).**
+  `set_from_terminal` cleared the remembered cell on every call, so syncing
+  before each event, which we do, made `TRACK_LAST_CELL` do nothing. It now
+  forgets the cell only when the tracking mode, format or size actually
+  changes. That lets `MouseReporter` hand motion deduplication to the
+  encoder, which also counts presses (see the commit after this one).
+- **Skin tone width (`77c2f8b9f`, #15337).** Under grapheme clustering (mode
+  2027), a skin tone after an emoji drawn as text by default (U+261D and eight
+  others) left the cluster one cell wide, where VS16 made it two.
+
+`wrapAndSkinTone.test.ts` covers the wraps and the width, and each case fails
+on the previous binary.
+
+Also in range:
+
+- **Styled rows moved with one copy (`3e9b1cca3`, #15313).** Insert and delete
+  line within left and right margins, which is how tmux scrolls a pane with
+  another beside it. Upstream's own stream (a 60-column pane at 120x40, colored
+  lines) ran 1.55x and 2.08x faster in two runs here; plain scrolling and
+  colored text were even.
+- **A restored snapshot keeps a pending wrap at any column (`f61fe7b5d`,
+  #15328),** which matters with side margins set. Reconnect replay restores
+  snapshots.
+- **Prompt marks survive IL and DL within side margins (`e50c17800`,
+  #15327).**
+
+Inert here: the HTML formatter's OSC 8 scheme allowlist (#15347; we don't
+call the formatter), Kitty placeholders and drag and drop, font shaping, GTK
+and CI.
+
+The stripped binary grew **7,475 bytes** (1,316,350 -> 1,323,825).
+
+### Moving from `cf3a8a65` (2026-11-12) to `9ad3c422`
 
 24 merges over eight days, and the first pin that needs **Zig 0.17.1**
 (`minimum_zig_version` moved in `2521ab9f6`). It is installed in WSL at
@@ -832,7 +882,7 @@ build and is not one. The default was corrected on 2026-08-14.
 
 ```sh
 git clone https://github.com/ghostty-org/ghostty.git
-cd ghostty && git checkout 9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7
+cd ghostty && git checkout 9fd1ebf21f04f81b0cc21ad28fcef91aa51b016f
 git apply ../patches/ghostty-main-esc-k.patch   # #176, the only carried fix
 zig build -Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast
 # -> zig-out/bin/ghostty-vt.wasm

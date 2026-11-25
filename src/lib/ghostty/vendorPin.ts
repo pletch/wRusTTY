@@ -21,15 +21,15 @@
  */
 export const GHOSTTY_PIN = {
   /** The branch the pin is on. ghostty `main` just past the `vt-1.0.0` tag
-   *  of libghostty-vt (it reports 1.0.2-dev), with the same C API. */
+   *  of libghostty-vt (it reports 1.0.3-dev), with the same C API. */
   upstream: 'main',
-  commit: '9ad3c422222e45b32c5f9ab9f4cd32e0e3694ef7',
+  commit: '9fd1ebf21f04f81b0cc21ad28fcef91aa51b016f',
   /** Carried on top of the pin — see `patches/ghostty-main-esc-k.patch`. Worth
    *  showing: it changes parser behavior, so "ghostty at <commit>" alone would
    *  not reproduce what the user is running. */
   patch: 'ghostty-main-esc-k.patch (#176)',
-  sha256: 'ab6dae1fccb241862a4200df33e3cac53fef797dbaf17cd786df538f22d7d90d',
-  bytes: 1_316_350,
+  sha256: 'a74f34bc1aeb5b0418ee172f9859c88d5afc6ff78266cb7137ab8775f7e7bfc8',
+  bytes: 1_323_825,
   zig: '0.17.1',
   buildFlags: '-Demit-lib-vt=true -Dtarget=wasm32-freestanding -Doptimize=fast',
 } as const
