@@ -48,7 +48,6 @@ import {
   MODE_BRACKETED_PASTE,
   MODE_ALT_SCREEN,
   MODE_FOCUS_REPORTING,
-  MODE_MOUSE_SGR_PIXELS,
   allocBufferOrThrow,
   GhosttyOutOfMemoryError,
   type GhosttyWasm,
@@ -373,7 +372,6 @@ export class GhosttyEngine implements TerminalEngine {
       tracking: () => this.mouseTracking(),
       at: (e) => this.pointerAt(e),
       encoder: () => this.mouseEncoder,
-      pixelReporting: () => this.mouseMode(MODE_MOUSE_SGR_PIXELS),
       send: (bytes) => {
         for (const h of this.onDataHandlers) h(bytes)
       },
@@ -932,8 +930,8 @@ export class GhosttyEngine implements TerminalEngine {
    * whenever it can change. No padding: the canvas is sized to the grid.
    */
   private syncMouseSurface(): void {
-    // The reporter's last cell was measured against the old geometry.
-    this.mouse.forgetLastCell()
+    // A new size also makes the encoder forget its last cell, which was
+    // measured against the old geometry.
     if (!this.mouseEncoder || !this.renderer) return
     const cell = this.renderer.getCellSize()
     this.mouseEncoder.setSurface({
@@ -952,12 +950,7 @@ export class GhosttyEngine implements TerminalEngine {
     const size = this.renderer.getCellSize()
     const x = Math.max(0, Math.min(e.clientX - rect.left, this._cols * size.width - 1))
     const y = Math.max(0, Math.min(e.clientY - rect.top, this._rows * size.height - 1))
-    return {
-      x,
-      y,
-      col: Math.floor(x / size.width) + 1,
-      row: Math.floor(y / size.height) + 1,
-    }
+    return { x, y }
   }
 
   private onMouseUp = (e: MouseEvent) => {

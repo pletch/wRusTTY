@@ -158,6 +158,35 @@ describe('mouse reporting, from the canvas to the wire', () => {
     engine.unmount()
   })
 
+  it('reports a click with no hover before it as a press and a release', async () => {
+    // A tap on a touch screen, or the first click after switching windows,
+    // arrives with no motion before it. A jiggle inside the pressed cell is
+    // not motion; reporting it turns a click into press, motion, release,
+    // which programs that read a click as a back-to-back press and release
+    // (Codex, upstream #15317) don't take as a click.
+    const { engine, sent, down, move, up } = await mounted()
+    engine.write('\x1b[?1002h\x1b[?1006h')
+    down(15, 25)
+    move(17, 26)
+    up(17, 26)
+    expect(sent).toEqual(['\x1b[<0;2;2M', '\x1b[<0;2;2m'])
+    engine.unmount()
+  })
+
+  it('reports motion into the next cell after a change of geometry', async () => {
+    const { engine, sent, down, move } = await mounted()
+    engine.write('\x1b[?1002h\x1b[?1006h')
+    down(15, 25)
+    move(25, 25)
+    sent.length = 0
+    // A resize moves every cell boundary. The first move after it is
+    // reported even if it lands in the cell the last report named.
+    engine.resize(COLS - 1, ROWS, true)
+    move(26, 25)
+    expect(sent).toEqual(['\x1b[<32;3;2M'])
+    engine.unmount()
+  })
+
   it('reports every pixel of a drag once the program asks in pixels', async () => {
     const { engine, sent, down, move } = await mounted()
     engine.write('\x1b[?1002h\x1b[?1016h')

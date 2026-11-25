@@ -32,6 +32,11 @@ release job publishes it as the GitHub release notes.
   had wrapped.
 - An emoji with a skin tone, such as ☝🏻, takes two cells in programs that turn
   on grapheme clustering (mode 2027), so the rest of the line lines up.
+- A click in a program that tracks the mouse is reported as a press and a
+  release, even when nothing moved over the pane first, such as a tap on
+  Android or the first click after switching windows. A slight movement
+  within the clicked cell was reported as motion in between, which some
+  programs, Codex among them, don't take as a click.
 
 ### Changed
 

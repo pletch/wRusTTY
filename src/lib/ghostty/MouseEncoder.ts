@@ -12,16 +12,26 @@
  * ## What's still ours
  *
  * - **Which button is held**, which the DOM only reports on some events.
- * - **Motion rate.** `TRACK_LAST_CELL` does nothing observable in this build,
- *   so the caller keeps its own last-cell check (see `MouseReporter`).
  * - **Clamping.** A position outside the surface encodes to nothing, but a
  *   drag that left the pane should report the edge cell, so the caller clamps.
+ *
+ * ## Motion rate is the encoder's
+ *
+ * `TRACK_LAST_CELL` is on: the encoder remembers the cell of the last report
+ * it wrote, a press included, and writes nothing for motion within it. So a
+ * click with no hover before it (a tap, the first click after switching
+ * windows) stays a press and a release, rather than press, motion, release.
+ * Under DEC 1016 it reports every pixel. It forgets the cell when the
+ * tracking mode, format or size changes, and from upstream `74d1983f2` on,
+ * not otherwise, so syncing from the terminal before every event is safe.
+ * Before that, the sync cleared it every time and the option did nothing.
  */
 
 import * as abi from './main/abi'
 import {
   MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
   MOUSE_ENCODER_OPT_SIZE,
+  MOUSE_ENCODER_OPT_TRACK_LAST_CELL,
   MOUSE_POSITION_BYTES,
   MOUSE_SIZE_BYTES,
   MOUSE_SIZE_OFF_CELL_HEIGHT,
@@ -98,6 +108,10 @@ export class MouseEncoder {
     this.posBuf = ex.ghostty_wasm_alloc(MOUSE_POSITION_BYTES)
     this.flagBuf = ex.ghostty_wasm_alloc(1)
     this.lenSlot = ex.ghostty_wasm_alloc(abi.USIZE_BYTES)
+
+    // Set once: `set_from_terminal` doesn't touch it.
+    this.dv().setUint8(this.flagBuf, 1)
+    ex.ghostty_mouse_encoder_set(this.encoder, MOUSE_ENCODER_OPT_TRACK_LAST_CELL, this.flagBuf)
   }
 
   /**
@@ -202,9 +216,8 @@ export class MouseEncoder {
     return new Uint8Array(ex.memory.buffer, this.buf, len).slice()
   }
 
-  // No `reset()`: `ghostty_mouse_encoder_reset` clears the `TRACK_LAST_CELL`
-  // state, which does nothing in this build. `MouseReporter` has its own
-  // `forgetLastCell`.
+  // No `reset()`: the encoder forgets its last cell by itself whenever the
+  // mode, format or size changes, which covers every case that needs it.
 
   dispose(): void {
     const { ex } = this
