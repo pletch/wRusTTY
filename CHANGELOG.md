@@ -13,6 +13,11 @@ release job publishes it as the GitHub release notes.
 
 ## [0.7.2] - 2026-11-25
 
+### Security
+
+- `url` is updated to 2.5.9 for RUSTSEC-2026-0592 and `cookie` to 0.18.3 for
+  RUSTSEC-2026-0594. Both come in through Tauri.
+
 ### Added
 
 - The multi-line paste prompt has a **Paste as one line** button, for a long
