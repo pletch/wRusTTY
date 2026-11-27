@@ -15,6 +15,7 @@ import {
   takeSoftModifiers,
   type SoftModifiers,
 } from '../softModifiers'
+import type { InputIntent } from '../terminalEngine'
 import type { KeyEncoder } from './KeyEncoder'
 
 /** The input's accessible name, which is how the key row finds the focused one. */
@@ -24,7 +25,7 @@ export class GhosttyInputHandler {
   private container: HTMLElement
   /** Focus lives here, not on the canvas. */
   readonly element: HTMLTextAreaElement
-  private onData: (data: Uint8Array) => void
+  private onData: (data: Uint8Array, intent: InputIntent) => void
   private encoder = new TextEncoder()
   /**
    * Null for the few milliseconds before the pane's WASM is up. Keys then
@@ -43,7 +44,7 @@ export class GhosttyInputHandler {
 
   constructor(
     container: HTMLElement,
-    onData: (data: Uint8Array) => void,
+    onData: (data: Uint8Array, intent: InputIntent) => void,
     keyEncoder: () => KeyEncoder | null = () => null
   ) {
     this.container = container
@@ -144,7 +145,7 @@ export class GhosttyInputHandler {
   }
 
   private send(text: string) {
-    if (text) this.onData(this.encoder.encode(text))
+    if (text) this.onData(this.encoder.encode(text), { kind: 'text' })
   }
 
   /** Sends `text`, unless it's a paste and the host took it. */
@@ -171,7 +172,7 @@ export class GhosttyInputHandler {
   private sendModified(char: string, mods: SoftModifiers, composing: boolean) {
     const key = /^[A-Z]$/.test(char) ? char.toLowerCase() : char
     const event = new KeyboardEvent('keydown', { key, ctrlKey: mods.ctrl, altKey: mods.alt })
-    this.onData(this.keyEncoder()?.encode(event) ?? legacyModifiedBytes(key, mods))
+    this.onData(this.keyEncoder()?.encode(event) ?? legacyModifiedBytes(key, mods), { kind: 'key', event })
     this.element.value = ''
     if (!composing) return
     // End the composition, or the keyboard keeps building on the character just
@@ -231,13 +232,14 @@ export class GhosttyInputHandler {
 
   private handleKeyDown = (e: KeyboardEvent) => {
     if (!this.isOurs(e)) return
-    const bytes = this.keyEncoder()?.encode(softModifierArmed() ? withSoftModifiers(e) : e)
+    const event = softModifierArmed() ? withSoftModifiers(e) : e
+    const bytes = this.keyEncoder()?.encode(event)
     // No sequence: a bare modifier, or a character the browser is about to
     // deliver as text. Leave the event alone so that text arrives.
     if (!bytes) return
     e.preventDefault()
     e.stopPropagation()
-    this.onData(bytes)
+    this.onData(bytes, { kind: 'key', event })
   }
 
   /**
@@ -248,7 +250,7 @@ export class GhosttyInputHandler {
   private handleKeyUp = (e: KeyboardEvent) => {
     if (!this.isOurs(e)) return
     const bytes = this.keyEncoder()?.encode(e)
-    if (bytes) this.onData(bytes)
+    if (bytes) this.onData(bytes, { kind: 'key', event: e })
   }
 }
 

@@ -8,9 +8,15 @@
  *
  * The group id is the tab id; a pane dragged to another tab re-registers. */
 
-/** Sends bytes to one pane's session. Errors are swallowed at the source, so
- * one failed pane doesn't stop the others. */
-export type Send = (data: Uint8Array) => void
+import type { InputIntent } from './terminalEngine'
+
+/** Sends input to one pane's session. Errors are swallowed at the source, so
+ * one failed pane doesn't stop the others.
+ *
+ * `data` is what the origin pane encoded; `intent`, when given, is the action
+ * behind it, so the target can encode it for its own program's modes (see
+ * `InputIntent`). */
+export type Send = (data: Uint8Array, intent?: InputIntent) => void
 
 interface Member {
   groupId: string
@@ -50,12 +56,17 @@ export function size(groupId: string): number {
  * `exceptPaneId` omits the origin, which `Terminal` writes to directly, so
  * broadcast only adds recipients. Members are snapshotted first, in case a
  * send disconnects its own pane. */
-export function send(groupId: string, data: Uint8Array, exceptPaneId?: string): number {
+export function send(
+  groupId: string,
+  data: Uint8Array,
+  exceptPaneId?: string,
+  intent?: InputIntent,
+): number {
   const targets: Send[] = []
   for (const [paneId, member] of members) {
     if (member.groupId === groupId && paneId !== exceptPaneId) targets.push(member.send)
   }
-  for (const target of targets) target(data)
+  for (const target of targets) target(data, intent)
   return targets.length
 }
 

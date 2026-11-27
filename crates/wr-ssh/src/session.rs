@@ -560,8 +560,8 @@ where
     await_handshake(config, connect_fut, verify_started, prompter, false).await
 }
 
-/// Waits for the handshake (bounded by `CONNECT_TIMEOUT`, except while a
-/// host-key prompt is up), then authenticates (bounded by `AUTH_TIMEOUT`).
+/// Waits for the handshake (bounded by `CONNECT_TIMEOUT`, paused while a
+/// host-key prompt is up and restarted once it is accepted), then authenticates (bounded by `AUTH_TIMEOUT`).
 async fn await_handshake<F>(
     config: &SshConfig,
     connect_fut: F,
@@ -574,18 +574,25 @@ where
 {
     tokio::pin!(connect_fut);
 
+    // The handler notifies twice: when a host-key prompt goes up (the clock
+    // stops) and when it is accepted (the clock restarts, in full, for the
+    // rest of the handshake). A rejection ends the handshake itself.
     let mut awaiting_verification = false;
+    let mut deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
     let mut handle = loop {
         tokio::select! {
             result = &mut connect_fut => break result?,
-            () = tokio::time::sleep(CONNECT_TIMEOUT), if !awaiting_verification => {
+            () = tokio::time::sleep_until(deadline), if !awaiting_verification => {
                 return Err(SshError::Timeout {
                     host: config.host.clone(),
                     port: config.port,
                 });
             }
-            () = verify_started.notified(), if !awaiting_verification => {
-                awaiting_verification = true;
+            () = verify_started.notified() => {
+                if awaiting_verification {
+                    deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+                }
+                awaiting_verification = !awaiting_verification;
             }
         }
     };

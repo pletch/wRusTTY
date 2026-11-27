@@ -22,6 +22,11 @@ pub struct ElevatedState {
     _unsupported: (),
 }
 
+impl ElevatedState {
+    /// Nothing to close: no session is ever opened here.
+    pub async fn disconnect_all(&self) {}
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn elevated_connect(

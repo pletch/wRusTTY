@@ -313,65 +313,6 @@ pub async fn sftp_canonicalize(
         .map_err(|e| e.to_string())
 }
 
-/// Extensions handed to the OS opener without asking. Everything else gets a
-/// confirmation, because on Windows remote `.hta`, `.lnk`, `.scr`, `.js`,
-/// `.wsf`, `.ps1` or `.bat` files execute when opened. `.js` and `.py` are
-/// deliberately absent: both have executing default handlers on Windows.
-const INERT_EXTENSIONS: &[&str] = &[
-    "txt",
-    "md",
-    "markdown",
-    "rst",
-    "log",
-    "text",
-    "conf",
-    "cfg",
-    "ini",
-    "yaml",
-    "yml",
-    "toml",
-    "json",
-    "xml",
-    "csv",
-    "tsv",
-    "properties",
-    "env",
-    "diff",
-    "patch",
-    "sql",
-    "sh",
-    "bash",
-    "zsh",
-    "fish",
-    "c",
-    "h",
-    "cc",
-    "cpp",
-    "hpp",
-    "rs",
-    "go",
-    "java",
-    "kt",
-    "rb",
-    "php",
-    "pl",
-    "lua",
-    "ts",
-    "tsx",
-    "jsx",
-    "css",
-    "scss",
-    "gitignore",
-    // These reach the extension branch; `Dockerfile` has no dot and is
-    // already inert.
-    "service",
-    "repo",
-    "list",
-];
-
-// `svg` is deliberately not inert: Windows opens it in a browser, and SVG
-// can carry `<script>`.
-
 /// Windows filename hazards that a `..`/separator check misses, checked on
 /// every platform:
 ///
@@ -392,22 +333,6 @@ fn is_unsafe_windows_filename(basename: &str) -> bool {
         || basename.ends_with(' ')
         || basename.ends_with('.')
         || RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
-}
-
-/// Whether `basename` can go straight to the OS opener. Only the last
-/// extension counts (`notes.txt.exe` is an exe); no extension is inert.
-fn is_inert_to_open(basename: &str) -> bool {
-    match basename.rsplit_once('.') {
-        None => true,
-        Some((stem, ext)) => {
-            // `.bashrc` is a stem, not an extension.
-            if stem.is_empty() {
-                return true;
-            }
-            let ext = ext.to_ascii_lowercase();
-            INERT_EXTENSIONS.contains(&ext.as_str())
-        }
-    }
 }
 
 /// The placeholder a configured editor command may put the file path in.
@@ -473,31 +398,6 @@ fn parse_editor_command(
         args.push(path);
     }
     Ok((program, args))
-}
-
-/// Asks before opening something whose handler might execute it. A dismissed
-/// or failed dialog means no.
-async fn confirm_risky_open(app: &AppHandle, basename: &str) -> bool {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .message(format!(
-            "\"{basename}\" is a type of file that can run code when it is opened, \
-             and it came from the remote host.\n\n\
-             Only open it if you trust that host. Open anyway?"
-        ))
-        .title("Open remote file?")
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Open".into(),
-            "Cancel".into(),
-        ))
-        .show(move |confirmed| {
-            let _ = tx.send(confirmed);
-        });
-
-    rx.await.unwrap_or(false)
 }
 
 /// Who the session is connected as, so the panel can predict a refused write
@@ -928,9 +828,17 @@ async fn open_in_editor(
         .unwrap_or_default();
 
     let Some(command) = editor else {
-        // The OS opener dispatches by extension (see `INERT_EXTENSIONS`). Asked on
+        // The OS opener dispatches by extension (see `open_policy`). Asked on
         // every open.
-        if !is_inert_to_open(&basename) && !confirm_risky_open(app, &basename).await {
+        if !crate::open_policy::is_inert_to_open(&basename)
+            && !crate::open_policy::confirm_open(
+                app,
+                "Open remote file?",
+                &basename,
+                "it came from the remote host",
+            )
+            .await
+        {
             return Ok(());
         }
         return app
@@ -2958,10 +2866,7 @@ pub(crate) async fn resume_session_transfers(app: &AppHandle, session_id: &str) 
 }
 
 /// Forgets a session's waiting transfers when its pane goes away.
-pub(crate) async fn forget_interrupted_transfers(
-    sftp_state: &State<'_, SftpState>,
-    session_id: &str,
-) {
+pub(crate) async fn forget_interrupted_transfers(sftp_state: &SftpState, session_id: &str) {
     sftp_state
         .interrupted
         .lock()
@@ -2972,9 +2877,9 @@ pub(crate) async fn forget_interrupted_transfers(
 #[cfg(test)]
 mod tests {
     use super::{
-        absorb_listing, is_already_there, is_inert_to_open, is_unsafe_windows_filename,
-        is_usable_remote_name, local_target, parse_editor_command, part_path_for, rename_target,
-        ChunkReader, SftpEvent, TreePlan,
+        absorb_listing, is_already_there, is_unsafe_windows_filename, is_usable_remote_name,
+        local_target, parse_editor_command, part_path_for, rename_target, ChunkReader, SftpEvent,
+        TreePlan,
     };
     use std::path::{Path, PathBuf};
     use tokio::sync::mpsc;
@@ -3070,53 +2975,6 @@ mod tests {
                 "{name} should be allowed"
             );
         }
-    }
-
-    #[test]
-    fn text_and_source_files_open_directly() {
-        for name in [
-            "notes.txt",
-            "nginx.conf",
-            "Config.YAML",
-            "main.rs",
-            "deploy.sh",
-            "README",
-            ".bashrc",
-            "app.tsx",
-        ] {
-            assert!(is_inert_to_open(name), "{name} should open without asking");
-        }
-    }
-
-    /// `.js` and `.py` are editable text but execute on double-click on Windows.
-    #[test]
-    fn executable_handlers_are_confirmed_first() {
-        for name in [
-            "payload.hta",
-            "shortcut.lnk",
-            "setup.scr",
-            "run.bat",
-            "run.cmd",
-            "task.ps1",
-            "dropper.js",
-            "script.py",
-            "installer.msi",
-            "tool.exe",
-            // Edge is the Windows default handler, and SVG can carry <script>.
-            "logo.svg",
-        ] {
-            assert!(
-                !is_inert_to_open(name),
-                "{name} should require confirmation"
-            );
-        }
-    }
-
-    /// The OS dispatches on the last extension.
-    #[test]
-    fn double_extension_is_judged_by_the_last_one() {
-        assert!(!is_inert_to_open("invoice.txt.exe"));
-        assert!(is_inert_to_open("archive.tar.md"));
     }
 
     /// A dropped name must not climb out of the target directory.

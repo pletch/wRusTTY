@@ -36,6 +36,7 @@ import {
   Search,
 } from 'lucide-react'
 import { toast } from './lib/toast'
+import { remoteNotifyLimiter } from './lib/notifyLimit'
 import type { FilesReveal } from './components/FilesPanel'
 import * as sftp from './lib/sftp'
 import { startDirFor } from './lib/fileActions'
@@ -1622,6 +1623,9 @@ function App() {
                     if (!(leaf.id === focusedPaneId && document.hasFocus())) {
                       dispatchPaneRuntime({ type: 'attentionRaised', paneId: leaf.id })
                     }
+                    // The marker above is idempotent; toasts and native
+                    // notifications are not, so a flood from the host is capped.
+                    if (!remoteNotifyLimiter.allow(leaf.id)) return
                     // Shown even for the watched pane: it was asked for explicitly.
                     if (document.hasFocus()) {
                       toast.info(`${from} — ${notification.body}`)

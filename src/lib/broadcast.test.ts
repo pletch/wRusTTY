@@ -39,6 +39,16 @@ describe('broadcast', () => {
     expect(other.received).toEqual(['uptime\r'])
   })
 
+  /** The target re-encodes from the intent (see `InputIntent`), so it has to
+   * arrive alongside the origin's bytes. */
+  it('hands each target the intent behind the bytes', () => {
+    const got: unknown[] = []
+    broadcast.join('pane-b', 'tab-1', (_data, intent) => got.push(intent))
+    const intent = { kind: 'paste', text: 'ls' } as const
+    broadcast.send('tab-1', bytes('ls'), 'pane-a', intent)
+    expect(got).toEqual([intent])
+  })
+
   /** A pane on its own broadcasts to nobody — the fan-out is additive, so the
    * single-pane case has to come out as zero extra sends rather than one. */
   it('sends to nobody when the origin is the only member', () => {

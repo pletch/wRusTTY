@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
 import { Copy, Download, Trash2 } from 'lucide-react'
-import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import type { TerminalSettings } from '../lib/settings'
 import { fileStem, parseThemeFile } from '../lib/themeImport'
@@ -65,21 +64,12 @@ export function ThemeEditor({
    * (see `parseThemeFile`).
    */
   async function importFile() {
-    const picked = await open({
-      multiple: false,
-      filters: [
-        // `json` covers a VS Code theme and a settings.json alike; `txt`
-        // because a scheme downloaded from a browser often arrives as one,
-        // and the parser sniffs the content anyway.
-        { name: 'Color schemes', extensions: ['itermcolors', 'json', 'jsonc', 'txt'] },
-        { name: 'All files', extensions: ['*'] },
-      ],
-    })
-    if (!picked || Array.isArray(picked)) return
-
     try {
-      const text = await invoke<string>('read_theme_file', { path: picked })
-      const { theme, missing, format } = parseThemeFile(text, fileStem(picked))
+      // The backend opens the picker and reads what was picked, so no path
+      // ever travels from this page to a file read.
+      const picked = await invoke<{ name: string; text: string } | null>('pick_theme_file')
+      if (!picked) return
+      const { theme, missing, format } = parseThemeFile(picked.text, fileStem(picked.name))
       const named = uniqueThemeName(theme.name, new Set([...PRESET_THEMES, ...settings.customThemes].map((t) => t.name)))
       onChange({
         ...settings,

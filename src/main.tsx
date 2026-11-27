@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { ConfirmProvider } from './components/ConfirmProvider'
+import { installReloadBlock } from './lib/blockReload'
 import { registerBundledFonts } from './lib/bundledFonts'
 import { isAndroid, relaxTextEntry } from './lib/platform'
 
@@ -11,6 +12,10 @@ import { isAndroid, relaxTextEntry } from './lib/platform'
 registerBundledFonts()
 
 if (isAndroid) relaxTextEntry()
+
+// Release builds only: during development a reload is how the page is
+// restarted on purpose.
+if (!import.meta.env.DEV) installReloadBlock()
 
 // The measurement instruments, behind a build flag. They're on screen rather
 // than console-only because attaching DevTools puts V8's WebAssembly in a

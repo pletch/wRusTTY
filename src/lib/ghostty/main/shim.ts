@@ -722,13 +722,18 @@ class MainShim {
       ghostty_terminal_has_response: (term) => (this.drain(term).length > 0 ? 1 : 0),
       ghostty_terminal_read_response: (term, out, len) => {
         const queue = this.drain(term)
-        const reply = queue.shift()
+        // A reply that doesn't fit is dropped whole, never cut short: half an
+        // escape sequence would reach the host as garbage it might act on.
+        // Replies (CPR, DA, DSR, XTVERSION) are far shorter than the buffer
+        // `readResponse` provides, so this is a guard, not a path.
+        let reply = queue.shift()
+        while (reply && reply.length > len) {
+          console.warn(`dropped a ${reply.length}-byte terminal reply that did not fit ${len} bytes`)
+          reply = queue.shift()
+        }
         if (!reply) return 0
-        // Truncated rather than split; replies (CPR, DA, DSR, XTVERSION) are far
-        // shorter than the 256 bytes `readResponse` provides.
-        const n = Math.min(reply.length, len)
-        new Uint8Array(ex.memory.buffer, out, n).set(reply.subarray(0, n))
-        return n
+        new Uint8Array(ex.memory.buffer, out, reply.length).set(reply)
+        return reply.length
       },
 
       ghostty_wasm_alloc_u8_array: (len) => ex.ghostty_wasm_alloc(len),

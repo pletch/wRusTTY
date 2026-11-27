@@ -211,6 +211,8 @@ impl HostKeyVerifier for TauriHostKeyVerifier {
             })
             .is_err()
         {
+            // Nobody will ever answer it, so nothing else would remove it.
+            state.pending_host_key.lock().await.remove(&request_id);
             return false;
         }
 
@@ -701,6 +703,21 @@ pub async fn ssh_disconnect(
     state: State<'_, SshState>,
     sftp_state: State<'_, crate::sftp::SftpState>,
 ) -> Result<(), String> {
+    disconnect_session(&state, &sftp_state, &session_id).await
+}
+
+/// Every live SSH session id; see [`SessionRegistry::ids`].
+pub async fn session_ids(state: &SshState) -> Vec<String> {
+    state.sessions.ids().await
+}
+
+/// What `ssh_disconnect` does, for callers outside the IPC layer.
+pub async fn disconnect_session(
+    state: &SshState,
+    sftp_state: &crate::sftp::SftpState,
+    session_id: &str,
+) -> Result<(), String> {
+    let session_id = session_id.to_owned();
     // First, answer any prompt this session is parked on (closing a pane is
     // how users decline), so the handshake fails and unwinds.
     for tx in take_pending(&state.pending_host_key, &session_id).await {
@@ -728,9 +745,9 @@ pub async fn ssh_disconnect(
         let _ = handle.stop().await;
     }
 
-    crate::sftp::stop_watching_session(&sftp_state, &session_id).await;
+    crate::sftp::stop_watching_session(sftp_state, &session_id).await;
     // Nothing else would remove them.
-    crate::sftp::forget_interrupted_transfers(&sftp_state, &session_id).await;
+    crate::sftp::forget_interrupted_transfers(sftp_state, &session_id).await;
 
     Ok(())
 }

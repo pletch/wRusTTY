@@ -468,10 +468,17 @@ export function Terminal({
   const sourceRef = useRef(source)
   sourceRef.current = source
   useEffect(() => {
-    return broadcast.join(paneId, broadcastGroupId, (data) => {
+    return broadcast.join(paneId, broadcastGroupId, (data, intent) => {
       const id = sessionIdRef.current
       // Panes without a live session are skipped.
-      if (id) conn.write(sourceRef.current, id, data).catch(() => {})
+      if (!id) return
+      // Encoded for this pane's program, not the origin's: the origin may be
+      // running something that turned on the Kitty keyboard protocol or
+      // bracketed paste, and this pane's program may not have.
+      const own = intent ? termRef.current?.encodeIntent?.(intent) : null
+      const bytes = own ?? data
+      if (bytes.length === 0) return
+      conn.write(sourceRef.current, id, bytes).catch(() => {})
     })
   }, [paneId, broadcastGroupId])
 
@@ -1695,10 +1702,10 @@ export function Terminal({
     // Broadcast fans out from `onInput`, not `onData`: `onData` also carries
     // mouse reports (this pane's geometry), focus reports and replies to host
     // queries, none of which belong to other panes. Broadcast adds to this pane's
-    // own write (see `broadcast.send`'s `exceptPaneId`). Backspace translation
-    // uses this pane's setting for every target, which is wrong in principle for
-    // a group mixing ^H and ^? hosts.
-    const inputListener = term.onInput((data) => {
+    // own write (see `broadcast.send`'s `exceptPaneId`). The intent travels
+    // with the bytes so each target encodes keys and pastes against its own
+    // modes and Backspace setting (see `encodeIntent`).
+    const inputListener = term.onInput((data, intent) => {
       // Autocomplete's view of typing. Enter and `^C` end the line.
       if (!lineEditor) {
         const submitted = data.some((b) => b === 0x0d || b === 0x0a)
@@ -1722,7 +1729,7 @@ export function Terminal({
       // A line-edited session sends whole lines; keystrokes aren't fanned out.
       if (lineEditor) return
       if (!broadcastingRef.current) return
-      broadcast.send(broadcastGroupRef.current, data, paneId)
+      broadcast.send(broadcastGroupRef.current, data, paneId, intent)
     })
 
     const selectionListener = term.onSelectionChange(() => {

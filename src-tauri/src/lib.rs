@@ -34,6 +34,7 @@ mod local_shells;
 mod logging;
 #[cfg(windows)]
 mod network_watch;
+mod open_policy;
 mod profiles;
 #[cfg(desktop)]
 mod putty_import;
@@ -142,7 +143,7 @@ pub fn run() {
             ssh::ssh_retry_forward,
             wake::wake_host,
             fonts::list_fonts,
-            theme_import::read_theme_file,
+            theme_import::pick_theme_file,
             sftp::sftp_list_dir,
             sftp::sftp_canonicalize,
             #[cfg(desktop)]
@@ -289,6 +290,12 @@ pub fn run() {
             #[cfg(desktop)]
             attention::flash_window,
         ])
+        .on_page_load(|webview, payload| {
+            #[cfg(desktop)]
+            on_page_load(webview, payload);
+            #[cfg(not(desktop))]
+            let _ = (webview, payload);
+        })
         .setup(|app| {
             migrate_from_previous_identifier(app.handle());
             vault::migrate_os_unlock_key();
@@ -323,6 +330,49 @@ pub fn run() {
             #[cfg(target_os = "android")]
             session_attach::on_run_event(_app, _event);
         });
+}
+
+/// A page load after the first is a reload (F5, a dev server's full reload):
+/// the UI starts again empty, so every session it had open is closed here,
+/// rather than left running with nothing to show it or close it. That
+/// includes port forwards, and a SOCKS listener the user approved for a pane
+/// that no longer exists.
+///
+/// Desktop only: on Android a recreated activity reloads the page on purpose,
+/// and `session_attach` hands the kept sessions to the new page.
+#[cfg(desktop)]
+fn on_page_load<R: tauri::Runtime>(
+    webview: &tauri::Webview<R>,
+    payload: &tauri::webview::PageLoadPayload<'_>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tauri::webview::PageLoadEvent;
+    use tauri::Manager;
+
+    static LOADED_ONCE: AtomicBool = AtomicBool::new(false);
+    if webview.label() != "main" || payload.event() != PageLoadEvent::Started {
+        return;
+    }
+    if !LOADED_ONCE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = webview.app_handle().clone();
+    tauri::async_runtime::spawn(async move {
+        log::info!("the page reloaded; closing the sessions it left behind");
+        let ssh = app.state::<ssh::SshState>();
+        let sftp = app.state::<sftp::SftpState>();
+        for id in ssh::session_ids(&ssh).await {
+            if let Err(e) = ssh::disconnect_session(&ssh, &sftp, &id).await {
+                log::warn!("closing {id}: {e}");
+            }
+        }
+        app.state::<telnet::TelnetState>().disconnect_all().await;
+        app.state::<local::LocalState>().disconnect_all().await;
+        app.state::<elevation::ElevatedState>()
+            .disconnect_all()
+            .await;
+        app.state::<serial::SerialState>().disconnect_all().await;
+    });
 }
 
 /// One-time migration for the `sh.wrshell.app` to `sh.wrustty.app` rename:

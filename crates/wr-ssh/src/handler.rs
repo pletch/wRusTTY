@@ -46,7 +46,8 @@ pub(crate) struct ClientHandler {
     /// rejecting an unknown host key, so the caller's connect-phase timeout
     /// (meant to bound pure network stalls) can stop counting down — a
     /// person reading a fingerprint routinely takes longer than any
-    /// reasonable network timeout.
+    /// reasonable network timeout. Fired again once the key is accepted, so
+    /// the timeout resumes for the rest of the handshake.
     verify_started: Arc<tokio::sync::Notify>,
 }
 
@@ -115,6 +116,9 @@ impl russh::client::Handler for ClientHandler {
                 port: self.port,
             });
         }
+        // The person has answered; a server that stalls from here on is a
+        // network stall again.
+        self.verify_started.notify_one();
 
         let mut store = self.known_hosts.lock().await;
         store.learn(&self.host, self.port, server_public_key)?;
@@ -131,12 +135,17 @@ impl russh::client::Handler for ClientHandler {
         reply: russh::client::ChannelOpenHandle,
         _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
-        let target = self
-            .remote_forwards
-            .lock()
-            .await
-            .get(&(connected_address.to_string(), connected_port as u16))
-            .cloned();
+        // A port past 65535 can't be one we asked for; truncating it would
+        // alias it onto one that is.
+        let target = match u16::try_from(connected_port) {
+            Ok(port) => self
+                .remote_forwards
+                .lock()
+                .await
+                .get(&(connected_address.to_string(), port))
+                .cloned(),
+            Err(_) => None,
+        };
 
         let Some((target_host, target_port)) = target else {
             reply

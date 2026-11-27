@@ -1,6 +1,7 @@
 import {
   SCROLLBAR_GUTTER_PX,
   type IDisposable,
+  type InputIntent,
   type SearchOptions,
   type SearchResult,
   type TerminalEngine,
@@ -194,7 +195,7 @@ export class GhosttyEngine implements TerminalEngine {
 
   private onDataHandlers = new Set<(data: Uint8Array) => void>()
   /** Fired only for key input and paste, i.e. data a human typed. */
-  private onInputHandlers = new Set<(data: Uint8Array) => void>()
+  private onInputHandlers = new Set<(data: Uint8Array, intent?: InputIntent) => void>()
   private onResizeHandlers = new Set<(size: { cols: number; rows: number }) => void>()
   private inputHandler: GhosttyInputHandler | null = null
   /** Ghostty's key encoder; holds a pointer to the terminal, so it lives and dies
@@ -1402,7 +1403,7 @@ export class GhosttyEngine implements TerminalEngine {
     window.addEventListener('keydown', this.onHoverModifierKey)
     window.addEventListener('keyup', this.onHoverModifierKey)
 
-    this.inputHandler = new GhosttyInputHandler(this.container, (data) => {
+    this.inputHandler = new GhosttyInputHandler(this.container, (data, intent) => {
       // Typing while scrolled up should show the prompt.
       this.scrollToBottom()
       // Keystrokes only, not the whole output channel: in the legacy mouse
@@ -1412,7 +1413,7 @@ export class GhosttyEngine implements TerminalEngine {
         handler(out)
       }
       for (const handler of this.onInputHandlers) {
-        handler(out)
+        handler(out, intent)
       }
     }, () => this.keyEncoder)
     // A keyboard's clipboard panel pastes by typing into the input box. With a
@@ -1741,7 +1742,28 @@ export class GhosttyEngine implements TerminalEngine {
       handler(payload)
     }
     for (const handler of this.onInputHandlers) {
-      handler(payload)
+      handler(payload, { kind: 'paste', text })
+    }
+  }
+
+  encodeIntent(intent: InputIntent): Uint8Array | null {
+    if (!this.wasm || !this.termPtr) return null
+    switch (intent.kind) {
+      case 'key': {
+        if (!this.keyEncoder) return null
+        // Null from the encoder is ordinary here (a release this program
+        // didn't ask for), and means send nothing rather than the source's
+        // bytes.
+        const bytes = this.keyEncoder.encode(intent.event) ?? new Uint8Array(0)
+        return translateBackspace(bytes, this.backspaceSendsCtrlH)
+      }
+      case 'paste': {
+        const bracketed =
+          this.wasm.exports.ghostty_terminal_get_mode(this.termPtr, MODE_BRACKETED_PASTE, 0) !== 0
+        return encodePaste(this.wasm, intent.text, bracketed)
+      }
+      case 'text':
+        return null
     }
   }
 
@@ -1750,7 +1772,7 @@ export class GhosttyEngine implements TerminalEngine {
     return { dispose: () => this.onDataHandlers.delete(handler) }
   }
 
-  onInput(handler: (data: Uint8Array) => void): IDisposable {
+  onInput(handler: (data: Uint8Array, intent?: InputIntent) => void): IDisposable {
     this.onInputHandlers.add(handler)
     return { dispose: () => this.onInputHandlers.delete(handler) }
   }

@@ -27,6 +27,13 @@ pub struct SerialState {
     sessions: SessionRegistry<SerialConnector>,
 }
 
+impl SerialState {
+    /// Closes every session; see `lib.rs`'s page-load hook.
+    pub async fn disconnect_all(&self) {
+        self.sessions.disconnect_all().await
+    }
+}
+
 impl Default for SerialState {
     fn default() -> Self {
         Self {

@@ -11,9 +11,11 @@
 //!   device forms are refused before touching the filesystem: even looking up
 //!   a UNC path sends that host an NTLM exchange (as `isOpenableUrl` guards
 //!   for URLs). A network working directory is refused too.
-//! - **Nothing runs.** Anything Windows deems dangerous (`AssocIsDangerous`,
-//!   `PATHEXT`, and shell-handled types) is selected in Explorer instead of
-//!   opened.
+//! - **Nothing runs unasked.** A type known to run something
+//!   (`AssocIsDangerous`, `PATHEXT`, and the list in `open_policy`) is
+//!   selected in Explorer instead of opened. A type known to be inert opens
+//!   directly, and anything else is confirmed first: the same allowlist the
+//!   files panel uses for remote files.
 //! - **It has to exist**, so `and/or` in prose is just "not found".
 //!
 //! Windows only; elsewhere `open_local_path` refuses up front, hence the
@@ -159,101 +161,6 @@ pub(crate) fn resolve(raw: &str, cwds: &[String], home: Option<&Path>) -> Option
     None
 }
 
-/// Types that run something when opened, beyond what `AssocIsDangerous` and
-/// `PATHEXT` already cover on a given machine. Kept deliberately broad: the
-/// cost of a false entry is one extra click in Explorer.
-const RUNS_SOMETHING: &[&str] = &[
-    "exe",
-    "com",
-    "bat",
-    "cmd",
-    "ps1",
-    "psm1",
-    "psd1",
-    "ps1xml",
-    "vbs",
-    "vbe",
-    "js",
-    "jse",
-    "wsf",
-    "wsh",
-    "msc",
-    "msi",
-    "msp",
-    "mst",
-    "scr",
-    "pif",
-    "lnk",
-    "url",
-    "website",
-    "scf",
-    "hta",
-    "cpl",
-    "reg",
-    "inf",
-    "jar",
-    "appref-ms",
-    "application",
-    "gadget",
-    "library-ms",
-    "search-ms",
-    "searchconnector-ms",
-    "settingcontent-ms",
-    "diagcab",
-    "xll",
-    "chm",
-    "appx",
-    "appxbundle",
-    "msix",
-    "msixbundle",
-    "sys",
-    "dll",
-    "ocx",
-    "theme",
-    "themepack",
-    "desktopthemepack",
-];
-
-fn extension_of(path: &Path) -> Option<String> {
-    path.extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-}
-
-/// Whether opening this file by association would run it.
-fn runs_when_opened(path: &Path) -> bool {
-    let Some(ext) = extension_of(path) else {
-        return false;
-    };
-    if RUNS_SOMETHING.contains(&ext.as_str()) {
-        return true;
-    }
-    if let Ok(pathext) = std::env::var("PATHEXT") {
-        if pathext
-            .split(';')
-            .any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext))
-        {
-            return true;
-        }
-    }
-    assoc_is_dangerous(&ext)
-}
-
-#[cfg(windows)]
-fn assoc_is_dangerous(ext: &str) -> bool {
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::Shell::AssocIsDangerous;
-    let wide: Vec<u16> = format!(".{ext}")
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe { AssocIsDangerous(PCWSTR(wide.as_ptr())) }.as_bool()
-}
-
-#[cfg(not(windows))]
-fn assoc_is_dangerous(_ext: &str) -> bool {
-    false
-}
-
 /// Shows a file selected in an Explorer window. `explorer.exe` always exits
 /// non-zero, so its status says nothing and is not read.
 #[cfg(windows)]
@@ -349,31 +256,55 @@ pub async fn open_local_path(
             .get_webview_window("main")
             .and_then(|w| w.hwnd().ok())
             .map(|h| h.0 as isize);
-        tokio::task::spawn_blocking(move || {
+        let found = tokio::task::spawn_blocking(move || {
             let home = dirs::home_dir();
-            let Some(found) = resolve(&path, &cwds, home.as_deref()) else {
-                return Ok(OpenOutcome::NotFound);
-            };
-            let shown = found.to_string_lossy().into_owned();
+            let found = resolve(&path, &cwds, home.as_deref())?;
             let is_dir = std::fs::metadata(&found)
                 .map(|m| m.is_dir())
                 .unwrap_or(false);
-            if is_dir {
-                shell_open(owner, &found, true)?;
-                return Ok(OpenOutcome::Folder { path: shown });
-            }
-            if runs_when_opened(&found) {
-                reveal(&found)?;
-                return Ok(OpenOutcome::Revealed { path: shown });
-            }
-            Ok(if shell_open(owner, &found, false)? {
-                OpenOutcome::Opened { path: shown }
-            } else {
-                OpenOutcome::Cancelled
-            })
+            Some((found, is_dir))
         })
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        let Some((found, is_dir)) = found else {
+            return Ok(OpenOutcome::NotFound);
+        };
+        let shown = found.to_string_lossy().into_owned();
+        let open = |found: PathBuf, is_dir: bool| async move {
+            tokio::task::spawn_blocking(move || shell_open(owner, &found, is_dir))
+                .await
+                .map_err(|e| e.to_string())?
+        };
+        if is_dir {
+            open(found, true).await?;
+            return Ok(OpenOutcome::Folder { path: shown });
+        }
+        let basename = found
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if crate::open_policy::runs_when_opened(&basename) {
+            reveal(&found)?;
+            return Ok(OpenOutcome::Revealed { path: shown });
+        }
+        // Neither known to run nor known to be inert: the same question the
+        // files panel asks for a remote file.
+        if !crate::open_policy::is_inert_to_open(&basename)
+            && !crate::open_policy::confirm_open(
+                &app,
+                "Open this file?",
+                &basename,
+                "its name was printed in a terminal pane by whatever ran there",
+            )
+            .await
+        {
+            return Ok(OpenOutcome::Cancelled);
+        }
+        Ok(if open(found, false).await? {
+            OpenOutcome::Opened { path: shown }
+        } else {
+            OpenOutcome::Cancelled
+        })
     }
     #[cfg(not(windows))]
     {
@@ -461,15 +392,5 @@ mod tests {
         let cwds = vec![d.path().to_string_lossy().into_owned()];
         assert_eq!(resolve("con", &cwds, None), None);
         assert_eq!(resolve(r"sub\nul.txt", &cwds, None), None);
-    }
-
-    #[test]
-    fn treats_programs_and_scripts_as_running() {
-        for f in ["a.exe", "b.BAT", "c.js", "d.lnk", "e.ps1", "f.url", "g.hta"] {
-            assert!(runs_when_opened(Path::new(f)), "{f}");
-        }
-        for f in ["a.txt", "b.rs", "c.md", "Makefile"] {
-            assert!(!runs_when_opened(Path::new(f)), "{f}");
-        }
     }
 }

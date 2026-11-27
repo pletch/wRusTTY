@@ -14,6 +14,22 @@ export interface IDisposable {
 }
 
 /**
+ * What the user did to produce a chunk of input, so another pane can encode
+ * the same action for its own program (broadcast). The bytes depend on the
+ * modes of the terminal that encoded them: the Kitty keyboard protocol turns
+ * Enter into `CSI 13 u`, and bracketed paste wraps a paste in markers. A pane
+ * whose program never asked for either has to encode the action itself.
+ *
+ * - `key`: a key event the engine's encoder turned into bytes.
+ * - `paste`: pasted text, before encoding.
+ * - `text`: typed or composed text, which is plain UTF-8 in every mode.
+ */
+export type InputIntent =
+  | { kind: 'key'; event: KeyboardEvent }
+  | { kind: 'paste'; text: string }
+  | { kind: 'text' }
+
+/**
  * Width of the custom scrollbar's controls (`.term-scrollbar-inner` in
  * index.css). Shared because `Terminal.tsx` sizes the gutter overlay and an
  * engine fitting its grid must reserve the gutter (see `fitGrid`).
@@ -93,7 +109,15 @@ export interface TerminalEngine {
    * User-originated input only (typing and paste), a subset of `onData`. Use
    * this for anything that redirects input elsewhere.
    */
-  onInput(cb: (data: Uint8Array) => void): IDisposable
+  onInput(cb: (data: Uint8Array, intent?: InputIntent) => void): IDisposable
+  /**
+   * The bytes this pane would send for input another pane produced, encoded
+   * against this pane's own modes and Backspace setting. Null when the engine
+   * can't encode it (no core yet, or plain text), and the caller then sends
+   * the original bytes. An empty array means "nothing to send", such as a key
+   * release this pane's program didn't ask for. Optional.
+   */
+  encodeIntent?(intent: InputIntent): Uint8Array | null
   onWriteParsed(cb: () => void): IDisposable
   onScroll(cb: (newPos: number) => void): IDisposable
   onBufferChange(cb: (isAlternate: boolean) => void): IDisposable

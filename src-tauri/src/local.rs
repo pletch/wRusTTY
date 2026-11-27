@@ -27,6 +27,13 @@ pub struct LocalState {
     sessions: SessionRegistry<LocalConnector>,
 }
 
+impl LocalState {
+    /// Closes every session; see `lib.rs`'s page-load hook.
+    pub async fn disconnect_all(&self) {
+        self.sessions.disconnect_all().await
+    }
+}
+
 impl Default for LocalState {
     fn default() -> Self {
         Self {

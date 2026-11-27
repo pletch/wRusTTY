@@ -30,6 +30,13 @@ pub struct TelnetState {
     sessions: SessionRegistry<TelnetConnector>,
 }
 
+impl TelnetState {
+    /// Closes every session; see `lib.rs`'s page-load hook.
+    pub async fn disconnect_all(&self) {
+        self.sessions.disconnect_all().await
+    }
+}
+
 impl Default for TelnetState {
     fn default() -> Self {
         Self {

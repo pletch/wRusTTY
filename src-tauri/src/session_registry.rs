@@ -426,6 +426,21 @@ impl<C: Connector> SessionRegistry<C> {
         )
     }
 
+    /// Every live session id, for tearing them all down at once (a webview
+    /// reload; see `lib.rs`).
+    pub async fn ids(&self) -> Vec<String> {
+        self.sessions.lock().await.keys().cloned().collect()
+    }
+
+    /// Disconnects every session, as `disconnect` would one at a time.
+    pub async fn disconnect_all(&self) {
+        for id in self.ids().await {
+            if let Err(e) = self.disconnect(&id).await {
+                log::warn!("closing {id}: {e}");
+            }
+        }
+    }
+
     /// The slot for `session_id`. Returns the slot rather than the session since a
     /// caller may arrive mid-handshake; `Slot::ready` checks for a session.
     pub async fn lookup(&self, session_id: &str) -> Result<SharedSlot<C::Session>, String> {

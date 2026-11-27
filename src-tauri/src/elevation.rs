@@ -182,6 +182,13 @@ pub struct ElevatedState {
     sessions: SessionRegistry<ElevatedConnector>,
 }
 
+impl ElevatedState {
+    /// Closes every session; see `lib.rs`'s page-load hook.
+    pub async fn disconnect_all(&self) {
+        self.sessions.disconnect_all().await
+    }
+}
+
 impl Default for ElevatedState {
     fn default() -> Self {
         Self {
@@ -343,6 +350,9 @@ fn elevation_refusal(shell_id: &str) -> Option<String> {
     if !ELEVATABLE_SHELLS.contains(&shell_id) {
         return Some(format!("{shell_id} cannot be run as administrator"));
     }
+    if let Some(why) = install_refusal() {
+        return Some(why);
+    }
     if resolve_elevatable(shell_id).is_some() {
         return None;
     }
@@ -357,6 +367,49 @@ fn elevation_refusal(shell_id: &str) -> Option<String> {
         ),
         None => format!("{shell_id} is not installed"),
     })
+}
+
+/// Why this copy of wRusTTY must not be run as administrator, if it mustn't.
+///
+/// UAC elevates `current_exe()`, so whoever can write to its folder chooses
+/// what the approval runs: they can swap the exe, or plant a DLL beside it
+/// that it loads. A per-user install (`%LOCALAPPDATA%`) is writable by
+/// anything running as the user, and an unsigned build's prompt looks the
+/// same whichever binary it names. That is the same rule `ElevatedMachine`
+/// keeps for the shell: nothing the user can change without elevation picks
+/// what runs elevated.
+///
+/// Debug builds are exempt: they always run from a writable `target` folder,
+/// and the elevated path still has to be testable there.
+fn install_refusal() -> Option<String> {
+    if cfg!(debug_assertions) {
+        return None;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => return Some(format!("could not find our own executable: {e}")),
+    };
+    let dir = exe.parent()?;
+    folder_is_writable(dir).then(|| {
+        format!(
+            "wRusTTY is installed in a folder your account can change ({}), so running it \
+             as administrator would let any program running as you take over the elevated \
+             tab. Reinstall wRusTTY for all users (into Program Files) to open \
+             administrator tabs.",
+            dir.display()
+        )
+    })
+}
+
+/// Whether the current user can create a file in `dir`. Tried rather than
+/// worked out from the ACL: the attempt is what an attacker would make, and
+/// it answers for inherited entries, group membership and integrity levels
+/// all at once. The probe file is deleted when closed.
+fn folder_is_writable(dir: &std::path::Path) -> bool {
+    tempfile::Builder::new()
+        .prefix(".wrustty-elevation-check")
+        .tempfile_in(dir)
+        .is_ok()
 }
 
 /// Host mode: serve one elevated shell to one tab, then exit.
@@ -555,6 +608,14 @@ mod tests {
         assert!(elevation_refusal("wsl:Debian")
             .unwrap()
             .contains("cannot be run as administrator"));
+    }
+
+    #[test]
+    fn a_folder_the_user_can_write_to_is_detected_and_left_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(folder_is_writable(dir.path()));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(!folder_is_writable(&dir.path().join("missing")));
     }
 
     fn request(shell_id: &str, pipe_name: &str) -> LaunchRequest {

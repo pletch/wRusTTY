@@ -398,7 +398,9 @@ export function writeString(wasm: GhosttyWasm, termPtr: number, str: string): vo
 /** Drain any DSR-style replies the terminal owes the host. */
 export function readResponse(wasm: GhosttyWasm, termPtr: number): Uint8Array | null {
   if (!wasm.exports.ghostty_terminal_has_response(termPtr)) return null
-  const cap = 256
+  // Far above any real reply; the `main` shim drops (never truncates) one
+  // that wouldn't fit.
+  const cap = 4096
   const ptr = allocBufferOrThrow(wasm, cap)
   const n = wasm.exports.ghostty_terminal_read_response(termPtr, ptr, cap)
   const out = n > 0 ? new Uint8Array(wasm.exports.memory.buffer, ptr, n).slice() : null
