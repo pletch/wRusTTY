@@ -11,6 +11,50 @@ release job publishes it as the GitHub release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Administrator tabs are refused when wRusTTY runs from a folder your account
+  can change, such as the per-user folder earlier installers used. UAC runs
+  wRusTTY's own executable, so any program running as you could have replaced
+  it, or put a DLL beside it, and taken over the next administrator tab you
+  approved. The Windows installer now installs for all users, into Program
+  Files.
+- Ctrl+clicking a file path in a local pane asks before opening any type that
+  isn't known to be harmless. Programs, scripts and disk images (now including
+  `.py`, `.pyw`, `.iso`, `.vhd`, `.vhdx`, `.rdp` and `.jnlp`) are shown in
+  Explorer instead of opened, as before.
+- Opening a remote file from the files panel now asks first for `.sh`, `.bash`,
+  `.pl`, `.rb` and `.php`, which an installed interpreter may run rather than
+  open. Git for Windows sets this up for `.sh` by default.
+- A remote program can show at most three notifications (OSC 9 and OSC 777)
+  every 10 seconds per pane, so it can't bury the window in them.
+- Importing a color scheme no longer lets the page read a file by path: the
+  file picker is opened, and the picked file read, by the app's native side.
+
+### Fixed
+
+- Broadcast input reaches each pane encoded for the program running there.
+  A source pane running a program that uses the Kitty keyboard protocol or
+  bracketed paste sent the other panes escape sequences their programs never
+  asked for, so Enter or a paste could arrive as garbage. Each pane also uses
+  its own Backspace setting now.
+- F5 and Ctrl+R no longer reload the window when focus is outside a pane,
+  which brought it back with no tabs. If the window does reload, the sessions,
+  port forwards and SOCKS proxies it had open are closed, rather than left
+  running with no way to reach them.
+- After you accept a new host key, the connection timeout applies again for the
+  rest of the connection, so a server that stops responding no longer hangs
+  the pane indefinitely.
+- A reply the terminal sends a program (such as a cursor position) is never cut
+  short, which could have sent the program a broken escape sequence.
+
+### Changed
+
+- The Windows installer (`.exe`) installs for all users, into Program Files,
+  and asks for administrator approval to do it. If you installed an earlier
+  version from the `.exe`, uninstall it first: earlier installers put wRusTTY
+  in your user folder rather than Program Files.
+
 ## [0.7.2] - 2026-11-25
 
 ### Security
