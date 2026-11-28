@@ -183,6 +183,11 @@ jobs:
 
             These are **not code signed**, so expect a SmartScreen warning on
             first run: *More info* → *Run anyway*.
+
+            Android (arm64) — the `.apk`, attached by hand shortly after the
+            Windows installers, so it may take a little while to appear.
+            Install it over an earlier wRusTTY to update in place; Android may
+            ask you to allow installs from your browser or file manager first.
           releaseDraft: false
       # Checksums of the installers exactly as published: downloaded back from
       # the release rather than hashed from the bundle directory, so they
