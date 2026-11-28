@@ -427,12 +427,14 @@ impl<C: Connector> SessionRegistry<C> {
     }
 
     /// Every live session id, for tearing them all down at once (a webview
-    /// reload; see `lib.rs`).
+    /// reload; see `lib.rs`). Desktop only, like that hook.
+    #[cfg_attr(not(desktop), allow(dead_code))]
     pub async fn ids(&self) -> Vec<String> {
         self.sessions.lock().await.keys().cloned().collect()
     }
 
     /// Disconnects every session, as `disconnect` would one at a time.
+    #[cfg_attr(not(desktop), allow(dead_code))]
     pub async fn disconnect_all(&self) {
         for id in self.ids().await {
             if let Err(e) = self.disconnect(&id).await {

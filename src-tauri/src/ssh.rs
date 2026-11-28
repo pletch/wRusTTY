@@ -707,6 +707,7 @@ pub async fn ssh_disconnect(
 }
 
 /// Every live SSH session id; see [`SessionRegistry::ids`].
+#[cfg_attr(not(desktop), allow(dead_code))]
 pub async fn session_ids(state: &SshState) -> Vec<String> {
     state.sessions.ids().await
 }

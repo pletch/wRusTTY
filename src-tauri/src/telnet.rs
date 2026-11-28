@@ -32,6 +32,7 @@ pub struct TelnetState {
 
 impl TelnetState {
     /// Closes every session; see `lib.rs`'s page-load hook.
+    #[cfg_attr(not(desktop), allow(dead_code))]
     pub async fn disconnect_all(&self) {
         self.sessions.disconnect_all().await
     }

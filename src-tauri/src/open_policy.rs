@@ -162,6 +162,8 @@ pub fn is_inert_to_open(basename: &str) -> bool {
 
 /// Whether opening `basename` by association is known to run it. Not the
 /// complement of [`is_inert_to_open`]: most types are neither, and ask first.
+/// Only the local-pane opener uses it, and that is Windows only.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn runs_when_opened(basename: &str) -> bool {
     extension_of(basename).is_some_and(|ext| ext_runs(&ext))
 }
